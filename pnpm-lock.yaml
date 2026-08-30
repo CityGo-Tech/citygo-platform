@@ -33,6 +33,8 @@ importers:
         specifier: ^8.41.0
         version: 8.68.0(eslint@9.39.5)(typescript@5.9.3)
 
+  apps/admin: {}
+
   apps/api:
     dependencies:
       '@citygo/contracts':
@@ -54,6 +56,8 @@ importers:
       tsx:
         specifier: ^4.20.5
         version: 4.23.13
+
+  apps/mobile: {}
 
   apps/web:
     dependencies:
@@ -77,6 +81,17 @@ importers:
         specifier: ^19.1.7
         version: 19.2.5(@types/react@19.2.18)
 
+  apps/worker: {}
+
+  packages/agents:
+    devDependencies:
+      tsup:
+        specifier: ^8.5.0
+        version: 8.5.1(postcss@8.4.31)(tsx@4.23.13)(typescript@5.9.3)
+      tsx:
+        specifier: ^4.20.5
+        version: 4.23.13
+
   packages/contracts:
     dependencies:
       zod:
@@ -89,6 +104,25 @@ importers:
       tsx:
         specifier: ^4.20.5
         version: 4.23.13
+
+  packages/db: {}
+
+  packages/design-tokens: {}
+
+  packages/domain:
+    devDependencies:
+      tsup:
+        specifier: ^8.5.0
+        version: 8.5.1(postcss@8.4.31)(tsx@4.23.13)(typescript@5.9.3)
+      tsx:
+        specifier: ^4.20.5
+        version: 4.23.13
+
+  packages/llm:
+    devDependencies:
+      tsup:
+        specifier: ^8.5.0
+        version: 8.5.1(postcss@8.4.31)(tsx@4.23.13)(typescript@5.9.3)
 
 packages:
 

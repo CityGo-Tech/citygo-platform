@@ -1,0 +1,10 @@
+{
+  "expo": {
+    "name": "CityGo",
+    "slug": "citygo",
+    "scheme": "citygo",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic"
+  }
+}

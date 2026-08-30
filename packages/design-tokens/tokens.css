@@ -1,0 +1,9 @@
+:root {
+  --citygo-color-background: #f4f5ee;
+  --citygo-color-foreground: #14221a;
+  --citygo-color-accent: #c3ff68;
+  --citygo-color-muted: #667661;
+  --citygo-color-border: #bdc5b9;
+  --citygo-radius-control: 999px;
+  --citygo-radius-card: 24px;
+}
