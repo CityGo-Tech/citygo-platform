@@ -1,0 +1,24 @@
+{
+  "name": "@citygo/web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "next build",
+    "clean": "node -e \"require('fs').rmSync('.next',{recursive:true,force:true})\"",
+    "dev": "next dev",
+    "lint": "eslint src",
+    "start": "next start",
+    "test": "node -e \"console.log('No web tests yet')\"",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@citygo/contracts": "workspace:*",
+    "next": "^15.5.2",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
+  },
+  "devDependencies": {
+    "@types/react": "^19.1.10",
+    "@types/react-dom": "^19.1.7"
+  }
+}

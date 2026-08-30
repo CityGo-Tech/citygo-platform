@@ -1,0 +1,25 @@
+{
+  "name": "@citygo/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsup ./src/server.ts --format esm --sourcemap --clean",
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "dev": "tsx watch src/server.ts",
+    "lint": "eslint src",
+    "start": "node dist/server.js",
+    "test": "node --import tsx --test src/**/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@citygo/contracts": "workspace:*",
+    "@fastify/cors": "^11.1.0",
+    "fastify": "^5.5.0",
+    "zod": "^4.1.1"
+  },
+  "devDependencies": {
+    "tsup": "^8.5.0",
+    "tsx": "^4.20.5"
+  }
+}
