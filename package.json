@@ -1,0 +1,28 @@
+{
+  "name": "citygo-platform",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.15.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "lint": "turbo run lint",
+    "test": "turbo run test",
+    "typecheck": "turbo run typecheck",
+    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build",
+    "clean": "turbo run clean"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.34.0",
+    "@next/eslint-plugin-next": "^15.5.2",
+    "@types/node": "^22.17.2",
+    "eslint": "^9.34.0",
+    "globals": "^16.3.0",
+    "turbo": "^2.5.6",
+    "typescript": "^5.9.2",
+    "typescript-eslint": "^8.41.0"
+  }
+}
