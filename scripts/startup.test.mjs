@@ -18,6 +18,10 @@ function start(envOverrides) {
     ROUTERAI_MODEL: "",
     ROUTERAI_UPSTREAM: "",
     ROUTERAI_COUNTRY: "",
+    GIGACHAT_CREDENTIALS: "",
+    GIGACHAT_MODEL: "",
+    GIGACHAT_SCOPE: "",
+    GIGACHAT_CA_BUNDLE_FILE: "",
     ...envOverrides,
   };
   if (env.NODE_ENV === undefined) delete env.NODE_ENV;
@@ -52,9 +56,7 @@ test("provider configuration errors fail before any database connection", () => 
       result.stderr,
       LLM_PROVIDER === "openai"
         ? /requires both OPENAI_API_KEY and OPENAI_MODEL/
-        : LLM_PROVIDER === "routerai"
-          ? /production activation is blocked/
-          : /adapter is not installed/,
+        : /production activation is blocked/,
     );
     assert.doesNotMatch(result.stderr, /ECONNREFUSED/);
     assert.doesNotMatch(result.stdout, /Server listening/);

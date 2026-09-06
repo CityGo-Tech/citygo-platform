@@ -8,7 +8,11 @@ import {
   type AiProviderId,
   type Dashboard,
 } from "@citygo/contracts";
-import { RouterAIProvider, type StreamingProvider } from "@citygo/llm";
+import {
+  RouterAIProvider,
+  GigaChatProvider,
+  type StreamingProvider,
+} from "@citygo/llm";
 import { buildApp } from "./app.js";
 import { readConfig } from "@citygo/config";
 
@@ -398,6 +402,107 @@ function routerResponse(complete: boolean) {
     { headers: { "content-type": "text/event-stream" } },
   );
 }
+
+test("GigaChat adapter mocked HTTP: full vertical slice, cached OAuth, history and exactly-once XP", async (t) => {
+  let auth = 0,
+    chat = 0;
+  const provider = new GigaChatProvider(
+    Buffer.from("test-client:test-key").toString("base64"),
+    "GigaChat-test",
+    {
+      scope: "GIGACHAT_API_PERS",
+      post: async (url, init) => {
+        if (url === "https://ngw.devices.sberbank.ru:9443/api/v2/oauth") {
+          auth++;
+          return Response.json({
+            access_token: "test-access-token",
+            expires_at: Date.now() + 1800000,
+          });
+        }
+        chat++;
+        assert.equal(url, "https://api.giga.chat/v1/chat/completions");
+        const request = JSON.parse(init.body);
+        assert.equal(request.messages[0].role, "system");
+        assert.doesNotMatch(
+          JSON.stringify(request.messages),
+          /@example.test|CityGo-test-password/,
+        );
+        if (chat === 2)
+          assert.ok(
+            request.messages.some(
+              (message: { role: string; content: string }) =>
+                message.role === "assistant" &&
+                message.content.includes("бюджет аренды"),
+            ),
+          );
+        return routerResponse(true);
+      },
+    },
+  );
+  await verticalSlice(t, "gigachat", provider);
+  assert.equal(auth, 1);
+  assert.equal(chat, 2);
+});
+
+test("GigaChat adapter mocked HTTP: interruption blocks XP without token refresh or hidden retry", async (t) => {
+  let auth = 0,
+    chat = 0;
+  const f = await fixture(
+    new GigaChatProvider(
+      Buffer.from("test-client:test-key").toString("base64"),
+      "GigaChat-test",
+      {
+        scope: "GIGACHAT_API_PERS",
+        post: async (url) => {
+          if (url === "https://ngw.devices.sberbank.ru:9443/api/v2/oauth") {
+            auth++;
+            return Response.json({
+              access_token: "test-access-token",
+              expires_at: Date.now() + 1800000,
+            });
+          }
+          return routerResponse(++chat > 1);
+        },
+      },
+    ),
+  );
+  t.after(f.close);
+  const { token } = await f.register();
+  await f.call("POST", "/v1/questionnaire", token, testProfile);
+  const dashboard = async () =>
+    (await f.call("GET", "/v1/dashboard", token)).json<Dashboard>();
+  const quest = (await dashboard()).quests[0]!.id;
+  const thread = (
+    await f.call("POST", `/v1/quests/${quest}/start`, token, {})
+  ).json().id;
+  const send = () =>
+    f.call("POST", `/v1/threads/${thread}/messages`, token, {
+      text: "Помоги выбрать квартиру",
+      requestId: randomUUID(),
+    });
+  const response = await send();
+  assert.match(response.body, /"type":"error"/);
+  assert.doesNotMatch(response.body, /"type":"done"|test-access-token/);
+  const board = await dashboard();
+  assert.equal(board.thread!.messages.at(-1)!.status, "interrupted");
+  assert.deepEqual(board.thread!.messages.at(-1)!.generation, {
+    provider: "gigachat",
+    requestedModel: "GigaChat-test",
+  });
+  assert.equal(
+    (
+      await f.call("POST", `/v1/quests/${quest}/complete`, token, {
+        confirmed: true,
+      })
+    ).statusCode,
+    409,
+  );
+  assert.equal(chat, 1);
+  assert.equal((await dashboard()).xp, 0);
+  assert.match((await send()).body, /"type":"done"/);
+  assert.equal(chat, 2);
+  assert.equal(auth, 1);
+});
 
 test("RouterAI adapter mocked HTTP: full vertical slice with history, handoff and exactly-once XP", async (t) => {
   let calls = 0;

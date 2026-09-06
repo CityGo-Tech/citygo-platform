@@ -60,6 +60,10 @@ export const serverConfigSchema = z.object({
   ROUTERAI_MODEL: optionalSetting,
   ROUTERAI_UPSTREAM: optionalSetting,
   ROUTERAI_COUNTRY: optionalSetting,
+  GIGACHAT_CREDENTIALS: optionalSetting,
+  GIGACHAT_MODEL: optionalSetting,
+  GIGACHAT_SCOPE: optionalSetting,
+  GIGACHAT_CA_BUNDLE_FILE: optionalSetting,
   ADMIN_USER_IDS: z.string().default(""),
   TRUSTED_PROXY_CIDRS: trustedProxySchema,
 });
