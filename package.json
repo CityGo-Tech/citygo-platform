@@ -8,11 +8,11 @@
   },
   "scripts": {
     "browser:install": "playwright install chromium",
-    "build": "turbo run build",
+    "build": "turbo run build --concurrency=3",
     "dev": "node scripts/run.mjs dev",
-    "lint": "turbo run lint && eslint scripts e2e playwright.config.ts",
-    "test": "turbo run test",
-    "typecheck": "turbo run typecheck",
+    "lint": "turbo run lint --concurrency=3 && eslint scripts e2e playwright.config.ts",
+    "test": "turbo run test --concurrency=3",
+    "typecheck": "turbo run typecheck --concurrency=3",
     "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build",
     "clean": "turbo run clean",
     "db:migrate": "node scripts/run.mjs migrate",
@@ -41,3 +41,4 @@
     "prettier": "^3.6.2"
   }
 }
+

@@ -6,6 +6,7 @@ const root = fileURLToPath(new URL("../", import.meta.url));
 if (existsSync(resolve(root, ".env")))
   process.loadEnvFile(resolve(root, ".env"));
 process.env.DATABASE_URL ??= "pglite://" + resolve(root, ".local/database");
+process.env.API_INTERNAL_URL ??= "http://127.0.0.1:" + (process.env.API_PORT ?? "4000");
 if (
   process.env.DATABASE_URL.startsWith("pglite://") &&
   !process.env.DATABASE_URL.startsWith("pglite://:memory:")
@@ -31,7 +32,7 @@ const run = (args) =>
   });
 const mode = process.argv[2];
 if (mode === "dev" || mode === "migrate") {
-  await run(["turbo", "run", "build", "--filter=./packages/*"]);
+  await run(["turbo", "run", "build", "--filter=./packages/*", "--concurrency=3"]);
   await run(["exec", "node", "packages/db/dist/cli.js"]);
 }
 if (mode === "dev")
@@ -39,6 +40,7 @@ if (mode === "dev")
     "turbo",
     "run",
     "dev",
+    "--concurrency=20",
     "--filter=@citygo/web...",
     "--filter=@citygo/api...",
   ]);

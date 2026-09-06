@@ -17,7 +17,7 @@
   "dependencies": {
     "@citygo/api-client": "workspace:*",
     "@citygo/ui-web": "workspace:*",
-    "react": "^19.2.0"
+    "react": "19.2.3"
   },
   "devDependencies": {
     "tsup": "^8.5.0",
@@ -25,3 +25,4 @@
     "@types/react": "^19.2.0"
   }
 }
+

@@ -16,7 +16,7 @@ import { createClient, ApiError } from "@citygo/api-client";
 import { questionnaireSchema, type Dashboard } from "@citygo/contracts";
 import { tokens } from "@citygo/design-tokens";
 import { Button, Card, Field } from "@citygo/ui-native";
-import { housingChecklist } from "@citygo/content";
+import { questChecklist } from "@citygo/content";
 export default function App() {
   const session = useRef<string | null>(null);
   const base = process.env.EXPO_PUBLIC_API_URL ?? "http://localhost:4000";
@@ -256,7 +256,7 @@ export default function App() {
                       />
                     ) : (
                       <>
-                        {housingChecklist.map((item) => (
+                    {questChecklist(quest.slug).map((item) => (
                           <Text key={item}>• {item}</Text>
                         ))}
                         <View style={styles.row}>

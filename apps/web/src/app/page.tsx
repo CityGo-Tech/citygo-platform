@@ -5,7 +5,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { createClient, ApiError } from "@citygo/api-client";
 import type { Dashboard, Questionnaire } from "@citygo/contracts";
 import { Button, Card, Field, Badge, Progress } from "@citygo/ui-web";
-import { housingChecklist } from "@citygo/content";
+import { questChecklist } from "@citygo/content";
 
 const api = createClient();
 const names = {
@@ -392,7 +392,7 @@ export default function Home() {
                         ) : (
                           <>
                             <div className="checklist">
-                              {housingChecklist.map((item, i) => (
+                          {questChecklist(active.slug).map((item, i) => (
                                 <label className="check" key={item}>
                                   <input
                                     type="checkbox"

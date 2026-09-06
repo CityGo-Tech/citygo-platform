@@ -173,6 +173,9 @@ test("vertical slice, ownership, streaming, handoff and exactly-once XP", async 
   );
   assert.match(handoff.body, /"type":"handoff"/);
   assert.equal((await dashboard()).thread!.agentKey, "resume-builder");
+  await f.call("POST", "/v1/quests/" + next.id + "/start", user.token, {});
+  assert.equal((await dashboard()).thread!.agentKey, "housing");
+  assert.equal((await f.call("POST", "/v1/quests/" + next.id + "/complete", user.token, { confirmed: true })).statusCode, 409);
   assert.equal(
     (await f.call("GET", "/v1/admin/overview", user.token)).statusCode,
     403,

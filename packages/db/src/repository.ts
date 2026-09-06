@@ -189,8 +189,8 @@ export class Repository {
       );
       const thread = (
         await tx.query<{ id: string }>(
-          "insert into agent_threads(user_id,agent_key) values ($1,'housing') on conflict (user_id) where status<>'closed' do update set updated_at=now() returning id::text",
-          [userId],
+          "insert into agent_threads(user_id,agent_key) values ($1,'housing') on conflict (user_id) where status<>'closed' do update set agent_key=case when $2 then 'housing' else agent_threads.agent_key end,updated_at=now() returning id::text",
+          [userId, quest.state === "available"],
         )
       ).rows[0]!;
       return thread;

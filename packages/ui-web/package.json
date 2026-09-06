@@ -18,7 +18,7 @@
   },
   "dependencies": {
     "@citygo/design-tokens": "workspace:*",
-    "react": "^19.1.1"
+    "react": "19.2.3"
   },
   "devDependencies": {
     "tsup": "^8.5.0",
@@ -26,3 +26,4 @@
     "@types/react": "^19.1.10"
   }
 }
+

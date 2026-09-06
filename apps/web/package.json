@@ -13,8 +13,8 @@
   "dependencies": {
     "@citygo/contracts": "workspace:*",
     "next": "^15.5.2",
-    "react": "^19.1.1",
-    "react-dom": "^19.1.1",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
     "@citygo/ui-web": "workspace:*",
     "@citygo/api-client": "workspace:*",
     "@citygo/content": "workspace:*",
@@ -27,3 +27,4 @@
     "@types/react-dom": "^19.1.7"
   }
 }
+
