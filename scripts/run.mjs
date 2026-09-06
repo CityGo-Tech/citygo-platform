@@ -47,9 +47,9 @@ if (mode === "dev")
     "turbo",
     "run",
     "dev",
-    "--concurrency=20",
-    "--filter=@citygo/web...",
-    "--filter=@citygo/api...",
+    "--concurrency=3",
+    "--filter=@citygo/web",
+    "--filter=@citygo/api",
   ]);
 else if (mode === "start")
   await run([

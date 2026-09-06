@@ -30,5 +30,8 @@ For server-PostgreSQL integration tests, set TEST_DATABASE_URL to a dedicated
 test database. Every fixture creates and drops its own randomly named test schema.
 
 Build: pnpm build. Serve built Web/API: pnpm start after pnpm db:migrate.
-Shared packages are prebuilt before development watchers start. Web typecheck
-runs next typegen before tsc, including from a fresh checkout.
+Shared packages are prebuilt before the Web/API development watchers start. After
+editing a shared package, restart pnpm dev to rebuild it, or run that package's
+dev script in a separate terminal. The launcher deliberately starts only the two
+application watchers to keep memory use bounded on development laptops.
+Web typecheck runs next typegen before tsc, including from a fresh checkout.
