@@ -1,5 +1,8 @@
 # Web UI
 
-Accessible web primitives: Button, Input, Chip, Quest Card, Agent Card, Chat
-Bubble, Header, and Progress. Components consume design tokens and contain no
-product data access.
+Executable React components: Button (primary/secondary/ghost), Card, Field, Badge,
+Progress. Labels and hint descriptions are separate for screen readers.
+
+Import @citygo/design-tokens/tokens.css, then @citygo/ui-web/styles.css.
+Layout and product orchestration remain in apps/web; primitives make no API calls.
+The Figma comparison is pending: see docs/design/token-status.md.

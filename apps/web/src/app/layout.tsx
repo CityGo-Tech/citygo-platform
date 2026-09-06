@@ -1,14 +1,14 @@
 import type { Metadata } from "next";
-import type { ReactNode } from "react";
-
+import "@citygo/design-tokens/tokens.css";
+import "@citygo/ui-web/styles.css";
 import "./globals.css";
-
 export const metadata: Metadata = {
-  description: "A clear, personalized route to your new city.",
-  title: "CityGo",
+  title: "CityGo — ваш следующий шаг",
+  description: "Личный план переезда и AI-помощники CityGo",
 };
-
-export default function RootLayout({ children }: Readonly<{ children: ReactNode }>) {
+export default function RootLayout({
+  children,
+}: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="ru">
       <body>{children}</body>

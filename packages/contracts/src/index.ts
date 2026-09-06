@@ -1,4 +1,5 @@
 import { z } from "zod";
+export * from "./platform.js";
 
 export const relocationStages = [
   "profile",

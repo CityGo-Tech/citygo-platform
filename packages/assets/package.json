@@ -1,0 +1,14 @@
+{
+  "name": "@citygo/assets",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./manifest.json": "./manifest.json",
+    "./characters/*": "./characters/*"
+  },
+  "scripts": {
+    "lint": "node scripts/verify.mjs",
+    "build": "node scripts/verify.mjs"
+  }
+}

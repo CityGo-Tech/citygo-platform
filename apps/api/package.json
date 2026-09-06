@@ -6,7 +6,7 @@
   "scripts": {
     "build": "tsup ./src/server.ts --format esm --sourcemap --clean",
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
-    "dev": "tsx watch src/server.ts",
+    "dev": "tsx watch src/dev.ts",
     "lint": "eslint src",
     "start": "node dist/server.js",
     "test": "node --import tsx --test src/**/*.test.ts",
@@ -16,10 +16,18 @@
     "@citygo/contracts": "workspace:*",
     "@fastify/cors": "^11.1.0",
     "fastify": "^5.5.0",
-    "zod": "^4.1.1"
+    "zod": "^4.1.1",
+    "@citygo/db": "workspace:*",
+    "@citygo/config": "workspace:*",
+    "@citygo/agents": "workspace:*",
+    "@citygo/llm": "workspace:*",
+    "@citygo/observability": "workspace:*",
+    "@fastify/cookie": "^11.0.2",
+    "@fastify/rate-limit": "^10.3.0"
   },
   "devDependencies": {
     "tsup": "^8.5.0",
-    "tsx": "^4.20.5"
+    "tsx": "^4.20.5",
+    "@citygo/testkit": "workspace:*"
   }
 }

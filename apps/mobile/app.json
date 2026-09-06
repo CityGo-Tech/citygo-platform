@@ -5,6 +5,16 @@
     "scheme": "citygo",
     "version": "0.1.0",
     "orientation": "portrait",
-    "userInterfaceStyle": "automatic"
+    "userInterfaceStyle": "light",
+    "plugins": ["expo-secure-store"],
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "package": "tech.citygo.platform"
+    },
+    "experiments": {
+      "autolinkingModuleResolution": true
+    }
   }
 }

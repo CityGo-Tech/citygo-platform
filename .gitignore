@@ -1,4 +1,10 @@
 node_modules/
+.local/
+.expo/
+playwright-report/
+test-results/
+apps/web/public/characters/
+**/next-env.d.ts
 .next/
 dist/
 coverage/

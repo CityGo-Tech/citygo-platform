@@ -1,0 +1,9 @@
+{
+  "extends": ["//"],
+  "tasks": {
+    "build": {
+      "inputs": ["$TURBO_DEFAULT$", "!index.ts", "!tokens.css"],
+      "outputs": ["tokens.css", "index.ts"]
+    }
+  }
+}

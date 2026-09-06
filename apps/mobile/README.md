@@ -1,7 +1,18 @@
-# Mobile
+# CityGo Mobile
 
-Expo / React Native boundary for the CityGo mobile experience.
+Expo SDK 57 / React Native 0.86. Shared schemas, tokens, native controls and API
+client. Includes email/password sessions in SecureStore, questionnaire, plan,
+quests, streaming chat, saved history and completion.
 
-The first implementation must reuse `@citygo/contracts`, `@citygo/domain`, the
-shared API client, native UI primitives, and design tokens. Offline progress and
-cross-device synchronization require an explicit ADR before implementation.
+Build shared packages first: pnpm build.
+Set EXPO_PUBLIC_API_URL to the API address reachable from the device.
+For an Android emulator use http://10.0.2.2:4000; a physical device needs the host's
+LAN address and API_HOST=0.0.0.0. Use HTTPS outside local development.
+Never put the OpenAI key into an EXPO_PUBLIC variable.
+
+pnpm mobile:dev starts Metro. pnpm mobile:export verifies Android/iOS JS bundles,
+not signed native binaries. A device/emulator smoke test and EAS project/store
+accounts are required before distributing builds. No EAS project is created by
+this change. SDK 57 provides streaming fetch globally on native.
+
+Desktop Web remains apps/web; this Expo package is not a replacement Web target.

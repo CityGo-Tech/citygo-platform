@@ -1,20 +1,27 @@
 name: CI
-
 on:
   pull_request:
   push:
     branches: [main]
-
 permissions:
   contents: read
-
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
-
 jobs:
   verify:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: citygo_test
+          POSTGRES_USER: citygo
+          POSTGRES_PASSWORD: citygo_test_only
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U citygo -d citygo_test" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql://citygo:citygo_test_only@localhost:5432/citygo_test
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -22,7 +29,20 @@ jobs:
           version: 10.15.0
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # Must work before next build has generated any route types.
+      - run: pnpm typecheck
       - run: pnpm check
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm test:e2e
+      - run: pnpm mobile:export
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: browser-test-evidence
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7

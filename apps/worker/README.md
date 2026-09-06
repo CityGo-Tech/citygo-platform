@@ -1,4 +1,9 @@
-# Worker
+# CityGo Worker
 
-Reserved for background jobs, notifications, knowledge ingestion, and durable
-outbox processing. Jobs must be idempotent and safe to retry.
+Built TypeScript maintenance job. After pnpm build, pnpm worker:once reads the root
+.env and runs against server PostgreSQL only. It removes expired sessions,
+marks expired chat leases as interrupted and retains analytics for 90 days.
+
+The job is idempotent and can be retried. Schedule it using the deployment
+platform after choosing the hosting environment. It does not send notifications,
+scrape sources or contact realtors.

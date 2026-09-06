@@ -1,3 +1,4 @@
+export * from "./stream.js";
 export interface LlmMessage {
   role: "system" | "user" | "assistant";
   content: string;
