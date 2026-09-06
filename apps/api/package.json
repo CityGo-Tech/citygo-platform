@@ -6,7 +6,7 @@
   "scripts": {
     "build": "tsup ./src/server.ts --format esm --sourcemap --clean",
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
-    "dev": "tsx watch src/server.ts",
+    "dev": "tsx watch src/dev.ts",
     "lint": "eslint src",
     "start": "node dist/server.js",
     "test": "node --import tsx --test src/**/*.test.ts",

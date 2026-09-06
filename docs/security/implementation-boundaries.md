@@ -7,6 +7,11 @@
   Passwords and provider keys must never be stored on the device.
 - Auth and chat are rate limited. Current limiter is per process/IP; a shared,
   account-aware limiter is required before horizontally scaled production.
+  Only configured TRUSTED_PROXY_CIDRS may supply forwarded client addresses.
+  The HTTPS ingress must replace client-supplied forwarding headers and prevent
+  direct public access to Web/API origins; see the production ingress contract.
+- Built API and root pnpm start force production mode. Insecure database/origin
+  settings or missing proxy trust abort startup; local HTTP/PGlite uses pnpm dev.
 - Every user-facing data query is scoped to the authenticated user. The DB is
   API-owned, never accessible from browser/mobile. Use a restricted runtime DB role
   distinct from the migration owner before production.

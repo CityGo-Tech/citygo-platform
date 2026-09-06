@@ -11,6 +11,7 @@
     "API_PORT",
     "API_HOST",
     "ADMIN_USER_IDS",
+    "TRUSTED_PROXY_CIDRS",
     "NODE_ENV"
   ],
   "tasks": {

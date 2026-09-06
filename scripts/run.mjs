@@ -5,6 +5,9 @@ import { spawn } from "node:child_process";
 const root = fileURLToPath(new URL("../", import.meta.url));
 if (existsSync(resolve(root, ".env")))
   process.loadEnvFile(resolve(root, ".env"));
+const mode = process.argv[2];
+if (mode === "start") process.env.NODE_ENV = "production";
+if (mode === "dev") process.env.NODE_ENV = "development";
 process.env.DATABASE_URL ??= "pglite://" + resolve(root, ".local/database");
 process.env.API_INTERNAL_URL ??=
   "http://127.0.0.1:" + (process.env.API_PORT ?? "4000");
@@ -31,7 +34,6 @@ const run = (args) =>
     for (const signal of ["SIGINT", "SIGTERM"])
       process.once(signal, () => child.kill(signal));
   });
-const mode = process.argv[2];
 if (mode === "dev" || mode === "migrate") {
   await run([
     "turbo",

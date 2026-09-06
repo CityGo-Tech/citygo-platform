@@ -30,6 +30,9 @@ export function buildApp(options: {
     logger: options.testing ? false : { redact: redactPaths },
     bodyLimit: 16 * 1024,
     genReqId: () => randomUUID(),
+    trustProxy: config.TRUSTED_PROXY_CIDRS.length
+      ? config.TRUSTED_PROXY_CIDRS
+      : false,
   });
   const secure = config.NODE_ENV === "production";
   const sessionName = secure ? "__Host-citygo" : "citygo";
@@ -43,7 +46,7 @@ export function buildApp(options: {
   app.register(cookie);
   app.register(cors, { origin: config.WEB_ORIGIN, credentials: true });
   app.register(rateLimit, {
-    max: options.testing ? 10000 : 120,
+    max: 120,
     timeWindow: "1 minute",
   });
   const dummyHash = hashPassword(randomUUID());
@@ -119,7 +122,7 @@ export function buildApp(options: {
       {
         config: {
           rateLimit: {
-            max: options.testing ? 10000 : 10,
+            max: 10,
             timeWindow: "15 minutes",
           },
         },
@@ -191,7 +194,7 @@ export function buildApp(options: {
     {
       config: {
         rateLimit: {
-          max: options.testing ? 10000 : 20,
+          max: 20,
           timeWindow: "1 minute",
         },
       },

@@ -5,8 +5,9 @@ import { connectDatabase, migrate } from "@citygo/db";
 import { testProfile, TestProvider } from "@citygo/testkit";
 import type { Dashboard } from "@citygo/contracts";
 import { buildApp } from "./app.js";
+import { readConfig } from "@citygo/config";
 
-async function fixture(provider = true) {
+async function fixture(provider = true, env: NodeJS.ProcessEnv = {}) {
   const base = process.env.TEST_DATABASE_URL;
   const schema = "test_" + randomUUID().replaceAll("-", "");
   const admin = base ? await connectDatabase(base) : null;
@@ -24,6 +25,7 @@ async function fixture(provider = true) {
     db,
     provider: provider ? new TestProvider() : undefined,
     testing: true,
+    config: readConfig({ NODE_ENV: "test", ...env }),
   });
   async function close() {
     await app.close();
@@ -58,6 +60,112 @@ async function fixture(provider = true) {
   }
   return { app, db, call, register, close };
 }
+
+test("trusted proxy clients have independent global, auth and chat rate limits", async (t) => {
+  const f = await fixture(false, {
+    TRUSTED_PROXY_CIDRS: "10.0.0.8/32,::1/128",
+  });
+  t.after(f.close);
+  const request = (path: string, client: string, remoteAddress = "10.0.0.8") =>
+    f.app.inject({
+      method: path === "/health" ? "GET" : "POST",
+      url: path,
+      remoteAddress,
+      headers: { origin: "http://localhost:3000", "x-forwarded-for": client },
+      ...(path === "/health" ? {} : { payload: {} }),
+    });
+  for (let i = 0; i < 120; i++)
+    assert.equal((await request("/health", "198.51.100.1")).statusCode, 200);
+  assert.equal((await request("/health", "198.51.100.1")).statusCode, 429);
+  assert.equal((await request("/health", "198.51.100.2")).statusCode, 200);
+  // The closest untrusted address wins, not a forged entry on the left.
+  assert.equal(
+    (await request("/health", "203.0.113.99, 198.51.100.1")).statusCode,
+    429,
+  );
+  // IPv4-mapped socket addresses and IPv6 proxy/client paths are supported.
+  assert.equal(
+    (await request("/health", "198.51.100.1", "::ffff:10.0.0.8")).statusCode,
+    429,
+  );
+  assert.equal(
+    (await request("/health", "2001:db8::2", "::1")).statusCode,
+    200,
+  );
+  for (const action of ["login", "register"]) {
+    const path = "/v1/auth/" + action;
+    for (let i = 0; i < 10; i++)
+      assert.equal((await request(path, "198.51.100.3")).statusCode, 400);
+    assert.equal((await request(path, "198.51.100.3")).statusCode, 429);
+    assert.equal((await request(path, "198.51.100.4")).statusCode, 400);
+  }
+  const chat = "/v1/threads/1/messages";
+  for (let i = 0; i < 20; i++)
+    assert.equal((await request(chat, "198.51.100.5")).statusCode, 401);
+  assert.equal((await request(chat, "198.51.100.5")).statusCode, 429);
+  assert.equal((await request(chat, "198.51.100.6")).statusCode, 401);
+});
+
+test("untrusted direct clients cannot evade rate limits with forwarded headers", async (t) => {
+  const f = await fixture(false, { TRUSTED_PROXY_CIDRS: "10.0.0.8/32" });
+  t.after(f.close);
+  for (let i = 0; i < 11; i++) {
+    const reply = await f.app.inject({
+      method: "POST",
+      url: "/v1/auth/login",
+      remoteAddress: "198.51.100.9",
+      headers: {
+        origin: "http://localhost:3000",
+        "x-forwarded-for": "203.0.113." + i,
+      },
+      payload: {},
+    });
+    assert.equal(reply.statusCode, i < 10 ? 400 : 429);
+  }
+});
+
+test("production sessions use secure host-only cookies for signup, login and logout", async (t) => {
+  const f = await fixture(false, {
+    NODE_ENV: "production",
+    DATABASE_URL: "postgresql://localhost/citygo",
+    WEB_ORIGIN: "https://citygo.example",
+    TRUSTED_PROXY_CIDRS: "10.0.0.8/32",
+  });
+  t.after(f.close);
+  const credentials = {
+    email: randomUUID() + "@example.test",
+    password: "CityGo-test-password",
+  };
+  for (const action of ["register", "login"]) {
+    const reply = await f.app.inject({
+      method: "POST",
+      url: "/v1/auth/" + action,
+      headers: { origin: "https://citygo.example" },
+      payload: credentials,
+    });
+    assert.equal(reply.statusCode, 200, reply.body);
+    const cookie = String(reply.headers["set-cookie"]);
+    assert.match(cookie, /^__Host-citygo=/);
+    assert.match(cookie, /; Secure(?:;|$)/);
+    assert.match(cookie, /; HttpOnly(?:;|$)/);
+    assert.match(cookie, /; SameSite=Lax(?:;|$)/i);
+    assert.match(cookie, /; Path=\/(?:;|$)/);
+    assert.doesNotMatch(cookie, /; Domain=/i);
+    const logout = await f.app.inject({
+      method: "POST",
+      url: "/v1/auth/logout",
+      headers: {
+        origin: "https://citygo.example",
+        cookie: "__Host-citygo=" + reply.cookies[0]!.value,
+      },
+    });
+    assert.equal(logout.statusCode, 200);
+    assert.match(
+      String(logout.headers["set-cookie"]),
+      /^__Host-citygo=.*; Secure/,
+    );
+  }
+});
 
 test("vertical slice, ownership, streaming, handoff and exactly-once XP", async (t) => {
   const f = await fixture();
