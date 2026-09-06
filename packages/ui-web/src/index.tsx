@@ -44,10 +44,11 @@ export function Field({
   const errorId = inputId + "-error";
   return (
     <label className="cg-field" htmlFor={inputId}>
-      <span>{label}</span>
+      <span id={inputId + "-label"}>{label}</span>
       <input
         {...props}
         id={inputId}
+        aria-labelledby={props["aria-labelledby"] ?? inputId + "-label"}
         aria-invalid={error ? true : props["aria-invalid"]}
         aria-describedby={
           [describedBy, hint && hintId, error && errorId]
@@ -77,10 +78,11 @@ export function SelectField({
   const hintId = inputId + "-hint";
   return (
     <label className="cg-field" htmlFor={inputId}>
-      <span>{label}</span>
+      <span id={inputId + "-label"}>{label}</span>
       <select
         {...props}
         id={inputId}
+        aria-labelledby={props["aria-labelledby"] ?? inputId + "-label"}
         aria-describedby={
           [describedBy, hint && hintId].filter(Boolean).join(" ") || undefined
         }
