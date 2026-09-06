@@ -1,8 +1,13 @@
 # Web UI
 
-Executable React components: Button (primary/secondary/ghost), Card, Field, Badge,
-Progress. Labels and hint descriptions are separate for screen readers.
+Executable React components: Button (primary/secondary/ghost), Card, Field,
+SelectField, RadioGroup, Badge (primary/success), Progress.
+Field supports associated hints/errors and native input props; RadioGroup uses
+native radios with a fieldset/legend and works with arrow keys. Prefer these over
+app-specific copies. Pass disabled during submissions and keep consent unchecked.
 
 Import @citygo/design-tokens/tokens.css, then @citygo/ui-web/styles.css.
 Layout and product orchestration remain in apps/web; primitives make no API calls.
-The Figma comparison is pending: see docs/design/token-status.md.
+See /design-system in Web for states and keyboard testing. The library uses
+verified Figma tokens; questionnaire-specific layout remains consumer-owned.
+For export scope and intentional adaptations, see docs/design/token-status.md.

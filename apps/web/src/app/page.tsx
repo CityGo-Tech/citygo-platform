@@ -6,6 +6,7 @@ import { createClient, ApiError } from "@citygo/api-client";
 import type { Dashboard, Questionnaire } from "@citygo/contracts";
 import { Button, Card, Field, Badge, Progress } from "@citygo/ui-web";
 import { questChecklist } from "@citygo/content";
+import { QuestionnaireForm } from "../components/questionnaire";
 
 const api = createClient();
 const names = {
@@ -75,6 +76,8 @@ export default function Home() {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
     void act(async () => {
+      if (data.get("aiConsent") !== "on")
+        throw new Error("Подтвердите согласие на AI-рекомендации");
       await api.questionnaire({
         originCity: String(data.get("originCity")),
         targetCity: String(data.get("targetCity")),
@@ -112,7 +115,9 @@ export default function Home() {
     });
   }
   return (
-    <div className="shell">
+    <div
+      className={"shell" + (board && !board.profile ? " shell-onboarding" : "")}
+    >
       <header className="topbar">
         <Link className="wordmark" href="/" aria-label="CityGo — главная">
           City<span>Go</span>
@@ -238,79 +243,7 @@ export default function Home() {
             </Card>
           </div>
         ) : !board.profile ? (
-          <div className="onboarding">
-            <section>
-              <Badge>ШАГ 1 ИЗ 3</Badge>
-              <h1>Куда отправимся?</h1>
-              <p>
-                Несколько деталей — и у вашего переезда появится понятный план.
-              </p>
-              <ol className="steps">
-                <li className="current">Расскажите о переезде</li>
-                <li>Получите личный план</li>
-                <li>Начните жилищный квест</li>
-              </ol>
-            </section>
-            <Card>
-              <h2>Ваш переезд</h2>
-              <form onSubmit={questionnaire}>
-                <div className="form-grid">
-                  <Field
-                    label="Откуда переезжаете"
-                    name="originCity"
-                    minLength={2}
-                    maxLength={100}
-                    required
-                    placeholder="Казань"
-                  />
-                  <Field
-                    label="Город назначения"
-                    name="targetCity"
-                    minLength={2}
-                    maxLength={100}
-                    required
-                    placeholder="Москва"
-                  />
-                </div>
-                <Field
-                  label="Бюджет аренды в месяц, ₽"
-                  name="monthlyBudget"
-                  type="number"
-                  min={5000}
-                  max={1000000}
-                  step={1000}
-                  required
-                  placeholder="65000"
-                />
-                <Field
-                  label="Планируемая дата переезда"
-                  name="moveTargetDate"
-                  type="date"
-                  min={new Date().toISOString().slice(0, 10)}
-                  required
-                />
-                <label className="cg-field">
-                  <span>Кто переезжает</span>
-                  <select name="household">
-                    <option value="solo">Я один / одна</option>
-                    <option value="couple">Вдвоём</option>
-                    <option value="family">С семьёй</option>
-                  </select>
-                </label>
-                <label className="check">
-                  <input type="checkbox" required />
-                  <span>
-                    Разрешаю передавать город, бюджет, дату и состав семьи
-                    AI-провайдеру для персональных рекомендаций. Не буду
-                    отправлять документы и платёжные данные.
-                  </span>
-                </label>
-                <Button disabled={busy} type="submit">
-                  Получить план
-                </Button>
-              </form>
-            </Card>
-          </div>
+          <QuestionnaireForm busy={busy} onSubmit={questionnaire} />
         ) : (
           <div className="dashboard">
             <aside className="sidebar">
@@ -586,7 +519,7 @@ export default function Home() {
       </main>
       <footer>
         CityGo · Место для вашего нового начала{" "}
-        <span>Web MVP · Дизайн ожидает сверки с Figma</span>
+        <span>Web MVP · Токены и анкета сверены с Figma</span>
       </footer>
     </div>
   );

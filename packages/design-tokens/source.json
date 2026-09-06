@@ -1,13 +1,20 @@
 {
-  "status": "local-fallback-awaiting-figma",
-  "source": "CITYGO_THEME_PACK.md (user-provided local design archive)",
+  "status": "figma-variables-and-questionnaire-verified",
+  "source": "Figma local variables plus inspected V2 questionnaire properties",
   "figmaFileKey": "XCWQDLWLHO68J11CtA8ivB",
-  "figmaNodeId": "3:2",
-  "verifiedAgainstFigma": false,
-  "reason": "Figma MCP Starter plan call quota exceeded on 2026-09-06",
+  "figmaNodeId": "261:1905",
+  "mobileNodeId": "269:150",
+  "verifiedAgainstFigma": true,
+  "verifiedScope": "37 exported local variables, 28 mapped application tokens and V2 questionnaire visual foundations; not a whole-application visual sign-off",
+  "exportedAt": "2026-09-06",
+  "snapshot": "figma.snapshot.json",
+  "mapping": "figma.mapping.json",
   "adaptations": [
-    "primaryStrong added for readable white button text",
-    "foreground and muted approximated from local HSL tokens"
+    "V2 nodes have no variable bindings: foreground #182033 and border #E2E5EC override library #17192B and #E3E5EC only inside questionnaire.",
+    "V2 vector paths use a 32px card, 14px fields and 16px CTA; preserved as questionnaire-specific tokens instead of replacing library radii.",
+    "Budget, exact date, household, consent, session logout and busy/error behavior remain functional; unsupported goal directions are disabled.",
+    "Hover, error and disabled states are implementation adaptations, not exported component variants.",
+    "Manrope is bundled for Web; Expo receives shared token values, not the Web font loader."
   ],
-  "policy": "Do not mark as synchronized until exported Figma variables are compared and reviewed."
+  "policy": "Changes to the snapshot or mapping require deliberate Figma export review; builds resolve aliases offline and reject unmapped changes to verified values."
 }

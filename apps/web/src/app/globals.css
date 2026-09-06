@@ -8,7 +8,7 @@ body {
   margin: 0;
   background: var(--cg-color-background);
   color: var(--cg-color-foreground);
-  font-family: var(--cg-font-family);
+  font-family: var(--cg-manrope), var(--cg-font-family);
   font-size: 15px;
   line-height: 1.55;
 }
@@ -41,7 +41,7 @@ a:focus-visible,
 input:focus-visible,
 textarea:focus-visible,
 select:focus-visible {
-  outline: 3px solid var(--cg-color-primary);
+  outline: 3px solid var(--cg-color-focus);
   outline-offset: 3px;
 }
 h1,
@@ -117,78 +117,20 @@ main {
   min-height: calc(100vh - 165px);
   padding: 32px 4% 48px;
 }
-.cg-card {
-  background: var(--cg-color-surface);
-  padding: 28px;
-  border: 1px solid var(--cg-color-border);
-  border-radius: var(--cg-radius-card);
-}
-.cg-button {
-  min-height: 46px;
-  padding: 11px 21px;
-  border-radius: var(--cg-radius-control);
-  border: 1px solid transparent;
-  font-weight: 650;
-  font-size: 14px;
-  transition:
-    background 0.15s,
-    transform 0.15s;
-}
-.cg-button:active:not(:disabled) {
-  transform: translateY(1px);
-}
-.cg-button-primary {
-  background: var(--cg-color-primary-strong);
-  color: white;
-}
-.cg-button-primary:hover:not(:disabled) {
-  background: #344aa3;
-}
-.cg-button-secondary {
-  background: #eef1ff;
-  color: var(--cg-color-primary-strong);
-}
-.cg-button-ghost {
-  background: transparent;
-  color: var(--cg-color-primary-strong);
-}
-.cg-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 6px 11px;
-  border-radius: 999px;
-  background: #eceffd;
-  color: #3b4b8d;
-  font-size: 11px;
-  letter-spacing: 0.025em;
-  font-weight: 650;
-}
 .eyebrow {
   font-size: 10px;
   letter-spacing: 0.14em;
   color: var(--cg-color-muted);
   font-weight: 750;
 }
-.cg-field {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-  font-size: 13px;
-  font-weight: 600;
-}
-.cg-field input,
-.cg-field select,
 textarea {
   width: 100%;
-  border: 1px solid #ccd0de;
-  border-radius: 12px;
-  background: white;
+  border: 1px solid var(--cg-color-control-border);
+  border-radius: var(--cg-radius-control);
+  background: var(--cg-color-surface);
   padding: 12px 14px;
   color: var(--cg-color-foreground);
-  min-height: 47px;
-}
-.cg-field small {
-  font-weight: 400;
+  min-height: var(--cg-size-touch-min);
 }
 form {
   display: flex;
@@ -251,42 +193,110 @@ form .cg-button {
   margin-top: 16px;
 }
 .onboarding {
-  max-width: 1000px;
-  margin: 45px auto;
+  max-width: 1312px;
+  margin: 16px auto 48px;
   display: grid;
-  grid-template-columns: 1fr 1.2fr;
-  gap: 70px;
+  grid-template-columns: minmax(0, 520fr) minmax(0, 740fr);
+  gap: 52px;
+  align-items: start;
+  --cg-color-foreground: var(--cg-questionnaire-foreground);
+  --cg-color-border: var(--cg-questionnaire-border);
+}
+.onboarding-intro {
+  padding-top: 8px;
 }
 .onboarding h1 {
-  margin: 20px 0;
+  font-size: clamp(32px, 3.35vw, var(--cg-questionnaire-title-size));
+  font-weight: 700;
+  letter-spacing: -0.025em;
+  line-height: 1.2;
+  margin: 12px 0 28px;
 }
-.steps {
-  list-style: none;
-  padding: 0;
-  counter-reset: step;
-  margin-top: 40px;
-}
-.steps li {
-  counter-increment: step;
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 16px 0;
-  color: var(--cg-color-muted);
-}
-.steps li:before {
-  content: counter(step);
-  border: 1px solid var(--cg-color-border);
-  border-radius: 50%;
-  width: 34px;
-  height: 34px;
-  display: grid;
-  place-items: center;
-  background: white;
-}
-.steps .current {
+.onboarding h1 em {
+  font-style: normal;
   color: var(--cg-color-primary-strong);
-  font-weight: 600;
+}
+.onboarding-intro > p {
+  font-size: 18px;
+  line-height: 1.55;
+  max-width: 485px;
+}
+.onboarding-mobile-title {
+  display: none;
+}
+.onboarding-guide {
+  margin: 48px 0 0;
+  background: var(--cg-questionnaire-art-background);
+  border-radius: 28px;
+  padding: 22px 36px 28px;
+}
+.onboarding-guide img {
+  display: block;
+  width: min(100%, 400px);
+  height: auto;
+  aspect-ratio: 1;
+  object-fit: fill;
+  margin: 0 auto;
+}
+.onboarding-guide figcaption {
+  position: relative;
+  padding: 16px 26px;
+  margin-top: -26px;
+  background: var(--cg-color-surface);
+  border-radius: 20px;
+}
+.onboarding-guide small {
+  display: block;
+  color: var(--cg-color-primary-strong);
+  font-size: 12px;
+  font-weight: 700;
+}
+.onboarding-guide strong {
+  display: block;
+  font-size: 18px;
+}
+.onboarding-card.cg-card {
+  padding: 32px 48px;
+  border-radius: var(--cg-questionnaire-card-radius);
+}
+.onboarding-card h2 {
+  font-size: 30px;
+  line-height: 1.35;
+  letter-spacing: -0.025em;
+  margin-bottom: 6px;
+}
+.onboarding-card > p {
+  font-size: 15px;
+  margin-bottom: 28px;
+}
+.onboarding-card .cg-progress {
+  margin-bottom: 32px;
+}
+.onboarding-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+.onboarding-card .cg-field input {
+  min-height: var(--cg-questionnaire-control-height);
+  border-radius: var(--cg-questionnaire-control-radius);
+}
+.onboarding-card .cg-button {
+  width: 100%;
+  min-height: var(--cg-questionnaire-button-height);
+  border-radius: var(--cg-questionnaire-button-radius);
+  font-size: 16px;
+}
+.onboarding-note {
+  text-align: center;
+  display: block;
+}
+.shell-onboarding .topbar {
+  height: 64px;
 }
 .form-grid {
   display: grid;
@@ -344,17 +354,6 @@ form .cg-button {
 .sidebar-bottom > small {
   display: block;
   margin-top: 17px;
-}
-.cg-progress {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  font-size: 12px;
-}
-progress {
-  width: 100%;
-  height: 6px;
-  accent-color: var(--cg-color-primary-strong);
 }
 .workspace {
   min-width: 0;
@@ -756,4 +755,101 @@ footer {
   * {
     transition: none !important;
   }
+}
+/* Responsive Figma questionnaire: functional fields can extend beyond the static canvas. */
+@media (max-width: 1100px) and (min-width: 851px) {
+  .onboarding {
+    gap: 28px;
+    grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.2fr);
+  }
+  .onboarding-card.cg-card {
+    padding: 28px;
+  }
+  .onboarding .form-grid {
+    grid-template-columns: 1fr;
+  }
+  .onboarding-guide {
+    padding: 20px;
+  }
+}
+@media (max-width: 850px) {
+  .onboarding {
+    gap: 24px;
+    margin-top: 4px;
+  }
+  .onboarding-intro {
+    padding: 0;
+  }
+  .onboarding-desktop-title,
+  .onboarding-guide {
+    display: none;
+  }
+  .onboarding-mobile-title {
+    display: inline;
+  }
+  .onboarding h1 {
+    font-size: var(--cg-questionnaire-mobile-title-size);
+    margin: 12px 0 16px;
+  }
+  .onboarding-intro > p {
+    font-size: 14px;
+  }
+  .onboarding-card.cg-card {
+    padding: 24px;
+    border-radius: var(--cg-radius-card);
+  }
+  .onboarding-card h2 {
+    font-size: 20px;
+  }
+  .onboarding-card .cg-field input {
+    min-height: 52px;
+  }
+  .onboarding-card .cg-button {
+    min-height: var(--cg-size-touch-min);
+  }
+  .onboarding-card .cg-radio-option span {
+    padding: 12px 16px;
+    font-size: 13px;
+  }
+  .onboarding-card .cg-radio-options {
+    gap: 8px;
+  }
+  .onboarding-card .cg-progress > span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+  .onboarding-card .cg-progress progress {
+    height: 8px;
+  }
+}
+.design-system {
+  max-width: 1100px;
+  margin: auto;
+  padding: 32px 20px;
+}
+.design-system-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+  gap: 24px;
+}
+.design-system-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 20px;
+}
+.design-system-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+}
+.design-system-swatch {
+  width: 100%;
+  height: 36px;
+  border-radius: 8px;
+  border: 1px solid var(--cg-color-border);
 }
