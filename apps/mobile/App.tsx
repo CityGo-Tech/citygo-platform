@@ -404,9 +404,18 @@ export default function App() {
                             abort.current.signal,
                             board.aiAccess.policy?.id,
                           );
+                        } catch (e) {
+                          // A stale consent or quota rejection must not discard
+                          // the user's draft; resubmission remains explicit.
+                          if (!abort.current?.signal.aborted) setText(message);
+                          throw e;
                         } finally {
-                          await refresh();
-                          setDraft("");
+                          try {
+                            await refresh();
+                          } finally {
+                            setDraft("");
+                            abort.current = null;
+                          }
                         }
                       })
                     }

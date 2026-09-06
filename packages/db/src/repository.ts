@@ -330,6 +330,8 @@ export class Repository {
         fail(409, "Этот запрос уже был принят");
       if (!(await this.hasAiConsent(tx, userId, access.policyId)))
         fail(403, "Подтвердите передачу данных выбранному AI-получателю");
+      if (access.userDailyLimit === 0 || access.globalDailyLimit === 0)
+        fail(503, "Чат временно отключён администратором.");
       // UTC day from the database, shared across processes/providers/restarts.
       const day = (
         await tx.query<{ day: string }>(

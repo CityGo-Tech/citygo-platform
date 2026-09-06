@@ -313,7 +313,7 @@ test("daily global admission is atomic across simultaneous users and API instanc
   );
 });
 
-test("failed requests consume personal quota across restarts; zero disables new admissions", async (t) => {
+test("failed requests consume personal quota across restarts and provider changes; zero disables new admissions", async (t) => {
   let calls = 0;
   const provider: StreamingProvider = {
     name: "openai",
@@ -337,13 +337,15 @@ test("failed requests consume personal quota across restarts; zero disables new 
     ).body,
     /"type":"error"/,
   );
+  const switched: StreamingProvider = { ...provider, name: "gigachat" };
   const restarted = await buildApp({
     db: f.db,
-    provider,
+    provider: switched,
     config: readConfig({ NODE_ENV: "test", LLM_USER_DAILY_REQUEST_LIMIT: "1" }),
     testing: true,
   });
   t.after(() => restarted.close());
+  const switchedPolicyId = await f.consent(user.token, restarted);
   const headers = {
     origin: "http://localhost:3000",
     cookie: "citygo=" + user.token,
@@ -357,7 +359,7 @@ test("failed requests consume personal quota across restarts; zero disables new 
         payload: {
           text: "Квартира",
           requestId: randomUUID(),
-          policyId: user.policyId,
+          policyId: switchedPolicyId,
         },
       })
     ).statusCode,
@@ -377,7 +379,7 @@ test("failed requests consume personal quota across restarts; zero disables new 
   );
   const disabled = await buildApp({
     db: f.db,
-    provider,
+    provider: switched,
     config: readConfig({
       NODE_ENV: "test",
       LLM_GLOBAL_DAILY_REQUEST_LIMIT: "0",
@@ -394,11 +396,11 @@ test("failed requests consume personal quota across restarts; zero disables new 
         payload: {
           text: "Квартира",
           requestId: randomUUID(),
-          policyId: user.policyId,
+          policyId: switchedPolicyId,
         },
       })
     ).statusCode,
-    429,
+    503,
   );
   assert.equal(calls, 2);
   assert.equal(
