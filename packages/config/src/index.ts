@@ -56,6 +56,10 @@ export const serverConfigSchema = z.object({
   LLM_MAX_OUTPUT_TOKENS: z.coerce.number().int().min(1).max(8000).default(1400),
   OPENAI_API_KEY: optionalSetting,
   OPENAI_MODEL: optionalSetting,
+  ROUTERAI_API_KEY: optionalSetting,
+  ROUTERAI_MODEL: optionalSetting,
+  ROUTERAI_UPSTREAM: optionalSetting,
+  ROUTERAI_COUNTRY: optionalSetting,
   ADMIN_USER_IDS: z.string().default(""),
   TRUSTED_PROXY_CIDRS: trustedProxySchema,
 });

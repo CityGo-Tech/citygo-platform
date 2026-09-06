@@ -24,9 +24,12 @@
 - Questionnaire city/budget/date/household may go to OpenAI only after explicit
   consent. Email is excluded from model context. Responses API uses store:false;
   that is not a promise of zero provider-side retention.
-- Stage 1 provider-neutral contracts do not enable new data recipients. RouterAI
-  and GigaChat selections fail closed until their adapters and recipient/consent
-  rules ship. See the [AI provider rollout](../runbooks/ai-providers.md).
+- Stage 2 adds RouterAI for an explicit local synthetic-data pilot only. Production
+  selection fails before database connection pending recipient/consent rules;
+  GigaChat remains reserved. RouterAI uses separate credentials, a fixed HTTPS
+  endpoint, one named upstream and allow_fallbacks:false; redirects and client
+  retries are disabled. Never use development mode to bypass production gates.
+  See the [AI provider rollout](../runbooks/ai-providers.md).
 - The orchestrator is deterministic topic routing, not autonomous tool execution.
   Specialists cannot mutate XP, contact third parties or invent housing listings.
 - Human handoffs are stored for review, not dispatched to a real realtor.

@@ -9,6 +9,20 @@ const production = {
   TRUSTED_PROXY_CIDRS: "10.0.0.8/32, ::1/128",
 };
 
+test("RouterAI settings are trimmed, blank-safe and never implicitly select it", () => {
+  const config = readConfig({
+    ROUTERAI_API_KEY: " test-key ",
+    ROUTERAI_MODEL: " test/model ",
+    ROUTERAI_UPSTREAM: " test-upstream ",
+    ROUTERAI_COUNTRY: " ",
+  });
+  assert.equal(config.ROUTERAI_API_KEY, "test-key");
+  assert.equal(config.ROUTERAI_MODEL, "test/model");
+  assert.equal(config.ROUTERAI_UPSTREAM, "test-upstream");
+  assert.equal(config.ROUTERAI_COUNTRY, undefined);
+  assert.equal(config.LLM_PROVIDER, undefined);
+});
+
 test("provider settings preserve blank defaults and validate IDs and limits", () => {
   assert.equal(readConfig({ LLM_PROVIDER: " " }).LLM_PROVIDER, undefined);
   for (const LLM_PROVIDER of ["openai", "routerai", "gigachat", "disabled"])
