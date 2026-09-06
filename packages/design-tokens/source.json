@@ -1,0 +1,13 @@
+{
+  "status": "local-fallback-awaiting-figma",
+  "source": "CITYGO_THEME_PACK.md (user-provided local design archive)",
+  "figmaFileKey": "XCWQDLWLHO68J11CtA8ivB",
+  "figmaNodeId": "3:2",
+  "verifiedAgainstFigma": false,
+  "reason": "Figma MCP Starter plan call quota exceeded on 2026-09-06",
+  "adaptations": [
+    "primaryStrong added for readable white button text",
+    "foreground and muted approximated from local HSL tokens"
+  ],
+  "policy": "Do not mark as synchronized until exported Figma variables are compared and reviewed."
+}

@@ -1,0 +1,13 @@
+node_modules
+.pnpm-store
+.next
+.turbo
+dist
+.local
+playwright-report
+test-results
+pnpm-lock.yaml
+packages/design-tokens/index.ts
+packages/design-tokens/tokens.css
+apps/web/public/characters
+**/next-env.d.ts

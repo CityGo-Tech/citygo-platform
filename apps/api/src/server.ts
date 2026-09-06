@@ -1,19 +1,17 @@
-import { z } from "zod";
-
+import { readConfig } from "@citygo/config";
+import { connectDatabase } from "@citygo/db";
+import { OpenAIProvider } from "@citygo/llm";
 import { buildApp } from "./app.js";
-
-const env = z
-  .object({
-    API_HOST: z.string().default("0.0.0.0"),
-    API_PORT: z.coerce.number().int().positive().default(4000),
-  })
-  .parse(process.env);
-
-const app = buildApp();
-
-try {
-  await app.listen({ host: env.API_HOST, port: env.API_PORT });
-} catch (error) {
-  app.log.error(error);
-  process.exit(1);
-}
+const config = readConfig();
+const db = await connectDatabase(config.DATABASE_URL);
+const provider =
+  config.OPENAI_API_KEY && config.OPENAI_MODEL
+    ? new OpenAIProvider(config.OPENAI_API_KEY, config.OPENAI_MODEL)
+    : undefined;
+const app = buildApp({ db, config, provider });
+app.addHook("onClose", () => db.close());
+for (const signal of ["SIGINT", "SIGTERM"])
+  process.once(signal, () => {
+    void app.close();
+  });
+await app.listen({ host: config.API_HOST, port: config.API_PORT });

@@ -5,12 +5,17 @@ import tseslint from "typescript-eslint";
 
 export default tseslint.config(
   {
-    ignores: ["**/.next/**", "**/coverage/**", "**/dist/**", "**/node_modules/**"],
+    ignores: [
+      "**/.next/**",
+      "**/coverage/**",
+      "**/dist/**",
+      "**/node_modules/**",
+    ],
   },
   eslint.configs.recommended,
   ...tseslint.configs.recommended,
   {
-    files: ["apps/web/**/*.{ts,tsx}"],
+    files: ["apps/web/**/*.{ts,tsx}", "apps/admin/**/*.{ts,tsx}"],
     languageOptions: { globals: globals.browser },
     plugins: { "@next/next": nextPlugin },
     rules: {
@@ -19,7 +24,14 @@ export default tseslint.config(
     },
   },
   {
-    files: ["apps/api/**/*.ts", "packages/**/*.{js,mjs,ts}"],
+    files: [
+      "apps/api/**/*.ts",
+      "apps/worker/**/*.ts",
+      "packages/**/*.{js,mjs,ts}",
+      "scripts/**/*.mjs",
+      "e2e/**/*.ts",
+      "playwright.config.ts",
+    ],
     languageOptions: { globals: globals.node },
   },
 );

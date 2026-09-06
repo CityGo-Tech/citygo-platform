@@ -1,9 +1,6 @@
+export * from "./runtime.js";
 export type AgentId =
-  | "support"
-  | "housing"
-  | "job-search"
-  | "resume-builder"
-  | "digital-mentor";
+  "support" | "housing" | "job-search" | "resume-builder" | "digital-mentor";
 
 export interface AgentDefinition {
   id: AgentId;
@@ -26,14 +23,20 @@ export const agentCatalog: readonly AgentDefinition[] = [
     displayName: "Housing Navigator",
     promptVersion: "v1",
     allowedToolGroups: ["profile:read", "housing:search", "quest:update"],
-    handoffWhen: ["Legal interpretation is required", "Fraud or safety risk is detected"],
+    handoffWhen: [
+      "Legal interpretation is required",
+      "Fraud or safety risk is detected",
+    ],
   },
   {
     id: "job-search",
     displayName: "Job Search Mentor",
     promptVersion: "v1",
     allowedToolGroups: ["profile:read", "jobs:search", "quest:update"],
-    handoffWhen: ["A resume artifact is requested", "A human career review is requested"],
+    handoffWhen: [
+      "A resume artifact is requested",
+      "A human career review is requested",
+    ],
   },
   {
     id: "resume-builder",
@@ -47,6 +50,9 @@ export const agentCatalog: readonly AgentDefinition[] = [
     displayName: "Digital Mentor",
     promptVersion: "v1",
     allowedToolGroups: ["profile:read", "knowledge:read", "quest:update"],
-    handoffWhen: ["Official support is required", "Sensitive account access is involved"],
+    handoffWhen: [
+      "Official support is required",
+      "Sensitive account access is involved",
+    ],
   },
 ] as const;

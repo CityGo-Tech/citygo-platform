@@ -3,19 +3,24 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "build": "next build",
+    "build": "node ../../scripts/sync-assets.mjs && next build",
     "clean": "node -e \"require('fs').rmSync('.next',{recursive:true,force:true})\"",
-    "dev": "next dev",
+    "dev": "node ../../scripts/sync-assets.mjs && next dev",
     "lint": "eslint src",
     "start": "next start",
-    "test": "node -e \"console.log('No web tests yet')\"",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "next typegen && tsc --noEmit"
   },
   "dependencies": {
     "@citygo/contracts": "workspace:*",
     "next": "^15.5.2",
     "react": "^19.1.1",
-    "react-dom": "^19.1.1"
+    "react-dom": "^19.1.1",
+    "@citygo/ui-web": "workspace:*",
+    "@citygo/api-client": "workspace:*",
+    "@citygo/content": "workspace:*",
+    "@citygo/assets": "workspace:*",
+    "@citygo/design-tokens": "workspace:*",
+    "@citygo/admin": "workspace:*"
   },
   "devDependencies": {
     "@types/react": "^19.1.10",

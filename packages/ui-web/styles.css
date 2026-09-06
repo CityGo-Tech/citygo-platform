@@ -1,0 +1,69 @@
+/* Import after @citygo/design-tokens/tokens.css. App layout is consumer-owned. */
+.cg-button {
+  min-height: 46px;
+  padding: 11px 21px;
+  border-radius: var(--cg-radius-control);
+  border: 1px solid transparent;
+  font: inherit;
+  font-weight: 650;
+  cursor: pointer;
+}
+.cg-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.cg-button-primary {
+  background: var(--cg-color-primary-strong);
+  color: white;
+}
+.cg-button-secondary {
+  background: #eef1ff;
+  color: var(--cg-color-primary-strong);
+}
+.cg-button-ghost {
+  background: transparent;
+  color: var(--cg-color-primary-strong);
+}
+.cg-card {
+  background: var(--cg-color-surface);
+  padding: 28px;
+  border: 1px solid var(--cg-color-border);
+  border-radius: var(--cg-radius-card);
+}
+.cg-field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.cg-field input {
+  font: inherit;
+  border: 1px solid var(--cg-color-border);
+  border-radius: var(--cg-radius-control);
+  padding: 12px 14px;
+}
+.cg-badge {
+  display: inline-flex;
+  padding: 6px 11px;
+  border-radius: 999px;
+  background: #eceffd;
+  color: #3b4b8d;
+  font-size: 11px;
+  font-weight: 650;
+}
+.cg-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  font-size: 12px;
+}
+.cg-progress progress {
+  width: 100%;
+  accent-color: var(--cg-color-primary-strong);
+}
+.cg-button:focus-visible,
+.cg-field input:focus-visible {
+  outline: 3px solid var(--cg-color-primary);
+  outline-offset: 3px;
+}

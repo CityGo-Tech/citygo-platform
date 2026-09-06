@@ -1,11 +1,28 @@
 {
   "$schema": "https://turbo.build/schema.json",
+  "globalDependencies": ["tsconfig.base.json", "eslint.config.mjs", ".env"],
+  "globalPassThroughEnv": [
+    "DATABASE_URL",
+    "TEST_DATABASE_URL",
+    "OPENAI_API_KEY",
+    "OPENAI_MODEL",
+    "WEB_ORIGIN",
+    "API_PORT",
+    "API_HOST",
+    "ADMIN_USER_IDS",
+    "NODE_ENV"
+  ],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
       "outputs": [".next/**", "!.next/cache/**", "dist/**"]
     },
     "dev": {
+      "dependsOn": ["^build"],
+      "cache": false,
+      "persistent": true
+    },
+    "start": {
       "cache": false,
       "persistent": true
     },
@@ -14,10 +31,12 @@
     },
     "test": {
       "dependsOn": ["^build"],
+      "cache": false,
       "outputs": []
     },
     "typecheck": {
-      "dependsOn": ["^build"]
+      "dependsOn": ["^build"],
+      "outputs": []
     },
     "clean": {
       "cache": false

@@ -1,9 +1,21 @@
 :root {
-  --citygo-color-background: #f4f5ee;
-  --citygo-color-foreground: #14221a;
-  --citygo-color-accent: #c3ff68;
-  --citygo-color-muted: #667661;
-  --citygo-color-border: #bdc5b9;
-  --citygo-radius-control: 999px;
-  --citygo-radius-card: 24px;
+  --cg-color-background: #F6F7FB;
+  --cg-color-foreground: #202338;
+  --cg-color-surface: #FFFFFF;
+  --cg-color-primary: #6A8DFF;
+  --cg-color-primary-strong: #4059BB;
+  --cg-color-secondary: #F4B8A7;
+  --cg-color-accent: #A675FF;
+  --cg-color-muted: #64697D;
+  --cg-color-border: #E1E3EE;
+  --cg-color-success: #206846;
+  --cg-color-danger: #AD3047;
+  --cg-radius-control: 12px;
+  --cg-radius-card: 24px;
+  --cg-space-xs: 4px;
+  --cg-space-sm: 8px;
+  --cg-space-md: 16px;
+  --cg-space-lg: 24px;
+  --cg-space-xl: 32px;
+  --cg-font-family: Manrope, system-ui, sans-serif;
 }

@@ -1,5 +1,30 @@
 {
   "name": "@citygo/mobile",
   "version": "0.1.0",
-  "private": true
+  "private": true,
+  "main": "index.ts",
+  "scripts": {
+    "dev": "expo start",
+    "export": "expo export --platform android --platform ios",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint App.tsx index.ts"
+  },
+  "dependencies": {
+    "@citygo/api-client": "workspace:*",
+    "@citygo/contracts": "workspace:*",
+    "@citygo/ui-native": "workspace:*",
+    "@citygo/design-tokens": "workspace:*",
+    "@citygo/content": "workspace:*",
+    "expo": "~57.0.17",
+    "expo-secure-store": "~57.0.3",
+    "react-native": "0.86.3",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "expo-crypto": "~57.0.2",
+    "react-native-safe-area-context": "~5.7.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.0",
+    "typescript": "^5.9.2"
+  }
 }

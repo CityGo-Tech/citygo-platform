@@ -1,5 +1,5 @@
 # Native UI
 
-React Native counterparts for shared CityGo interaction patterns. Platform-
-specific accessibility and navigation behavior takes precedence over visual
-pixel parity.
+Compiled React Native Button, Card and Field primitives using the same typed
+design tokens as Web. Expo consumes this real workspace package.
+React/React Native versions align with the Expo SDK 57 bundled module list.

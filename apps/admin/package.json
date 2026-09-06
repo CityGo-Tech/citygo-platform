@@ -1,5 +1,27 @@
 {
   "name": "@citygo/admin",
   "version": "0.1.0",
-  "private": true
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup src/index.tsx --format esm --dts --clean",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src"
+  },
+  "dependencies": {
+    "@citygo/api-client": "workspace:*",
+    "@citygo/ui-web": "workspace:*",
+    "react": "^19.2.0"
+  },
+  "devDependencies": {
+    "tsup": "^8.5.0",
+    "tsx": "^4.20.5",
+    "@types/react": "^19.2.0"
+  }
 }

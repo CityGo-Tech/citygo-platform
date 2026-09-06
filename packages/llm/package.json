@@ -17,5 +17,8 @@
   },
   "devDependencies": {
     "tsup": "^8.5.0"
+  },
+  "dependencies": {
+    "openai": "^6.0.0"
   }
 }

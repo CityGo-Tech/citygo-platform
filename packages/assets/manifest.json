@@ -1,0 +1,194 @@
+{
+  "source": "User-provided CityGo character illustrations; no Figma export available",
+  "characters": [
+    {
+      "id": "housing",
+      "label": "Housing Navigator",
+      "sourceFile": "Помощник по подбору жилья — Housing Navigator (Soft-Tech A-Style)1.png",
+      "sourceSha256": "a55678e7259b13e1ef033f62507634bf272bfc107bcfbed0061217d1a86618ba",
+      "sourceBytes": 1095938,
+      "variants": [
+        {
+          "path": "characters/housing-192.webp",
+          "width": 192,
+          "height": 105,
+          "bytes": 1912
+        },
+        {
+          "path": "characters/housing-640.webp",
+          "width": 640,
+          "height": 349,
+          "bytes": 9850
+        }
+      ]
+    },
+    {
+      "id": "job-search",
+      "label": "Job Search Mentor",
+      "sourceFile": "Помощник по поиску работы — Job Search Mentor (Soft-Tech A-Style)1.png",
+      "sourceSha256": "4b9191d586405befd29d8eeedfeb76b2ad73e0dc856fbc2d0526f824deb19331",
+      "sourceBytes": 1138013,
+      "variants": [
+        {
+          "path": "characters/job-search-192.webp",
+          "width": 192,
+          "height": 105,
+          "bytes": 1832
+        },
+        {
+          "path": "characters/job-search-640.webp",
+          "width": 640,
+          "height": 349,
+          "bytes": 9380
+        }
+      ]
+    },
+    {
+      "id": "resume-builder",
+      "label": "Resume Builder Expert",
+      "sourceFile": "Помощник по созданию резюме — Resume Builder Expert (Soft-Tech A-Style)1.png",
+      "sourceSha256": "6b2a8b2a96b3ebca54c796c0c32ad89f8d53a108668473ba447dbb1979015161",
+      "sourceBytes": 1142508,
+      "variants": [
+        {
+          "path": "characters/resume-builder-192.webp",
+          "width": 192,
+          "height": 105,
+          "bytes": 1962
+        },
+        {
+          "path": "characters/resume-builder-640.webp",
+          "width": 640,
+          "height": 349,
+          "bytes": 11728
+        }
+      ]
+    },
+    {
+      "id": "support",
+      "label": "Support Assistant",
+      "sourceFile": "Партнёр по сервису _ Support Assistant — универсальный помощник CityGo (Soft-Tech A-Style)1.png",
+      "sourceSha256": "d290b949d35ff71baa7a1dde190806f7b075ce99046f1adeeaf669c2d0bf8efd",
+      "sourceBytes": 1114086,
+      "variants": [
+        {
+          "path": "characters/support-192.webp",
+          "width": 192,
+          "height": 105,
+          "bytes": 1674
+        },
+        {
+          "path": "characters/support-640.webp",
+          "width": 640,
+          "height": 349,
+          "bytes": 9672
+        }
+      ]
+    },
+    {
+      "id": "digital-mentor",
+      "label": "Digital Mentor",
+      "sourceFile": "Digital Mentor _ AI-Guide — полу-человек, полу-ИИ.png",
+      "sourceSha256": "3c230d87add9b676cfa3c9d9a8b9b6b6adf89de65699218019e6a8ab6c272327",
+      "sourceBytes": 1105074,
+      "variants": [
+        {
+          "path": "characters/digital-mentor-192.webp",
+          "width": 192,
+          "height": 105,
+          "bytes": 1576
+        },
+        {
+          "path": "characters/digital-mentor-640.webp",
+          "width": 640,
+          "height": 349,
+          "bytes": 9272
+        }
+      ]
+    },
+    {
+      "id": "traveler-female",
+      "label": "основной женский персонаж",
+      "sourceFile": "основной женский персонаж CityGo Premium.png",
+      "sourceSha256": "2a2f55c4821d37433a5994be0878ac8c2bcf3a095606221008cb2352e2f77f7b",
+      "sourceBytes": 1136017,
+      "variants": [
+        {
+          "path": "characters/traveler-female-192.webp",
+          "width": 192,
+          "height": 105,
+          "bytes": 1538
+        },
+        {
+          "path": "characters/traveler-female-640.webp",
+          "width": 640,
+          "height": 349,
+          "bytes": 7588
+        }
+      ]
+    },
+    {
+      "id": "traveler-male",
+      "label": "Мужчина-переезжающий",
+      "sourceFile": "Мужчина-переезжающий — Traveler Male.png",
+      "sourceSha256": "dae79c65fde839553d81c977996d8fd4d6938bd06a40c3a9cc6b18c0ec69328d",
+      "sourceBytes": 1224751,
+      "variants": [
+        {
+          "path": "characters/traveler-male-192.webp",
+          "width": 192,
+          "height": 105,
+          "bytes": 2044
+        },
+        {
+          "path": "characters/traveler-male-640.webp",
+          "width": 640,
+          "height": 349,
+          "bytes": 13850
+        }
+      ]
+    },
+    {
+      "id": "child-female",
+      "label": "Персонаж девочка",
+      "sourceFile": "Персонаж девочка.png",
+      "sourceSha256": "951ac16a1d0de048efba0c6f00a24facc3a2300f5b242b376a3b10a78da55b8f",
+      "sourceBytes": 1094590,
+      "variants": [
+        {
+          "path": "characters/child-female-192.webp",
+          "width": 192,
+          "height": 192,
+          "bytes": 2398
+        },
+        {
+          "path": "characters/child-female-640.webp",
+          "width": 640,
+          "height": 640,
+          "bytes": 11292
+        }
+      ]
+    },
+    {
+      "id": "child-male",
+      "label": "Персонаж - мальчик",
+      "sourceFile": "Персонаж - мальчик.png",
+      "sourceSha256": "2ca0cb96b80db5bc35eb9bfcf0ab7cb868e2af90383a0e9af22a94e4dd0a0898",
+      "sourceBytes": 1144831,
+      "variants": [
+        {
+          "path": "characters/child-male-192.webp",
+          "width": 192,
+          "height": 192,
+          "bytes": 2394
+        },
+        {
+          "path": "characters/child-male-640.webp",
+          "width": 640,
+          "height": 640,
+          "bytes": 12370
+        }
+      ]
+    }
+  ]
+}

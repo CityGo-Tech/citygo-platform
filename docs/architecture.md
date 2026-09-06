@@ -1,24 +1,28 @@
-# Architecture
+# Runtime architecture
 
-CityGo starts as a modular monolith split across independently deployable web
-and API applications. Shared contracts live in a small package so both runtime
-surfaces agree on validation rules and product terminology.
+Web and Expo consume @citygo/api-client and @citygo/contracts. Only the Fastify API
+accesses user data and OpenAI. Admin is an executable workspace React package
+mounted by Web at /admin; the API enforces its allowlist.
 
-## Boundaries
+The API-owned Repository executes parameterized SQL through either a pg Pool
+(server PostgreSQL) or PGlite (single-process local development). Migrations are
+append-only, checksum-checked, serialized and transactional. Domain quest state
+rules are shared; rewards are never decided by the model or a client.
 
-```text
-apps/web  --->  apps/api  --->  future infrastructure adapters
-    \             /
-     packages/contracts
-```
+Questionnaire creates one versioned plan and two user quests. Starting a quest
+opens the user's conversation. Chat reserves a lease and stores the user message
+before streaming. A short final transaction stores the assistant result. The
+router can switch specialization without losing conversation history.
 
-- The web app owns presentation and browser-side orchestration.
-- The API owns use cases, authorization, validation, and integrations.
-- Shared packages must not import from applications.
-- External providers should be introduced behind API adapters.
+Completion requires an in-progress quest, explicit user confirmation, and a
+complete Housing Navigator reply since that quest started. The quest update,
+exactly-once XP event, next-quest unlock and analytics event commit together.
 
-## Data safety
+The model receives a bounded recent history and consented profile fields. It has
+no external search, mutation or third-party messaging tools. Role instructions
+cover housing, job search, resume, digital adaptation and support. Handoff is
+rules-based routing plus a persisted audit record, not a multi-model swarm.
 
-Relocation profiles may contain personal and financial information. Production
-work must add explicit retention rules, audit trails, encryption, role-based
-access, and redaction before real customer data is stored.
+Worker is a separate one-shot server-PostgreSQL maintenance process. Readiness
+checks applied migrations. Logs use request IDs and redact credentials. Production
+deployment and external monitoring targets are intentionally not provisioned.

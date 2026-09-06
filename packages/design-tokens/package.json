@@ -2,8 +2,15 @@
   "name": "@citygo/design-tokens",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "exports": {
+    ".": "./index.ts",
     "./tokens.css": "./tokens.css",
-    "./tokens.json": "./tokens.json"
+    "./tokens.json": "./tokens.json",
+    "./source.json": "./source.json"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "lint": "node scripts/build.mjs --check"
   }
 }
