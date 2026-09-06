@@ -117,6 +117,22 @@ test("vertical slice, ownership, streaming, handoff and exactly-once XP", async 
     ).statusCode,
     409,
   );
+  const human = await f.call(
+    "POST",
+    "/v1/threads/" + thread + "/messages",
+    user.token,
+    { text: "Нужен живой риелтор", requestId: randomUUID() },
+  );
+  assert.match(human.body, /"type":"done"/);
+  assert.equal((await dashboard()).thread!.messages.at(-1)!.status, "complete");
+  assert.equal(
+    (
+      await f.call("POST", "/v1/quests/" + first.id + "/complete", user.token, {
+        confirmed: true,
+      })
+    ).statusCode,
+    409,
+  );
   const body = { text: "Помоги выбрать квартиру", requestId: randomUUID() };
   assert.equal(
     (
@@ -150,7 +166,7 @@ test("vertical slice, ownership, streaming, handoff and exactly-once XP", async 
     409,
   );
   board = await dashboard();
-  assert.equal(board.thread!.messages.length, 2);
+  assert.equal(board.thread!.messages.length, 4);
   const completions = await Promise.all(
     [1, 2].map(() =>
       f.call("POST", "/v1/quests/" + first.id + "/complete", user.token, {
@@ -175,7 +191,14 @@ test("vertical slice, ownership, streaming, handoff and exactly-once XP", async 
   assert.equal((await dashboard()).thread!.agentKey, "resume-builder");
   await f.call("POST", "/v1/quests/" + next.id + "/start", user.token, {});
   assert.equal((await dashboard()).thread!.agentKey, "housing");
-  assert.equal((await f.call("POST", "/v1/quests/" + next.id + "/complete", user.token, { confirmed: true })).statusCode, 409);
+  assert.equal(
+    (
+      await f.call("POST", "/v1/quests/" + next.id + "/complete", user.token, {
+        confirmed: true,
+      })
+    ).statusCode,
+    409,
+  );
   assert.equal(
     (await f.call("GET", "/v1/admin/overview", user.token)).statusCode,
     403,

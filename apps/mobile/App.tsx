@@ -256,7 +256,7 @@ export default function App() {
                       />
                     ) : (
                       <>
-                    {questChecklist(quest.slug).map((item) => (
+                        {questChecklist(quest.slug).map((item) => (
                           <Text key={item}>• {item}</Text>
                         ))}
                         <View style={styles.row}>

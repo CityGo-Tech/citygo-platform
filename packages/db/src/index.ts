@@ -2,7 +2,8 @@ import { PGlite } from "@electric-sql/pglite";
 import pg from "pg";
 export { Repository, DomainError } from "./repository.js";
 import { createHash } from "node:crypto";
-import { readdir, readFile } from "node:fs/promises";
+import { readdir, readFile, mkdir } from "node:fs/promises";
+import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export interface Sql {
@@ -19,6 +20,8 @@ export interface Database extends Sql {
 export async function connectDatabase(url: string): Promise<Database> {
   if (url.startsWith("pglite://")) {
     const path = url.slice("pglite://".length);
+    if (path && path !== ":memory:")
+      await mkdir(dirname(path), { recursive: true });
     const db = new PGlite(path === ":memory:" ? undefined : path);
     await db.waitReady;
     return {

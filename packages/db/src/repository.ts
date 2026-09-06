@@ -216,7 +216,7 @@ export class Repository {
       const advice = (
         await tx.query(
           `select m.id from messages m join agent_threads t on t.id=m.thread_id
-        where t.user_id=$1 and m.role='assistant' and m.metadata->>'agentKey'='housing' and m.metadata->>'status'='complete'
+        where t.user_id=$1 and m.role='assistant' and m.metadata->>'agentKey'='housing' and m.metadata->>'status'='complete' and m.metadata->>'source'='model'
         and m.created_at >= (select started_at from user_quests where id=$2) limit 1`,
           [userId, questId],
         )
@@ -341,6 +341,7 @@ export class Repository {
     agent: AgentKey,
     content: string,
     complete: boolean,
+    modelResponse = complete,
   ) {
     return this.db.transaction(async (tx) => {
       const owner = (
@@ -359,6 +360,7 @@ export class Repository {
             JSON.stringify({
               agentKey: agent,
               status: complete ? "complete" : "interrupted",
+              source: modelResponse ? "model" : "system",
             }),
           ],
         )

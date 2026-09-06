@@ -12,6 +12,10 @@ export const relocationSteps = [
 
 export function questChecklist(slug: string) {
   return slug === "housing-viewing"
-    ? ["Подготовьте вопросы для просмотра", "Проверьте документы и признаки мошенничества", "Обсудите план просмотра с Housing Navigator"]
+    ? [
+        "Подготовьте вопросы для просмотра",
+        "Проверьте документы и признаки мошенничества",
+        "Обсудите план просмотра с Housing Navigator",
+      ]
     : housingChecklist;
 }

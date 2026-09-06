@@ -392,7 +392,7 @@ export default function Home() {
                         ) : (
                           <>
                             <div className="checklist">
-                          {questChecklist(active.slug).map((item, i) => (
+                              {questChecklist(active.slug).map((item, i) => (
                                 <label className="check" key={item}>
                                   <input
                                     type="checkbox"

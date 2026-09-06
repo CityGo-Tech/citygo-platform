@@ -13,7 +13,7 @@ import {
 } from "@citygo/contracts";
 import { Repository, DomainError, type Database } from "@citygo/db";
 import { readConfig } from "@citygo/config";
-import { instructions, routeAgent } from "@citygo/agents";
+import { instructions, profileContext, routeAgent } from "@citygo/agents";
 import { redactPaths } from "@citygo/observability";
 import type { StreamingProvider } from "@citygo/llm";
 import { hashPassword, verifyPassword, tokenHash, newToken } from "./auth.js";
@@ -264,8 +264,8 @@ export function buildApp(options: {
             .slice(-20)
             .map((m) => ({ role: m.role, content: m.content }));
           for await (const text of options.provider.stream(
-            instructions(routing.to, reservation.profile),
-            messages,
+            instructions(routing.to),
+            [profileContext(reservation.profile), ...messages],
             signal,
           )) {
             if (signal.aborted) throw new Error("Aborted");
@@ -281,6 +281,7 @@ export function buildApp(options: {
           reservation.lease,
           routing.to,
           content,
+          true,
           !routing.human,
         );
         saved = true;
