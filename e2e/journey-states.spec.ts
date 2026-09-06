@@ -14,6 +14,19 @@ function fixture(): Dashboard {
     },
     xp: 0,
     provider: "openai",
+    aiAccess: {
+      granted: true,
+      dailyLimit: 20,
+      policy: {
+        id: "a".repeat(64),
+        version: "test-v1",
+        provider: "openai",
+        model: "test-model",
+        recipient: "OpenAI",
+        routing: "Прямое подключение",
+        data: "Тестовая анкета и история для рекомендаций",
+      },
+    },
     quests: [
       {
         id: "housing-first",
@@ -38,6 +51,70 @@ async function dashboard(page: Page, board: Dashboard) {
     route.fulfill({ json: board }),
   );
 }
+
+test("changed recipient resets unchecked consent and never resends automatically", async ({
+  page,
+}) => {
+  const board = fixture();
+  board.aiAccess.granted = false;
+  let confirmations = 0;
+  let messages = 0;
+  await dashboard(page, board);
+  await page.route("**/api/v1/threads/*/messages", (route) => {
+    messages++;
+    return route.fulfill({
+      status: 500,
+      json: { error: "Unexpected auto-send" },
+    });
+  });
+  await page.route("**/api/v1/ai/consent", (route) => {
+    confirmations++;
+    const input = route.request().postDataJSON();
+    expect(input.action).toBe("granted");
+    if (confirmations === 1) {
+      expect(input.policyId).toBe("a".repeat(64));
+      board.provider = "routerai";
+      board.aiAccess.policy = {
+        ...board.aiAccess.policy!,
+        id: "b".repeat(64),
+        provider: "routerai",
+        recipient: "RouterAI",
+        model: "test/new-model",
+        routing: "Дополнительный получатель: test-upstream",
+      };
+      return route.fulfill({
+        status: 409,
+        json: { error: "AI-получатель изменился" },
+      });
+    }
+    expect(input.policyId).toBe("b".repeat(64));
+    board.aiAccess.granted = true;
+    return route.fulfill({ json: { ok: true } });
+  });
+  await page.goto("/#chat");
+  const checkbox = page.getByRole("checkbox", {
+    name: "Разрешаю передачу указанных данных этому получателю для рекомендаций.",
+  });
+  const confirm = page.getByRole("button", {
+    name: "Подтвердить получателя AI",
+  });
+  await expect(checkbox).not.toBeChecked();
+  await expect(confirm).toBeDisabled();
+  await expect(page.getByLabel("Сообщение помощнику")).toBeDisabled();
+  await checkbox.check();
+  await confirm.click();
+  await expect(page.getByRole("alert")).toContainText(
+    "AI-получатель изменился",
+  );
+  await expect(page.getByText(/Получатель: RouterAI/)).toBeVisible();
+  await expect(checkbox).not.toBeChecked();
+  await expect(confirm).toBeDisabled();
+  await checkbox.check();
+  await confirm.click();
+  await expect(page.getByLabel("Сообщение помощнику")).toBeEnabled();
+  expect(confirmations).toBe(2);
+  expect(messages).toBe(0);
+});
 
 test("plan, chat and completion fit 320px, tablet and desktop; back navigation works", async ({
   page,
@@ -88,6 +165,7 @@ test("unconfigured provider disables chat; server rejection never displays succe
 }) => {
   const board = fixture();
   board.provider = "unconfigured";
+  board.aiAccess = { policy: null, granted: false, dailyLimit: 20 };
   await dashboard(page, board);
   await page.route("**/api/v1/quests/*/complete", (route) =>
     route.fulfill({

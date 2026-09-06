@@ -328,6 +328,17 @@
 .journey-conversation {
   min-width: 0;
 }
+.ai-access {
+  margin-top: 16px;
+  overflow-wrap: anywhere;
+}
+.ai-access summary {
+  cursor: pointer;
+}
+.ai-access .cg-button {
+  width: 100%;
+  white-space: normal;
+}
 .journey-chat-heading {
   display: flex;
   align-items: center;

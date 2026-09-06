@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { AiProviderId, ModelGeneration } from "./llm.js";
+import { aiPolicyIdSchema, type AiAccess } from "./ai-access.js";
 
 export const credentialsSchema = z.object({
   email: z
@@ -34,6 +35,8 @@ export type AgentKey = z.infer<typeof agentKeySchema>;
 export const chatInputSchema = z.object({
   text: z.string().trim().min(1).max(4000),
   requestId: z.uuid(),
+  // Missing IDs from old clients fail closed at admission, without sending data.
+  policyId: aiPolicyIdSchema.optional(),
 });
 export const completionSchema = z.object({ confirmed: z.literal(true) });
 export type Quest = {
@@ -58,6 +61,7 @@ export type Dashboard = {
   quests: Quest[];
   thread: { id: string; agentKey: AgentKey; messages: Message[] } | null;
   provider: AiProviderId | "unconfigured";
+  aiAccess: AiAccess;
 };
 export type StreamEvent =
   | { type: "delta"; text: string }

@@ -191,13 +191,13 @@ export default function App() {
                 ))}
                 <View style={styles.row}>
                   <Switch
-                    accessibilityLabel="Согласие на обработку анкеты AI"
+                    accessibilityLabel="Использование анкеты для плана"
                     value={consent}
                     onValueChange={setConsent}
                   />
                   <Text style={styles.flex}>
-                    Разрешаю передавать город, бюджет, дату и состав семьи
-                    AI-провайдеру.
+                    Разрешаю CityGo использовать анкету для плана. Передача
+                    AI-получателю подтверждается отдельно перед чатом.
                   </Text>
                 </View>
                 <Button
@@ -299,6 +299,65 @@ export default function App() {
                   {board.provider === "unconfigured" && (
                     <Text>AI пока не подключён на сервере.</Text>
                   )}
+                  <Text style={styles.title}>Передача данных AI</Text>
+                  {board.aiAccess?.policy ? (
+                    <>
+                      <Text>
+                        Получатель: {board.aiAccess.policy.recipient}. Модель:{" "}
+                        {board.aiAccess.policy.model}.
+                      </Text>
+                      <Text>{board.aiAccess.policy.routing}</Text>
+                      <Text>{board.aiAccess.policy.data}</Text>
+                      <Text>
+                        До {board.aiAccess.dailyLimit} принятых запросов в сутки
+                        (UTC). Возможен общий лимит сервиса. Автоматического
+                        переключения нет.
+                      </Text>
+                      {board.aiAccess.granted ? (
+                        <Text>Передача разрешена.</Text>
+                      ) : (
+                        <Button
+                          title="Разрешить передачу этому AI-получателю"
+                          disabled={busy}
+                          onPress={() =>
+                            void act(async () => {
+                              try {
+                                await api.aiConsent({
+                                  action: "granted",
+                                  policyId: board.aiAccess.policy!.id,
+                                });
+                              } finally {
+                                await refresh();
+                              }
+                            })
+                          }
+                        />
+                      )}
+                    </>
+                  ) : (
+                    <Text>
+                      Условия подключения недоступны. Обновите приложение перед
+                      отправкой сообщения.
+                    </Text>
+                  )}
+                  <Text>
+                    Отзыв блокирует новые запросы. Уже принятый запрос может
+                    завершиться; переданные данные нельзя вернуть. План и
+                    история остаются доступны.
+                  </Text>
+                  <Button
+                    title="Отозвать разрешение AI"
+                    disabled={busy}
+                    onPress={() =>
+                      void act(async () => {
+                        try {
+                          await api.aiConsent({ action: "revoked" });
+                        } finally {
+                          await refresh();
+                        }
+                      })
+                    }
+                  />
                   {board.thread?.messages.map((m) => (
                     <View key={m.id} style={styles.message}>
                       <Text style={{ fontWeight: "700" }}>
@@ -322,6 +381,7 @@ export default function App() {
                       busy ||
                       !text.trim() ||
                       !board.thread ||
+                      !board.aiAccess?.granted ||
                       board.provider === "unconfigured"
                     }
                     onPress={() =>
@@ -342,6 +402,7 @@ export default function App() {
                                 setNotice(event.reason);
                             },
                             abort.current.signal,
+                            board.aiAccess.policy?.id,
                           );
                         } finally {
                           await refresh();

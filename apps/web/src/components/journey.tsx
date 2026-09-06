@@ -1,9 +1,15 @@
 "use client";
 import Image from "next/image";
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import type { AgentKey, Dashboard, Quest } from "@citygo/contracts";
+import type {
+  AgentKey,
+  AiConsentInput,
+  Dashboard,
+  Quest,
+} from "@citygo/contracts";
 import { Badge, Button, Card, Progress } from "@citygo/ui-web";
 import { questChecklist } from "@citygo/content";
+import { AiAccessPanel } from "./ai-access";
 
 export const agentNames: Record<AgentKey, string> = {
   housing: "Housing Navigator",
@@ -29,6 +35,7 @@ type JourneyProps = {
   onText: (value: string) => void;
   onChat: (event: FormEvent) => void;
   onStop: () => void;
+  onConsent: (input: AiConsentInput) => void;
   onStart: (id: string) => Promise<boolean>;
   onComplete: (id: string) => Promise<boolean>;
 };
@@ -93,7 +100,11 @@ export function Journey(props: JourneyProps) {
         : "plan";
   const agent = props.streamAgent ?? board.thread?.agentKey ?? "housing";
   const doneCount = board.quests.filter((q) => q.state === "completed").length;
-  const canChat = !!board.thread && board.provider !== "unconfigured" && !busy;
+  const canChat =
+    !!board.thread &&
+    board.provider !== "unconfigured" &&
+    !!board.aiAccess?.granted &&
+    !busy;
   const checkedCount = checks.filter(Boolean).length;
 
   useEffect(() => {
@@ -345,6 +356,18 @@ export function Journey(props: JourneyProps) {
                 сервере.
               </p>
             )}
+            <AiAccessPanel
+              key={`${board.aiAccess?.policy?.id}:${board.aiAccess?.granted}`}
+              access={
+                board.aiAccess ?? {
+                  policy: null,
+                  granted: false,
+                  dailyLimit: 0,
+                }
+              }
+              busy={busy}
+              onConsent={props.onConsent}
+            />
             {!board.thread && (
               <Card>
                 <p>Начните жилищный квест, чтобы открыть диалог.</p>
