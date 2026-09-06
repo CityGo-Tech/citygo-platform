@@ -80,7 +80,8 @@
 }
 .journey-quest-list li {
   position: relative;
-  display: flex;
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) auto;
   align-items: center;
   gap: 14px;
   padding: 20px;
@@ -121,6 +122,9 @@
   white-space: nowrap;
   color: var(--cg-color-muted);
   margin-left: auto;
+}
+.journey-mobile-quest-action {
+  display: none;
 }
 .journey-route-marker {
   width: 40px;
@@ -574,6 +578,23 @@
   }
 }
 @media (max-width: 850px) {
+  .journey-quest-list li {
+    grid-template-columns: 40px minmax(0, 1fr);
+  }
+  .journey-reward {
+    grid-column: 2;
+    margin-left: 0;
+  }
+  .journey-mobile-quest-action {
+    display: block;
+    grid-column: 1 / -1;
+  }
+  .journey-mobile-quest-action .cg-button {
+    width: 100%;
+  }
+  .journey-desktop-start {
+    display: none;
+  }
   .shell-journey main {
     padding: 20px;
   }

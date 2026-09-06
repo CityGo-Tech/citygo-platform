@@ -146,6 +146,15 @@ export function Journey(props: JourneyProps) {
             <small>{stateLabels[quest.state]}</small>
           </div>
           <span className="journey-reward">+{quest.xpReward} XP</span>
+          {view === "plan" && quest.id === active?.id && (
+            <div className="journey-mobile-quest-action">
+              <Button disabled={busy} onClick={() => void start()}>
+                {quest.state === "in_progress"
+                  ? "Продолжить квест"
+                  : "Начать квест"}
+              </Button>
+            </div>
+          )}
         </li>
       ))}
     </ol>
@@ -235,7 +244,11 @@ export function Journey(props: JourneyProps) {
                 </div>
                 <div className="journey-actions">
                   {active && (
-                    <Button disabled={busy} onClick={() => void start()}>
+                    <Button
+                      className="journey-desktop-start"
+                      disabled={busy}
+                      onClick={() => void start()}
+                    >
                       {active.state === "in_progress"
                         ? "Продолжить квест"
                         : "Начать квест"}

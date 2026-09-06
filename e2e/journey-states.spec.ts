@@ -107,7 +107,9 @@ test("unconfigured provider disables chat; server rejection never displays succe
     .all())
     await checkbox.check();
   await page.getByRole("button", { name: "Завершить квест · +60 XP" }).click();
-  await expect(page.getByRole("alert")).toContainText("Сначала обсудите");
+  await expect(page.getByRole("main").getByRole("alert")).toContainText(
+    "Сначала обсудите",
+  );
   await expect(page).toHaveURL(/#chat$/);
   await expect(page.locator(".account")).toContainText("0 XP");
   await expect(page.locator(".journey-success")).toHaveCount(0);
@@ -123,7 +125,9 @@ test("chat errors preserve the draft; stopping is possible before the first toke
   await page.goto("/#chat");
   await page.getByLabel("Сообщение помощнику").fill("Помоги с квартирой");
   await page.getByRole("button", { name: "Отправить", exact: true }).click();
-  await expect(page.getByRole("alert")).toContainText("Попробуйте позже");
+  await expect(page.getByRole("main").getByRole("alert")).toContainText(
+    "Попробуйте позже",
+  );
   await expect(page.getByLabel("Сообщение помощнику")).toHaveValue(
     "Помоги с квартирой",
   );
@@ -142,7 +146,7 @@ test("chat errors preserve the draft; stopping is possible before the first toke
     await page.getByRole("button", { name: "Стоп", exact: true }).click();
     await expect(page.getByLabel("Сообщение помощнику")).toBeEnabled();
     await expect(page.getByRole("status")).toContainText("Ответ остановлен");
-    await expect(page.getByRole("alert")).toHaveCount(0);
+    await expect(page.getByRole("main").getByRole("alert")).toHaveCount(0);
   } finally {
     release();
   }
