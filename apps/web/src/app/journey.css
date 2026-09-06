@@ -1,0 +1,726 @@
+/* V2 plan/chat/completion layouts; live quest state always comes from the API. */
+.shell-journey {
+  --cg-color-foreground: var(--cg-questionnaire-foreground);
+}
+.shell-journey .topbar {
+  height: 72px;
+  background: var(--cg-color-surface);
+}
+.shell-journey main {
+  padding: 24px 28px 48px;
+}
+.journey {
+  max-width: 1384px;
+  margin: auto;
+}
+.journey h1 {
+  font-size: 32px;
+  font-weight: 700;
+  letter-spacing: -0.025em;
+  line-height: 1.25;
+}
+.journey h1:focus {
+  outline: none;
+}
+.journey h2 {
+  font-size: 25px;
+}
+.journey p {
+  line-height: 1.6;
+}
+.journey strong,
+.journey h1,
+.journey h2,
+.journey h3 {
+  overflow-wrap: anywhere;
+}
+.journey-nav {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+}
+.journey-nav a {
+  padding: 12px 20px;
+  min-height: 48px;
+  border-radius: 12px;
+  color: var(--cg-color-muted);
+  font-weight: 700;
+}
+.journey-nav a[aria-current] {
+  color: var(--cg-color-primary-strong);
+  background: var(--cg-color-primary-soft);
+}
+.journey-plan-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  margin: 32px 0;
+}
+.journey-plan-heading h1 {
+  margin-bottom: 10px;
+}
+.journey-plan-heading p {
+  margin-bottom: 0;
+  overflow-wrap: anywhere;
+}
+.journey-plan-grid {
+  display: grid;
+  grid-template-columns: minmax(250px, 340px) minmax(0, 880px);
+  gap: 48px;
+}
+.journey-plan-grid > aside > .cg-progress {
+  margin: 28px 16px;
+}
+.journey-quest-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.journey-quest-list li {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 20px;
+  margin-bottom: 16px;
+  background: var(--cg-color-surface);
+  border: 1px solid var(--cg-color-border);
+  border-radius: 16px;
+}
+.journey-quest-list li::after {
+  content: "";
+  position: absolute;
+  left: 39px;
+  top: 100%;
+  height: 17px;
+  border-left: 2px solid var(--cg-color-progress-track);
+}
+.journey-quest-list li:last-child::after {
+  display: none;
+}
+.journey-quest-list .in_progress,
+.journey-quest-list .available {
+  border-color: var(--cg-color-primary-strong);
+}
+.journey-quest-list .completed {
+  border-color: var(--cg-color-success);
+  background: var(--cg-color-success-soft);
+}
+.journey-quest-list strong {
+  display: block;
+  font-size: 14px;
+}
+.journey-quest-list small {
+  display: block;
+  margin-top: 5px;
+}
+.journey-reward {
+  font-size: 12px;
+  white-space: nowrap;
+  color: var(--cg-color-muted);
+  margin-left: auto;
+}
+.journey-route-marker {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  background: var(--cg-color-progress-track);
+  color: var(--cg-color-muted);
+  font-weight: 700;
+}
+.completed .journey-route-marker {
+  background: var(--cg-color-success);
+  color: white;
+}
+.in_progress .journey-route-marker,
+.available .journey-route-marker {
+  background: var(--cg-color-primary-strong);
+  color: white;
+}
+.journey-detail.cg-card {
+  padding: 0;
+  overflow: hidden;
+  box-shadow: 0 4px 24px #00000008;
+}
+.journey-detail-heading {
+  padding: 32px 40px;
+  background: linear-gradient(110deg, var(--cg-color-primary-soft), #f8f5ff);
+}
+.journey-detail-heading h2 {
+  margin: 14px 0 12px;
+  font-size: 28px;
+}
+.journey-detail-heading p {
+  max-width: 580px;
+}
+.journey-detail-heading > small {
+  color: var(--cg-color-primary-strong);
+}
+.journey-detail-body {
+  padding: 28px 40px 40px;
+}
+.journey-navigator {
+  background: var(--cg-color-background);
+  border-radius: 16px;
+  padding: 24px;
+}
+.journey-agent-heading {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-width: 0;
+}
+.journey-agent-heading h3,
+.journey-agent-heading p {
+  margin: 0 0 4px;
+}
+.journey-agent-heading p {
+  font-size: 13px;
+}
+.journey-avatar {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+.journey-navigator ul {
+  padding-left: 20px;
+  margin: 20px 0 0;
+}
+.journey-navigator li,
+.journey-next li {
+  margin-bottom: 12px;
+}
+.journey-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 28px 0;
+}
+#journey-agents {
+  scroll-margin-top: 20px;
+}
+#journey-agents > p {
+  font-size: 13px;
+}
+.journey-team {
+  display: flex;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+.journey-team > div {
+  width: 94px;
+  text-align: center;
+  font-size: 11px;
+}
+.journey-team .journey-avatar {
+  width: 48px;
+  height: 48px;
+  display: block;
+  margin: 0 auto 8px;
+}
+.journey-map-section {
+  margin-top: 36px;
+}
+.journey-route {
+  display: flex;
+  gap: 32px;
+  padding: 32px 0;
+  margin: 0;
+  list-style: none;
+}
+.journey-route li {
+  flex: 1;
+  position: relative;
+  min-width: 0;
+  padding-right: 12px;
+}
+.journey-route li:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  top: 23px;
+  left: 60px;
+  right: -14px;
+  border-top: 6px dotted #cbd3fa;
+}
+.journey-route-marker + strong {
+  display: block;
+  margin: 14px 0 6px;
+}
+.journey-route li > strong {
+  font-size: 16px;
+}
+.journey-route .journey-route-marker {
+  width: 52px;
+  height: 52px;
+}
+.journey-chat-grid {
+  display: grid;
+  grid-template-columns: 250px minmax(0, 1fr) 300px;
+  gap: 24px;
+  align-items: start;
+}
+.journey-chat-sidebar.cg-card,
+.journey-agent-panel.cg-card {
+  padding: 24px;
+  min-width: 0;
+}
+.journey-chat-sidebar {
+  min-height: 740px;
+  display: flex;
+  flex-direction: column;
+}
+.journey-chat-sidebar h2 {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--cg-color-muted);
+}
+.journey-chat-sidebar > .cg-badge {
+  align-self: flex-start;
+  margin-bottom: 28px;
+}
+.journey-chat-sidebar .journey-quest-list li {
+  padding: 16px 0;
+  border: 0;
+  background: transparent;
+  align-items: flex-start;
+}
+.journey-chat-sidebar .journey-quest-list li::after {
+  left: 19px;
+}
+.journey-chat-sidebar .journey-reward {
+  display: none;
+}
+.journey-support {
+  padding: 18px 12px;
+  margin-top: auto;
+  border: 1px solid var(--cg-color-border);
+  border-radius: 20px;
+}
+.journey-support .journey-agent-heading {
+  margin: 12px 0;
+  gap: 8px;
+  font-size: 12px;
+}
+.journey-support .journey-avatar {
+  width: 48px;
+  height: 48px;
+}
+.journey-support .cg-button {
+  width: 100%;
+}
+.journey-support > small {
+  display: block;
+  font-size: 10px;
+  margin-top: 8px;
+}
+.journey-conversation {
+  min-width: 0;
+}
+.journey-chat-heading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0 24px;
+  border-bottom: 1px solid var(--cg-color-border);
+}
+.journey-chat-heading h1 {
+  font-size: 18px;
+  margin-bottom: 4px;
+}
+.journey-chat-heading .journey-avatar {
+  width: 48px;
+  height: 48px;
+}
+.journey-chat-heading small {
+  color: var(--cg-color-success);
+  font-size: 12px;
+}
+.journey-chat-heading .cg-badge {
+  margin-left: auto;
+  padding: 8px 12px;
+  font-size: 10px;
+}
+.journey-messages {
+  min-height: 340px;
+  max-height: 520px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 20px 8px;
+  scrollbar-gutter: stable;
+}
+.journey-chat-intro {
+  font-size: 12px;
+  text-align: center;
+  padding: 0 12px;
+}
+.journey-message {
+  padding: 18px 22px;
+  margin: 20px 0;
+  background: #f0f2f8;
+  border-radius: 20px;
+  max-width: 86%;
+}
+.journey-message small {
+  display: block;
+  font-size: 10px;
+  color: var(--cg-color-primary-strong);
+}
+.journey-message p {
+  margin: 10px 0 0;
+  font-size: 15px;
+  color: var(--cg-color-foreground);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.journey-message.user {
+  background: var(--cg-color-primary-strong);
+  margin-left: auto;
+  text-align: right;
+}
+.journey-message.user p,
+.journey-message.user small {
+  color: var(--cg-color-on-action);
+}
+.journey-quick-replies {
+  padding: 16px 8px;
+}
+.journey-quick-replies > span {
+  font-size: 12px;
+  color: var(--cg-color-muted);
+}
+.journey-quick-replies > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 8px;
+}
+.journey-quick-replies .cg-button {
+  border: 1px solid var(--cg-color-control-border);
+  border-radius: 28px;
+  font-size: 13px;
+}
+.journey-quick-replies small {
+  display: block;
+  font-size: 11px;
+  margin-top: 10px;
+}
+.journey-composer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+  padding: 16px 0;
+}
+.journey-composer textarea {
+  font-size: 16px;
+  resize: vertical;
+  max-height: 200px;
+  border-radius: 20px;
+}
+.journey-composer > small {
+  grid-column: 1 / -1;
+  font-size: 11px;
+}
+.journey-agent-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.journey-agent-panel figure {
+  margin: 0;
+  padding: 12px;
+  text-align: center;
+  border-radius: 24px;
+  background: var(--cg-questionnaire-art-background);
+}
+.journey-portrait {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 4 / 3;
+  object-fit: fill;
+}
+.journey-agent-panel figcaption {
+  margin: 10px 0 0;
+  font-size: 16px;
+}
+.journey-agent-panel figcaption small {
+  display: block;
+  color: var(--cg-color-primary-strong);
+}
+.journey-agent-panel h2 {
+  font-size: 18px;
+  margin: 0;
+}
+.journey-checklist {
+  min-width: 0;
+  border: 0;
+  padding: 0;
+  margin: 0;
+}
+.journey-checklist legend {
+  font-size: 13px;
+  font-weight: 700;
+  margin-bottom: 12px;
+}
+.journey-checklist .check {
+  min-height: 48px;
+  align-items: flex-start;
+  margin-bottom: 8px;
+}
+.journey-completion-hint {
+  font-size: 12px;
+  margin: 0;
+}
+.journey-finish.cg-button {
+  background: var(--cg-color-success);
+  width: 100%;
+}
+.journey-agent-panel > small {
+  text-align: center;
+}
+.journey-success {
+  background: #eaf8f2;
+  border-radius: 32px;
+  padding: 40px;
+  display: grid;
+  grid-template-columns: 148px minmax(0, 1fr) 220px;
+  gap: 32px;
+  align-items: center;
+}
+.journey-success h1 {
+  font-size: 36px;
+  margin: 12px 0;
+}
+.journey-success-mark {
+  width: 148px;
+  height: 148px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--cg-color-success);
+  color: white;
+  font-size: 68px;
+}
+.journey-success-xp {
+  display: inline-block;
+  padding: 12px 32px;
+  border-radius: 32px;
+  background: var(--cg-color-success);
+  color: white;
+  font-size: 20px;
+}
+.journey-complete-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr);
+  gap: 28px;
+  margin-top: 32px;
+}
+.journey-next {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.journey-next > .cg-badge {
+  align-self: flex-start;
+  background: #f0eaff;
+  color: var(--cg-color-accent-strong);
+}
+.journey-next h2,
+.journey-next p {
+  margin: 0;
+}
+.journey-next > p {
+  color: var(--cg-color-accent-strong);
+}
+.journey-next ul {
+  padding-left: 20px;
+}
+.journey-next-button.cg-button {
+  background: var(--cg-color-accent-strong);
+  margin-top: auto;
+}
+@media (max-width: 1200px) {
+  .journey-chat-grid {
+    grid-template-columns: minmax(0, 1fr) 300px;
+  }
+  .journey-chat-sidebar {
+    display: none;
+  }
+  .journey-plan-grid {
+    gap: 24px;
+    grid-template-columns: 280px minmax(0, 1fr);
+  }
+  .journey-quest-list li {
+    flex-wrap: wrap;
+  }
+  .journey-success {
+    grid-template-columns: 100px minmax(0, 1fr) 160px;
+    padding: 28px;
+    gap: 24px;
+  }
+  .journey-success-mark {
+    width: 100px;
+    height: 100px;
+    font-size: 52px;
+  }
+}
+@media (max-width: 850px) {
+  .shell-journey main {
+    padding: 20px;
+  }
+  .journey h1 {
+    font-size: 28px;
+  }
+  .journey-plan-heading {
+    margin-top: 12px;
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .journey-plan-grid,
+  .journey-chat-grid,
+  .journey-complete-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 24px;
+  }
+  .journey-detail-heading,
+  .journey-detail-body {
+    padding: 24px;
+  }
+  .journey-detail-heading h2 {
+    font-size: 23px;
+  }
+  .journey-plan-grid > aside > .cg-progress {
+    display: none;
+  }
+  .journey-navigator {
+    padding: 18px;
+  }
+  .journey-agent-panel figure,
+  .journey-agent-panel > .eyebrow {
+    display: none;
+  }
+  .journey-chat-heading {
+    flex-wrap: wrap;
+    padding-top: 0;
+  }
+  .journey-chat-heading h1 {
+    font-size: 17px;
+  }
+  .journey-chat-heading .cg-badge {
+    margin: 8px auto 0;
+  }
+  .journey-messages {
+    max-height: 480px;
+    min-height: 220px;
+    padding: 12px 0;
+  }
+  .journey-message {
+    padding: 18px;
+    max-width: 92%;
+  }
+  .journey-message p {
+    font-size: 14px;
+  }
+  .journey-composer {
+    padding-bottom: 0;
+  }
+  .journey-quick-replies {
+    padding: 12px 0;
+  }
+  .journey-success {
+    display: flex;
+    flex-direction: column;
+    text-align: center;
+    padding: 28px 20px;
+    gap: 16px;
+  }
+  .journey-success > .journey-portrait {
+    display: none;
+  }
+  .journey-success-mark {
+    width: 84px;
+    height: 84px;
+    font-size: 38px;
+  }
+  .journey-success h1 {
+    font-size: 26px;
+  }
+  .journey-success p {
+    font-size: 14px;
+  }
+  .journey-success-xp {
+    font-size: 17px;
+    padding: 10px 32px;
+  }
+  .journey-route {
+    gap: 20px;
+    padding: 20px 0;
+  }
+  .journey-route li > strong {
+    font-size: 13px;
+  }
+  .journey-route li > small {
+    font-size: 11px;
+  }
+  .journey-route .journey-route-marker {
+    width: 44px;
+    height: 44px;
+  }
+  .journey-route li:not(:last-child)::after {
+    left: 52px;
+    top: 20px;
+  }
+  .journey-next.cg-card {
+    border: 2px solid var(--cg-color-accent-strong);
+  }
+}
+@media (max-width: 380px) {
+  .shell-journey main {
+    padding: 16px 12px;
+  }
+  .shell-journey .topbar {
+    gap: 8px;
+    padding: 0 12px;
+  }
+  .shell-journey .account {
+    gap: 4px;
+  }
+  .shell-journey .account .cg-button {
+    padding: 10px 12px;
+  }
+  .journey-nav {
+    gap: 0;
+  }
+  .journey-nav a {
+    padding: 12px 14px;
+    font-size: 14px;
+  }
+  .journey-detail-heading,
+  .journey-detail-body {
+    padding: 20px;
+  }
+  .journey-agent-heading {
+    flex-wrap: wrap;
+  }
+  .journey-composer {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .journey-composer > .cg-button {
+    width: 100%;
+  }
+  .journey-quick-replies .cg-button {
+    padding: 12px 14px;
+  }
+  .journey-complete-grid > .cg-card {
+    padding: 20px;
+  }
+}

@@ -44,8 +44,8 @@ errors. The housing route is the only supported goal; job/documents choices are
 visibly disabled with an explanation. No new API fields or fake persisted goals.
 The form is scrollable rather than clipped to the static 844px mobile canvas.
 Header remains the working application header; desktop hero is hidden on mobile
-as in its source frame. The dashboard, chat and completion layouts are not yet
-visually reconciled to their Figma frames.
+as in its source frame. Plan, chat and completion now follow their separate V2
+frames; their sources and functional adaptations are in [journey-screens.md](journey-screens.md).
 
 ## Shared Web components
 
