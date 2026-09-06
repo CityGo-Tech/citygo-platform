@@ -6,7 +6,7 @@ if (process.env.NODE_ENV !== "test")
   throw new Error("Test server requires NODE_ENV=test");
 const db = await connectDatabase("pglite://:memory:");
 await migrate(db);
-const app = buildApp({ db, provider: new TestProvider(), testing: true });
+const app = await buildApp({ db, provider: new TestProvider(), testing: true });
 app.addHook("onClose", () => db.close());
 for (const signal of ["SIGINT", "SIGTERM"])
   process.once(signal, () => {

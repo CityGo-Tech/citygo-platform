@@ -21,7 +21,7 @@ async function fixture(provider = true, env: NodeJS.ProcessEnv = {}) {
   const db = await connectDatabase(url);
   await migrate(db);
   await migrate(db);
-  const app = buildApp({
+  const app = await buildApp({
     db,
     provider: provider ? new TestProvider() : undefined,
     testing: true,
@@ -405,7 +405,7 @@ test("interrupted replies are persisted but do not qualify for XP", async (t) =>
   const thread = (
     await f.call("POST", "/v1/quests/" + id + "/start", user.token, {})
   ).json().id;
-  const broken = buildApp({
+  const broken = await buildApp({
     db: f.db,
     testing: true,
     provider: {

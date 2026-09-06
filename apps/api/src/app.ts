@@ -18,7 +18,7 @@ import { redactPaths } from "@citygo/observability";
 import type { StreamingProvider } from "@citygo/llm";
 import { hashPassword, verifyPassword, tokenHash, newToken } from "./auth.js";
 
-export function buildApp(options: {
+export async function buildApp(options: {
   db: Database;
   provider?: StreamingProvider;
   config?: ReturnType<typeof readConfig>;
@@ -43,9 +43,10 @@ export function buildApp(options: {
     sameSite: "lax" as const,
     maxAge: 7 * 86400,
   };
-  app.register(cookie);
-  app.register(cors, { origin: config.WEB_ORIGIN, credentials: true });
-  app.register(rateLimit, {
+  await app.register(cookie);
+  await app.register(cors, { origin: config.WEB_ORIGIN, credentials: true });
+  // The limiter installs an onRoute hook: register it before declaring routes.
+  await app.register(rateLimit, {
     max: 120,
     timeWindow: "1 minute",
   });
