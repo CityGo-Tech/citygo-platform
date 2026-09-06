@@ -317,248 +317,6 @@ form .cg-button {
   margin-top: 4px;
   accent-color: var(--cg-color-primary-strong);
 }
-.dashboard {
-  display: grid;
-  grid-template-columns: 192px minmax(0, 1fr);
-  gap: 32px;
-}
-.sidebar {
-  padding-top: 15px;
-  display: flex;
-  flex-direction: column;
-}
-.sidebar h2 {
-  margin: 12px 0 2px;
-}
-.sidebar nav {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin: 25px 0;
-}
-.sidebar nav a {
-  padding: 13px 14px;
-  border-radius: 12px;
-  color: var(--cg-color-muted);
-  font-size: 13px;
-}
-.sidebar nav .selected {
-  background: #e8ecff;
-  color: var(--cg-color-primary-strong);
-  font-weight: 650;
-}
-.sidebar-bottom {
-  margin-top: 40px;
-  padding: 0 12px;
-}
-.sidebar-bottom > small {
-  display: block;
-  margin-top: 17px;
-}
-.workspace {
-  min-width: 0;
-}
-.plan-hero {
-  border-radius: 24px;
-  background: linear-gradient(110deg, #e4e9fc, #eee7fa 65%, #f6e8e4);
-  padding: 30px 36px;
-  display: flex;
-  justify-content: space-between;
-  gap: 20px;
-  align-items: center;
-  margin-bottom: 25px;
-}
-.plan-hero .cg-badge {
-  background: #ffffff90;
-}
-.plan-hero h1 {
-  font-size: clamp(26px, 2.4vw, 36px);
-  margin: 16px 0;
-}
-.plan-hero p {
-  font-size: 12px;
-  margin-bottom: 0;
-}
-.xp-circle {
-  flex-shrink: 0;
-  width: 110px;
-  height: 110px;
-  border-radius: 50%;
-  border: 7px solid #ffffff88;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  align-items: center;
-  background: #f9f8fd66;
-}
-.xp-circle strong {
-  font-size: 33px;
-  line-height: 1.25;
-}
-.xp-circle span {
-  font-size: 10px;
-  letter-spacing: 0.12em;
-  color: var(--cg-color-muted);
-}
-.work-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 23px;
-  align-items: start;
-}
-.work-grid > div {
-  display: flex;
-  flex-direction: column;
-  gap: 22px;
-}
-.section-title {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 19px;
-}
-.section-title + .h2 {
-  margin-top: 20px;
-}
-.checklist {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  margin: 23px 0;
-}
-.route-card h3,
-.team-card h3 {
-  margin-bottom: 20px;
-}
-.route-row {
-  display: flex;
-  align-items: center;
-  gap: 13px;
-  padding: 16px 0;
-  border-top: 1px solid #edf0f5;
-}
-.route-row strong {
-  font-size: 13px;
-  font-weight: 600;
-}
-.route-row small {
-  display: block;
-  margin-top: 3px;
-}
-.route-dot {
-  border-radius: 50%;
-  width: 29px;
-  height: 29px;
-  display: grid;
-  place-items: center;
-  background: #edeffa;
-  color: #59649a;
-  flex-shrink: 0;
-  font-size: 12px;
-}
-.route-dot.completed {
-  color: var(--cg-color-success);
-  background: #e7f3eb;
-}
-.route-dot.locked {
-  color: #8b90a4;
-  background: #f1f2f5;
-}
-.team {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 16px;
-}
-.team > div {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 10px;
-}
-.team img {
-  border-radius: 9px;
-  object-fit: cover;
-}
-.team-card p {
-  font-size: 12px;
-}
-.chat-card {
-  padding: 0;
-  overflow: hidden;
-}
-.chat-heading {
-  display: flex;
-  align-items: center;
-  gap: 13px;
-  padding: 22px;
-  border-bottom: 1px solid #eceef5;
-}
-.chat-heading img {
-  border-radius: 14px;
-  object-fit: cover;
-}
-.chat-heading h3 {
-  font-size: 16px;
-  margin-bottom: 4px;
-}
-.chat-heading small {
-  font-size: 10px;
-}
-.messages {
-  padding: 24px;
-  min-height: 350px;
-  max-height: 520px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-}
-.chat-intro {
-  font-size: 13px;
-  line-height: 1.7;
-  background: #f2f4fc;
-  padding: 17px;
-  border-radius: 0 15px 15px;
-}
-.message {
-  border-radius: 15px;
-  background: #f1f3fb;
-  padding: 12px 16px;
-  margin: 16px 0;
-  max-width: 96%;
-}
-.message.user {
-  background: #e8edff;
-  margin-left: auto;
-}
-.message p {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  font-size: 13px;
-  color: var(--cg-color-foreground);
-  margin: 6px 0;
-  line-height: 1.7;
-}
-.message small {
-  font-size: 10px;
-}
-.chat-form {
-  border-top: 1px solid var(--cg-color-border);
-  padding: 18px;
-  gap: 10px;
-}
-.chat-form textarea {
-  resize: vertical;
-  max-height: 180px;
-  font-size: 13px;
-}
-.chat-form > div {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  justify-content: space-between;
-}
-.chat-form small {
-  font-size: 9px;
-}
 .provider-warning {
   background: #fff4dd;
   color: #70571b;
@@ -604,24 +362,8 @@ footer {
   clip: rect(0, 0, 0, 0);
 }
 @media (max-width: 1100px) {
-  .dashboard {
-    grid-template-columns: 150px minmax(0, 1fr);
-    gap: 20px;
-  }
   .cg-card {
     padding: 22px;
-  }
-  .chat-card {
-    padding: 0;
-  }
-  .work-grid {
-    gap: 16px;
-  }
-  .plan-hero {
-    padding: 25px;
-  }
-  .team {
-    grid-template-columns: 1fr;
   }
   .welcome-grid {
     gap: 30px;
@@ -649,27 +391,8 @@ footer {
   .auth-card {
     width: 100%;
   }
-  .dashboard {
-    grid-template-columns: 1fr;
-  }
-  .sidebar {
-    display: none;
-  }
-  .work-grid {
-    grid-template-columns: 1fr;
-  }
-  .chat-card {
-    order: -1;
-  }
-  .messages {
-    min-height: 180px;
-    max-height: 400px;
-  }
   .plan-hero h1 {
     font-size: 28px;
-  }
-  .team {
-    grid-template-columns: 1fr 1fr;
   }
   .steps {
     display: none;
@@ -679,13 +402,6 @@ footer {
   }
   footer {
     gap: 15px;
-  }
-  .xp-circle {
-    width: 80px;
-    height: 80px;
-  }
-  .xp-circle strong {
-    font-size: 26px;
   }
 }
 @media (max-width: 480px) {
@@ -698,23 +414,8 @@ footer {
   .topbar > .cg-badge {
     font-size: 9px;
   }
-  .plan-hero {
-    padding: 20px;
-    gap: 12px;
-  }
   .plan-hero h1 {
     font-size: 23px;
-  }
-  .plan-hero p {
-    font-size: 10px;
-  }
-  .xp-circle {
-    width: 66px;
-    height: 66px;
-    border-width: 4px;
-  }
-  .xp-circle span {
-    font-size: 8px;
   }
   .form-grid {
     grid-template-columns: 1fr;
@@ -725,18 +426,6 @@ footer {
   }
   .cg-card {
     padding: 21px;
-  }
-  .chat-card {
-    padding: 0;
-  }
-  .chat-heading {
-    padding: 18px;
-  }
-  .chat-form > div {
-    flex-wrap: wrap;
-  }
-  .chat-form small {
-    max-width: 170px;
   }
   footer {
     flex-direction: column;
