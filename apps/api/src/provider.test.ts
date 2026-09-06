@@ -52,11 +52,107 @@ test("partial or explicitly selected OpenAI configuration fails without revealin
   }
 });
 
-test("GigaChat remains reserved without falling back to OpenAI", () => {
+test("GigaChat requires its own settings without falling back to OpenAI", () => {
   assert.throws(
     () =>
       createProvider(readConfig({ ...credentials, LLM_PROVIDER: "gigachat" })),
-    /adapter is not installed/,
+    /GigaChat requires/,
+  );
+});
+
+const gigaSettings = {
+  GIGACHAT_CREDENTIALS: Buffer.from(
+    "test-client:test-secret-not-live",
+  ).toString("base64"),
+  GIGACHAT_MODEL: "GigaChat-test",
+  GIGACHAT_SCOPE: "GIGACHAT_API_PERS",
+};
+
+test("GigaChat selection is explicit and retains RouterAI, OpenAI and disabled behavior", () => {
+  assert.equal(createProvider(readConfig(gigaSettings)), undefined);
+  assert.equal(
+    createProvider(readConfig({ ...gigaSettings, ...credentials }))?.name,
+    "openai",
+  );
+  assert.equal(
+    createProvider(
+      readConfig({ ...gigaSettings, ...credentials, LLM_PROVIDER: "disabled" }),
+    ),
+    undefined,
+  );
+  assert.equal(
+    createProvider(
+      readConfig({
+        ...gigaSettings,
+        ...routerSettings,
+        LLM_PROVIDER: "routerai",
+      }),
+    )?.name,
+    "routerai",
+  );
+  for (const NODE_ENV of ["development", "test"]) {
+    const provider = createProvider(
+      readConfig({
+        ...gigaSettings,
+        ...credentials,
+        LLM_PROVIDER: "gigachat",
+        NODE_ENV,
+      }),
+    );
+    assert.equal(provider?.name, "gigachat");
+    assert.equal(provider?.model, "GigaChat-test");
+  }
+});
+
+test("GigaChat rejects partial credentials, invalid scope and production activation", () => {
+  for (const field of Object.keys(gigaSettings))
+    assert.throws(
+      () =>
+        createProvider(
+          readConfig({
+            ...gigaSettings,
+            ...credentials,
+            [field]: " ",
+            LLM_PROVIDER: "gigachat",
+          }),
+        ),
+      /GigaChat requires/,
+    );
+  assert.throws(
+    () =>
+      createProvider(
+        readConfig({
+          ...gigaSettings,
+          LLM_PROVIDER: "gigachat",
+          GIGACHAT_SCOPE: "typo",
+        }),
+      ),
+    /GIGACHAT_SCOPE/,
+  );
+  assert.throws(
+    () =>
+      createProvider(
+        readConfig({
+          ...gigaSettings,
+          LLM_PROVIDER: "gigachat",
+          NODE_ENV: "production",
+          DATABASE_URL: "postgresql://localhost/citygo",
+          WEB_ORIGIN: "https://citygo.example",
+          TRUSTED_PROXY_CIDRS: "127.0.0.1/32",
+        }),
+      ),
+    /GigaChat production activation is blocked/,
+  );
+  assert.throws(
+    () =>
+      createProvider(
+        readConfig({
+          ...gigaSettings,
+          LLM_PROVIDER: "gigachat",
+          GIGACHAT_CA_BUNDLE_FILE: "missing-test-ca.pem",
+        }),
+      ),
+    /GIGACHAT_CA_BUNDLE_FILE/,
   );
 });
 

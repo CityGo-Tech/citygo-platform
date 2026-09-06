@@ -2,6 +2,7 @@ import type { readConfig } from "@citygo/config";
 import {
   OpenAIProvider,
   RouterAIProvider,
+  GigaChatProvider,
   type StreamingProvider,
 } from "@citygo/llm";
 
@@ -33,10 +34,27 @@ export function createProvider(
       maxOutputTokens: config.LLM_MAX_OUTPUT_TOKENS,
     });
   }
-  if (selected === "gigachat")
-    throw new Error(
-      `LLM_PROVIDER=${selected}: adapter is not installed in this release`,
-    );
+  if (selected === "gigachat") {
+    if (config.NODE_ENV === "production")
+      throw new Error(
+        "GigaChat production activation is blocked pending recipient/consent rollout",
+      );
+    const {
+      GIGACHAT_CREDENTIALS: credentials,
+      GIGACHAT_MODEL: model,
+      GIGACHAT_SCOPE: scope,
+    } = config;
+    if (!credentials || !model || !scope)
+      throw new Error(
+        "GigaChat requires GIGACHAT_CREDENTIALS, GIGACHAT_MODEL and GIGACHAT_SCOPE",
+      );
+    return new GigaChatProvider(credentials, model, {
+      scope,
+      caBundleFile: config.GIGACHAT_CA_BUNDLE_FILE,
+      timeoutMs: config.LLM_REQUEST_TIMEOUT_MS,
+      maxOutputTokens: config.LLM_MAX_OUTPUT_TOKENS,
+    });
+  }
 
   const { OPENAI_API_KEY: apiKey, OPENAI_MODEL: model } = config;
   if (!selected && !apiKey && !model) return undefined;

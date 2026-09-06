@@ -24,12 +24,17 @@
 - Questionnaire city/budget/date/household may go to OpenAI only after explicit
   consent. Email is excluded from model context. Responses API uses store:false;
   that is not a promise of zero provider-side retention.
-- Stage 2 adds RouterAI for an explicit local synthetic-data pilot only. Production
-  selection fails before database connection pending recipient/consent rules;
-  GigaChat remains reserved. RouterAI uses separate credentials, a fixed HTTPS
+- Stage 3 supports RouterAI and GigaChat for explicit local synthetic-data pilots
+  only. Production selection fails before database connection pending recipient/
+  consent rules. RouterAI uses separate credentials, a fixed HTTPS
   endpoint, one named upstream and allow_fallbacks:false; redirects and client
   retries are disabled. Never use development mode to bypass production gates.
   See the [AI provider rollout](../runbooks/ai-providers.md).
+- GigaChat keeps OAuth tokens only in process memory, with bounded single-flight
+  refresh and independent cancellation for waiting requests. A pre-stream HTTP
+  401 allows one token refresh/retry; partial responses and other errors never
+  trigger generation retry. TLS and hostname verification are mandatory. Optional
+  extra CA trust is scoped to GigaChat, not installed globally or sent to clients.
 - The orchestrator is deterministic topic routing, not autonomous tool execution.
   Specialists cannot mutate XP, contact third parties or invent housing listings.
 - Human handoffs are stored for review, not dispatched to a real realtor.

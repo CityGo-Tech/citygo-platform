@@ -9,6 +9,20 @@ const production = {
   TRUSTED_PROXY_CIDRS: "10.0.0.8/32, ::1/128",
 };
 
+test("GigaChat settings are blank-safe and do not implicitly select a provider", () => {
+  const config = readConfig({
+    GIGACHAT_CREDENTIALS: " key ",
+    GIGACHAT_MODEL: " GigaChat-test ",
+    GIGACHAT_SCOPE: " GIGACHAT_API_PERS ",
+    GIGACHAT_CA_BUNDLE_FILE: " ",
+  });
+  assert.equal(config.GIGACHAT_CREDENTIALS, "key");
+  assert.equal(config.GIGACHAT_MODEL, "GigaChat-test");
+  assert.equal(config.GIGACHAT_SCOPE, "GIGACHAT_API_PERS");
+  assert.equal(config.GIGACHAT_CA_BUNDLE_FILE, undefined);
+  assert.equal(config.LLM_PROVIDER, undefined);
+});
+
 test("RouterAI settings are trimmed, blank-safe and never implicitly select it", () => {
   const config = readConfig({
     ROUTERAI_API_KEY: " test-key ",

@@ -16,8 +16,9 @@ The root .env is optional. Copy .env.example, then configure OPENAI_API_KEY and
 OPENAI_MODEL server-side for real chat. With both absent, the API returns an explicit
 503; partial configuration is a startup error. LLM_PROVIDER can be empty (legacy
 OpenAI selection), openai (both settings required), or disabled (explicitly off).
-RouterAI is available as an explicit local synthetic-data pilot; production
-activation is blocked pending recipient/consent rollout. GigaChat remains reserved.
+RouterAI and GigaChat are available as explicit local synthetic-data pilots;
+production activation is blocked pending recipient/consent rollout. GigaChat needs
+its own authorization key, explicit model/account scope, and verified CA trust.
 There is no production mock provider. Do not paste keys into issues, PRs or chat.
 See [AI provider configuration](ai-providers.md) for limits and rollout boundaries.
 
