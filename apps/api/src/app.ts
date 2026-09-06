@@ -10,6 +10,7 @@ import {
   credentialsSchema,
   questionnaireSchema,
   type StreamEvent,
+  type ModelGeneration,
 } from "@citygo/contracts";
 import { Repository, DomainError, type Database } from "@citygo/db";
 import { readConfig } from "@citygo/config";
@@ -172,7 +173,7 @@ export async function buildApp(options: {
   app.get("/v1/dashboard", async (request) =>
     repo.dashboard(
       await authenticate(request),
-      options.provider ? "openai" : "unconfigured",
+      options.provider?.name ?? "unconfigured",
     ),
   );
   app.post("/v1/questionnaire", async (request) => {
@@ -207,7 +208,7 @@ export async function buildApp(options: {
       if (!options.provider)
         throw new DomainError(
           503,
-          "AI пока не подключён. Администратору нужно задать OPENAI_API_KEY и OPENAI_MODEL.",
+          "AI пока не подключён. Администратору нужно настроить провайдера на сервере.",
         );
       const reservation = await repo.reserveChat(
         user.id,
@@ -219,7 +220,7 @@ export async function buildApp(options: {
       const abort = new AbortController();
       const signal = AbortSignal.any([
         abort.signal,
-        AbortSignal.timeout(60000),
+        AbortSignal.timeout(config.LLM_REQUEST_TIMEOUT_MS),
       ]);
       reply.hijack();
       for (const [name, value] of Object.entries(reply.getHeaders()))
@@ -241,6 +242,7 @@ export async function buildApp(options: {
       }, 15000);
       let content = "";
       let saved = false;
+      let generation: ModelGeneration | undefined;
       try {
         if (routing.to !== reservation.thread.agent_key || routing.human) {
           await repo.handoff(
@@ -267,16 +269,36 @@ export async function buildApp(options: {
             .filter((m) => m.status === "complete")
             .slice(-20)
             .map((m) => ({ role: m.role, content: m.content }));
-          for await (const text of options.provider.stream(
+          generation = {
+            provider: options.provider.name,
+            requestedModel: options.provider.model,
+          };
+          let completed = false;
+          for await (const event of options.provider.stream(
             instructions(routing.to),
             [profileContext(reservation.profile), ...messages],
             signal,
           )) {
-            if (signal.aborted) throw new Error("Aborted");
-            content += text;
-            if (content.length > 24000) throw new Error("Response too large");
-            send({ type: "delta", text });
+            signal.throwIfAborted();
+            if (completed)
+              throw new Error("Provider sent events after completion");
+            if (event.type === "complete") {
+              if (!event.model.trim())
+                throw new Error("Provider omitted model");
+              completed = true;
+              generation = {
+                ...generation,
+                model: event.model,
+                ...(event.usage ? { usage: event.usage } : {}),
+              };
+            } else {
+              content += event.text;
+              if (content.length > 24000) throw new Error("Response too large");
+              send({ type: "delta", text: event.text });
+            }
           }
+          signal.throwIfAborted();
+          if (!completed) throw new Error("Provider stream interrupted");
           if (!content.trim()) throw new Error("Empty response");
         }
         const messageId = await repo.finishChat(
@@ -287,6 +309,7 @@ export async function buildApp(options: {
           content,
           true,
           !routing.human,
+          generation,
         );
         saved = true;
         send({ type: "done", messageId });
@@ -300,6 +323,8 @@ export async function buildApp(options: {
               routing.to,
               content,
               false,
+              !routing.human,
+              generation,
             )
             .catch(() =>
               request.log.error("Failed to persist interrupted response"),

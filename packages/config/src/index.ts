@@ -1,5 +1,11 @@
 import { z } from "zod";
 import { isIP } from "node:net";
+import { aiProviderIdSchema } from "@citygo/contracts";
+
+const optionalSetting = z.preprocess(
+  (value) => (typeof value === "string" ? value.trim() || undefined : value),
+  z.string().optional(),
+);
 
 const trustedProxySchema = z
   .string()
@@ -37,8 +43,19 @@ export const serverConfigSchema = z.object({
   API_PORT: z.coerce.number().int().positive().default(4000),
   WEB_ORIGIN: z.url().default("http://localhost:3000"),
   DATABASE_URL: z.string().min(1).default("pglite://.local/database"),
-  OPENAI_API_KEY: z.string().optional(),
-  OPENAI_MODEL: z.string().optional(),
+  LLM_PROVIDER: z.preprocess(
+    (value) => (typeof value === "string" ? value.trim() || undefined : value),
+    aiProviderIdSchema.or(z.literal("disabled")).optional(),
+  ),
+  LLM_REQUEST_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(1000)
+    .max(60000)
+    .default(60000),
+  LLM_MAX_OUTPUT_TOKENS: z.coerce.number().int().min(1).max(8000).default(1400),
+  OPENAI_API_KEY: optionalSetting,
+  OPENAI_MODEL: optionalSetting,
   ADMIN_USER_IDS: z.string().default(""),
   TRUSTED_PROXY_CIDRS: trustedProxySchema,
 });

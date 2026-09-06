@@ -245,6 +245,9 @@ importers:
 
   packages/config:
     dependencies:
+      '@citygo/contracts':
+        specifier: workspace:*
+        version: link:../contracts
       zod:
         specifier: ^4.1.1
         version: 4.5.4
@@ -319,6 +322,9 @@ importers:
 
   packages/llm:
     dependencies:
+      '@citygo/contracts':
+        specifier: workspace:*
+        version: link:../contracts
       openai:
         specifier: ^6.0.0
         version: 6.49.0(ws@8.21.3)(zod@4.5.4)
@@ -326,6 +332,9 @@ importers:
       tsup:
         specifier: ^8.5.0
         version: 8.5.1(postcss@8.5.28)(tsx@4.23.13)(typescript@5.9.3)(yaml@2.9.0)
+      tsx:
+        specifier: ^4.20.5
+        version: 4.23.13
 
   packages/observability:
     devDependencies:
@@ -337,6 +346,10 @@ importers:
         version: 4.23.13
 
   packages/testkit:
+    dependencies:
+      '@citygo/llm':
+        specifier: workspace:*
+        version: link:../llm
     devDependencies:
       tsup:
         specifier: ^8.5.0

@@ -5,6 +5,7 @@ import type {
   Message,
   Questionnaire,
   Quest,
+  ModelGeneration,
 } from "@citygo/contracts";
 import { randomUUID } from "node:crypto";
 import { canTransitionQuest } from "@citygo/domain";
@@ -113,7 +114,8 @@ export class Repository {
     const rows = (
       await tx.query<Message>(
         `select id::text,role,content,coalesce(metadata->>'agentKey','housing') as "agentKey",
-      coalesce(metadata->>'status','complete') as status from messages where thread_id=$1 and role in ('user','assistant')
+      coalesce(metadata->>'status','complete') as status, metadata->'generation' as generation
+      from messages where thread_id=$1 and role in ('user','assistant')
       order by id desc limit 100`,
         [threadId],
       )
@@ -342,6 +344,7 @@ export class Repository {
     content: string,
     complete: boolean,
     modelResponse = complete,
+    generation?: ModelGeneration,
   ) {
     return this.db.transaction(async (tx) => {
       const owner = (
@@ -361,6 +364,7 @@ export class Repository {
               agentKey: agent,
               status: complete ? "complete" : "interrupted",
               source: modelResponse ? "model" : "system",
+              ...(modelResponse && generation ? { generation } : {}),
             }),
           ],
         )

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { AiProviderId, ModelGeneration } from "./llm.js";
 
 export const credentialsSchema = z.object({
   email: z
@@ -48,6 +49,7 @@ export type Message = {
   content: string;
   agentKey: AgentKey;
   status: "complete" | "interrupted";
+  generation?: ModelGeneration | null;
 };
 export type Dashboard = {
   user: { id: string; email: string };
@@ -55,7 +57,7 @@ export type Dashboard = {
   xp: number;
   quests: Quest[];
   thread: { id: string; agentKey: AgentKey; messages: Message[] } | null;
-  provider: "openai" | "unconfigured";
+  provider: AiProviderId | "unconfigured";
 };
 export type StreamEvent =
   | { type: "delta"; text: string }
