@@ -13,8 +13,12 @@ PostgreSQL engine (PGlite). Persistent data lives in ignored .local/database.
 Use only one API process with this local store; the separate worker requires a server PostgreSQL connection.
 
 The root .env is optional. Copy .env.example, then configure OPENAI_API_KEY and
-OPENAI_MODEL server-side for real chat. Without them, the API returns an explicit
-503; there is no production mock provider. Do not paste keys into issues, PRs or chat.
+OPENAI_MODEL server-side for real chat. With both absent, the API returns an explicit
+503; partial configuration is a startup error. LLM_PROVIDER can be empty (legacy
+OpenAI selection), openai (both settings required), or disabled (explicitly off).
+The routerai/gigachat IDs are reserved and rejected until their adapters ship.
+There is no production mock provider. Do not paste keys into issues, PRs or chat.
+See [AI provider configuration](ai-providers.md) for limits and rollout boundaries.
 
 For PostgreSQL server:
 

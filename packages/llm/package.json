@@ -13,12 +13,15 @@
     "build": "tsup ./src/index.ts --format esm --dts --clean",
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
     "lint": "eslint src",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test src/**/*.test.ts"
   },
   "devDependencies": {
-    "tsup": "^8.5.0"
+    "tsup": "^8.5.0",
+    "tsx": "^4.20.5"
   },
   "dependencies": {
-    "openai": "^6.0.0"
+    "openai": "^6.0.0",
+    "@citygo/contracts": "workspace:*"
   }
 }

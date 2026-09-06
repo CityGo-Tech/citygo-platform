@@ -1,13 +1,21 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { randomUUID } from "node:crypto";
 import { connectDatabase, migrate } from "@citygo/db";
 import { testProfile, TestProvider } from "@citygo/testkit";
-import type { Dashboard } from "@citygo/contracts";
+import {
+  aiProviderIds,
+  type AiProviderId,
+  type Dashboard,
+} from "@citygo/contracts";
+import type { StreamingProvider } from "@citygo/llm";
 import { buildApp } from "./app.js";
 import { readConfig } from "@citygo/config";
 
-async function fixture(provider = true, env: NodeJS.ProcessEnv = {}) {
+async function fixture(
+  provider: boolean | StreamingProvider = true,
+  env: NodeJS.ProcessEnv = {},
+) {
   const base = process.env.TEST_DATABASE_URL;
   const schema = "test_" + randomUUID().replaceAll("-", "");
   const admin = base ? await connectDatabase(base) : null;
@@ -23,7 +31,7 @@ async function fixture(provider = true, env: NodeJS.ProcessEnv = {}) {
   await migrate(db);
   const app = await buildApp({
     db,
-    provider: provider ? new TestProvider() : undefined,
+    provider: provider === true ? new TestProvider() : provider || undefined,
     testing: true,
     config: readConfig({ NODE_ENV: "test", ...env }),
   });
@@ -167,8 +175,8 @@ test("production sessions use secure host-only cookies for signup, login and log
   }
 });
 
-test("vertical slice, ownership, streaming, handoff and exactly-once XP", async (t) => {
-  const f = await fixture();
+async function verticalSlice(t: TestContext, providerId: AiProviderId) {
+  const f = await fixture(new TestProvider(providerId));
   t.after(f.close);
   const user = await f.register();
   const other = await f.register();
@@ -195,6 +203,7 @@ test("vertical slice, ownership, streaming, handoff and exactly-once XP", async 
   const dashboard = async () =>
     (await f.call("GET", "/v1/dashboard", user.token)).json<Dashboard>();
   let board = await dashboard();
+  assert.equal(board.provider, providerId);
   assert.equal(board.profile?.targetCity, "Москва");
   assert.equal(board.xp, 0);
   const first = board.quests[0]!;
@@ -233,6 +242,7 @@ test("vertical slice, ownership, streaming, handoff and exactly-once XP", async 
   );
   assert.match(human.body, /"type":"done"/);
   assert.equal((await dashboard()).thread!.messages.at(-1)!.status, "complete");
+  assert.equal((await dashboard()).thread!.messages.at(-1)!.generation, null);
   assert.equal(
     (
       await f.call("POST", "/v1/quests/" + first.id + "/complete", user.token, {
@@ -275,6 +285,13 @@ test("vertical slice, ownership, streaming, handoff and exactly-once XP", async 
   );
   board = await dashboard();
   assert.equal(board.thread!.messages.length, 4);
+  assert.deepEqual(board.thread!.messages.at(-1)!.generation, {
+    provider: providerId,
+    requestedModel: "test-model",
+    model: "test-model-v1",
+    usage: { inputTokens: 32, outputTokens: 16 },
+  });
+  assert.equal(board.thread!.messages.at(-2)!.generation, null);
   const completions = await Promise.all(
     [1, 2].map(() =>
       f.call("POST", "/v1/quests/" + first.id + "/complete", user.token, {
@@ -339,7 +356,11 @@ test("vertical slice, ownership, streaming, handoff and exactly-once XP", async 
     "select count(*)::integer n from xp_events",
   );
   assert.equal(ledger.rows[0]!.n, 1);
-});
+}
+
+for (const providerId of aiProviderIds)
+  test(`vertical slice, ownership, streaming, handoff and exactly-once XP (${providerId} test double)`, (t) =>
+    verticalSlice(t, providerId));
 
 test("bad credentials, origin guard, validation and unavailable AI", async (t) => {
   const f = await fixture(false);
@@ -370,6 +391,7 @@ test("bad credentials, origin guard, validation and unavailable AI", async (t) =
   const board = (
     await f.call("GET", "/v1/dashboard", user.token)
   ).json<Dashboard>();
+  assert.equal(board.provider, "unconfigured");
   const start = await f.call(
     "POST",
     "/v1/quests/" + board.quests[0]!.id + "/start",
@@ -410,8 +432,9 @@ test("interrupted replies are persisted but do not qualify for XP", async (t) =>
     testing: true,
     provider: {
       name: "openai",
+      model: "test-interrupted",
       async *stream() {
-        yield "Частичный ответ";
+        yield { type: "delta", text: "Частичный ответ" };
         throw new Error("test disconnect");
       },
     },
@@ -431,6 +454,10 @@ test("interrupted replies are persisted but do not qualify for XP", async (t) =>
     await f.call("GET", "/v1/dashboard", user.token)
   ).json<Dashboard>();
   assert.equal(saved.thread!.messages.at(-1)!.status, "interrupted");
+  assert.deepEqual(saved.thread!.messages.at(-1)!.generation, {
+    provider: "openai",
+    requestedModel: "test-interrupted",
+  });
   assert.equal(
     (
       await f.call("POST", "/v1/quests/" + id + "/complete", user.token, {
@@ -446,4 +473,127 @@ test("interrupted replies are persisted but do not qualify for XP", async (t) =>
     { text: "Квартира", requestId: randomUUID() },
   );
   assert.match(recovered.body, /"type":"done"/);
+});
+
+for (const failure of [
+  "missing-terminal",
+  "after-terminal",
+  "empty-response",
+] as const) {
+  test(`provider protocol failure ${failure} cannot complete a quest`, async (t) => {
+    const f = await fixture({
+      name: "routerai",
+      model: "test-protocol-model",
+      async *stream() {
+        if (failure !== "empty-response")
+          yield { type: "delta", text: "Неполный ответ" };
+        if (failure !== "missing-terminal")
+          yield { type: "complete", model: "test-protocol-model" };
+        if (failure === "after-terminal")
+          yield { type: "delta", text: "Лишний текст" };
+      },
+    });
+    t.after(f.close);
+    const user = await f.register();
+    await f.call("POST", "/v1/questionnaire", user.token, testProfile);
+    const board = (
+      await f.call("GET", "/v1/dashboard", user.token)
+    ).json<Dashboard>();
+    const quest = board.quests[0]!.id;
+    const thread = (
+      await f.call("POST", `/v1/quests/${quest}/start`, user.token, {})
+    ).json().id;
+    const response = await f.call(
+      "POST",
+      `/v1/threads/${thread}/messages`,
+      user.token,
+      {
+        text: "Помоги выбрать квартиру",
+        requestId: randomUUID(),
+      },
+    );
+    assert.match(response.body, /"type":"error"/);
+    assert.doesNotMatch(response.body, /"type":"done"/);
+    const saved = (
+      await f.call("GET", "/v1/dashboard", user.token)
+    ).json<Dashboard>();
+    assert.equal(saved.thread!.messages.at(-1)!.status, "interrupted");
+    assert.equal(
+      (
+        await f.call("POST", `/v1/quests/${quest}/complete`, user.token, {
+          confirmed: true,
+        })
+      ).statusCode,
+      409,
+    );
+    assert.equal(saved.xp, 0);
+  });
+}
+
+test("changing injected providers between API instances preserves history and records each answer's source", async (t) => {
+  const f = await fixture();
+  t.after(f.close);
+  const user = await f.register();
+  await f.call("POST", "/v1/questionnaire", user.token, testProfile);
+  const initial = (
+    await f.call("GET", "/v1/dashboard", user.token)
+  ).json<Dashboard>();
+  const thread = (
+    await f.call(
+      "POST",
+      `/v1/quests/${initial.quests[0]!.id}/start`,
+      user.token,
+      {},
+    )
+  ).json().id;
+  await f.call("POST", `/v1/threads/${thread}/messages`, user.token, {
+    text: "Первый вопрос о квартире",
+    requestId: randomUUID(),
+  });
+  const before = (
+    await f.call("GET", "/v1/dashboard", user.token)
+  ).json<Dashboard>();
+  let receivedHistory: unknown;
+  const replacement = await buildApp({
+    db: f.db,
+    testing: true,
+    config: readConfig({ NODE_ENV: "test" }),
+    provider: {
+      name: "gigachat",
+      model: "test-gigachat",
+      async *stream(_instructions, messages) {
+        receivedHistory = messages;
+        yield { type: "delta", text: "Новый ответ" };
+        yield { type: "complete", model: "test-gigachat-v1" };
+      },
+    },
+  });
+  t.after(() => replacement.close());
+  const headers = {
+    origin: "http://localhost:3000",
+    cookie: "citygo=" + user.token,
+  };
+  const response = await replacement.inject({
+    method: "POST",
+    url: `/v1/threads/${thread}/messages`,
+    headers,
+    payload: { text: "Второй вопрос о квартире", requestId: randomUUID() },
+  });
+  assert.match(response.body, /"type":"done"/);
+  assert.ok(Array.isArray(receivedHistory));
+  assert.deepEqual(
+    receivedHistory.slice(1, 3),
+    before.thread!.messages.map(({ role, content }) => ({ role, content })),
+  );
+  const after = (
+    await replacement.inject({ method: "GET", url: "/v1/dashboard", headers })
+  ).json<Dashboard>();
+  assert.equal(after.provider, "gigachat");
+  assert.deepEqual(after.thread!.messages.slice(0, 2), before.thread!.messages);
+  assert.equal(after.thread!.messages.at(-1)!.generation?.provider, "gigachat");
+  assert.equal(
+    after.thread!.messages.at(-1)!.generation?.model,
+    "test-gigachat-v1",
+  );
+  assert.equal(after.xp, 0);
 });

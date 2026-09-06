@@ -15,7 +15,9 @@
     "lint": "eslint src",
     "typecheck": "tsc --noEmit"
   },
-  "dependencies": {},
+  "dependencies": {
+    "@citygo/llm": "workspace:*"
+  },
   "devDependencies": {
     "tsup": "^8.5.0",
     "tsx": "^4.20.5"

@@ -11,6 +11,9 @@ function start(envOverrides) {
     WEB_ORIGIN: "http://localhost:3000",
     TRUSTED_PROXY_CIDRS: "",
     API_PORT: "49999",
+    LLM_PROVIDER: "",
+    OPENAI_API_KEY: "",
+    OPENAI_MODEL: "",
     ...envOverrides,
   };
   if (env.NODE_ENV === undefined) delete env.NODE_ENV;
@@ -28,6 +31,26 @@ test("built API never silently starts in development mode", () => {
     const result = start({ NODE_ENV });
     assert.equal(result.status, 1, result.stderr);
     assert.match(result.stderr, /Production requires PostgreSQL and HTTPS/);
+    assert.doesNotMatch(result.stdout, /Server listening/);
+  }
+});
+
+test("provider configuration errors fail before any database connection", () => {
+  for (const LLM_PROVIDER of ["routerai", "gigachat", "openai"]) {
+    const result = start({
+      DATABASE_URL: "postgresql://127.0.0.1:1/unreachable",
+      WEB_ORIGIN: "https://citygo.example",
+      TRUSTED_PROXY_CIDRS: "127.0.0.1/32",
+      LLM_PROVIDER,
+    });
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(
+      result.stderr,
+      LLM_PROVIDER === "openai"
+        ? /requires both OPENAI_API_KEY and OPENAI_MODEL/
+        : /adapter is not installed/,
+    );
+    assert.doesNotMatch(result.stderr, /ECONNREFUSED/);
     assert.doesNotMatch(result.stdout, /Server listening/);
   }
 });
