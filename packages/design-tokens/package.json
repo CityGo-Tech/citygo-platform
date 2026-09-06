@@ -11,6 +11,7 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs",
-    "lint": "node scripts/build.mjs --check"
+    "lint": "node scripts/build.mjs --check",
+    "test": "node --test scripts/figma.test.mjs"
   }
 }
