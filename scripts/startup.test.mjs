@@ -14,6 +14,10 @@ function start(envOverrides) {
     LLM_PROVIDER: "",
     OPENAI_API_KEY: "",
     OPENAI_MODEL: "",
+    ROUTERAI_API_KEY: "",
+    ROUTERAI_MODEL: "",
+    ROUTERAI_UPSTREAM: "",
+    ROUTERAI_COUNTRY: "",
     ...envOverrides,
   };
   if (env.NODE_ENV === undefined) delete env.NODE_ENV;
@@ -48,7 +52,9 @@ test("provider configuration errors fail before any database connection", () => 
       result.stderr,
       LLM_PROVIDER === "openai"
         ? /requires both OPENAI_API_KEY and OPENAI_MODEL/
-        : /adapter is not installed/,
+        : LLM_PROVIDER === "routerai"
+          ? /production activation is blocked/
+          : /adapter is not installed/,
     );
     assert.doesNotMatch(result.stderr, /ECONNREFUSED/);
     assert.doesNotMatch(result.stdout, /Server listening/);

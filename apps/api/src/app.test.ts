@@ -8,7 +8,7 @@ import {
   type AiProviderId,
   type Dashboard,
 } from "@citygo/contracts";
-import type { StreamingProvider } from "@citygo/llm";
+import { RouterAIProvider, type StreamingProvider } from "@citygo/llm";
 import { buildApp } from "./app.js";
 import { readConfig } from "@citygo/config";
 
@@ -175,8 +175,12 @@ test("production sessions use secure host-only cookies for signup, login and log
   }
 });
 
-async function verticalSlice(t: TestContext, providerId: AiProviderId) {
-  const f = await fixture(new TestProvider(providerId));
+async function verticalSlice(
+  t: TestContext,
+  providerId: AiProviderId,
+  provider: StreamingProvider = new TestProvider(providerId),
+) {
+  const f = await fixture(provider);
   t.after(f.close);
   const user = await f.register();
   const other = await f.register();
@@ -287,7 +291,7 @@ async function verticalSlice(t: TestContext, providerId: AiProviderId) {
   assert.equal(board.thread!.messages.length, 4);
   assert.deepEqual(board.thread!.messages.at(-1)!.generation, {
     provider: providerId,
-    requestedModel: "test-model",
+    requestedModel: provider.model,
     model: "test-model-v1",
     usage: { inputTokens: 32, outputTokens: 16 },
   });
@@ -361,6 +365,116 @@ async function verticalSlice(t: TestContext, providerId: AiProviderId) {
 for (const providerId of aiProviderIds)
   test(`vertical slice, ownership, streaming, handoff and exactly-once XP (${providerId} test double)`, (t) =>
     verticalSlice(t, providerId));
+
+function routerResponse(complete: boolean) {
+  const chunks = [
+    {
+      model: "test-model-v1",
+      choices: [
+        {
+          index: 0,
+          delta: { content: "Сравните районы и бюджет аренды." },
+          finish_reason: null,
+        },
+      ],
+    },
+    ...(complete
+      ? [
+          {
+            model: "test-model-v1",
+            choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+          },
+          {
+            model: "test-model-v1",
+            choices: [],
+            usage: { prompt_tokens: 32, completion_tokens: 16 },
+          },
+        ]
+      : []),
+  ];
+  return new Response(
+    chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("") +
+      (complete ? "data: [DONE]\n\n" : ""),
+    { headers: { "content-type": "text/event-stream" } },
+  );
+}
+
+test("RouterAI adapter mocked HTTP: full vertical slice with history, handoff and exactly-once XP", async (t) => {
+  let calls = 0;
+  const provider = new RouterAIProvider("test-key", "test/model", {
+    upstream: "test-upstream",
+    fetch: async (url, init) => {
+      calls++;
+      assert.equal(url, "https://routerai.ru/api/v1/chat/completions");
+      const request = JSON.parse(String(init?.body));
+      assert.equal(request.messages[0].role, "system");
+      assert.match(request.messages[0].content, /CityGo/);
+      assert.doesNotMatch(
+        JSON.stringify(request.messages),
+        /@example.test|CityGo-test-password/,
+      );
+      if (calls === 2)
+        assert.ok(
+          request.messages.some(
+            (message: { role: string; content: string }) =>
+              message.role === "assistant" &&
+              message.content.includes("бюджет аренды"),
+          ),
+        );
+      return routerResponse(true);
+    },
+  });
+  await verticalSlice(t, "routerai", provider);
+  // Human escalation, unauthorized access and duplicate request IDs do not call AI.
+  assert.equal(calls, 2);
+});
+
+test("RouterAI adapter mocked HTTP: interrupted stream persists, blocks XP and permits a new attempt", async (t) => {
+  let calls = 0;
+  const f = await fixture(
+    new RouterAIProvider("test-key", "test/model", {
+      upstream: "test-upstream",
+      fetch: async () => routerResponse(++calls > 1),
+    }),
+  );
+  t.after(f.close);
+  const { token } = await f.register();
+  await f.call("POST", "/v1/questionnaire", token, testProfile);
+  const dashboard = async () =>
+    (await f.call("GET", "/v1/dashboard", token)).json<Dashboard>();
+  const quest = (await dashboard()).quests[0]!.id;
+  const thread = (
+    await f.call("POST", `/v1/quests/${quest}/start`, token, {})
+  ).json().id;
+  const send = () =>
+    f.call("POST", `/v1/threads/${thread}/messages`, token, {
+      text: "Помоги выбрать квартиру",
+      requestId: randomUUID(),
+    });
+  const interrupted = await send();
+  assert.match(interrupted.body, /"type":"delta"/);
+  assert.match(interrupted.body, /"type":"error"/);
+  assert.doesNotMatch(interrupted.body, /"type":"done"|test-key/);
+  const saved = await dashboard();
+  assert.equal(saved.thread!.messages.at(-1)!.status, "interrupted");
+  assert.deepEqual(saved.thread!.messages.at(-1)!.generation, {
+    provider: "routerai",
+    requestedModel: "test/model",
+  });
+  assert.equal(
+    (
+      await f.call("POST", `/v1/quests/${quest}/complete`, token, {
+        confirmed: true,
+      })
+    ).statusCode,
+    409,
+  );
+  assert.equal((await dashboard()).xp, 0);
+  assert.equal(calls, 1);
+  assert.match((await send()).body, /"type":"done"/);
+  assert.equal(calls, 2);
+  assert.equal((await dashboard()).thread!.messages.at(-1)!.status, "complete");
+});
 
 test("bad credentials, origin guard, validation and unavailable AI", async (t) => {
   const f = await fixture(false);
