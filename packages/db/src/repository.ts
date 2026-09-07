@@ -12,18 +12,15 @@ import type {
   AiRoutingInput,
   AiAttemptOverview,
   AiProviderId,
+  AiExecution,
+  AiBudgetInput,
 } from "@citygo/contracts";
 import { randomUUID } from "node:crypto";
 import { canTransitionQuest } from "@citygo/domain";
+import { DomainError } from "./errors.js";
+import { aiBudget, changeAiBudget, reserveAiMoney } from "./ai-budget.js";
 
-export class DomainError extends Error {
-  constructor(
-    public statusCode: number,
-    message: string,
-  ) {
-    super(message);
-  }
-}
+export { DomainError } from "./errors.js";
 const fail = (status: number, message: string): never => {
   throw new DomainError(status, message);
 };
@@ -31,6 +28,16 @@ type User = { id: string; email: string; password_hash: string };
 type Thread = { id: string; agent_key: AgentKey; busy_until: string | null };
 export class Repository {
   constructor(public db: Database) {}
+  aiBudget(executions: AiExecution[]) {
+    return aiBudget(this.db, executions);
+  }
+  changeAiBudget(
+    userId: string,
+    input: AiBudgetInput,
+    executions: AiExecution[],
+  ) {
+    return changeAiBudget(this.db, userId, input, executions);
+  }
   async reserveAiAttempt(input: {
     userId: string;
     threadId: string;
@@ -43,6 +50,7 @@ export class Repository {
     routingRevision: number;
     userDailyLimit: number;
     globalDailyLimit: number;
+    execution: AiExecution;
   }) {
     if (
       !Number.isInteger(input.attemptNumber) ||
@@ -73,6 +81,12 @@ export class Repository {
         ],
       );
       if (!request.rows.length) fail(409, "Запрос AI устарел.");
+      if (
+        input.execution.policy.id !== input.policyId ||
+        input.execution.policy.provider !== input.provider ||
+        input.execution.policy.model !== input.model
+      )
+        fail(409, "Денежный резерв не соответствует запросу.");
       const previous = (
         await tx.query<{
           attempt_number: number;
@@ -142,8 +156,9 @@ export class Repository {
         "insert into ai_user_model_attempt_daily(user_id,usage_day,reserved_attempts) values ($1,$2,1) on conflict(user_id,usage_day) do update set reserved_attempts=ai_user_model_attempt_daily.reserved_attempts+1",
         [input.userId, day],
       );
+      const money = await reserveAiMoney(tx, input.execution);
       await tx.query(
-        "insert into ai_model_attempts(thread_id,request_id,attempt_number,user_id,provider,model,policy_id,routing_revision) values ($1,$2,$3,$4,$5,$6,$7,$8)",
+        "insert into ai_model_attempts(thread_id,request_id,attempt_number,user_id,provider,model,policy_id,routing_revision,money_currency,money_reserved_micros,money_budget_revision,money_rule_key,reserved_at) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)",
         [
           input.threadId,
           input.requestId,
@@ -153,6 +168,11 @@ export class Repository {
           input.model,
           input.policyId,
           input.routingRevision,
+          money.currency,
+          money.amountMicros,
+          money.revision,
+          money.ruleKey,
+          money.reservedAt,
         ],
       );
     });
@@ -177,7 +197,8 @@ export class Repository {
       await this.db.query<AiAttemptOverview["recent"][number]>(
         `select a.user_id::text as "userId",a.thread_id::text as "threadId",a.request_id::text as "requestId",
        a.attempt_number as "attemptNumber",a.provider,a.model,a.routing_revision as "routingRevision",
-       to_char(a.reserved_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "reservedAt",r.status as "requestStatus"
+       to_char(a.reserved_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "reservedAt",r.status as "requestStatus",
+       case when a.money_currency is null then null else jsonb_build_object('currency',a.money_currency,'amountMicros',a.money_reserved_micros,'revision',a.money_budget_revision,'ruleKey',a.money_rule_key) end as money
        from ai_model_attempts a join chat_requests r using(thread_id,request_id)
        order by a.reserved_at desc,a.thread_id desc,a.request_id desc,a.attempt_number desc limit 20`,
       )

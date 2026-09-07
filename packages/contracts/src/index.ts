@@ -2,6 +2,7 @@ import { z } from "zod";
 export * from "./platform.js";
 export * from "./llm.js";
 export * from "./ai-access.js";
+export * from "./ai-budget.js";
 
 export const relocationStages = [
   "profile",

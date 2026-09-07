@@ -2,6 +2,7 @@
 import { useState } from "react";
 import { createClient } from "@citygo/api-client";
 import { Button, Card } from "@citygo/ui-web";
+import { formatMoneyMicros } from "@citygo/contracts";
 
 const api = createClient();
 type Status = Awaited<ReturnType<typeof api.aiControl>>;
@@ -189,8 +190,8 @@ export function AiControls({
           <p>
             Это резерв до вызова модели, а не счёт провайдера. Сбои, отмены и
             повторы расходуют резерв; ошибка авторизации может остановить вызов
-            ещё до отправки сообщения. Денежный бюджет пока не настроен. Лимиты
-            не меняются через этот интерфейс.
+            ещё до отправки сообщения. Количественные лимиты меняются только в
+            настройках сервера; денежный бюджет задаётся отдельно.
           </p>
           <p>
             Первый резерв фиксирует лимиты на текущий день UTC для всех
@@ -217,6 +218,10 @@ export function AiControls({
                     interrupted: "прервано",
                   }[entry.requestStatus]
                 }
+                {" · денежный резерв: "}
+                {entry.money
+                  ? `${formatMoneyMicros(entry.money.amountMicros)} ${entry.money.currency} (бюджет v${entry.money.revision})`
+                  : "не оценён"}
               </li>
             ))}
           </ol>

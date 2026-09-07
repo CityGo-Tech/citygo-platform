@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { aiProviderIdSchema, type AiProviderId } from "./llm.js";
+import type { AiBudgetStatus, AiMoneyReservation } from "./ai-budget.js";
 
 export const aiPolicyIdSchema = z.string().regex(/^[a-f0-9]{64}$/);
 export const aiConsentSchema = z.discriminatedUnion("action", [
@@ -62,6 +63,7 @@ export type AiControlStatus = {
   audit: AiRoutingAudit[];
   // Additive for older admin clients/servers. Never a billing statement.
   attempts?: AiAttemptOverview;
+  budget?: AiBudgetStatus;
 };
 
 export type AiAttemptOverview = {
@@ -82,5 +84,7 @@ export type AiAttemptOverview = {
     routingRevision: number;
     reservedAt: string;
     requestStatus: "running" | "complete" | "interrupted";
+    // Null/absent means historical attempt without a monetary assessment.
+    money?: AiMoneyReservation | null;
   }[];
 };

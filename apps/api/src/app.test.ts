@@ -8,6 +8,7 @@ import {
   type AiProviderId,
   type Dashboard,
   type AiControlStatus,
+  type AiBudgetInput,
 } from "@citygo/contracts";
 import {
   RouterAIProvider,
@@ -18,11 +19,15 @@ import {
 import { buildApp } from "./app.js";
 import { readConfig } from "@citygo/config";
 import type { ProviderMap } from "./provider.js";
+import { seedTestBudget } from "./test-budget.js";
+import { createAiExecution } from "./ai-execution.js";
+import { createAiPolicy } from "./ai-policy.js";
 
 async function fixture(
   provider: boolean | StreamingProvider = true,
   env: NodeJS.ProcessEnv = {},
   providers: ProviderMap = {},
+  seedBudget = true,
 ) {
   const base = process.env.TEST_DATABASE_URL;
   const schema = "test_" + randomUUID().replaceAll("-", "");
@@ -37,12 +42,20 @@ async function fixture(
   const db = await connectDatabase(url);
   await migrate(db);
   await migrate(db);
+  const instance =
+    provider === true ? new TestProvider() : provider || undefined;
+  const config = readConfig({ NODE_ENV: "test", ...env });
+  if (seedBudget)
+    await seedTestBudget(db, config, {
+      ...providers,
+      ...(instance ? { [instance.name]: instance } : {}),
+    });
   const app = await buildApp({
     db,
-    provider: provider === true ? new TestProvider() : provider || undefined,
+    provider: instance,
     providers,
     testing: true,
-    config: readConfig({ NODE_ENV: "test", ...env }),
+    config,
   });
   async function close() {
     await app.close();
@@ -132,7 +145,40 @@ async function fixture(
     assert.match(String(result.headers["set-cookie"]), /HttpOnly/);
     return { email, token: result.cookies[0]!.value };
   }
-  return { app, db, call, consent, activate, register, close };
+  async function approveBudget(
+    token: string,
+    target = app,
+    changes: Partial<AiBudgetInput> = {},
+  ) {
+    const headers = { origin, cookie: "citygo=" + token };
+    const response = await target.inject({
+      method: "GET",
+      url: "/v1/admin/ai",
+      headers,
+    });
+    assert.equal(response.statusCode, 200, response.body);
+    const budget = response.json<AiControlStatus>().budget!;
+    const result = await target.inject({
+      method: "POST",
+      url: "/v1/admin/ai/budget",
+      headers,
+      payload: {
+        expectedRevision: budget.settings.revision,
+        enabled: true,
+        currency: "RUB",
+        dailyLimitMicros: 1000000,
+        totalLimitMicros: 1000000,
+        rules: budget.availableExecutions.map((item) => ({
+          key: item.key,
+          attemptCeilingMicros: 1,
+        })),
+        ...changes,
+      },
+    });
+    assert.equal(result.statusCode, 200, result.body);
+    return result.json();
+  }
+  return { app, db, call, consent, activate, register, close, approveBudget };
 }
 
 async function chatUser(f: Awaited<ReturnType<typeof fixture>>, grant = true) {
@@ -157,6 +203,526 @@ async function chatUser(f: Awaited<ReturnType<typeof fixture>>, grant = true) {
     policyId: board.aiAccess.policy!.id,
   };
 }
+
+test("money budget starts closed, protects admin writes and allows only explicitly approved attempts", async (t) => {
+  let calls = 0;
+  const provider: StreamingProvider = {
+    name: "openai",
+    model: "test-money",
+    async *stream() {
+      calls++;
+      yield { type: "delta", text: "Ответ" };
+      yield { type: "complete", model: "test-money" };
+    },
+  };
+  const f = await fixture(provider, { ADMIN_USER_IDS: "1" }, {}, false);
+  t.after(f.close);
+  const admin = await chatUser(f);
+  const user = await chatUser(f);
+  const path = `/v1/threads/${admin.thread}/messages`;
+  const before = (
+    await f.call("GET", "/v1/admin/ai", admin.token)
+  ).json<AiControlStatus>();
+  assert.equal(before.budget!.settings.enabled, false);
+  assert.equal(before.budget!.settings.currency, null);
+  assert.equal(before.budget!.settings.rules.length, 0);
+  assert.equal(before.budget!.totalReservedMicros, 0);
+  const denied = await f.call("POST", path, admin.token, {
+    text: "Квартира",
+    requestId: randomUUID(),
+  });
+  assert.match(denied.body, /Денежный бюджет AI не включён/);
+  assert.equal(calls, 0);
+  assert.equal(
+    (await f.db.query("select * from ai_model_attempts")).rows.length,
+    0,
+  );
+  assert.equal(
+    (await f.db.query("select * from ai_model_attempt_daily")).rows.length,
+    0,
+  );
+  const human = await f.call("POST", path, admin.token, {
+    text: "Нужен живой риелтор",
+    requestId: randomUUID(),
+  });
+  assert.match(human.body, /"type":"done"/);
+  assert.equal(calls, 0);
+  const input: AiBudgetInput = {
+    expectedRevision: 1,
+    enabled: true,
+    currency: "RUB",
+    dailyLimitMicros: 10,
+    totalLimitMicros: 20,
+    rules: [
+      {
+        key: before.budget!.availableExecutions[0]!.key,
+        attemptCeilingMicros: 3,
+      },
+    ],
+  };
+  assert.equal(
+    (await f.call("POST", "/v1/admin/ai/budget", "", input)).statusCode,
+    401,
+  );
+  assert.equal(
+    (await f.call("POST", "/v1/admin/ai/budget", user.token, input)).statusCode,
+    403,
+  );
+  assert.equal(
+    (await f.call("GET", "/v1/admin/ai", user.token)).statusCode,
+    403,
+  );
+  assert.equal(
+    (
+      await f.app.inject({
+        method: "POST",
+        url: "/v1/admin/ai/budget",
+        headers: {
+          origin: "https://wrong.test",
+          cookie: "citygo=" + admin.token,
+        },
+        payload: input,
+      })
+    ).statusCode,
+    403,
+  );
+  assert.equal(
+    (
+      await f.call("POST", "/v1/admin/ai/budget", admin.token, {
+        ...input,
+        reset: true,
+      })
+    ).statusCode,
+    400,
+  );
+  assert.equal(
+    (
+      await f.call("POST", "/v1/admin/ai/budget", admin.token, {
+        ...input,
+        rules: [{ key: "a".repeat(64), attemptCeilingMicros: 3 }],
+      })
+    ).statusCode,
+    409,
+  );
+  assert.equal(
+    (await f.call("POST", "/v1/admin/ai/budget", admin.token, input))
+      .statusCode,
+    200,
+  );
+  assert.equal(
+    (await f.call("POST", "/v1/admin/ai/budget", admin.token, input))
+      .statusCode,
+    409,
+  );
+  assert.match(
+    (
+      await f.call("POST", path, admin.token, {
+        text: "Помоги выбрать квартиру",
+        requestId: randomUUID(),
+      })
+    ).body,
+    /"type":"done"/,
+  );
+  assert.equal(calls, 1);
+  const after = (
+    await f.call("GET", "/v1/admin/ai", admin.token)
+  ).json<AiControlStatus>();
+  assert.equal(after.budget!.totalReservedMicros, 3);
+  assert.equal(after.budget!.reservedTodayMicros, 3);
+  assert.equal(after.budget!.audit.length, 1);
+  assert.equal(after.budget!.audit[0]!.actorUserId, admin.userId);
+  assert.deepEqual(after.attempts!.recent[0]!.money, {
+    currency: "RUB",
+    amountMicros: 3,
+    revision: 2,
+    ruleKey: input.rules[0]!.key,
+  });
+  assert.doesNotMatch(
+    JSON.stringify(after),
+    /Помоги выбрать квартиру|password|apiKey|Authorization/,
+  );
+});
+
+test("money budget is atomic across replicas, persists across switches and daily rollover without resetting total", async (t) => {
+  let calls = 0;
+  const provider: StreamingProvider = {
+    name: "openai",
+    model: "test-money",
+    async *stream() {
+      calls++;
+      yield { type: "delta", text: "Ответ" };
+      yield { type: "complete", model: "test-money" };
+    },
+  };
+  const providers = {
+    openai: provider,
+    gigachat: { ...provider, name: "gigachat" as const },
+  };
+  const env = { ADMIN_USER_IDS: "1" };
+  const f = await fixture(provider, env, providers, false);
+  t.after(f.close);
+  const users = [await chatUser(f), await chatUser(f)];
+  const admin = users[0]!;
+  let status = (
+    await f.call("GET", "/v1/admin/ai", admin.token)
+  ).json<AiControlStatus>();
+  const rules = status.budget!.availableExecutions.map((item) => ({
+    key: item.key,
+    attemptCeilingMicros: 7,
+  }));
+  await f.approveBudget(admin.token, f.app, {
+    dailyLimitMicros: 7,
+    totalLimitMicros: 7,
+    rules,
+  });
+  const replica = await buildApp({
+    db: f.db,
+    provider,
+    providers,
+    testing: true,
+    config: readConfig({ NODE_ENV: "test", ...env }),
+  });
+  t.after(() => replica.close());
+  const replies = await Promise.all(
+    users.map((user, index) =>
+      (index ? replica : f.app).inject({
+        method: "POST",
+        url: `/v1/threads/${user.thread}/messages`,
+        headers: {
+          origin: "http://localhost:3000",
+          cookie: "citygo=" + user.token,
+        },
+        payload: {
+          text: "Квартира",
+          requestId: randomUUID(),
+          policyId: user.policyId,
+        },
+      }),
+    ),
+  );
+  assert.equal(
+    replies.filter((reply) => reply.body.includes('"type":"done"')).length,
+    1,
+  );
+  assert.equal(
+    replies.filter((reply) =>
+      reply.body.includes("Денежный резерв AI исчерпан"),
+    ).length,
+    1,
+  );
+  assert.equal(calls, 1);
+  await f.activate(admin.token, f.app, "gigachat");
+  await f.consent(admin.token);
+  // Simulate a prior UTC day's reservation without changing the lifetime total.
+  await f.db.query("update ai_budget_daily set usage_day=usage_day-1");
+  const send = () =>
+    f.call("POST", `/v1/threads/${admin.thread}/messages`, admin.token, {
+      text: "Квартира",
+      requestId: randomUUID(),
+    });
+  assert.match((await send()).body, /Денежный резерв AI исчерпан/);
+  await f.approveBudget(admin.token, f.app, {
+    dailyLimitMicros: 7,
+    totalLimitMicros: 21,
+    rules,
+  });
+  assert.match((await send()).body, /"type":"done"/);
+  assert.match((await send()).body, /Денежный резерв AI исчерпан/);
+  status = (
+    await f.call("GET", "/v1/admin/ai", admin.token)
+  ).json<AiControlStatus>();
+  assert.equal(status.budget!.totalReservedMicros, 14);
+  assert.equal(status.budget!.reservedTodayMicros, 7);
+  assert.equal(status.attempts!.reservedToday, 2);
+  assert.equal(calls, 2);
+  const settings = status.budget!.settings;
+  const input = {
+    expectedRevision: settings.revision,
+    enabled: false,
+    currency: "RUB",
+    dailyLimitMicros: 7,
+    totalLimitMicros: 21,
+    rules,
+  };
+  assert.equal(
+    (
+      await f.call("POST", "/v1/admin/ai/budget", admin.token, {
+        ...input,
+        currency: "USD",
+      })
+    ).statusCode,
+    409,
+  );
+  assert.equal(
+    (
+      await f.call("POST", "/v1/admin/ai/budget", admin.token, {
+        ...input,
+        dailyLimitMicros: 0,
+      })
+    ).statusCode,
+    409,
+  );
+  assert.equal(
+    (await f.call("POST", "/v1/admin/ai/budget", admin.token, input))
+      .statusCode,
+    200,
+  );
+  assert.match((await send()).body, /Денежный бюджет AI не включён/);
+  assert.equal(calls, 2);
+});
+
+test("money budget reserves retries separately and never refunds interrupted or failed calls", async (t) => {
+  let calls = 0;
+  const provider: StreamingProvider = {
+    name: "openai",
+    model: "test-retry-budget",
+    async *stream(_instructions, _messages, _signal, guard) {
+      calls++;
+      await guard!.beforeRetry();
+      calls++;
+      yield { type: "delta", text: "Частичный ответ" };
+      throw new Error("test failure, unknown provider charge");
+    },
+  };
+  const f = await fixture(provider, { ADMIN_USER_IDS: "1" }, {}, false);
+  t.after(f.close);
+  const user = await chatUser(f);
+  const initial = (
+    await f.call("GET", "/v1/admin/ai", user.token)
+  ).json<AiControlStatus>();
+  const rules = [
+    {
+      key: initial.budget!.availableExecutions[0]!.key,
+      attemptCeilingMicros: 3,
+    },
+  ];
+  await f.approveBudget(user.token, f.app, {
+    dailyLimitMicros: 5,
+    totalLimitMicros: 5,
+    rules,
+  });
+  const send = () =>
+    f.call("POST", `/v1/threads/${user.thread}/messages`, user.token, {
+      text: "Квартира",
+      requestId: randomUUID(),
+    });
+  assert.match((await send()).body, /Денежный резерв AI исчерпан/);
+  assert.equal(calls, 1);
+  let status = (
+    await f.call("GET", "/v1/admin/ai", user.token)
+  ).json<AiControlStatus>();
+  assert.equal(status.budget!.totalReservedMicros, 3);
+  assert.equal(status.attempts!.reservedToday, 1);
+  await f.approveBudget(user.token, f.app, {
+    dailyLimitMicros: 9,
+    totalLimitMicros: 9,
+    rules,
+  });
+  const failed = await send();
+  assert.match(failed.body, /Частичный ответ/);
+  assert.match(failed.body, /"type":"error"/);
+  assert.equal(calls, 3);
+  status = (
+    await f.call("GET", "/v1/admin/ai", user.token)
+  ).json<AiControlStatus>();
+  assert.equal(status.budget!.totalReservedMicros, 9);
+  assert.equal(status.attempts!.reservedToday, 3);
+  assert.deepEqual(
+    status.attempts!.recent.map((item) => item.attemptNumber).sort(),
+    [1, 1, 2],
+  );
+  assert.match((await send()).body, /Денежный резерв AI исчерпан/);
+  assert.equal(calls, 3);
+});
+
+test("money budget disable during model I/O blocks the later retry without losing the first reserve", async (t) => {
+  let calls = 0;
+  let entered!: () => void;
+  let release!: () => void;
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const paused = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const provider: StreamingProvider = {
+    name: "openai",
+    model: "test-paused",
+    async *stream(_instructions, _messages, _signal, guard) {
+      calls++;
+      entered();
+      await paused;
+      await guard!.beforeRetry();
+      calls++;
+      yield { type: "delta", text: "Не должен отправиться" };
+      yield { type: "complete", model: "test-paused" };
+    },
+  };
+  const f = await fixture(provider, { ADMIN_USER_IDS: "1" });
+  t.after(f.close);
+  const user = await chatUser(f);
+  const pending = f.call(
+    "POST",
+    `/v1/threads/${user.thread}/messages`,
+    user.token,
+    { text: "Квартира", requestId: randomUUID() },
+  );
+  await started;
+  try {
+    await f.approveBudget(user.token, f.app, { enabled: false });
+  } finally {
+    release();
+  }
+  assert.match((await pending).body, /Денежный бюджет AI не включён/);
+  assert.equal(calls, 1);
+  const status = (
+    await f.call("GET", "/v1/admin/ai", user.token)
+  ).json<AiControlStatus>();
+  assert.equal(status.budget!.totalReservedMicros, 1);
+  assert.equal(status.attempts!.reservedToday, 1);
+  assert.equal(status.attempts!.recent[0]!.requestStatus, "interrupted");
+});
+
+test("money budget changes use CAS and roll back together with their audit record", async (t) => {
+  const f = await fixture(true, { ADMIN_USER_IDS: "1" }, {}, false);
+  t.after(f.close);
+  const user = await chatUser(f);
+  const initial = (
+    await f.call("GET", "/v1/admin/ai", user.token)
+  ).json<AiControlStatus>().budget!;
+  const input: AiBudgetInput = {
+    expectedRevision: 1,
+    enabled: true,
+    currency: "USD",
+    dailyLimitMicros: 1,
+    totalLimitMicros: 1,
+    rules: [
+      { key: initial.availableExecutions[0]!.key, attemptCeilingMicros: 1 },
+    ],
+  };
+  const results = await Promise.all([
+    f.call("POST", "/v1/admin/ai/budget", user.token, input),
+    f.call("POST", "/v1/admin/ai/budget", user.token, input),
+  ]);
+  assert.deepEqual(results.map((r) => r.statusCode).sort(), [200, 409]);
+  const repo = new Repository({
+    ...f.db,
+    transaction: (work) =>
+      f.db.transaction((tx) =>
+        work({
+          ...tx,
+          query: (sql, params) => {
+            if (sql.includes("insert into audit_log"))
+              throw new Error("test audit unavailable");
+            return tx.query(sql, params);
+          },
+        }),
+      ),
+  });
+  await assert.rejects(
+    repo.changeAiBudget(
+      user.userId,
+      { ...input, expectedRevision: 2, totalLimitMicros: 2 },
+      initial.availableExecutions,
+    ),
+    /test audit unavailable/,
+  );
+  const after = (
+    await f.call("GET", "/v1/admin/ai", user.token)
+  ).json<AiControlStatus>().budget!;
+  assert.equal(after.settings.revision, 2);
+  assert.equal(after.settings.totalLimitMicros, 1);
+  assert.equal(after.audit.length, 1);
+});
+
+test("money budget requires fresh approval for execution changes and rejects oversized UTF-8 context before reserving", async (t) => {
+  let calls = 0;
+  const provider: StreamingProvider = {
+    name: "openai",
+    model: "test-bound-input",
+    async *stream() {
+      calls++;
+      yield { type: "delta", text: "Ответ" };
+      yield { type: "complete", model: "test-bound-input" };
+    },
+  };
+  const f = await fixture(provider, { ADMIN_USER_IDS: "1" });
+  t.after(f.close);
+  const user = await chatUser(f);
+  const changed = await buildApp({
+    db: f.db,
+    provider,
+    testing: true,
+    config: readConfig({
+      NODE_ENV: "test",
+      ADMIN_USER_IDS: "1",
+      LLM_MAX_OUTPUT_TOKENS: "1401",
+    }),
+  });
+  t.after(() => changed.close());
+  const send = (app = changed, text = "Квартира") =>
+    app.inject({
+      method: "POST",
+      url: `/v1/threads/${user.thread}/messages`,
+      headers: {
+        origin: "http://localhost:3000",
+        cookie: "citygo=" + user.token,
+      },
+      payload: { text, requestId: randomUUID(), policyId: user.policyId },
+    });
+  assert.match((await send()).body, /ограничений не подтверждён/);
+  assert.equal(calls, 0);
+  await f.approveBudget(user.token, changed);
+  assert.match((await send()).body, /"type":"done"/);
+  assert.equal(calls, 1);
+  const small = await buildApp({
+    db: f.db,
+    provider,
+    testing: true,
+    config: readConfig({
+      NODE_ENV: "test",
+      ADMIN_USER_IDS: "1",
+      LLM_MAX_INPUT_BYTES: "1024",
+    }),
+  });
+  t.after(() => small.close());
+  await f.approveBudget(user.token, small);
+  assert.match(
+    (await send(small, "Квартира " + "я".repeat(1200))).body,
+    /Контекст диалога превышает/,
+  );
+  assert.equal(calls, 1);
+  const status = (
+    await f.call("GET", "/v1/admin/ai", user.token)
+  ).json<AiControlStatus>();
+  assert.equal(status.budget!.totalReservedMicros, 1);
+  assert.equal(status.attempts!.reservedToday, 1);
+});
+
+test("money budget leaves historical attempt amounts unknown instead of inventing zero charges", async (t) => {
+  const f = await fixture(true, { ADMIN_USER_IDS: "1" }, {}, false);
+  t.after(f.close);
+  const user = await chatUser(f);
+  const repo = new Repository(f.db);
+  const requestId = randomUUID();
+  await repo.reserveChat(user.userId, user.thread, requestId, "Квартира", {
+    policyId: user.policyId,
+    revision: 1,
+    userDailyLimit: 20,
+    globalDailyLimit: 200,
+  });
+  // A pre-0006 ledger row had none of the new monetary columns.
+  await f.db.query(
+    "insert into ai_model_attempts(thread_id,request_id,attempt_number,user_id,provider,model,policy_id,routing_revision) values ($1,$2,1,$3,'openai','test-model',$4,1)",
+    [user.thread, requestId, user.userId, user.policyId],
+  );
+  const status = (
+    await f.call("GET", "/v1/admin/ai", user.token)
+  ).json<AiControlStatus>();
+  assert.equal(status.attempts!.recent[0]!.money, null);
+  assert.equal(status.budget!.totalReservedMicros, 0);
+  assert.equal(status.budget!.settings.enabled, false);
+});
 
 test("model attempts share an atomic global cap across users, replicas and provider switches", async (t) => {
   let calls = 0;
@@ -463,6 +1029,10 @@ test("model attempt reservations reject duplicates, mismatched requests and expi
     routingRevision: 1,
     userDailyLimit: 20,
     globalDailyLimit: 200,
+    execution: createAiExecution(
+      readConfig({}),
+      createAiPolicy(readConfig({}), new TestProvider())!,
+    ),
   };
   const results = await Promise.allSettled([
     repo.reserveAiAttempt(input),
@@ -1062,6 +1632,7 @@ test("configuration drift fails closed until admin explicitly accepts the new mo
   );
   assert.equal(calls, 0);
   await f.activate(admin.token, replica, "openai");
+  await f.approveBudget(admin.token, replica);
   assert.equal(
     (await f.call("POST", path, admin.token, payload)).statusCode,
     503,
@@ -1527,7 +2098,7 @@ test("readiness requires the AI attempt migration", async (t) => {
   t.after(f.close);
   assert.equal((await f.call("GET", "/ready")).statusCode, 200);
   await f.db.query(
-    "delete from citygo_migrations where name='0005_ai_attempts.sql'",
+    "delete from citygo_migrations where name='0006_ai_budget.sql'",
   );
   assert.equal((await f.call("GET", "/ready")).statusCode, 503);
 });
@@ -2123,6 +2694,7 @@ test("interrupted replies are persisted but do not qualify for XP", async (t) =>
   });
   t.after(() => broken.close());
   await f.activate(user.token, broken);
+  await f.approveBudget(user.token, broken);
   const brokenPolicyId = await f.consent(user.token, broken);
   const response = await broken.inject({
     method: "POST",
@@ -2155,6 +2727,7 @@ test("interrupted replies are persisted but do not qualify for XP", async (t) =>
     409,
   );
   await f.activate(user.token);
+  await f.approveBudget(user.token);
   await f.consent(user.token);
   const recovered = await f.call(
     "POST",
@@ -2262,6 +2835,7 @@ test("changing injected providers between API instances preserves history and re
   });
   t.after(() => replacement.close());
   await f.activate(user.token, replacement);
+  await f.approveBudget(user.token, replacement);
   const headers = {
     origin: "http://localhost:3000",
     cookie: "citygo=" + user.token,

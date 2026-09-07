@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@citygo/api-client": "workspace:*",
+    "@citygo/contracts": "workspace:*",
     "@citygo/ui-web": "workspace:*",
     "react": "19.2.3"
   },

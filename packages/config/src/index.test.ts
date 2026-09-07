@@ -9,6 +9,16 @@ const production = {
   TRUSTED_PROXY_CIDRS: "10.0.0.8/32, ::1/128",
 };
 
+test("AI context byte limit is a bounded integer", () => {
+  assert.equal(readConfig({}).LLM_MAX_INPUT_BYTES, 64000);
+  for (const value of ["0", "1023", "262145", "1.5", "NaN", "Infinity"])
+    assert.throws(() => readConfig({ LLM_MAX_INPUT_BYTES: value }));
+  assert.equal(
+    readConfig({ LLM_MAX_INPUT_BYTES: "1024" }).LLM_MAX_INPUT_BYTES,
+    1024,
+  );
+});
+
 test("daily admission limits are bounded integers; zero disables admission", () => {
   assert.equal(readConfig({}).LLM_USER_DAILY_REQUEST_LIMIT, 20);
   assert.equal(readConfig({}).LLM_GLOBAL_DAILY_REQUEST_LIMIT, 200);

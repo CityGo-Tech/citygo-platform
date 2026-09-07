@@ -3,6 +3,7 @@ import { useState } from "react";
 import { createClient } from "@citygo/api-client";
 import { Button, Card } from "@citygo/ui-web";
 import { AiControls } from "./ai-control.js";
+import { AiBudgetControls } from "./ai-budget.js";
 const api = createClient();
 export function AdminOverview() {
   const [data, setData] = useState<Awaited<
@@ -15,6 +16,29 @@ export function AdminOverview() {
   > | null>(null);
   const [refreshVersion, setRefreshVersion] = useState(0);
   const [notice, setNotice] = useState("");
+  async function saveBudget(input: Parameters<typeof api.setAiBudget>[0]) {
+    setBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      await api.setAiBudget(input);
+      setNotice("Денежный бюджет AI сохранён.");
+    } catch (error) {
+      setError(
+        error instanceof Error ? error.message : "Не удалось сохранить бюджет",
+      );
+    } finally {
+      try {
+        await refresh();
+      } catch (error) {
+        setError(
+          error instanceof Error ? error.message : "Не удалось обновить сводку",
+        );
+      } finally {
+        setBusy(false);
+      }
+    }
+  }
   async function refresh() {
     try {
       const [overview, ai] = await Promise.all([api.admin(), api.aiControl()]);
@@ -108,6 +132,16 @@ export function AdminOverview() {
                 }
               }
             })();
+          }}
+        />
+      )}
+      {control?.budget && (
+        <AiBudgetControls
+          key={`budget-${refreshVersion}`}
+          status={control.budget}
+          busy={busy}
+          onSave={(input) => {
+            void saveBudget(input);
           }}
         />
       )}
