@@ -57,7 +57,7 @@ and selection. Prefer a forward fix or a server-level stop on all replicas.
 
 Attempt-control rollout additionally requires `0005_ai_attempts.sql` and replacing
 all older API instances: old code does not reserve model attempts. Drain them and
-apply the migration before starting this version. `/ready` now checks migration 0005. The journal starts at rollout with no reconstructed historical counts, so
+apply the migration before starting this version. The journal starts at rollout with no reconstructed historical counts, so
 check provider-side spending before choosing a launch window. Keep
 `LLM_USER_DAILY_ATTEMPT_LIMIT` / `LLM_GLOBAL_DAILY_ATTEMPT_LIMIT` identical on all
 replicas (defaults 20/200). The first reserve pins the two limits for that UTC day;
@@ -67,6 +67,17 @@ counters to change a limit. The admin journal is capacity accounting, not billin
 approved financial envelopes and provider-side caps remain required. Never roll
 back to pre-attempt-control code with AI enabled; use a forward fix or the server
 hard-disable setting. See the model-attempt section of the AI runbook.
+
+Monetary-control rollout requires `0006_ai_budget.sql` and replacing **all** older
+API instances after draining them. `/ready` now checks `0006`. New model attempts,
+including direct OpenAI, are blocked by default until an existing allowlisted admin
+explicitly approves/enables currency, total/daily budget and verified per-attempt
+ceilings. Migration grants no admin rights and does not authorize live spending.
+There is no automatic tariff lookup, conversion, refund or billed-cost reconciliation.
+Never serve mixed old/new versions or roll back to older code with AI enabled:
+older versions ignore this guard. Use a forward fix or hard-disable all replicas.
+Do not reset accounting data; historical attempts remain unpriced, not zero-cost.
+See [monetary budget rollout](ai-providers.md#monetary-reservation-budget-stage-4b2b).
 
 ## Forwarded client address: required ingress contract
 

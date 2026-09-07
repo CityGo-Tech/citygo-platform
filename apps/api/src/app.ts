@@ -11,6 +11,7 @@ import {
   questionnaireSchema,
   aiConsentSchema,
   aiRoutingInputSchema,
+  aiBudgetInputSchema,
   type StreamEvent,
   type ModelGeneration,
   type AiPolicy,
@@ -23,6 +24,7 @@ import type { StreamingProvider } from "@citygo/llm";
 import { hashPassword, verifyPassword, tokenHash, newToken } from "./auth.js";
 import { createAiControl } from "./ai-control.js";
 import type { ProviderMap } from "./provider.js";
+import { createAiExecution } from "./ai-execution.js";
 
 export async function buildApp(options: {
   db: Database;
@@ -36,6 +38,9 @@ export async function buildApp(options: {
   const providers: ProviderMap = { ...options.providers };
   if (options.provider) providers[options.provider.name] = options.provider;
   const control = createAiControl(config, providers);
+  const executions = control.options.flatMap((option) =>
+    option.policy ? [createAiExecution(config, option.policy)] : [],
+  );
   await repo.initializeAiRouting(
     control.options.find((entry) => entry.provider === options.provider?.name)
       ?.policy ?? null,
@@ -136,7 +141,7 @@ export async function buildApp(options: {
   app.get("/ready", async () => {
     try {
       const result = await options.db.query(
-        "select 1 from citygo_migrations where name='0005_ai_attempts.sql'",
+        "select 1 from citygo_migrations where name='0006_ai_budget.sql'",
       );
       if (!result.rows.length) throw new Error("Pending migration");
     } catch {
@@ -325,6 +330,7 @@ export async function buildApp(options: {
             routingRevision: current.revision,
             userDailyLimit: config.LLM_USER_DAILY_ATTEMPT_LIMIT,
             globalDailyLimit: config.LLM_GLOBAL_DAILY_ATTEMPT_LIMIT,
+            execution: createAiExecution(config, aiPolicy),
           });
         } catch (error) {
           if (error instanceof DomainError) attemptError = error;
@@ -355,21 +361,41 @@ export async function buildApp(options: {
             "Запрос на помощь человека сохранён. Живой риелтор пока не подключён к CityGo; это не отправка сообщения внешнему специалисту. Не переводите деньги и не отправляйте документы до независимой проверки.";
           send({ type: "delta", text: content });
         } else {
-          // Reserve capacity before entering any adapter (including OAuth).
-          // Failures/cancellations never refund a possibly dispatched attempt.
-          await reserveAttempt();
           const messages = reservation.messages
             .filter((m) => m.status === "complete")
             .slice(-20)
             .map((m) => ({ role: m.role, content: m.content }));
+          const modelInstructions = instructions(routing.to);
+          const modelMessages = [
+            profileContext(reservation.profile),
+            ...messages,
+          ];
+          if (
+            Buffer.byteLength(
+              JSON.stringify({
+                instructions: modelInstructions,
+                messages: modelMessages,
+              }),
+              "utf8",
+            ) > config.LLM_MAX_INPUT_BYTES
+          ) {
+            attemptError = new DomainError(
+              413,
+              "Контекст диалога превышает подтверждённый лимит AI. Обратитесь к администратору.",
+            );
+            throw attemptError;
+          }
+          // Bound context and reserve both attempt + money before adapter/OAuth.
+          // No automatic refund: even a failed request may have been billed.
+          await reserveAttempt();
           generation = {
             provider: provider.name,
             requestedModel: provider.model,
           };
           let completed = false;
           for await (const event of provider.stream(
-            instructions(routing.to),
-            [profileContext(reservation.profile), ...messages],
+            modelInstructions,
+            modelMessages,
             signal,
             { beforeRetry: reserveAttempt },
           )) {
@@ -445,6 +471,7 @@ export async function buildApp(options: {
       automaticFallback: false,
       options: control.options,
       audit: await repo.aiRoutingAudit(),
+      budget: await repo.aiBudget(executions),
       attempts: await repo.aiAttemptOverview(
         config.LLM_USER_DAILY_ATTEMPT_LIMIT,
         config.LLM_GLOBAL_DAILY_ATTEMPT_LIMIT,
@@ -467,6 +494,14 @@ export async function buildApp(options: {
       policy = option.policy;
     }
     return repo.changeAiRouting(user.id, input, policy);
+  });
+  app.post("/v1/admin/ai/budget", async (request) => {
+    const user = await authenticateAdmin(request);
+    return repo.changeAiBudget(
+      user.id,
+      aiBudgetInputSchema.parse(request.body),
+      executions,
+    );
   });
   app.get("/v1/admin/overview", async (request) => {
     await authenticateAdmin(request);

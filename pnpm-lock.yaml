@@ -50,6 +50,9 @@ importers:
       '@citygo/api-client':
         specifier: workspace:*
         version: link:../../packages/api-client
+      '@citygo/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
       '@citygo/ui-web':
         specifier: workspace:*
         version: link:../../packages/ui-web

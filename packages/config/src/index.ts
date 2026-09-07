@@ -54,6 +54,13 @@ export const serverConfigSchema = z.object({
     .max(60000)
     .default(60000),
   LLM_MAX_OUTPUT_TOKENS: z.coerce.number().int().min(1).max(8000).default(1400),
+  // Serialized instructions + messages, UTF-8 bytes (not a token estimate).
+  LLM_MAX_INPUT_BYTES: z.coerce
+    .number()
+    .int()
+    .min(1024)
+    .max(262144)
+    .default(64000),
   // Accepted chat requests, not currency or upstream HTTP-attempt accounting.
   LLM_USER_DAILY_REQUEST_LIMIT: z.coerce
     .number()

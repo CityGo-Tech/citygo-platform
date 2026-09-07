@@ -37,6 +37,14 @@ blocks new attempts until the next UTC day or restoration of the pinned settings
 zero always blocks immediately. `/admin` shows the counters and last 20 reserves.
 These are not billed-call counts or currency limits. No live budget is authorized.
 
+Migration `0006_ai_budget.sql` starts a separate monetary budget **disabled**. Even
+configured OpenAI calls now require an existing allowlisted admin to choose currency,
+total/daily allowances and verified ceilings in `/admin`, then explicitly enable
+new reserves. No prices, positive budget or admin rights are provisioned. Per-attempt
+ceilings bind exact recipient/model and `LLM_MAX_INPUT_BYTES` / output-token limits;
+oversized context is rejected before model I/O. See the monetary budget section of
+the [AI runbook](ai-providers.md). This is reserved allowance, never actual billing.
+
 For PostgreSQL server:
 
 1. Start docker compose -f docker-compose.dev.yml up -d.

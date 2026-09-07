@@ -2,6 +2,8 @@ import type {
   AiConsentInput,
   AiRoutingInput,
   AiRouting,
+  AiBudgetInput,
+  AiBudgetSettings,
   AiControlStatus,
   Dashboard,
   Questionnaire,
@@ -49,6 +51,8 @@ export function createClient(
     aiControl: () => request<AiControlStatus>("/v1/admin/ai"),
     setAiRouting: (input: AiRoutingInput) =>
       request<AiRouting>("/v1/admin/ai", input),
+    setAiBudget: (input: AiBudgetInput) =>
+      request<AiBudgetSettings>("/v1/admin/ai/budget", input),
     questionnaire: (profile: Questionnaire) =>
       request("/v1/questionnaire", profile),
     start: (id: string) =>

@@ -1,17 +1,98 @@
-# AI provider rollout — stage 4B2a of 5
+# AI provider rollout — stage 4B2b of 5
 
-This release adds shared model-attempt reservations, guards for internal retries
-and a read-only admin journal, building on 4B1's persistent provider selector and
-4A's recipient consent / accepted-chat caps.
+This release adds an explicit monetary-reserve budget to 4B2a's shared model-attempt
+reservations and retry guards, 4B1's persistent provider selector and 4A's recipient
+consent / accepted-chat caps. This is allocation accounting, not provider billing.
 All three independent adapters remain available. RouterAI and GigaChat production
 activation stays blocked: the technical disclosure is not an operator-approved
 privacy notice. Automatic failover is **not** enabled. Stage 4 remains split into
 reviewable steps; the financial/privacy launch requirements are not completed by
 these reservations. No live model is chosen or upgraded by this PR.
 
+## Monetary reservation budget (stage 4B2b)
+
+**Upgrade behavior: migration `0006_ai_budget.sql` starts with the monetary budget
+disabled, no currency, no rules and zero limits. This blocks new model attempts
+for OpenAI as well as RouterAI/GigaChat until an authorized admin configures and
+explicitly enables a budget.** It does not delete any provider, key or history.
+The local human-handoff response needs no model/money reserve; it still follows
+the existing chat admission and consent rules and does not contact a real person.
+
+1. Drain/stop all pre-4B2b API instances, apply migrations through `0006`, and replace
+   every instance. `/ready` requires `0006`. Older code ignores monetary budgets:
+   mixed-version serving and rollback to older code with AI enabled are unsafe.
+2. An operator must independently approve recipient/privacy conditions, actual
+   model/account/upstream pricing, provider-side caps and a pilot allowance. No
+   sample amount is a recommended tariff, no prices are fetched, and no live call
+   is made by opening or saving the admin screen.
+3. Open `/admin` with an existing allowlisted `ADMIN_USER_IDS` account and refresh.
+   Choose RUB or USD explicitly, a lifetime/project total and a per-UTC-day budget.
+   Set a conservative per-attempt ceiling for each intended exact execution rule.
+   Leave a field empty to leave that model unapproved. Check the confirmation and
+   save. Provider selection and recipient-specific user consent remain separate.
+4. Verify the displayed revision, currency, rules and journal before any authorized
+   live pilot. No admin rights, secrets, positive budgets or tariff approvals are
+   provisioned by this release. RouterAI/GigaChat production gates remain closed.
+
+Amounts are integer millionths (1 currency unit = 1,000,000 micros), bounded to
+1,000,000 currency units. Decimal input allows up to six fractional digits, with
+`.` or `,`, without silent rounding or exponent notation. Daily budget cannot
+exceed total. Currency may change only before the first monetary reservation;
+there is no FX conversion or independent currency bucket that resets spending.
+Do not use a RUB ceiling derived from a USD price without an explicitly reviewed
+conversion allowance; the application performs no conversion or tariff validation.
+
+The server derives a rule key from the recipient-policy hash (provider, requested
+model, upstream/account scope), `LLM_MAX_INPUT_BYTES` and `LLM_MAX_OUTPUT_TOKENS`.
+Changing one requires fresh admin approval; credentials are not in the key/audit.
+The input cap defaults to 64000, bounded 1024–262144, and measures UTF-8 bytes of
+`JSON.stringify({instructions,messages})`, including profile context and at most
+20 completed messages. It is enforced before any reserve or adapter/OAuth I/O.
+Oversized context is rejected, not silently truncated. **Bytes are not tokens**;
+this cap excludes adapter-specific wire envelopes. The operator's ceiling must
+cover actual tokenization, protocol overhead, reasoning/output charges, taxes and
+the current provider tariff, including any charged failed attempt. Provider-side
+spending controls remain necessary. Incorrect ceilings cannot bound actual bills.
+
+Each initial attempt and permitted retry atomically reserves the full ceiling,
+increments attempt counters, and stores currency/amount/budget revision/rule key
+in the ledger. Lock order is user → thread → attempt daily counter → singleton
+budget; admin budget writes lock actor user before budget, then append audit in
+the same transaction. No model/network I/O occurs under these locks. Shared budget
+locking prevents two replicas from allocating the last allowance simultaneously.
+If money is unavailable, all changes to attempt counters and ledger roll back;
+the previously admitted chat remains interrupted in history without an automatic
+admission refund. The client receives a safe SSE error, not a fabricated answer.
+
+There is **no automatic refund or billed-cost settlement**, even for cancellation,
+OAuth failure, timeout, retry failure, missing usage or process crash. A reserved
+call may have been dispatched, so usage/terminal events cannot erase its allowance.
+Old `0005` attempt rows have null monetary snapshots and are shown as “не оценён”,
+never as zero-cost. The total covers only monetary reservations since this rollout,
+not reconstructed historical spend or calls made outside this application.
+
+`GET /v1/admin/ai` adds optional `budget`; `POST /v1/admin/ai/budget` is allowlist-
+and origin-protected, accepts strict integer settings and `expectedRevision`, and
+stores an atomic before/after audit with the actor. Competing/stale writes return
+409 and the UI refreshes without automatic reapplication. Refresh, edits and failed
+writes clear confirmation. Secrets, prompts and profile data never enter this view.
+Changing limits does not reset counters. Raising them is an explicit admin action;
+lowering below already reserved total/today is rejected. Uncheck “Разрешить новые
+денежные резервы” to stop new allocations, keeping limits at least already reserved.
+Already reserved calls may finish; later retries require current budget approval.
+Removing an old rule can therefore block an in-flight retry without rerouting it.
+The form identifies unavailable old rules that will be removed on save.
+
+Every new UTC day has a fresh daily bucket, but the project total persists across
+days, provider switches and restarts. There is no reset/refill job or delete endpoint.
+Do not edit/delete counters, accounting rows or clocks to bypass a limit. Budget
+changes are shared immediately in PostgreSQL; execution-limit environment changes
+still require consistent process restarts. Test harnesses explicitly seed synthetic
+budgets on isolated databases; production code has no testing-budget bypass.
+
 ## Model-attempt reservations (stage 4B2a)
 
-Apply `0005_ai_attempts.sql` before starting the updated API; `/ready` requires it.
+Attempt accounting was introduced in `0005_ai_attempts.sql`; this version additionally requires `0006`.
 The journal starts empty without guessing older requests' attempt counts. Drain
 and replace all older API instances; otherwise their unmetered calls bypass this
 control. Do not roll back to older code with AI enabled or delete accounting rows.
@@ -71,12 +152,9 @@ profile fields. The journal's timestamp is UTC ISO 8601; the UI renders local ti
 Historical response metadata and XP are unchanged. Missing token usage is not
 invented. The per-attempt ledger has indexed foreign keys and a newest-first index.
 
-**Financial budget remains a separate next step (4B2b).** Neither these count caps
-nor existing output-token limits are a monetary guarantee. Before any live pilot,
-the operator must approve currency, per-model/upstream prices and conservative
-request-cost envelopes, daily/project budgets, provider-side caps and the handling
-of unknown usage. This PR does not choose tariffs, convert currencies, authorize
-spending, call live models, or present reserved attempts as actual expenses.
+Count caps are not a monetary guarantee. The new budget section above implements
+conservative monetary allocation, not tariff approval or billing reconciliation.
+Before a live pilot the operator still needs verified ceilings and provider-side caps.
 
 OpenAI keeps `maxRetries:1`. Its per-stream fetch wrapper observes each additional
 SDK transport attempt and awaits the guard; a denial aborts that stream so it is
@@ -205,7 +283,7 @@ message. History stays readable. After a provider switch, granting permission
 also permits the disclosed history (including prior providers' answers) to be sent.
 
 Migration `0003_ai_access.sql` creates consent state and daily counters; `/ready`
-now requires the migration sequence through `0005_ai_attempts.sql`. Admission locks the user, owned thread and UTC global-counter row in
+now requires the migration sequence through `0006_ai_budget.sql`. Admission locks the user, owned thread and UTC global-counter row in
 a consistent order. Consent, duplicate/busy checks, quota increments, lease and
 request/message insert commit atomically. The model runs **outside** this short
 transaction. A revocation committed before admission blocks the request; an
@@ -229,7 +307,7 @@ replicas must use identical settings; do not serve mixed configs behind a balanc
 1. Keep the current credentials; never paste keys into chat or PRs. For RouterAI or
    GigaChat use only an authorized synthetic-data local pilot until the production
    gate is explicitly addressed in a reviewed later change.
-2. Drain and stop pre-4B2a API instances. Apply all migrations through `0005` before
+2. Drain and stop pre-4B2b API instances. Apply all migrations through `0006` before
    starting this version. Deploy the updated Web admin; Web/Expo clients from #17
    keep their consent/chat contract. Clients predating 4A still fail closed.
 3. Configure the desired adapters and their own required settings, review caps,
@@ -413,10 +491,12 @@ completion. XP remains server-controlled and exactly-once.
   guard, audit, Web/Expo UI and atomic cross-process daily admission caps.
 - Stage 4B1 (completed): protected manual selector, persistent revisioned choice,
   atomic audit, multi-replica admission guard and explicit return to direct OpenAI.
-- Stage 4B2a (this release): atomic model-attempt reservations, guarded retries,
+- Stage 4B2a (completed): atomic model-attempt reservations, guarded retries,
   shared personal/global caps and metadata-only admin journal. Not billing.
-- Remaining stage 4: approved recipient/privacy notice, financial envelopes/
-  budgets and optional failover, off by default. Never splice another
+- Stage 4B2b (this release): fail-closed monetary allocation with explicit admin
+  budgets, exact execution-rule approval, atomic ledger and no automatic refunds.
+- Remaining stage 4: operator-approved recipient/privacy notice and verified
+  financial ceilings, plus optional failover, off by default. Never splice another
   provider into an answer after its first visible delta.
 - Stage 5: cross-provider E2E/failure matrix, opt-in budgeted live smoke checks,
   deployment instructions and a verified return to direct OpenAI.
