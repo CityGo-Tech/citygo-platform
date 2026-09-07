@@ -1,13 +1,19 @@
 import { readConfig } from "@citygo/config";
 import { connectDatabase } from "@citygo/db";
 import { buildApp } from "./app.js";
-import { createProvider } from "./provider.js";
+import { createProviderRegistry } from "./provider.js";
 
 export async function startServer() {
   const config = readConfig();
-  const provider = createProvider(config);
+  const registry = createProviderRegistry(config);
   const db = await connectDatabase(config.DATABASE_URL);
-  const app = await buildApp({ db, config, provider });
+  let app: Awaited<ReturnType<typeof buildApp>>;
+  try {
+    app = await buildApp({ db, config, ...registry });
+  } catch (error) {
+    await db.close();
+    throw error;
+  }
   app.addHook("onClose", () => db.close());
   for (const signal of ["SIGINT", "SIGTERM"])
     process.once(signal, () => {

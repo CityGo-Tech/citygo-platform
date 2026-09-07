@@ -10,8 +10,10 @@ import {
   credentialsSchema,
   questionnaireSchema,
   aiConsentSchema,
+  aiRoutingInputSchema,
   type StreamEvent,
   type ModelGeneration,
+  type AiPolicy,
 } from "@citygo/contracts";
 import { Repository, DomainError, type Database } from "@citygo/db";
 import { readConfig } from "@citygo/config";
@@ -19,17 +21,26 @@ import { instructions, profileContext, routeAgent } from "@citygo/agents";
 import { redactPaths } from "@citygo/observability";
 import type { StreamingProvider } from "@citygo/llm";
 import { hashPassword, verifyPassword, tokenHash, newToken } from "./auth.js";
-import { createAiPolicy } from "./ai-policy.js";
+import { createAiControl } from "./ai-control.js";
+import type { ProviderMap } from "./provider.js";
 
 export async function buildApp(options: {
   db: Database;
   provider?: StreamingProvider;
+  providers?: ProviderMap;
   config?: ReturnType<typeof readConfig>;
   testing?: boolean;
 }) {
   const config = options.config ?? readConfig();
   const repo = new Repository(options.db);
-  const aiPolicy = createAiPolicy(config, options.provider);
+  const providers: ProviderMap = { ...options.providers };
+  if (options.provider) providers[options.provider.name] = options.provider;
+  const control = createAiControl(config, providers);
+  await repo.initializeAiRouting(
+    control.options.find((entry) => entry.provider === options.provider?.name)
+      ?.policy ?? null,
+  );
+  const currentAi = async () => control.resolve(await repo.aiRouting());
   const app = Fastify({
     logger: options.testing ? false : { redact: redactPaths },
     bodyLimit: 16 * 1024,
@@ -65,6 +76,18 @@ export async function buildApp(options: {
       bearer(request.headers.authorization) ?? request.cookies[sessionName];
     const user = token ? await repo.session(tokenHash(token)) : undefined;
     if (!user) throw new DomainError(401, "Войдите в аккаунт");
+    return user;
+  }
+  async function authenticateAdmin(
+    request: Parameters<typeof authenticate>[0],
+  ) {
+    const user = await authenticate(request);
+    if (
+      !config.ADMIN_USER_IDS.split(",")
+        .map((value) => value.trim())
+        .includes(user.id)
+    )
+      throw new DomainError(403, "Доступ только для администратора");
     return user;
   }
   app.addHook("onRequest", async (request, reply) => {
@@ -113,7 +136,7 @@ export async function buildApp(options: {
   app.get("/ready", async () => {
     try {
       const result = await options.db.query(
-        "select 1 from citygo_migrations where name='0003_ai_access.sql'",
+        "select 1 from citygo_migrations where name='0004_ai_routing.sql'",
       );
       if (!result.rows.length) throw new Error("Pending migration");
     } catch {
@@ -173,26 +196,33 @@ export async function buildApp(options: {
     });
     return { ok: true };
   });
-  app.get("/v1/dashboard", async (request) =>
-    repo.dashboard(
-      await authenticate(request),
-      options.provider?.name ?? "unconfigured",
-      aiPolicy,
+  app.get("/v1/dashboard", async (request) => {
+    const user = await authenticate(request);
+    const active = await currentAi();
+    return repo.dashboard(
+      user,
+      active.provider?.name ?? "unconfigured",
+      active.policy,
       config.LLM_USER_DAILY_REQUEST_LIMIT,
-    ),
-  );
+    );
+  });
   app.post("/v1/ai/consent", async (request) => {
     const user = await authenticate(request);
     const input = aiConsentSchema.parse(request.body);
-    if (
-      input.action === "granted" &&
-      (!aiPolicy || input.policyId !== aiPolicy.id)
-    )
+    if (input.action === "revoked") {
+      await repo.aiConsent(user.id, null);
+      return { ok: true };
+    }
+    const active = await currentAi();
+    if (!active.policy || input.policyId !== active.policy.id)
       throw new DomainError(
         409,
         "AI-получатель изменился. Обновите страницу и проверьте условия.",
       );
-    await repo.aiConsent(user.id, input.action === "granted" ? aiPolicy : null);
+    await repo.aiConsent(user.id, {
+      policy: active.policy,
+      revision: active.current.revision,
+    });
     return { ok: true };
   });
   app.post("/v1/questionnaire", async (request) => {
@@ -224,10 +254,13 @@ export async function buildApp(options: {
       const user = await authenticate(request);
       const threadId = questParams.parse(request.params).id;
       const input = chatInputSchema.parse(request.body);
-      if (!options.provider || !aiPolicy)
+      // Immutable snapshot for this admission. A concurrent switch is caught by
+      // the repository lock/revision check before any message or quota is stored.
+      const { provider, policy: aiPolicy, current } = await currentAi();
+      if (!provider || !aiPolicy)
         throw new DomainError(
           503,
-          "AI пока не подключён. Администратору нужно настроить провайдера на сервере.",
+          "AI пока недоступен. Администратору нужно проверить выбранного провайдера и настройки сервера.",
         );
       if (input.policyId !== aiPolicy.id)
         throw new DomainError(
@@ -241,6 +274,7 @@ export async function buildApp(options: {
         input.text,
         {
           policyId: aiPolicy.id,
+          revision: current.revision,
           userDailyLimit: config.LLM_USER_DAILY_REQUEST_LIMIT,
           globalDailyLimit: config.LLM_GLOBAL_DAILY_REQUEST_LIMIT,
         },
@@ -299,11 +333,11 @@ export async function buildApp(options: {
             .slice(-20)
             .map((m) => ({ role: m.role, content: m.content }));
           generation = {
-            provider: options.provider.name,
-            requestedModel: options.provider.model,
+            provider: provider.name,
+            requestedModel: provider.model,
           };
           let completed = false;
-          for await (const event of options.provider.stream(
+          for await (const event of provider.stream(
             instructions(routing.to),
             [profileContext(reservation.profile), ...messages],
             signal,
@@ -369,14 +403,37 @@ export async function buildApp(options: {
       }
     },
   );
+  app.get("/v1/admin/ai", async (request) => {
+    await authenticateAdmin(request);
+    const active = await currentAi();
+    return {
+      current: active.current,
+      effectiveProvider: active.provider?.name ?? "unconfigured",
+      environmentDisabled: control.environmentDisabled,
+      automaticFallback: false,
+      options: control.options,
+      audit: await repo.aiRoutingAudit(),
+    };
+  });
+  app.post("/v1/admin/ai", async (request) => {
+    const user = await authenticateAdmin(request);
+    const input = aiRoutingInputSchema.parse(request.body);
+    let policy: AiPolicy | null = null;
+    if (input.provider !== "disabled") {
+      const option = control.options.find(
+        (entry) => entry.provider === input.provider,
+      );
+      if (!option?.policy || option.policy.id !== input.policyId)
+        throw new DomainError(
+          409,
+          "Провайдер недоступен или его настройки изменились. Обновите список.",
+        );
+      policy = option.policy;
+    }
+    return repo.changeAiRouting(user.id, input, policy);
+  });
   app.get("/v1/admin/overview", async (request) => {
-    const user = await authenticate(request);
-    if (
-      !config.ADMIN_USER_IDS.split(",")
-        .map((v) => v.trim())
-        .includes(user.id)
-    )
-      throw new DomainError(403, "Доступ только для администратора");
+    await authenticateAdmin(request);
     const counts = (
       await options.db.query<{ users: number; completed: number; xp: number }>(
         "select (select count(*)::integer from users) as users,(select count(*)::integer from user_quests where state='completed') as completed,(select coalesce(sum(points),0)::integer from xp_events) as xp",

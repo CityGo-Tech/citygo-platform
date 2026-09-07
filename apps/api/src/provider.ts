@@ -1,10 +1,32 @@
 import type { readConfig } from "@citygo/config";
+import { aiProviderIds, type AiProviderId } from "@citygo/contracts";
 import {
   OpenAIProvider,
   RouterAIProvider,
   GigaChatProvider,
   type StreamingProvider,
 } from "@citygo/llm";
+
+export type ProviderMap = Partial<Record<AiProviderId, StreamingProvider>>;
+
+export function createProviderRegistry(config: ReturnType<typeof readConfig>) {
+  // Preserve fail-fast validation of the bootstrap selection before connecting DB.
+  const provider = createProvider(config);
+  const providers: ProviderMap = {};
+  if (config.LLM_PROVIDER === "disabled") return { provider, providers };
+  if (provider) providers[provider.name] = provider;
+  for (const id of aiProviderIds) {
+    if (providers[id] || (config.NODE_ENV === "production" && id !== "openai"))
+      continue;
+    try {
+      providers[id] = createProvider({ ...config, LLM_PROVIDER: id });
+    } catch {
+      // Inactive incomplete/invalid settings do not break a working provider.
+      // No raw constructor error (or credential/path) is exposed to the admin UI.
+    }
+  }
+  return { provider, providers };
+}
 
 export function createProvider(
   config: ReturnType<typeof readConfig>,

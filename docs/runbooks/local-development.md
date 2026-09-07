@@ -16,6 +16,12 @@ The root .env is optional. Copy .env.example, then configure OPENAI_API_KEY and
 OPENAI_MODEL server-side for real chat. With both absent, the API returns an explicit
 503; partial configuration is a startup error. LLM_PROVIDER can be empty (legacy
 OpenAI selection), openai (both settings required), or disabled (explicitly off).
+Provider selection initializes a new database once. After migration 0004, `/admin`
+stores the shared choice for existing databases; restarts do not reset it. Use an
+account whose ID is in server-side ADMIN_USER_IDS. The bootstrap configuration is
+still validated on startup. LLM_PROVIDER=disabled always overrides the saved choice
+on that server and cannot be bypassed in the admin. Model/key changes require a
+consistent restart, then explicit acceptance of the new model snapshot in the admin.
 RouterAI and GigaChat are available as explicit local synthetic-data pilots;
 production activation is blocked pending recipient/consent rollout. GigaChat needs
 its own authorization key, explicit model/account scope, and verified CA trust.

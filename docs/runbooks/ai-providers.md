@@ -1,11 +1,12 @@
-# AI provider rollout — stage 4A of 5
+# AI provider rollout — stage 4B1 of 5
 
-This release adds explicit recipient consent and shared daily chat-admission caps
-in Web and Expo. All three independent adapters remain available. RouterAI and
-GigaChat production activation stays blocked: the technical disclosure is not an
-operator-approved privacy notice. It does **not** enable automatic failover or an
-admin selector. Stage 4 is split into reviewable steps; 4A is not completion of
-the entire operational rollout. No model is selected or upgraded automatically.
+This release adds an authenticated admin selector, persistent versioned routing
+and an audit journal, building on 4A's recipient consent and shared daily caps.
+All three independent adapters remain available. RouterAI and GigaChat production
+activation stays blocked: the technical disclosure is not an operator-approved
+privacy notice. Automatic failover is **not** enabled. Stage 4 remains split into
+reviewable steps; the financial/privacy launch requirements are not completed by
+this selector. No live model is chosen or upgraded by this PR.
 
 ## Server configuration
 
@@ -24,14 +25,78 @@ the entire operational rollout. No model is selected or upgraded automatically.
 Configure secrets only in the API environment or ignored root `.env`, never in
 `NEXT_PUBLIC_*`, the mobile bundle, issue/PR bodies or chat. The launch scripts
 load root `.env`; Turbo passes the provider settings to its child processes.
-Changing configuration requires restarting API processes. Drain active requests
-first; an abrupt process kill can lose the unsaved tail of an in-flight answer.
+Changing keys/models/account scope/CA/caps requires restarting API processes. Drain
+active requests first; an abrupt process kill can lose an unsaved answer tail.
+The table's `LLM_PROVIDER` selection rules now initialize **only a new database**;
+the bootstrap selection is still validated before every database connection.
+Keep its required settings complete. Once initialized, `/admin` controls the
+persistent choice; changing `LLM_PROVIDER` to another provider does not overwrite
+it. `LLM_PROVIDER=disabled` is the exception: it is always a server-level hard stop.
 
-To retain OpenAI, keep `OPENAI_API_KEY` and `OPENAI_MODEL`, and leave
-`LLM_PROVIDER` blank or set it to `openai`. To turn AI off, set it to `disabled`.
-For rollback after later adapter releases, select `openai`, verify both OpenAI
-settings, and restart the API. Existing histories and quest progress remain in
-CityGo; access to a real model must be verified in the deployment environment.
+Retain both OpenAI settings. A fresh database initially uses OpenAI when
+`LLM_PROVIDER` is blank or `openai`. For an existing database, return to it in
+`/admin` and explicitly confirm the displayed model. The saved `disabled` choice
+stops new messages without a restart. An emergency server-level stop uses
+`LLM_PROVIDER=disabled` plus a consistent restart on all replicas; the admin cannot
+override it. Existing histories, quest progress and daily counters remain in CityGo.
+Configuration presence is not verification of real model access or billing.
+
+## Administrative control (stage 4B1)
+
+Migration `0004_ai_routing.sql` adds a singleton selection with a positive revision,
+the admitted routing revision on chat requests, and a bounded audit-query index.
+Apply it before starting this version. First initialization inserts the existing
+bootstrap choice exactly once and audits that event with no actor. Restarts and
+additional replicas never reset the row or its revision. A saved choice pins the
+**public disclosure ID** as well as the provider; changing a server model/upstream/
+scope does not silently redirect already-consented traffic.
+
+The runtime constructs independently configured adapters at startup, with no live
+AI call. Inactive incomplete/invalid settings are marked unavailable and do not
+break a valid bootstrap provider. Production never prepares RouterAI/GigaChat,
+even if their credentials are complete; the API control layer enforces this again.
+Hard-disabled servers prepare no adapters. No raw constructor errors, credentials,
+certificate paths, configurable endpoints or API keys appear in the control API.
+
+Log in through Web with an account listed by internal ID in server-side
+`ADMIN_USER_IDS`, visit `/admin`, and choose **Обновить сводку**. The control shows
+the saved selection, the locally matching configuration, allowed options, model,
+recipient restrictions and the last 20 changes. Select an allowed provider (or
+disable), read the model/recipient, check the explicit confirmation and apply.
+This administrative confirmation does not grant or replace any user's consent.
+
+Both `GET /v1/admin/ai` and `POST /v1/admin/ai` require the existing admin allowlist.
+Writes retain same-origin/bearer protections and rate limits. The update body is
+`{provider,policyId,expectedRevision}`; disabling requires `policyId:null`. An
+unknown provider is invalid, unavailable providers or mismatched disclosure IDs
+are rejected, and arbitrary model/endpoint/key edits are not supported. Compare-
+and-swap rejects a stale revision with 409, including concurrent admin submissions.
+The UI refreshes and resets confirmation; it never retries an old choice silently.
+An identical current choice is a no-op, not an extra revision/audit event.
+
+Selection and audit (`from`, `to`, full new public disclosure, actor ID, timestamp)
+commit together. The journal retains the selected model/recipient description
+even when later server configuration changes. Each
+grant/admission takes a shared routing lock **before** its user/thread/quota locks;
+the switch takes the exclusive routing lock. A switch between initial lookup and
+admission therefore rejects the stale grant/message before storing data or quota.
+Locks end before model I/O. Already admitted answers keep their original provider
+instance and may finish after switching or disabling. The selector is not a
+cancellation/retraction API and never combines providers within one answer.
+
+Every request reads the shared selection; no process-local active-provider cache
+can silently serve an old choice. If the selected policy does not match a local
+adapter, that replica reports AI as unconfigured and returns 503 for new messages;
+it does not fall back to another configured service. `/ready` verifies database/
+migration readiness, not real upstream access. The admin can inspect and explicitly
+accept an updated server model by reapplying the same provider with its new policy
+ID. Users then confirm that new disclosure before their next AI request.
+
+All replicas must have the same allowed models, routing settings and caps. Do not
+load-balance mixed configurations: a mismatched replica intentionally rejects chat.
+Rotate configuration consistently, then accept the new snapshot in the admin.
+During an ordinary configured-provider switch, no restart or drain is required;
+the in-flight snapshot semantics above apply. Keep OpenAI configured for return.
 
 ## Recipient consent and admission (stage 4A)
 
@@ -64,7 +129,7 @@ message. History stays readable. After a provider switch, granting permission
 also permits the disclosed history (including prior providers' answers) to be sent.
 
 Migration `0003_ai_access.sql` creates consent state and daily counters; `/ready`
-requires it. Admission locks the user, owned thread and UTC global-counter row in
+now requires the migration sequence through `0004_ai_routing.sql`. Admission locks the user, owned thread and UTC global-counter row in
 a consistent order. Consent, duplicate/busy checks, quota increments, lease and
 request/message insert commit atomically. The model runs **outside** this short
 transaction. A revocation committed before admission blocks the request; an
@@ -88,21 +153,25 @@ replicas must use identical settings; do not serve mixed configs behind a balanc
 1. Keep the current credentials; never paste keys into chat or PRs. For RouterAI or
    GigaChat use only an authorized synthetic-data local pilot until the production
    gate is explicitly addressed in a reviewed later change.
-2. Drain and stop all old API instances. Apply the new migration before starting
-   this version. Ship updated Web/Expo clients; old clients fail closed.
-3. Set the intended `LLM_PROVIDER` and its own model/required settings, review the
-   recipient and caps, and restart all API instances consistently. No live choice
-   or paid request is made by this PR.
-4. Check readiness, login and the displayed recipient/model. Withhold confirmation
+2. Drain and stop pre-4B1 API instances. Apply all migrations through `0004` before
+   starting this version. Deploy the updated Web admin; Web/Expo clients from #17
+   keep their consent/chat contract. Clients predating 4A still fail closed.
+3. Configure the desired adapters and their own required settings, review caps,
+   and start all replicas consistently. In `/admin` explicitly choose the intended
+   provider and confirm the displayed model. No live choice or paid request is
+   made by this PR, and selection alone does not contact a model.
+4. Check readiness, login and the user's displayed recipient/model. Withhold confirmation
    first: no new message should reach a provider. Then explicitly grant only in the
    separately authorized pilot, test revocation and preserved history.
-5. To stop AI, select `disabled` and restart consistently. To return to direct
-   OpenAI, retain its settings, select `openai`, drain/restart and reconfirm the
-   disclosure if needed. Daily usage and histories are not reset.
+5. To stop new messages, select disabled in the admin. To return to direct OpenAI,
+   select its configured option and reconfirm the user's disclosure if needed.
+   Daily usage and histories are not reset. For a hard server stop, use the
+   environment override described above and restart consistently.
 
-Do not roll back to pre-4A application code while serving real chat traffic: it
-would ignore the new consent gates despite compatible additive SQL. Disable AI
-or use a forward fix. Never edit or remove an applied migration.
+Do not roll back to pre-4B1 API code while serving chat traffic: it ignores the
+saved administrative selection/disable despite additive SQL compatibility.
+Pre-4A code additionally ignores recipient consent. Disable AI at the server
+environment level or use a forward fix. Never edit or remove an applied migration.
 
 Direct OpenAI always uses `https://api.openai.com/v1`, not an ambient
 `OPENAI_BASE_URL`. It retains Responses API, `store:false`, current instructions,
@@ -112,8 +181,9 @@ The shared abort signal covers the complete request, including that retry.
 
 ## RouterAI local pilot (synthetic data only)
 
-Set `LLM_PROVIDER=routerai` explicitly. Adding RouterAI settings alone never selects
-it; keeping OpenAI settings does not provide implicit fallback. No default model,
+For a fresh database, `LLM_PROVIDER=routerai` is an explicit bootstrap choice. For
+an existing database, select the configured option in the admin. Adding RouterAI
+settings alone never selects it; keeping OpenAI settings does not provide implicit fallback. No default model,
 upstream, key or country is supplied. RouterAI construction does not call the API.
 
 | Setting             | Requirement                                                                                                           |
@@ -152,7 +222,7 @@ Before a separately authorized live pilot:
 3. Set the three required RouterAI values in the ignored API environment; retain
    OpenAI values unchanged. Start with `pnpm dev`, never production data in dev mode.
 4. Agree a test budget before sending messages. Verify the response, actual model,
-   usage when present, interruption behavior and a return to `LLM_PROVIDER=openai`.
+   usage when present, interruption behavior and an explicit return to OpenAI in the admin.
 
 Live RouterAI compatibility, credentials and billing have **not** been verified by
 mock HTTP tests. `pnpm start` intentionally refuses RouterAI at this stage. There
@@ -161,11 +231,13 @@ the later consent/recipient and operational-controls stage first.
 
 ## GigaChat local pilot (synthetic data only)
 
-Select `LLM_PROVIDER=gigachat` explicitly. Other providers' keys/models remain
+Use `LLM_PROVIDER=gigachat` for explicit first initialization, or select the
+configured GigaChat option in the admin of an existing local pilot. Other providers' keys/models remain
 independent and are not borrowed, deleted or used as fallback. Construction does
-not fetch a token or send chat data. Changing provider/model/scope/key/CA requires
-an API restart; drain active requests first. Return to `openai` or `routerai` with
-their existing settings, or `disabled`; CityGo retains history and quest progress.
+not fetch a token or send chat data. Changing model/scope/key/CA requires an API
+restart; drain active requests first. Switching configured providers uses the
+admin without a restart. Return to OpenAI or RouterAI with their existing settings,
+or disable AI there; CityGo retains history and quest progress.
 
 | Setting                   | Requirement                                                                                                                                                                          |
 | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -260,11 +332,13 @@ completion. XP remains server-controlled and exactly-once.
   credentials/model, failure tests and local-only activation boundary.
 - Stage 3 (completed): GigaChat adapter with account-specific scope, cached OAuth token,
   single-flight refresh, current API URL, and TLS certificate verification.
-- Stage 4A (this release): technical recipient-specific grant/revoke, stale-client
+- Stage 4A (completed): technical recipient-specific grant/revoke, stale-client
   guard, audit, Web/Expo UI and atomic cross-process daily admission caps.
-- Stage 4B (remaining): protected operational selector, approved recipient/privacy
-  notice, explicit per-attempt/financial controls and optional failover, off by
-  default. Never splice another provider into an answer after its first visible delta.
+- Stage 4B1 (this release): protected manual selector, persistent revisioned choice,
+  atomic audit, multi-replica admission guard and explicit return to direct OpenAI.
+- Remaining stage 4: approved recipient/privacy notice, explicit per-attempt/
+  financial controls and optional failover, off by default. Never splice another
+  provider into an answer after its first visible delta.
 - Stage 5: cross-provider E2E/failure matrix, opt-in budgeted live smoke checks,
   deployment instructions and a verified return to direct OpenAI.
 

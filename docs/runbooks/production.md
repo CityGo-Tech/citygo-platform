@@ -45,6 +45,16 @@ disclosure is not an approved legal notice; RouterAI/GigaChat production remain
 blocked. See [AI provider rollout](ai-providers.md) for admission/revocation
 semantics and the remaining stage 4B launch requirements.
 
+AI control rollout additionally requires `0004_ai_routing.sql` and replacing all
+pre-4B1 API instances. The saved admin choice is shared in PostgreSQL and survives
+restarts; `LLM_PROVIDER` only bootstraps a new database (its required config remains
+validated on every start). `LLM_PROVIDER=disabled` always overrides the saved
+choice on that replica and cannot be bypassed by the admin. Use consistent settings
+on every replica. `/admin` requires `ADMIN_USER_IDS`; no admin accounts are created
+or granted by this rollout. Changing selection does not test real credentials.
+Never roll back to pre-4B1 API code with chat enabled: it ignores the saved disable
+and selection. Prefer a forward fix or a server-level stop on all replicas.
+
 ## Forwarded client address: required ingress contract
 
 Next.js preserves an existing X-Forwarded-For header. An allowlist at the API alone

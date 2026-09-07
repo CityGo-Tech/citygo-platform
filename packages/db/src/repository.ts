@@ -7,6 +7,9 @@ import type {
   Quest,
   ModelGeneration,
   AiPolicy,
+  AiRouting,
+  AiRoutingAudit,
+  AiRoutingInput,
 } from "@citygo/contracts";
 import { randomUUID } from "node:crypto";
 import { canTransitionQuest } from "@citygo/domain";
@@ -26,6 +29,94 @@ type User = { id: string; email: string; password_hash: string };
 type Thread = { id: string; agent_key: AgentKey; busy_until: string | null };
 export class Repository {
   constructor(public db: Database) {}
+  async initializeAiRouting(policy: AiPolicy | null) {
+    await this.db.transaction(async (tx) => {
+      const inserted = await tx.query<AiRouting>(
+        'insert into ai_routing(id,provider,policy_id,revision) values (1,$1,$2,1) on conflict do nothing returning provider,policy_id as "policyId",revision',
+        [policy?.provider ?? "disabled", policy?.id ?? null],
+      );
+      if (inserted.rows[0])
+        await tx.query(
+          "insert into audit_log(action,entity_type,entity_id,payload) values ('ai-routing-initialized','ai-routing','1',$1)",
+          [JSON.stringify({ from: null, to: inserted.rows[0], policy })],
+        );
+    });
+  }
+  async aiRouting(tx: Sql = this.db): Promise<AiRouting> {
+    return (
+      (
+        await tx.query<AiRouting>(
+          'select provider,policy_id as "policyId",revision from ai_routing where id=1',
+        )
+      ).rows[0] ?? fail(503, "Настройка AI не готова")
+    );
+  }
+  async aiRoutingAudit(): Promise<AiRoutingAudit[]> {
+    return (
+      await this.db.query<AiRoutingAudit>(
+        `select id::text,actor_user_id::text as "actorUserId",created_at::text as "createdAt",payload
+       from audit_log where entity_type='ai-routing' and entity_id='1' order by id desc limit 20`,
+      )
+    ).rows;
+  }
+  async changeAiRouting(
+    userId: string,
+    input: AiRoutingInput,
+    policy: AiPolicy | null,
+  ): Promise<AiRouting> {
+    if (
+      input.provider === "disabled"
+        ? policy !== null
+        : !policy ||
+          policy.id !== input.policyId ||
+          policy.provider !== input.provider
+    )
+      fail(409, "Описание AI-получателя не соответствует выбору");
+    return this.db.transaction(async (tx) => {
+      await tx.query("select id from ai_routing where id=1 for update");
+      const current = await this.aiRouting(tx);
+      if (current.revision !== input.expectedRevision)
+        fail(
+          409,
+          "Настройка AI уже изменена. Обновите её и подтвердите выбор заново.",
+        );
+      if (
+        current.provider === input.provider &&
+        current.policyId === input.policyId
+      )
+        return current;
+      const next = (
+        await tx.query<AiRouting>(
+          'update ai_routing set provider=$1,policy_id=$2,revision=revision+1 where id=1 returning provider,policy_id as "policyId",revision',
+          [input.provider, input.policyId],
+        )
+      ).rows[0]!;
+      await tx.query(
+        "insert into audit_log(actor_user_id,action,entity_type,entity_id,payload) values ($1,'ai-routing-changed','ai-routing','1',$2)",
+        [userId, JSON.stringify({ from: current, to: next, policy })],
+      );
+      return next;
+    });
+  }
+  private async guardAiRouting(tx: Sql, revision: number, policyId: string) {
+    // Shared reads allow concurrent admissions. A switch takes the exclusive
+    // lock; both finish before any provider I/O. Always lock routing before users.
+    const current = (
+      await tx.query<AiRouting>(
+        'select provider,policy_id as "policyId",revision from ai_routing where id=1 for share',
+      )
+    ).rows[0];
+    if (
+      !current ||
+      current.provider === "disabled" ||
+      current.revision !== revision ||
+      current.policyId !== policyId
+    )
+      fail(
+        409,
+        "AI-получатель изменился. Обновите страницу и проверьте условия.",
+      );
+  }
   async register(email: string, passwordHash: string) {
     return this.db.transaction(async (tx) => {
       const user = (
@@ -128,8 +219,13 @@ export class Repository {
       )
     ).rows.length;
   }
-  async aiConsent(userId: string, policy: AiPolicy | null) {
+  async aiConsent(
+    userId: string,
+    grant: { policy: AiPolicy; revision: number } | null,
+  ) {
     await this.db.transaction(async (tx) => {
+      const policy = grant?.policy;
+      if (grant) await this.guardAiRouting(tx, grant.revision, grant.policy.id);
       // Same admission lock as reserveChat: a committed revocation blocks all
       // later admissions. Already admitted requests may finish outside this lock.
       await tx.query("select id from users where id=$1 for update", [userId]);
@@ -301,11 +397,13 @@ export class Repository {
     text: string,
     access: {
       policyId: string;
+      revision: number;
       userDailyLimit: number;
       globalDailyLimit: number;
     },
   ) {
     return this.db.transaction(async (tx) => {
+      await this.guardAiRouting(tx, access.revision, access.policyId);
       await tx.query("select id from users where id=$1 for update", [userId]);
       const thread =
         (
@@ -374,8 +472,8 @@ export class Repository {
         [threadId, lease],
       );
       await tx.query(
-        "insert into chat_requests(thread_id,request_id,status,ai_policy_id) values ($1,$2,'running',$3)",
-        [threadId, requestId, access.policyId],
+        "insert into chat_requests(thread_id,request_id,status,ai_policy_id,ai_routing_revision) values ($1,$2,'running',$3,$4)",
+        [threadId, requestId, access.policyId, access.revision],
       );
       await tx.query(
         "insert into messages(thread_id,role,content,metadata) values ($1,'user',$2,$3)",
