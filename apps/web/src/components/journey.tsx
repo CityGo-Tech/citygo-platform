@@ -7,7 +7,13 @@ import type {
   Dashboard,
   Quest,
 } from "@citygo/contracts";
-import { Badge, Button, Card, Progress } from "@citygo/ui-web";
+import {
+  AssistantMessage,
+  Badge,
+  Button,
+  Card,
+  Progress,
+} from "@citygo/ui-web";
 import { questChecklist } from "@citygo/content";
 import { AiAccessPanel } from "./ai-access";
 
@@ -398,7 +404,13 @@ export function Journey(props: JourneyProps) {
                       ? "Вы"
                       : agentNames[message.agentKey]}
                   </small>
-                  <p>{message.content || "Ответ не получен"}</p>
+                  {message.role === "assistant" ? (
+                    <AssistantMessage
+                      content={message.content || "Ответ не получен"}
+                    />
+                  ) : (
+                    <p>{message.content || "Ответ не получен"}</p>
+                  )}
                   {message.status === "interrupted" && (
                     <small>Ответ не завершён</small>
                   )}
@@ -413,7 +425,7 @@ export function Journey(props: JourneyProps) {
               {sending && (
                 <article className="journey-message assistant">
                   <small>{agentNames[agent]} · печатает…</small>
-                  <p>{draft || "Готовлю ответ…"}</p>
+                  <AssistantMessage content={draft || "Готовлю ответ…"} />
                 </article>
               )}
             </div>

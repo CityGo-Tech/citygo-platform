@@ -37,6 +37,13 @@
   extra CA trust is scoped to GigaChat, not installed globally or sent to clients.
 - The orchestrator is deterministic topic routing, not autonomous tool execution.
   Specialists cannot mutate XP, contact third parties or invent housing listings.
+- Web assistant replies use the same restricted Markdown renderer for streaming,
+  saved and interrupted content. Raw HTML is ignored; model images become text
+  placeholders without network requests. Only absolute HTTPS links without embedded
+  credentials are clickable, with a visible destination host, a new tab and no
+  opener/referrer. Links are not verified recommendations. User messages remain
+  literal text. Replies over 32,000 characters bypass Markdown parsing without
+  truncation. This display policy does not grant agents tools or navigation authority.
 - Human handoffs are stored for review, not dispatched to a real realtor.
 - Logs redact credentials/cookies. Analytics contain event names/internal IDs,
   not message text or raw questionnaires.

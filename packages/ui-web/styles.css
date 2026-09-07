@@ -204,6 +204,71 @@
   outline: 3px solid var(--cg-color-focus);
   outline-offset: 3px;
 }
+.cg-assistant-message {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--cg-color-foreground);
+}
+.cg-assistant-message p,
+.cg-assistant-message ul,
+.cg-assistant-message ol,
+.cg-assistant-message blockquote,
+.cg-assistant-message pre {
+  margin: 10px 0 0;
+  font: inherit;
+  white-space: normal;
+}
+.cg-assistant-message ul,
+.cg-assistant-message ol {
+  padding-left: 24px;
+}
+.cg-assistant-message li + li {
+  margin-top: 6px;
+}
+.cg-assistant-message li > p:first-child {
+  margin-top: 0;
+}
+.cg-assistant-message blockquote {
+  border-left: 3px solid var(--cg-color-control-border);
+  padding-left: 14px;
+}
+.cg-assistant-message .cg-assistant-heading {
+  margin-top: 16px;
+  font-size: 1.05em;
+}
+.cg-assistant-message > :first-child {
+  margin-top: 10px;
+}
+.cg-assistant-message a {
+  color: var(--cg-color-primary-strong);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.cg-assistant-message a:focus-visible {
+  outline: 3px solid var(--cg-color-focus);
+  outline-offset: 3px;
+}
+.cg-assistant-link-host,
+.cg-assistant-image {
+  font-size: 0.9em;
+}
+.cg-assistant-message code {
+  font-family: ui-monospace, monospace;
+  font-size: 0.9em;
+  white-space: pre-wrap;
+}
+.cg-assistant-message pre {
+  padding: 12px;
+  border: 1px solid var(--cg-color-border);
+  border-radius: 8px;
+  white-space: pre-wrap;
+}
+.cg-assistant-message .cg-assistant-plain {
+  white-space: pre-wrap;
+}
 @media (prefers-reduced-motion: reduce) {
   .cg-button {
     transition: none;

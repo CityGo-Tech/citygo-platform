@@ -14,15 +14,19 @@
     "build": "tsup src/index.tsx --format esm --dts --clean",
     "dev": "tsup src/index.tsx --format esm --dts --watch",
     "lint": "eslint src",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test src/*.test.tsx"
   },
   "dependencies": {
     "@citygo/design-tokens": "workspace:*",
-    "react": "19.2.3"
+    "react": "19.2.3",
+    "react-markdown": "10.1.0"
   },
   "devDependencies": {
     "tsup": "^8.5.0",
     "tsx": "^4.20.5",
-    "@types/react": "^19.1.10"
+    "@types/react": "^19.1.10",
+    "@types/react-dom": "^19.1.7",
+    "react-dom": "19.2.3"
   }
 }
