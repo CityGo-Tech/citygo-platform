@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { AiProviderId } from "./llm.js";
+import { aiProviderIdSchema, type AiProviderId } from "./llm.js";
 
 export const aiPolicyIdSchema = z.string().regex(/^[a-f0-9]{64}$/);
 export const aiConsentSchema = z.discriminatedUnion("action", [
@@ -21,4 +21,43 @@ export type AiAccess = {
   policy: AiPolicy | null;
   granted: boolean;
   dailyLimit: number;
+};
+
+const routingRevisionSchema = z.number().int().min(1).max(2147483647);
+export const aiRoutingInputSchema = z.discriminatedUnion("provider", [
+  z.strictObject({
+    provider: z.literal("disabled"),
+    policyId: z.null(),
+    expectedRevision: routingRevisionSchema,
+  }),
+  z.strictObject({
+    provider: aiProviderIdSchema,
+    policyId: aiPolicyIdSchema,
+    expectedRevision: routingRevisionSchema,
+  }),
+]);
+export type AiRoutingInput = z.infer<typeof aiRoutingInputSchema>;
+export type AiRouting = {
+  provider: AiProviderId | "disabled";
+  policyId: string | null;
+  revision: number;
+};
+export type AiRoutingAudit = {
+  id: string;
+  actorUserId: string | null;
+  createdAt: string;
+  payload: { from: AiRouting | null; to: AiRouting; policy: AiPolicy | null };
+};
+export type AiControlStatus = {
+  current: AiRouting;
+  effectiveProvider: AiProviderId | "unconfigured";
+  environmentDisabled: boolean;
+  automaticFallback: false;
+  options: {
+    provider: AiProviderId;
+    policy: AiPolicy | null;
+    unavailableReason:
+      "not_configured" | "production_blocked" | "server_disabled" | null;
+  }[];
+  audit: AiRoutingAudit[];
 };

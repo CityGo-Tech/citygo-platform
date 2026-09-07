@@ -1,5 +1,8 @@
 import type {
   AiConsentInput,
+  AiRoutingInput,
+  AiRouting,
+  AiControlStatus,
   Dashboard,
   Questionnaire,
   StreamEvent,
@@ -43,6 +46,9 @@ export function createClient(
     dashboard: () => request<Dashboard>("/v1/dashboard"),
     aiConsent: (input: AiConsentInput) =>
       request<{ ok: true }>("/v1/ai/consent", input),
+    aiControl: () => request<AiControlStatus>("/v1/admin/ai"),
+    setAiRouting: (input: AiRoutingInput) =>
+      request<AiRouting>("/v1/admin/ai", input),
     questionnaire: (profile: Questionnaire) =>
       request("/v1/questionnaire", profile),
     start: (id: string) =>

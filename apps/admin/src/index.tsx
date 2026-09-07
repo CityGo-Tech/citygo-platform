@@ -2,6 +2,7 @@
 import { useState } from "react";
 import { createClient } from "@citygo/api-client";
 import { Button, Card } from "@citygo/ui-web";
+import { AiControls } from "./ai-control.js";
 const api = createClient();
 export function AdminOverview() {
   const [data, setData] = useState<Awaited<
@@ -9,6 +10,23 @@ export function AdminOverview() {
     > | null>(null),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
+  const [control, setControl] = useState<Awaited<
+    ReturnType<typeof api.aiControl>
+  > | null>(null);
+  const [refreshVersion, setRefreshVersion] = useState(0);
+  const [notice, setNotice] = useState("");
+  async function refresh() {
+    try {
+      const [overview, ai] = await Promise.all([api.admin(), api.aiControl()]);
+      setData(overview);
+      setControl(ai);
+      setRefreshVersion((value) => value + 1);
+    } catch (error) {
+      setData(null);
+      setControl(null);
+      throw error;
+    }
+  }
   return (
     <main>
       <Card>
@@ -22,16 +40,20 @@ export function AdminOverview() {
           onClick={() => {
             setBusy(true);
             setError("");
-            void api
-              .admin()
-              .then(setData)
+            setNotice("");
+            void refresh()
               .catch((e) => setError(e.message))
               .finally(() => setBusy(false));
           }}
         >
           Обновить сводку
         </Button>
-        {error && <p role="alert">{error}</p>}
+        {error && (
+          <p className="admin-error" role="alert">
+            {error}
+          </p>
+        )}
+        {notice && <p role="status">{notice}</p>}
         {data && (
           <>
             <h2>Основной сценарий</h2>
@@ -53,6 +75,42 @@ export function AdminOverview() {
           </>
         )}
       </Card>
+      {control && (
+        <AiControls
+          key={refreshVersion}
+          status={control}
+          busy={busy}
+          onSave={(input) => {
+            setBusy(true);
+            setError("");
+            setNotice("");
+            void (async () => {
+              try {
+                await api.setAiRouting(input);
+                setNotice("Настройка AI сохранена.");
+              } catch (error) {
+                setError(
+                  error instanceof Error
+                    ? error.message
+                    : "Не удалось изменить настройку AI",
+                );
+              } finally {
+                try {
+                  await refresh();
+                } catch (error) {
+                  setError(
+                    error instanceof Error
+                      ? error.message
+                      : "Не удалось обновить сводку",
+                  );
+                } finally {
+                  setBusy(false);
+                }
+              }
+            })();
+          }}
+        />
+      )}
     </main>
   );
 }

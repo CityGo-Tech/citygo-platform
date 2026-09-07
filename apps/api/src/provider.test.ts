@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readConfig } from "@citygo/config";
-import { createProvider } from "./provider.js";
+import { createProvider, createProviderRegistry } from "./provider.js";
 
 const credentials = {
   OPENAI_API_KEY: "test-secret-not-live",
@@ -241,6 +241,58 @@ test("RouterAI production activation is blocked even with valid settings", () =>
           TRUSTED_PROXY_CIDRS: "127.0.0.1/32",
         }),
       ),
+    /production activation is blocked/,
+  );
+});
+
+test("registry prepares independent configured adapters without changing bootstrap selection", () => {
+  const registry = createProviderRegistry(
+    readConfig({ ...credentials, ...routerSettings, ...gigaSettings }),
+  );
+  assert.equal(registry.provider?.name, "openai");
+  assert.deepEqual(Object.keys(registry.providers).sort(), [
+    "gigachat",
+    "openai",
+    "routerai",
+  ]);
+  assert.equal(registry.providers.gigachat?.model, gigaSettings.GIGACHAT_MODEL);
+  assert.equal(
+    registry.providers.routerai?.model,
+    routerSettings.ROUTERAI_MODEL,
+  );
+});
+
+test("inactive invalid settings do not disable OpenAI; disabled environment constructs no registry", () => {
+  const config = readConfig({
+    ...credentials,
+    ...gigaSettings,
+    GIGACHAT_SCOPE: "invalid",
+    ROUTERAI_API_KEY: "unused-secret",
+  });
+  assert.deepEqual(Object.keys(createProviderRegistry(config).providers), [
+    "openai",
+  ]);
+  assert.deepEqual(
+    createProviderRegistry({ ...config, LLM_PROVIDER: "disabled" }),
+    { provider: undefined, providers: {} },
+  );
+});
+
+test("production registry cannot offer RouterAI or GigaChat even with complete settings", () => {
+  const config = readConfig({
+    ...credentials,
+    ...routerSettings,
+    ...gigaSettings,
+    NODE_ENV: "production",
+    DATABASE_URL: "postgresql://localhost/citygo",
+    WEB_ORIGIN: "https://citygo.example",
+    TRUSTED_PROXY_CIDRS: "127.0.0.1/32",
+  });
+  assert.deepEqual(Object.keys(createProviderRegistry(config).providers), [
+    "openai",
+  ]);
+  assert.throws(
+    () => createProviderRegistry({ ...config, LLM_PROVIDER: "gigachat" }),
     /production activation is blocked/,
   );
 });

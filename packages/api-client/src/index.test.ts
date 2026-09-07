@@ -1,6 +1,35 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createClient } from "./index.js";
+test("admin routing client sends the displayed revision and policy without auto-retry", async () => {
+  const original = globalThis.fetch;
+  const requests: { method: string; body: unknown }[] = [];
+  globalThis.fetch = async (_url, options) => {
+    requests.push({
+      method: options?.method ?? "GET",
+      body: options?.body ? JSON.parse(String(options.body)) : null,
+    });
+    return options?.method === "POST"
+      ? Response.json({ error: "Настройка изменена" }, { status: 409 })
+      : Response.json({ current: { revision: 1 } });
+  };
+  try {
+    const client = createClient("http://test");
+    await client.aiControl();
+    const input = {
+      provider: "disabled" as const,
+      policyId: null,
+      expectedRevision: 1,
+    };
+    await assert.rejects(client.setAiRouting(input), /Настройка изменена/);
+    assert.deepEqual(requests, [
+      { method: "GET", body: null },
+      { method: "POST", body: input },
+    ]);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
 test("client sends explicit consent actions and the viewed policy ID with chat", async () => {
   const original = globalThis.fetch;
   const requests: { path: string; body: unknown }[] = [];
