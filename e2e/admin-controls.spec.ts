@@ -103,7 +103,12 @@ test("admin confirms configured provider and refreshes stale state without reapp
   const save = page.getByRole("button", { name: "Применить настройку AI" });
   await expect(selection).toHaveValue("openai");
   await expect(save).toBeDisabled();
-  await expect(selection.locator('option[value="routerai"]')).toBeDisabled();
+  // Inspect the native option itself; the actionability matcher can retarget
+  // an option to its enabled parent select.
+  await expect(selection.locator('option[value="routerai"]')).toHaveJSProperty(
+    "disabled",
+    true,
+  );
   await selection.selectOption("gigachat");
   await expect(confirm).not.toBeChecked();
   await expect(save).toBeDisabled();
