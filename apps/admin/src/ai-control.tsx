@@ -163,6 +163,65 @@ export function AiControls({
           </li>
         ))}
       </ol>
+      {status.attempts && (
+        <section aria-label="Лимиты попыток AI">
+          <h3>Резерв попыток AI</h3>
+          <p>
+            За {status.attempts.day} (UTC) зарезервировано:{" "}
+            {status.attempts.reservedToday} из{" "}
+            {status.attempts.globalDailyLimit}. На пользователя:{" "}
+            {status.attempts.userDailyLimit} в сутки. На одно сообщение: не
+            более {status.attempts.maxPerRequest} попыток.
+          </p>
+          {!status.attempts.configurationMatches && (
+            <p role="alert">
+              Лимиты сервера отличаются от зафиксированных на сегодня. Новые
+              попытки заблокированы до согласования настроек.
+            </p>
+          )}
+          {status.attempts.pinnedLimits && (
+            <p>
+              Зафиксировано на сегодня:{" "}
+              {status.attempts.pinnedLimits.userDailyLimit} на пользователя,{" "}
+              {status.attempts.pinnedLimits.globalDailyLimit} на сервис.
+            </p>
+          )}
+          <p>
+            Это резерв до вызова модели, а не счёт провайдера. Сбои, отмены и
+            повторы расходуют резерв; ошибка авторизации может остановить вызов
+            ещё до отправки сообщения. Денежный бюджет пока не настроен. Лимиты
+            не меняются через этот интерфейс.
+          </p>
+          <p>
+            Первый резерв фиксирует лимиты на текущий день UTC для всех
+            серверов. Ноль в серверной настройке немедленно запрещает новые
+            попытки. Суточные ограничения принятых сообщений действуют отдельно.
+          </p>
+          <h4>Последние резервы</h4>
+          <ol>
+            {status.attempts.recent.map((entry) => (
+              <li
+                key={`${entry.threadId}/${entry.requestId}/${entry.attemptNumber}`}
+              >
+                {names[entry.provider]} · {entry.model} · попытка{" "}
+                {entry.attemptNumber} · версия {entry.routingRevision}
+                {" · пользователь #"}
+                {entry.userId}
+                {" · "}
+                {new Date(entry.reservedAt).toLocaleString("ru-RU")}
+                {" · состояние сообщения: "}
+                {
+                  {
+                    running: "в обработке",
+                    complete: "завершено",
+                    interrupted: "прервано",
+                  }[entry.requestStatus]
+                }
+              </li>
+            ))}
+          </ol>
+        </section>
+      )}
     </Card>
   );
 }

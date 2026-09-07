@@ -68,6 +68,19 @@ export const serverConfigSchema = z.object({
     .max(1000000)
     .default(200),
   OPENAI_API_KEY: optionalSetting,
+  // Reserved model attempts, including retries; independent of chat admissions.
+  LLM_USER_DAILY_ATTEMPT_LIMIT: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(10000)
+    .default(20),
+  LLM_GLOBAL_DAILY_ATTEMPT_LIMIT: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(1000000)
+    .default(200),
   OPENAI_MODEL: optionalSetting,
   ROUTERAI_API_KEY: optionalSetting,
   ROUTERAI_MODEL: optionalSetting,

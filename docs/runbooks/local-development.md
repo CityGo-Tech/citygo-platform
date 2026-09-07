@@ -28,6 +28,15 @@ its own authorization key, explicit model/account scope, and verified CA trust.
 There is no production mock provider. Do not paste keys into issues, PRs or chat.
 See [AI provider configuration](ai-providers.md) for limits and rollout boundaries.
 
+Migration `0005_ai_attempts.sql` adds durable model-attempt reservations. Set
+`LLM_USER_DAILY_ATTEMPT_LIMIT` / `LLM_GLOBAL_DAILY_ATTEMPT_LIMIT` consistently
+(defaults 20/200 per UTC day), separate from accepted-chat caps. A retry consumes
+another reservation; errors/cancellation do not refund it. The first reservation
+pins that day's two limits in the database. A different positive configuration
+blocks new attempts until the next UTC day or restoration of the pinned settings;
+zero always blocks immediately. `/admin` shows the counters and last 20 reserves.
+These are not billed-call counts or currency limits. No live budget is authorized.
+
 For PostgreSQL server:
 
 1. Start docker compose -f docker-compose.dev.yml up -d.

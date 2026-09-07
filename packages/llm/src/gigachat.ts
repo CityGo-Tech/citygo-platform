@@ -2,6 +2,7 @@ import type {
   ModelMessage,
   ModelStreamEvent,
   StreamingProvider,
+  ModelRetryGuard,
 } from "./provider.js";
 import { readChatCompletion } from "./chat-completion.js";
 import { createGigaPost, gigaChatUrl, type GigaPost } from "./gigachat-http.js";
@@ -56,6 +57,7 @@ export class GigaChatProvider implements StreamingProvider {
     instructions: string,
     messages: ModelMessage[],
     signal: AbortSignal,
+    retryGuard?: ModelRetryGuard,
   ): AsyncIterable<ModelStreamEvent> {
     const deadline = AbortSignal.any([
       signal,
@@ -87,6 +89,8 @@ export class GigaChatProvider implements StreamingProvider {
         this.tokens.invalidate(token);
         token = await this.tokens.get(deadline);
         // Exactly one auth recovery, only before a successful SSE response.
+        await retryGuard?.beforeRetry();
+        deadline.throwIfAborted();
         response = await request();
       }
       if (response.status === 401) this.tokens.invalidate(token);

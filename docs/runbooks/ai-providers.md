@@ -1,12 +1,88 @@
-# AI provider rollout — stage 4B1 of 5
+# AI provider rollout — stage 4B2a of 5
 
-This release adds an authenticated admin selector, persistent versioned routing
-and an audit journal, building on 4A's recipient consent and shared daily caps.
+This release adds shared model-attempt reservations, guards for internal retries
+and a read-only admin journal, building on 4B1's persistent provider selector and
+4A's recipient consent / accepted-chat caps.
 All three independent adapters remain available. RouterAI and GigaChat production
 activation stays blocked: the technical disclosure is not an operator-approved
 privacy notice. Automatic failover is **not** enabled. Stage 4 remains split into
 reviewable steps; the financial/privacy launch requirements are not completed by
-this selector. No live model is chosen or upgraded by this PR.
+these reservations. No live model is chosen or upgraded by this PR.
+
+## Model-attempt reservations (stage 4B2a)
+
+Apply `0005_ai_attempts.sql` before starting the updated API; `/ready` requires it.
+The journal starts empty without guessing older requests' attempt counts. Drain
+and replace all older API instances; otherwise their unmetered calls bypass this
+control. Do not roll back to older code with AI enabled or delete accounting rows.
+
+`LLM_USER_DAILY_ATTEMPT_LIMIT` and `LLM_GLOBAL_DAILY_ATTEMPT_LIMIT` default to
+20 and 200 per UTC day (bounds 0–10000 and 0–1000000). They are independent of
+accepted-chat quotas and shared across providers, users, restarts and replicas.
+At most two attempts can be reserved per admitted chat, matching the current
+OpenAI retry and GigaChat auth-recovery boundaries; RouterAI still sends once.
+Changing a provider or model never resets these counters.
+
+The API reserves the first model attempt before entering the adapter, including
+before GigaChat OAuth. An OpenAI SDK retry or GigaChat chat resubmission must reserve
+another slot **before** sending model data. OAuth refresh requests are not model
+attempts and retain their existing bounded/single-flight behavior. A denied first
+reserve never enters an adapter; a denied retry sends no second model request.
+The retry guard also rejects any retry after visible output. RouterAI and GigaChat
+retain their production blocks, and no cross-provider failover is enabled.
+
+A reservation is deliberately conservative: it is **not proof of HTTP dispatch,
+provider acceptance, success, or a billable charge**. OAuth failure, process crash,
+timeout or cancellation may leave an unused reserve. There are no automatic
+refunds because the provider may already have accepted a request. Completed,
+interrupted and unknown outcomes cannot safely be treated as zero cost. The admin
+displays the final/current **chat request** status alongside each reservation,
+not an invented per-attempt success/billing status. Late/cancelled calls may remain
+reserved; no replay or stale-lease reuse is authorized by this journal.
+
+Each reservation validates the admitted request's recipient/revision, ownership,
+unexpired lease and next attempt number, then atomically appends a metadata-only
+row and increments personal/global counters. Duplicate, out-of-order, third and
+stale reservations are rejected. The short transaction locks user, thread, then
+the UTC daily row. Model I/O is outside all locks. It validates the **admitted**
+recipient, not current admin routing, so an already accepted answer keeps 4B1's
+pinned-provider semantics even after a switch/revocation. A later request still
+needs current routing and recipient consent. The reservation does not confer consent.
+
+The first reservation of a UTC day also pins that day's two limit values. Replicas
+with different positive settings fail closed, rather than raising the cap or
+creating separate buckets. Configure all replicas consistently; schedule positive
+limit changes for the next UTC day, or restore the values already pinned today.
+Zero is an immediate new-attempt stop regardless of today's pinned values.
+Restart is required for environment changes; an already reserved call may finish.
+Never clear counters or change the server clock to work around this boundary.
+
+Human handoff responses do not enter an adapter and reserve no model attempt.
+Accepted-chat admission still occurs first: if attempt capacity later runs out,
+the accepted user message and interrupted result remain in history and the chat
+admission counter is not refunded. The client receives an explanatory SSE error
+and does not automatically repeat the message. Consent/pre-admission rejections
+never reserve an attempt. No new client consent/SSE contract is required.
+
+`GET /v1/admin/ai` adds the optional `attempts` summary: today's reserve count,
+configured limits and consistency flag, plus the latest 20 metadata-only rows.
+The existing admin allowlist protects it. It exposes no keys, tokens, prompts or
+profile fields. The journal's timestamp is UTC ISO 8601; the UI renders local time.
+Historical response metadata and XP are unchanged. Missing token usage is not
+invented. The per-attempt ledger has indexed foreign keys and a newest-first index.
+
+**Financial budget remains a separate next step (4B2b).** Neither these count caps
+nor existing output-token limits are a monetary guarantee. Before any live pilot,
+the operator must approve currency, per-model/upstream prices and conservative
+request-cost envelopes, daily/project budgets, provider-side caps and the handling
+of unknown usage. This PR does not choose tariffs, convert currencies, authorize
+spending, call live models, or present reserved attempts as actual expenses.
+
+OpenAI keeps `maxRetries:1`. Its per-stream fetch wrapper observes each additional
+SDK transport attempt and awaits the guard; a denial aborts that stream so it is
+not mistaken for a retryable connection failure. Direct OpenAI fetch now also
+rejects redirects instead of following an unaccounted transport/recipient hop. Official reference checked
+2026-09-07: [TypeScript SDK retries and fetch customization](https://developers.openai.com/api/reference/typescript#retries).
 
 ## Server configuration
 
@@ -129,7 +205,7 @@ message. History stays readable. After a provider switch, granting permission
 also permits the disclosed history (including prior providers' answers) to be sent.
 
 Migration `0003_ai_access.sql` creates consent state and daily counters; `/ready`
-now requires the migration sequence through `0004_ai_routing.sql`. Admission locks the user, owned thread and UTC global-counter row in
+now requires the migration sequence through `0005_ai_attempts.sql`. Admission locks the user, owned thread and UTC global-counter row in
 a consistent order. Consent, duplicate/busy checks, quota increments, lease and
 request/message insert commit atomically. The model runs **outside** this short
 transaction. A revocation committed before admission blocks the request; an
@@ -144,7 +220,7 @@ automatic retries at admission. Do not delete counters to work around a cap.
 
 These are **request caps, not monetary budgets** or exact upstream-attempt counts.
 The existing bounded OpenAI SDK retry and GigaChat pre-stream 401 refresh still
-apply. Input sizes and output tokens are bounded elsewhere, but actual prices,
+apply, now guarded by the separate model-attempt reservations above. Input sizes and output tokens are bounded elsewhere, but actual prices,
 provider-side billing limits and an approved pilot budget remain required. All
 replicas must use identical settings; do not serve mixed configs behind a balancer.
 
@@ -153,7 +229,7 @@ replicas must use identical settings; do not serve mixed configs behind a balanc
 1. Keep the current credentials; never paste keys into chat or PRs. For RouterAI or
    GigaChat use only an authorized synthetic-data local pilot until the production
    gate is explicitly addressed in a reviewed later change.
-2. Drain and stop pre-4B1 API instances. Apply all migrations through `0004` before
+2. Drain and stop pre-4B2a API instances. Apply all migrations through `0005` before
    starting this version. Deploy the updated Web admin; Web/Expo clients from #17
    keep their consent/chat contract. Clients predating 4A still fail closed.
 3. Configure the desired adapters and their own required settings, review caps,
@@ -266,7 +342,8 @@ A chat HTTP 401 before SSE can trigger exactly **one** refresh and resubmission
 within the same overall deadline. A second 401 fails. There is no retry after a
 visible delta, on stream errors, or for 403/429/5xx. Token acquisition itself does
 not retry. Separate API processes have separate token caches. Daily chat-admission
-quotas are now shared; exact upstream-attempt and financial controls remain later work.
+quotas and model-attempt reservations are now shared. The reservation count is not
+proof of upstream acceptance; financial controls remain later work.
 
 RouterAI and GigaChat share the bounded text-only completion decoder, with the
 same stop + `[DONE]` requirement and interruption semantics. GigaChat `blacklist`,
@@ -334,10 +411,12 @@ completion. XP remains server-controlled and exactly-once.
   single-flight refresh, current API URL, and TLS certificate verification.
 - Stage 4A (completed): technical recipient-specific grant/revoke, stale-client
   guard, audit, Web/Expo UI and atomic cross-process daily admission caps.
-- Stage 4B1 (this release): protected manual selector, persistent revisioned choice,
+- Stage 4B1 (completed): protected manual selector, persistent revisioned choice,
   atomic audit, multi-replica admission guard and explicit return to direct OpenAI.
-- Remaining stage 4: approved recipient/privacy notice, explicit per-attempt/
-  financial controls and optional failover, off by default. Never splice another
+- Stage 4B2a (this release): atomic model-attempt reservations, guarded retries,
+  shared personal/global caps and metadata-only admin journal. Not billing.
+- Remaining stage 4: approved recipient/privacy notice, financial envelopes/
+  budgets and optional failover, off by default. Never splice another
   provider into an answer after its first visible delta.
 - Stage 5: cross-provider E2E/failure matrix, opt-in budgeted live smoke checks,
   deployment instructions and a verified return to direct OpenAI.
