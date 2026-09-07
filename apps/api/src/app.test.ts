@@ -2167,13 +2167,23 @@ test("untrusted direct clients cannot evade rate limits with forwarded headers",
 });
 
 test("production sessions use secure host-only cookies for signup, login and logout", async (t) => {
-  const f = await fixture(false, {
-    NODE_ENV: "production",
-    DATABASE_URL: "postgresql://localhost/citygo",
-    WEB_ORIGIN: "https://citygo.example",
-    TRUSTED_PROXY_CIDRS: "10.0.0.8/32",
-  });
+  // Production-mode auth must retain the real fail-closed budget default.
+  const f = await fixture(
+    false,
+    {
+      NODE_ENV: "production",
+      DATABASE_URL: "postgresql://localhost/citygo",
+      WEB_ORIGIN: "https://citygo.example",
+      TRUSTED_PROXY_CIDRS: "10.0.0.8/32",
+    },
+    {},
+    false,
+  );
   t.after(f.close);
+  assert.equal(
+    (await new Repository(f.db).aiBudget([])).settings.enabled,
+    false,
+  );
   const credentials = {
     email: randomUUID() + "@example.test",
     password: "CityGo-test-password",
