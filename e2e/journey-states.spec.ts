@@ -103,7 +103,7 @@ test("changed recipient resets unchecked consent and never resends automatically
   await expect(page.getByLabel("Сообщение помощнику")).toBeDisabled();
   await checkbox.check();
   await confirm.click();
-  await expect(page.getByRole("alert")).toContainText(
+  await expect(page.locator(".alert[role='alert']")).toContainText(
     "AI-получатель изменился",
   );
   await expect(page.getByText(/Получатель: RouterAI/)).toBeVisible();
