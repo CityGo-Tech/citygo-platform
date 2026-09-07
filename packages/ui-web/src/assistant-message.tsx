@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { memo, type ReactNode } from "react";
 import Markdown, { type Components } from "react-markdown";
 
 // Treat model output as untrusted content, never as app navigation or HTML.
@@ -82,7 +82,11 @@ const allowedElements = [
 ];
 
 /** Shared by live, saved and interrupted replies. User messages stay plain text. */
-export function AssistantMessage({ content }: { content: string }) {
+export const AssistantMessage = memo(function AssistantMessage({
+  content,
+}: {
+  content: string;
+}) {
   return (
     <div className="cg-assistant-message">
       {content.length > 32_000 ? (
@@ -102,4 +106,4 @@ export function AssistantMessage({ content }: { content: string }) {
       )}
     </div>
   );
-}
+});
