@@ -52,6 +52,177 @@ async function dashboard(page: Page, board: Dashboard) {
   );
 }
 
+for (const width of [320, 768, 1440]) {
+  test(`assistant Markdown is readable and inert at ${width}px; user text stays literal`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 900 });
+    const board = fixture();
+    board.thread!.messages = [
+      {
+        id: "markdown-user",
+        role: "user",
+        agentKey: "housing",
+        status: "complete",
+        content: "**Не форматировать** <img src=x>",
+      },
+      {
+        id: "markdown-assistant",
+        role: "assistant",
+        agentKey: "housing",
+        status: "complete",
+        content: [
+          "## План поиска",
+          "**Бюджет**: 65 000 ₽, *без спешки*.",
+          "1. Выберите район\n2. Сравните квартиры",
+          "> Проверьте условия заранее",
+          "[Источник](https://markdown-tracker.example.test/source)",
+          "[Опасная ссылка](javascript:alert%281%29) и [Внутренняя команда](/api/v1/logout)",
+          "![План](https://markdown-tracker.example.test/pixel.png)",
+          '<img src="https://markdown-tracker.example.test/html.png" onerror="alert(1)">',
+          '<script>alert("unexpected")</script>',
+          "```text\n" + "длинная_строка_".repeat(40) + "\n```",
+        ].join("\n\n"),
+      },
+    ];
+    let externalRequests = 0;
+    let dialogs = 0;
+    await page.route(
+      "https://markdown-tracker.example.test/**",
+      async (route) => {
+        externalRequests++;
+        await route.abort();
+      },
+    );
+    page.on("dialog", async (dialog) => {
+      dialogs++;
+      await dialog.dismiss();
+    });
+    await dashboard(page, board);
+    await page.goto("/#chat");
+    const reply = page.locator(".journey-message.assistant");
+    await expect(reply.locator(".cg-assistant-heading")).toHaveText(
+      "План поиска",
+    );
+    await expect(
+      reply.locator("strong").filter({ hasText: "Бюджет" }),
+    ).toBeVisible();
+    await expect(reply.locator("ol li")).toHaveCount(2);
+    await expect(reply.locator("em")).toHaveText("без спешки");
+    await expect(reply.locator("blockquote")).toContainText(
+      "Проверьте условия",
+    );
+    await expect(reply.getByRole("link")).toHaveCount(1);
+    const link = reply.getByRole("link", {
+      name: "Источник (markdown-tracker.example.test)",
+    });
+    await expect(link).toHaveAttribute("target", "_blank");
+    await expect(link).toHaveAttribute("rel", "noopener noreferrer nofollow");
+    await expect(link).toHaveAttribute("referrerpolicy", "no-referrer");
+    await expect(reply).toContainText("Опасная ссылка");
+    await expect(reply).toContainText("Внутренняя команда");
+    await expect(reply).toContainText("Изображение не загружено: План");
+    await expect(reply.locator("img, script, iframe, h1, h2, h3")).toHaveCount(
+      0,
+    );
+    const user = page.locator(".journey-message.user");
+    await expect(user).toContainText("**Не форматировать** <img src=x>");
+    await expect(user.locator("strong, img")).toHaveCount(0);
+    expect(
+      await reply.evaluate(
+        (element) => element.scrollWidth <= element.clientWidth,
+      ),
+    ).toBe(true);
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    ).toBe(true);
+    await page.reload();
+    await expect(reply.locator(".cg-assistant-heading")).toHaveText(
+      "План поиска",
+    );
+    expect(externalRequests).toBe(0);
+    expect(dialogs).toBe(0);
+  });
+}
+
+for (const status of ["complete", "interrupted"] as const) {
+  test(`streamed Markdown and ${status} history use the same renderer`, async ({
+    page,
+  }) => {
+    const board = fixture();
+    const content =
+      "## Следующий шаг\n\n**Бюджет** согласован.\n\n- Выберите район\n- Проверьте маршрут";
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let sent = false;
+    await page.route("**/api/v1/dashboard", async (route) => {
+      if (sent) await gate;
+      await route.fulfill({ json: board });
+    });
+    await page.route("**/api/v1/threads/*/messages", async (route) => {
+      sent = true;
+      board.thread!.messages = [
+        {
+          id: "stream-user",
+          role: "user",
+          agentKey: "housing",
+          status: "complete",
+          content: "Помоги с планом",
+        },
+        {
+          id: "stream-assistant",
+          role: "assistant",
+          agentKey: "housing",
+          status,
+          content,
+        },
+      ];
+      const events = [
+        { type: "delta", text: content.slice(0, 25) },
+        { type: "delta", text: content.slice(25) },
+        status === "complete"
+          ? { type: "done" }
+          : { type: "error", message: "Соединение прервано" },
+      ];
+      await route.fulfill({
+        contentType: "text/event-stream",
+        body: events
+          .map((event) => "data: " + JSON.stringify(event) + "\n\n")
+          .join(""),
+      });
+    });
+    await page.goto("/#chat");
+    await page.getByLabel("Сообщение помощнику").fill("Помоги с планом");
+    await page.getByRole("button", { name: "Отправить", exact: true }).click();
+    const reply = page.locator(".journey-message.assistant");
+    try {
+      // Hold the dashboard refresh so this assertion targets the in-flight draft.
+      await expect(reply.locator("small")).toContainText("печатает");
+      await expect(reply.locator(".cg-assistant-heading")).toHaveText(
+        "Следующий шаг",
+      );
+      await expect(reply.locator("li")).toHaveCount(2);
+    } finally {
+      release();
+    }
+    await expect(page.getByLabel("Сообщение помощнику")).toBeEnabled();
+    await expect(reply.locator(".cg-assistant-heading")).toHaveText(
+      "Следующий шаг",
+    );
+    if (status === "interrupted")
+      await expect(reply).toContainText("Ответ не завершён");
+    await page.reload();
+    await expect(reply.locator("li")).toHaveCount(2);
+    await expect(
+      reply.locator("strong").filter({ hasText: "Бюджет" }),
+    ).toBeVisible();
+  });
+}
+
 test("changed recipient resets unchecked consent and never resends automatically", async ({
   page,
 }) => {

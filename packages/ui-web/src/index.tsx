@@ -6,6 +6,7 @@ import type {
   SelectHTMLAttributes,
 } from "react";
 import { useId } from "react";
+export { AssistantMessage } from "./assistant-message.js";
 export function Button({
   className = "",
   variant = "primary",
