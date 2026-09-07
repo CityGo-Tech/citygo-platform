@@ -48,18 +48,45 @@ async function fixture(
     }
   }
   const origin = "http://localhost:3000";
-  const call = (
+  const call = async (
     method: "GET" | "POST",
     path: string,
     token = "",
     body?: object,
-  ) =>
-    app.inject({
+  ) => {
+    // Model the updated client's dashboard snapshot, never auto-grant consent.
+    if (path.endsWith("/messages") && token && body && !("policyId" in body)) {
+      const board = (
+        await app.inject({
+          method: "GET",
+          url: "/v1/dashboard",
+          headers: { cookie: "citygo=" + token },
+        })
+      ).json<Dashboard>();
+      body = { ...body, policyId: board.aiAccess?.policy?.id };
+    }
+    return app.inject({
       method,
       url: path,
       headers: { origin, ...(token ? { cookie: "citygo=" + token } : {}) },
       ...(body ? { payload: body } : {}),
     });
+  };
+  async function consent(token: string, target = app) {
+    const headers = { origin, cookie: "citygo=" + token };
+    const board = (
+      await target.inject({ method: "GET", url: "/v1/dashboard", headers })
+    ).json<Dashboard>();
+    const policyId = board.aiAccess.policy!.id;
+    const result = await target.inject({
+      method: "POST",
+      url: "/v1/ai/consent",
+      headers,
+      payload: { action: "granted", policyId },
+    });
+    assert.equal(result.statusCode, 200, result.body);
+    return policyId;
+  }
   async function register() {
     const email = randomUUID() + "@example.test";
     const result = await call("POST", "/v1/auth/register", "", {
@@ -70,8 +97,394 @@ async function fixture(
     assert.match(String(result.headers["set-cookie"]), /HttpOnly/);
     return { email, token: result.cookies[0]!.value };
   }
-  return { app, db, call, register, close };
+  return { app, db, call, consent, register, close };
 }
+
+async function chatUser(f: Awaited<ReturnType<typeof fixture>>, grant = true) {
+  const user = await f.register();
+  await f.call("POST", "/v1/questionnaire", user.token, testProfile);
+  const board = (
+    await f.call("GET", "/v1/dashboard", user.token)
+  ).json<Dashboard>();
+  const thread = (
+    await f.call(
+      "POST",
+      `/v1/quests/${board.quests[0]!.id}/start`,
+      user.token,
+      {},
+    )
+  ).json().id as string;
+  if (grant) await f.consent(user.token);
+  return {
+    ...user,
+    userId: board.user.id,
+    thread,
+    policyId: board.aiAccess.policy!.id,
+  };
+}
+
+test("AI admission requires explicit current-recipient consent; revoke preserves history and isolates users", async (t) => {
+  let calls = 0;
+  const f = await fixture({
+    name: "openai",
+    model: "test-model",
+    async *stream() {
+      calls++;
+      yield { type: "delta", text: "Ответ" };
+      yield { type: "complete", model: "test-model" };
+    },
+  });
+  t.after(f.close);
+  const user = await chatUser(f, false);
+  const path = `/v1/threads/${user.thread}/messages`;
+  const body = {
+    text: "Квартира",
+    requestId: randomUUID(),
+    policyId: user.policyId,
+  };
+  const grant = { action: "granted", policyId: user.policyId };
+  assert.equal(
+    (await f.call("POST", "/v1/ai/consent", "", grant)).statusCode,
+    401,
+  );
+  assert.equal(
+    (
+      await f.app.inject({
+        method: "POST",
+        url: "/v1/ai/consent",
+        headers: {
+          origin: "https://evil.test",
+          cookie: "citygo=" + user.token,
+        },
+        payload: grant,
+      })
+    ).statusCode,
+    403,
+  );
+  assert.equal(
+    (
+      await f.call("POST", "/v1/ai/consent", user.token, {
+        ...grant,
+        policyId: "a".repeat(64),
+      })
+    ).statusCode,
+    409,
+  );
+  assert.equal((await f.call("POST", path, user.token, body)).statusCode, 403);
+  assert.equal(
+    (await f.call("POST", path, user.token, { ...body, policyId: undefined }))
+      .statusCode,
+    409,
+  );
+  assert.equal(calls, 0);
+  assert.equal(
+    (await f.db.query("select * from chat_requests")).rows.length,
+    0,
+  );
+  assert.equal((await f.db.query("select * from messages")).rows.length, 0);
+  assert.equal(
+    (await f.db.query("select * from ai_usage_daily")).rows.length,
+    0,
+  );
+  await f.consent(user.token);
+  assert.match(
+    (await f.call("POST", path, user.token, body)).body,
+    /"type":"done"/,
+  );
+  assert.equal((await f.call("POST", path, user.token, body)).statusCode, 409);
+  const other = await chatUser(f, false);
+  assert.equal(
+    (
+      await f.call(
+        "POST",
+        `/v1/threads/${other.thread}/messages`,
+        other.token,
+        { ...body, requestId: randomUUID() },
+      )
+    ).statusCode,
+    403,
+  );
+  assert.equal(
+    (
+      await f.call("POST", path, other.token, {
+        ...body,
+        requestId: randomUUID(),
+      })
+    ).statusCode,
+    404,
+  );
+  assert.equal(
+    (await f.call("POST", "/v1/ai/consent", user.token, { action: "revoked" }))
+      .statusCode,
+    200,
+  );
+  assert.equal(
+    (
+      await f.call("POST", path, user.token, {
+        ...body,
+        requestId: randomUUID(),
+      })
+    ).statusCode,
+    403,
+  );
+  const board = (
+    await f.call("GET", "/v1/dashboard", user.token)
+  ).json<Dashboard>();
+  assert.equal(board.aiAccess.granted, false);
+  assert.equal(board.thread!.messages.length, 2);
+  assert.equal(calls, 1);
+  const events = (
+    await f.db.query<{ action: string; details: { id?: string } }>(
+      "select action,details from consent_events where user_id=$1 and consent_key='ai-recipient' order by id",
+      [user.userId],
+    )
+  ).rows;
+  assert.deepEqual(
+    events.map((event) => event.action),
+    ["granted", "revoked"],
+  );
+  assert.equal(events[0]!.details.id, user.policyId);
+  assert.equal(
+    (
+      await f.db.query<{ ai_policy_id: string }>(
+        "select ai_policy_id from chat_requests",
+      )
+    ).rows[0]!.ai_policy_id,
+    user.policyId,
+  );
+  assert.equal(
+    (
+      await f.db.query<{ accepted_requests: number }>(
+        "select accepted_requests from ai_usage_daily",
+      )
+    ).rows[0]!.accepted_requests,
+    1,
+  );
+});
+
+test("daily global admission is atomic across simultaneous users and API instances", async (t) => {
+  const config = readConfig({
+    NODE_ENV: "test",
+    LLM_GLOBAL_DAILY_REQUEST_LIMIT: "1",
+  });
+  const f = await fixture(true, { LLM_GLOBAL_DAILY_REQUEST_LIMIT: "1" });
+  t.after(f.close);
+  const second = await buildApp({
+    db: f.db,
+    provider: new TestProvider(),
+    config,
+    testing: true,
+  });
+  t.after(() => second.close());
+  const users = [await chatUser(f), await chatUser(f)];
+  const results = await Promise.all(
+    users.map((user, i) =>
+      (i ? second : f.app).inject({
+        method: "POST",
+        url: `/v1/threads/${user.thread}/messages`,
+        headers: {
+          origin: "http://localhost:3000",
+          cookie: "citygo=" + user.token,
+        },
+        payload: {
+          text: "Квартира",
+          requestId: randomUUID(),
+          policyId: user.policyId,
+        },
+      }),
+    ),
+  );
+  assert.deepEqual(
+    results.map((result) => result.statusCode).sort(),
+    [200, 429],
+  );
+  assert.equal(
+    (await f.db.query("select * from chat_requests")).rows.length,
+    1,
+  );
+  assert.equal((await f.db.query("select * from messages")).rows.length, 2);
+  assert.equal(
+    (
+      await f.db.query<{ accepted_requests: number }>(
+        "select accepted_requests from ai_usage_daily",
+      )
+    ).rows[0]!.accepted_requests,
+    1,
+  );
+});
+
+test("failed requests consume personal quota across restarts and provider changes; zero disables new admissions", async (t) => {
+  let calls = 0;
+  const provider: StreamingProvider = {
+    name: "openai",
+    model: "test-error",
+    async *stream() {
+      calls++;
+      yield { type: "delta", text: "Часть" };
+      throw new Error("test failure");
+    },
+  };
+  const f = await fixture(provider, { LLM_USER_DAILY_REQUEST_LIMIT: "1" });
+  t.after(f.close);
+  const user = await chatUser(f);
+  const path = `/v1/threads/${user.thread}/messages`;
+  assert.match(
+    (
+      await f.call("POST", path, user.token, {
+        text: "Квартира",
+        requestId: randomUUID(),
+      })
+    ).body,
+    /"type":"error"/,
+  );
+  const switched: StreamingProvider = { ...provider, name: "gigachat" };
+  const restarted = await buildApp({
+    db: f.db,
+    provider: switched,
+    config: readConfig({ NODE_ENV: "test", LLM_USER_DAILY_REQUEST_LIMIT: "1" }),
+    testing: true,
+  });
+  t.after(() => restarted.close());
+  const switchedPolicyId = await f.consent(user.token, restarted);
+  const headers = {
+    origin: "http://localhost:3000",
+    cookie: "citygo=" + user.token,
+  };
+  assert.equal(
+    (
+      await restarted.inject({
+        method: "POST",
+        url: path,
+        headers,
+        payload: {
+          text: "Квартира",
+          requestId: randomUUID(),
+          policyId: switchedPolicyId,
+        },
+      })
+    ).statusCode,
+    429,
+  );
+  const other = await chatUser(f);
+  assert.equal(
+    (
+      await f.call(
+        "POST",
+        `/v1/threads/${other.thread}/messages`,
+        other.token,
+        { text: "Квартира", requestId: randomUUID() },
+      )
+    ).statusCode,
+    200,
+  );
+  const disabled = await buildApp({
+    db: f.db,
+    provider: switched,
+    config: readConfig({
+      NODE_ENV: "test",
+      LLM_GLOBAL_DAILY_REQUEST_LIMIT: "0",
+    }),
+    testing: true,
+  });
+  t.after(() => disabled.close());
+  assert.equal(
+    (
+      await disabled.inject({
+        method: "POST",
+        url: path,
+        headers,
+        payload: {
+          text: "Квартира",
+          requestId: randomUUID(),
+          policyId: switchedPolicyId,
+        },
+      })
+    ).statusCode,
+    503,
+  );
+  assert.equal(calls, 2);
+  assert.equal(
+    (await f.db.query("select * from chat_requests")).rows.length,
+    2,
+  );
+});
+
+test("revocation does not wait on model I/O and blocks admissions after the in-flight request", async (t) => {
+  let entered!: () => void;
+  let release!: () => void;
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const hold = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const f = await fixture({
+    name: "openai",
+    model: "test-held",
+    async *stream() {
+      entered();
+      await hold;
+      yield { type: "delta", text: "Уже принятый ответ" };
+      yield { type: "complete", model: "test-held" };
+    },
+  });
+  t.after(() => {
+    release();
+  });
+  t.after(f.close);
+  const user = await chatUser(f);
+  const path = `/v1/threads/${user.thread}/messages`;
+  const pending = f.call("POST", path, user.token, {
+    text: "Квартира",
+    requestId: randomUUID(),
+  });
+  // Bound the assertion so an accidental network-inside-transaction regression fails.
+  await Promise.race([
+    started,
+    new Promise<never>((_, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error("Provider not started")),
+        5000,
+      );
+      timer.unref();
+    }),
+  ]);
+  try {
+    const revoke = await Promise.race([
+      f.call("POST", "/v1/ai/consent", user.token, { action: "revoked" }),
+      new Promise<never>((_, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error("Revocation blocked on network")),
+          5000,
+        );
+        timer.unref();
+      }),
+    ]);
+    assert.equal(revoke.statusCode, 200);
+  } finally {
+    release();
+  }
+  assert.match((await pending).body, /"type":"done"/);
+  assert.equal(
+    (
+      await f.call("POST", path, user.token, {
+        text: "Квартира",
+        requestId: randomUUID(),
+      })
+    ).statusCode,
+    403,
+  );
+});
+
+test("readiness requires the AI access migration", async (t) => {
+  const f = await fixture(false);
+  t.after(f.close);
+  assert.equal((await f.call("GET", "/ready")).statusCode, 200);
+  await f.db.query(
+    "delete from citygo_migrations where name='0003_ai_access.sql'",
+  );
+  assert.equal((await f.call("GET", "/ready")).statusCode, 503);
+});
 
 test("trusted proxy clients have independent global, auth and chat rate limits", async (t) => {
   const f = await fixture(false, {
@@ -188,6 +601,7 @@ async function verticalSlice(
   t.after(f.close);
   const user = await f.register();
   const other = await f.register();
+  await f.consent(user.token);
   assert.equal((await f.call("GET", "/v1/dashboard")).statusCode, 401);
   assert.equal(
     (
@@ -468,6 +882,7 @@ test("GigaChat adapter mocked HTTP: interruption blocks XP without token refresh
   );
   t.after(f.close);
   const { token } = await f.register();
+  await f.consent(token);
   await f.call("POST", "/v1/questionnaire", token, testProfile);
   const dashboard = async () =>
     (await f.call("GET", "/v1/dashboard", token)).json<Dashboard>();
@@ -544,6 +959,7 @@ test("RouterAI adapter mocked HTTP: interrupted stream persists, blocks XP and p
   );
   t.after(f.close);
   const { token } = await f.register();
+  await f.consent(token);
   await f.call("POST", "/v1/questionnaire", token, testProfile);
   const dashboard = async () =>
     (await f.call("GET", "/v1/dashboard", token)).json<Dashboard>();
@@ -659,6 +1075,7 @@ test("interrupted replies are persisted but do not qualify for XP", async (t) =>
     },
   });
   t.after(() => broken.close());
+  const brokenPolicyId = await f.consent(user.token, broken);
   const response = await broken.inject({
     method: "POST",
     url: "/v1/threads/" + thread + "/messages",
@@ -666,7 +1083,11 @@ test("interrupted replies are persisted but do not qualify for XP", async (t) =>
       origin: "http://localhost:3000",
       cookie: "citygo=" + user.token,
     },
-    payload: { text: "Квартира", requestId: randomUUID() },
+    payload: {
+      text: "Квартира",
+      requestId: randomUUID(),
+      policyId: brokenPolicyId,
+    },
   });
   assert.match(response.body, /"type":"error"/);
   const saved = (
@@ -685,6 +1106,7 @@ test("interrupted replies are persisted but do not qualify for XP", async (t) =>
     ).statusCode,
     409,
   );
+  await f.consent(user.token);
   const recovered = await f.call(
     "POST",
     "/v1/threads/" + thread + "/messages",
@@ -714,6 +1136,7 @@ for (const failure of [
     });
     t.after(f.close);
     const user = await f.register();
+    await f.consent(user.token);
     await f.call("POST", "/v1/questionnaire", user.token, testProfile);
     const board = (
       await f.call("GET", "/v1/dashboard", user.token)
@@ -753,6 +1176,7 @@ test("changing injected providers between API instances preserves history and re
   const f = await fixture();
   t.after(f.close);
   const user = await f.register();
+  await f.consent(user.token);
   await f.call("POST", "/v1/questionnaire", user.token, testProfile);
   const initial = (
     await f.call("GET", "/v1/dashboard", user.token)
@@ -792,11 +1216,33 @@ test("changing injected providers between API instances preserves history and re
     origin: "http://localhost:3000",
     cookie: "citygo=" + user.token,
   };
+  const changed = (
+    await replacement.inject({ method: "GET", url: "/v1/dashboard", headers })
+  ).json<Dashboard>();
+  assert.equal(changed.aiAccess.granted, false);
+  assert.deepEqual(changed.thread!.messages, before.thread!.messages);
+  const rejected = await replacement.inject({
+    method: "POST",
+    url: `/v1/threads/${thread}/messages`,
+    headers,
+    payload: {
+      text: "Нельзя передавать без нового согласия",
+      requestId: randomUUID(),
+      policyId: changed.aiAccess.policy!.id,
+    },
+  });
+  assert.equal(rejected.statusCode, 403);
+  assert.deepEqual({ receivedHistory }, { receivedHistory: undefined });
+  const replacementPolicyId = await f.consent(user.token, replacement);
   const response = await replacement.inject({
     method: "POST",
     url: `/v1/threads/${thread}/messages`,
     headers,
-    payload: { text: "Второй вопрос о квартире", requestId: randomUUID() },
+    payload: {
+      text: "Второй вопрос о квартире",
+      requestId: randomUUID(),
+      policyId: replacementPolicyId,
+    },
   });
   assert.match(response.body, /"type":"done"/);
   assert.ok(Array.isArray(receivedHistory));

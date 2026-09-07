@@ -1,6 +1,39 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createClient } from "./index.js";
+test("client sends explicit consent actions and the viewed policy ID with chat", async () => {
+  const original = globalThis.fetch;
+  const requests: { path: string; body: unknown }[] = [];
+  globalThis.fetch = async (url, options) => {
+    requests.push({
+      path: String(url),
+      body: JSON.parse(String(options?.body)),
+    });
+    return String(url).endsWith("/messages")
+      ? new Response('data: {"type":"done","messageId":"1"}\n\n')
+      : Response.json({ ok: true });
+  };
+  try {
+    const client = createClient("http://test");
+    const policyId = "a".repeat(64);
+    await client.aiConsent({ action: "granted", policyId });
+    await client.stream("1", "test", "uuid", () => {}, undefined, policyId);
+    await client.aiConsent({ action: "revoked" });
+    assert.deepEqual(requests, [
+      {
+        path: "http://test/v1/ai/consent",
+        body: { action: "granted", policyId },
+      },
+      {
+        path: "http://test/v1/threads/1/messages",
+        body: { text: "test", requestId: "uuid", policyId },
+      },
+      { path: "http://test/v1/ai/consent", body: { action: "revoked" } },
+    ]);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
 test("SSE decoder preserves split UTF-8, multiple events and terminal state", async () => {
   const original = globalThis.fetch;
   const bytes = new TextEncoder().encode(

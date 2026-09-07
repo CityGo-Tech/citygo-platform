@@ -6,6 +6,7 @@ import type {
   Questionnaire,
   Quest,
   ModelGeneration,
+  AiPolicy,
 } from "@citygo/contracts";
 import { randomUUID } from "node:crypto";
 import { canTransitionQuest } from "@citygo/domain";
@@ -70,6 +71,8 @@ export class Repository {
   async dashboard(
     user: { id: string; email: string },
     provider: Dashboard["provider"],
+    policy: AiPolicy | null,
+    dailyLimit: number,
   ): Promise<Dashboard> {
     return this.db.transaction(async (tx) => {
       const profile =
@@ -107,7 +110,49 @@ export class Repository {
           ? { id: thread.id, agentKey: thread.agent_key, messages }
           : null,
         provider,
+        aiAccess: {
+          policy,
+          granted: policy
+            ? await this.hasAiConsent(tx, user.id, policy.id)
+            : false,
+          dailyLimit,
+        },
       };
+    });
+  }
+  private async hasAiConsent(tx: Sql, userId: string, policyId: string) {
+    return !!(
+      await tx.query(
+        "select 1 from ai_consents where user_id=$1 and policy_id=$2 and granted=true",
+        [userId, policyId],
+      )
+    ).rows.length;
+  }
+  async aiConsent(userId: string, policy: AiPolicy | null) {
+    await this.db.transaction(async (tx) => {
+      // Same admission lock as reserveChat: a committed revocation blocks all
+      // later admissions. Already admitted requests may finish outside this lock.
+      await tx.query("select id from users where id=$1 for update", [userId]);
+      if (policy) {
+        await tx.query(
+          "insert into ai_consents(user_id,policy_id,granted) values ($1,$2,true) on conflict (user_id) do update set policy_id=$2,granted=true,updated_at=now()",
+          [userId, policy.id],
+        );
+      } else {
+        await tx.query(
+          "update ai_consents set granted=false,updated_at=now() where user_id=$1",
+          [userId],
+        );
+      }
+      await tx.query(
+        "insert into consent_events(user_id,consent_key,action,policy_version,details) values ($1,'ai-recipient',$2,$3,$4)",
+        [
+          userId,
+          policy ? "granted" : "revoked",
+          policy?.id ?? "all-recipients",
+          JSON.stringify(policy ?? {}),
+        ],
+      );
     });
   }
   async history(tx: Sql, threadId: string): Promise<Message[]> {
@@ -148,7 +193,7 @@ export class Repository {
           [userId, key, JSON.stringify(value)],
         );
       await tx.query(
-        "insert into consent_events(user_id,consent_key,action,policy_version) values ($1,'ai-profile-processing','granted','2026-09-mvp')",
+        "insert into consent_events(user_id,consent_key,action,policy_version) values ($1,'profile-processing','granted','2026-09-local-profile-v1')",
         [userId],
       );
       await tx.query(
@@ -254,8 +299,14 @@ export class Repository {
     threadId: string,
     requestId: string,
     text: string,
+    access: {
+      policyId: string;
+      userDailyLimit: number;
+      globalDailyLimit: number;
+    },
   ) {
     return this.db.transaction(async (tx) => {
+      await tx.query("select id from users where id=$1 for update", [userId]);
       const thread =
         (
           await tx.query<Thread>(
@@ -277,14 +328,54 @@ export class Repository {
         ).rows.length
       )
         fail(409, "Этот запрос уже был принят");
+      if (!(await this.hasAiConsent(tx, userId, access.policyId)))
+        fail(403, "Подтвердите передачу данных выбранному AI-получателю");
+      if (access.userDailyLimit === 0 || access.globalDailyLimit === 0)
+        fail(503, "Чат временно отключён администратором.");
+      // UTC day from the database, shared across processes/providers/restarts.
+      const day = (
+        await tx.query<{ day: string }>(
+          "select (now() at time zone 'UTC')::date::text as day",
+        )
+      ).rows[0]!.day;
+      await tx.query(
+        "insert into ai_usage_daily(usage_day) values ($1) on conflict do nothing",
+        [day],
+      );
+      const global = (
+        await tx.query<{ accepted_requests: number }>(
+          "select accepted_requests from ai_usage_daily where usage_day=$1 for update",
+          [day],
+        )
+      ).rows[0]!;
+      const personal =
+        (
+          await tx.query<{ accepted_requests: number }>(
+            "select accepted_requests from ai_user_usage_daily where user_id=$1 and usage_day=$2",
+            [userId, day],
+          )
+        ).rows[0]?.accepted_requests ?? 0;
+      if (
+        global.accepted_requests >= access.globalDailyLimit ||
+        personal >= access.userDailyLimit
+      )
+        fail(429, "Суточный лимит чата исчерпан. Попробуйте после 00:00 UTC.");
+      await tx.query(
+        "update ai_usage_daily set accepted_requests=accepted_requests+1 where usage_day=$1",
+        [day],
+      );
+      await tx.query(
+        "insert into ai_user_usage_daily(user_id,usage_day,accepted_requests) values ($1,$2,1) on conflict (user_id,usage_day) do update set accepted_requests=ai_user_usage_daily.accepted_requests+1",
+        [userId, day],
+      );
       const lease = randomUUID();
       await tx.query(
         "update agent_threads set busy_until=now()+interval '90 seconds',lease_token=$2 where id=$1",
         [threadId, lease],
       );
       await tx.query(
-        "insert into chat_requests(thread_id,request_id,status) values ($1,$2,'running')",
-        [threadId, requestId],
+        "insert into chat_requests(thread_id,request_id,status,ai_policy_id) values ($1,$2,'running',$3)",
+        [threadId, requestId, access.policyId],
       );
       await tx.query(
         "insert into messages(thread_id,role,content,metadata) values ($1,'user',$2,$3)",

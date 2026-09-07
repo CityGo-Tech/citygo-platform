@@ -54,6 +54,19 @@ export const serverConfigSchema = z.object({
     .max(60000)
     .default(60000),
   LLM_MAX_OUTPUT_TOKENS: z.coerce.number().int().min(1).max(8000).default(1400),
+  // Accepted chat requests, not currency or upstream HTTP-attempt accounting.
+  LLM_USER_DAILY_REQUEST_LIMIT: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(10000)
+    .default(20),
+  LLM_GLOBAL_DAILY_REQUEST_LIMIT: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(1000000)
+    .default(200),
   OPENAI_API_KEY: optionalSetting,
   OPENAI_MODEL: optionalSetting,
   ROUTERAI_API_KEY: optionalSetting,

@@ -9,6 +9,19 @@ const production = {
   TRUSTED_PROXY_CIDRS: "10.0.0.8/32, ::1/128",
 };
 
+test("daily admission limits are bounded integers; zero disables admission", () => {
+  assert.equal(readConfig({}).LLM_USER_DAILY_REQUEST_LIMIT, 20);
+  assert.equal(readConfig({}).LLM_GLOBAL_DAILY_REQUEST_LIMIT, 200);
+  for (const name of [
+    "LLM_USER_DAILY_REQUEST_LIMIT",
+    "LLM_GLOBAL_DAILY_REQUEST_LIMIT",
+  ] as const) {
+    assert.equal(readConfig({ [name]: "0" })[name], 0);
+    for (const value of ["-1", "1.5", "NaN", "1000001"])
+      assert.throws(() => readConfig({ [name]: value }));
+  }
+});
+
 test("GigaChat settings are blank-safe and do not implicitly select a provider", () => {
   const config = readConfig({
     GIGACHAT_CREDENTIALS: " key ",

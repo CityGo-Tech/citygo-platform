@@ -66,7 +66,7 @@ export default function Home() {
     const data = new FormData(event.currentTarget);
     void act(async () => {
       if (data.get("aiConsent") !== "on")
-        throw new Error("Подтвердите согласие на AI-рекомендации");
+        throw new Error("Подтвердите использование анкеты для плана");
       await api.questionnaire({
         originCity: String(data.get("originCity")),
         targetCity: String(data.get("targetCity")),
@@ -80,7 +80,8 @@ export default function Home() {
   }
   async function chat(event: FormEvent) {
     event.preventDefault();
-    if (!board?.thread || !text.trim() || busy) return;
+    if (!board?.thread || !board.aiAccess?.granted || !text.trim() || busy)
+      return;
     const message = text;
     setText("");
     setDraft("");
@@ -102,6 +103,7 @@ export default function Home() {
             }
           },
           abort.current!.signal,
+          board.aiAccess.policy?.id,
         );
       } catch (e) {
         if (!abort.current?.signal.aborted) throw e;
@@ -263,6 +265,15 @@ export default function Home() {
             onText={setText}
             onChat={chat}
             onStop={() => abort.current?.abort()}
+            onConsent={(input) =>
+              void act(async () => {
+                try {
+                  await api.aiConsent(input);
+                } finally {
+                  await refresh();
+                }
+              })
+            }
             onStart={(id) =>
               act(async () => {
                 await api.start(id);

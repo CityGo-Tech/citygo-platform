@@ -66,6 +66,21 @@ test("questionnaire → plan → chat → +60 XP → next quest survives reload"
   await page.getByRole("button", { name: "Начать квест" }).click();
   await expect(page).toHaveURL(/#chat$/);
   await expect(
+    page.getByRole("button", { name: "Отправить", exact: true }),
+  ).toBeDisabled();
+  await expect(
+    page.getByRole("button", { name: "Подтвердить получателя AI" }),
+  ).toBeDisabled();
+  await page
+    .getByRole("checkbox", {
+      name: "Разрешаю передачу указанных данных этому получателю для рекомендаций.",
+    })
+    .check();
+  await page.getByRole("button", { name: "Подтвердить получателя AI" }).click();
+  await expect(
+    page.getByText("Передача данных разрешена: OpenAI", { exact: false }),
+  ).toBeVisible();
+  await expect(
     page.getByRole("button", { name: "Завершить квест · +60 XP" }),
   ).toBeDisabled();
   await page
@@ -80,6 +95,20 @@ test("questionnaire → plan → chat → +60 XP → next quest survives reload"
     .fill("Нужна квартира рядом с метро, помоги выбрать критерии");
   await page.getByRole("button", { name: "Отправить", exact: true }).click();
   await expect(page.getByRole("log")).toContainText("Уточните район");
+  await page.getByRole("button", { name: "Отозвать разрешение AI" }).click();
+  await expect(
+    page.getByRole("button", { name: "Подтвердить получателя AI" }),
+  ).toBeDisabled();
+  await page.reload();
+  await expect(page.getByRole("log")).toContainText("Уточните район");
+  await expect(page.getByLabel("Сообщение помощнику")).toBeDisabled();
+  await page
+    .getByRole("checkbox", {
+      name: "Разрешаю передачу указанных данных этому получателю для рекомендаций.",
+    })
+    .check();
+  await page.getByRole("button", { name: "Подтвердить получателя AI" }).click();
+  await expect(page.getByLabel("Сообщение помощнику")).toBeEnabled();
   await page.screenshot({
     path: testInfo.outputPath("figma-chat.png"),
     fullPage: true,

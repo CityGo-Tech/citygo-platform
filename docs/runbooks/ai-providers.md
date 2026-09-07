@@ -1,21 +1,25 @@
-# AI provider rollout — stage 3 of 5
+# AI provider rollout — stage 4A of 5
 
-This release adds GigaChat alongside RouterAI for local synthetic-data pilots and
-retains independent direct OpenAI. RouterAI and GigaChat production activation
-remain blocked pending recipient/consent rollout. It does **not** enable automatic
-failover or an admin selector. No model is selected or upgraded automatically.
+This release adds explicit recipient consent and shared daily chat-admission caps
+in Web and Expo. All three independent adapters remain available. RouterAI and
+GigaChat production activation stays blocked: the technical disclosure is not an
+operator-approved privacy notice. It does **not** enable automatic failover or an
+admin selector. Stage 4 is split into reviewable steps; 4A is not completion of
+the entire operational rollout. No model is selected or upgraded automatically.
 
 ## Server configuration
 
-| Setting                    | Behavior                                                                                                                                           |
-| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `LLM_PROVIDER` unset/blank | Preserve legacy OpenAI selection when both OpenAI settings exist. Both absent means AI is unconfigured. A partial pair is an error.                |
-| `LLM_PROVIDER=openai`      | Require both `OPENAI_API_KEY` and `OPENAI_MODEL`.                                                                                                  |
-| `LLM_PROVIDER=disabled`    | Disable AI explicitly, even if keys remain configured.                                                                                             |
-| `LLM_PROVIDER=routerai`    | Local/test only; require separate key, model and upstream below. Production startup fails before database connection, even with valid credentials. |
-| `LLM_PROVIDER=gigachat`    | Local/test only; require a separate authorization key, model and account scope below. Production startup fails before database connection.         |
-| `LLM_REQUEST_TIMEOUT_MS`   | Integer 1000–60000, default 60000. Shared API deadline includes the provider's retry.                                                              |
-| `LLM_MAX_OUTPUT_TOKENS`    | Integer 1–8000, default 1400. Existing 24000-character response cap also applies.                                                                  |
+| Setting                          | Behavior                                                                                                                                           |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `LLM_PROVIDER` unset/blank       | Preserve legacy OpenAI selection when both OpenAI settings exist. Both absent means AI is unconfigured. A partial pair is an error.                |
+| `LLM_PROVIDER=openai`            | Require both `OPENAI_API_KEY` and `OPENAI_MODEL`.                                                                                                  |
+| `LLM_PROVIDER=disabled`          | Disable AI explicitly, even if keys remain configured.                                                                                             |
+| `LLM_PROVIDER=routerai`          | Local/test only; require separate key, model and upstream below. Production startup fails before database connection, even with valid credentials. |
+| `LLM_PROVIDER=gigachat`          | Local/test only; require a separate authorization key, model and account scope below. Production startup fails before database connection.         |
+| `LLM_REQUEST_TIMEOUT_MS`         | Integer 1000–60000, default 60000. Shared API deadline includes the provider's retry.                                                              |
+| `LLM_MAX_OUTPUT_TOKENS`          | Integer 1–8000, default 1400. Existing 24000-character response cap also applies.                                                                  |
+| `LLM_USER_DAILY_REQUEST_LIMIT`   | Integer 0–10000, default 20. Per-user accepted chats per UTC day. Zero blocks admission.                                                           |
+| `LLM_GLOBAL_DAILY_REQUEST_LIMIT` | Integer 0–1000000, default 200. Shared accepted chats per UTC day. Zero blocks admission.                                                          |
 
 Configure secrets only in the API environment or ignored root `.env`, never in
 `NEXT_PUBLIC_*`, the mobile bundle, issue/PR bodies or chat. The launch scripts
@@ -28,6 +32,77 @@ To retain OpenAI, keep `OPENAI_API_KEY` and `OPENAI_MODEL`, and leave
 For rollback after later adapter releases, select `openai`, verify both OpenAI
 settings, and restart the API. Existing histories and quest progress remain in
 CityGo; access to a real model must be verified in the deployment environment.
+
+## Recipient consent and admission (stage 4A)
+
+The questionnaire only permits CityGo to build its local plan. The legacy field
+name `aiConsent` remains for contract compatibility, but neither it nor historical
+`ai-profile-processing` consent events authorize external AI calls. There is no
+automatic consent backfill. Existing accounts must confirm the recipient too.
+
+The authenticated dashboard exposes `aiAccess`: a server-created disclosure with
+provider, requested model, RouterAI upstream/country or GigaChat account scope,
+data description and version. Its SHA-256 ID binds the **entire public snapshot**;
+keys, tokens and CA paths are excluded. Changing any disclosed setting produces
+a different ID. Future disclosure/purpose changes must change the snapshot too.
+RouterAI's upstream tag and country filter are configuration, not certification of
+legal recipients, residence or retention. Review those before production activation.
+
+Web uses an unchecked checkbox plus confirmation; Expo uses an explicit permission
+button after the same disclosure. `POST /v1/ai/consent` accepts
+`{action:"granted",policyId}` or `{action:"revoked"}`. The server chooses the user
+from the session and validates the current policy before granting. Revocation
+works even when AI is disabled or the old recipient is no longer configured.
+Only one current grant per user is retained; grant/revoke events are append-only
+and include the granted public snapshot for auditing. A grant to another snapshot
+replaces the old one, so returning to an earlier provider requires reconfirmation.
+
+Chat sends the ID that the client actually displayed. Missing/stale IDs return
+409; current ID without a matching grant returns 403 before storing a message or
+calling AI. The clients refresh after errors but never auto-consent or replay a
+message. History stays readable. After a provider switch, granting permission
+also permits the disclosed history (including prior providers' answers) to be sent.
+
+Migration `0003_ai_access.sql` creates consent state and daily counters; `/ready`
+requires it. Admission locks the user, owned thread and UTC global-counter row in
+a consistent order. Consent, duplicate/busy checks, quota increments, lease and
+request/message insert commit atomically. The model runs **outside** this short
+transaction. A revocation committed before admission blocks the request; an
+already admitted request can finish. Revocation cannot retract transmitted data
+and does not erase CityGo history or constitute provider-side deletion.
+
+Counters are stored in PostgreSQL, shared across users/replicas/provider changes,
+and survive restarts. They reset by UTC date, never local server timezone. Rejected
+or duplicate requests do not count. Every admitted chat counts, including the
+local human-handoff response and failed/interrupted model requests. No refunds or
+automatic retries at admission. Do not delete counters to work around a cap.
+
+These are **request caps, not monetary budgets** or exact upstream-attempt counts.
+The existing bounded OpenAI SDK retry and GigaChat pre-stream 401 refresh still
+apply. Input sizes and output tokens are bounded elsewhere, but actual prices,
+provider-side billing limits and an approved pilot budget remain required. All
+replicas must use identical settings; do not serve mixed configs behind a balancer.
+
+### Switching/rollback checklist for this release
+
+1. Keep the current credentials; never paste keys into chat or PRs. For RouterAI or
+   GigaChat use only an authorized synthetic-data local pilot until the production
+   gate is explicitly addressed in a reviewed later change.
+2. Drain and stop all old API instances. Apply the new migration before starting
+   this version. Ship updated Web/Expo clients; old clients fail closed.
+3. Set the intended `LLM_PROVIDER` and its own model/required settings, review the
+   recipient and caps, and restart all API instances consistently. No live choice
+   or paid request is made by this PR.
+4. Check readiness, login and the displayed recipient/model. Withhold confirmation
+   first: no new message should reach a provider. Then explicitly grant only in the
+   separately authorized pilot, test revocation and preserved history.
+5. To stop AI, select `disabled` and restart consistently. To return to direct
+   OpenAI, retain its settings, select `openai`, drain/restart and reconfirm the
+   disclosure if needed. Daily usage and histories are not reset.
+
+Do not roll back to pre-4A application code while serving real chat traffic: it
+would ignore the new consent gates despite compatible additive SQL. Disable AI
+or use a forward fix. Never edit or remove an applied migration.
 
 Direct OpenAI always uses `https://api.openai.com/v1`, not an ambient
 `OPENAI_BASE_URL`. It retains Responses API, `store:false`, current instructions,
@@ -118,8 +193,8 @@ OAuth response body or raw provider error is persisted in CityGo history or logs
 A chat HTTP 401 before SSE can trigger exactly **one** refresh and resubmission
 within the same overall deadline. A second 401 fails. There is no retry after a
 visible delta, on stream errors, or for 403/429/5xx. Token acquisition itself does
-not retry. Separate API processes have separate token caches; cross-process quotas
-and spending controls remain part of the later operational stage.
+not retry. Separate API processes have separate token caches. Daily chat-admission
+quotas are now shared; exact upstream-attempt and financial controls remain later work.
 
 RouterAI and GigaChat share the bounded text-only completion decoder, with the
 same stop + `[DONE]` requirement and interruption semantics. GigaChat `blacklist`,
@@ -164,7 +239,7 @@ agent handoff.
 attempts, plus actual model/usage when reported. Usage is not a monetary cost.
 Historical rows and system/user messages return null generation metadata; they
 are not relabelled with the currently configured provider. The field is additive
-in shared Web/Expo contracts. No migration or new index is required: metadata is
+in shared Web/Expo contracts. Generation metadata needs no new index: it is
 read with existing thread-scoped history queries, not used as a search filter.
 External model waits remain outside database transactions.
 
@@ -183,11 +258,13 @@ completion. XP remains server-controlled and exactly-once.
   API instances, ownership, handoff and exactly-once XP.
 - Stage 2 (completed): RouterAI adapter, explicit upstream routing, separate
   credentials/model, failure tests and local-only activation boundary.
-- Stage 3 (this release): GigaChat adapter with account-specific scope, cached OAuth token,
+- Stage 3 (completed): GigaChat adapter with account-specific scope, cached OAuth token,
   single-flight refresh, current API URL, and TLS certificate verification.
-- Stage 4: operational switching, approved data-recipient/consent policy,
-  bounded spending/attempts and optional failover, off by default. Never splice
-  another provider into an answer after its first visible delta.
+- Stage 4A (this release): technical recipient-specific grant/revoke, stale-client
+  guard, audit, Web/Expo UI and atomic cross-process daily admission caps.
+- Stage 4B (remaining): protected operational selector, approved recipient/privacy
+  notice, explicit per-attempt/financial controls and optional failover, off by
+  default. Never splice another provider into an answer after its first visible delta.
 - Stage 5: cross-provider E2E/failure matrix, opt-in budgeted live smoke checks,
   deployment instructions and a verified return to direct OpenAI.
 

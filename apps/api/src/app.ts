@@ -9,6 +9,7 @@ import {
   completionSchema,
   credentialsSchema,
   questionnaireSchema,
+  aiConsentSchema,
   type StreamEvent,
   type ModelGeneration,
 } from "@citygo/contracts";
@@ -18,6 +19,7 @@ import { instructions, profileContext, routeAgent } from "@citygo/agents";
 import { redactPaths } from "@citygo/observability";
 import type { StreamingProvider } from "@citygo/llm";
 import { hashPassword, verifyPassword, tokenHash, newToken } from "./auth.js";
+import { createAiPolicy } from "./ai-policy.js";
 
 export async function buildApp(options: {
   db: Database;
@@ -27,6 +29,7 @@ export async function buildApp(options: {
 }) {
   const config = options.config ?? readConfig();
   const repo = new Repository(options.db);
+  const aiPolicy = createAiPolicy(config, options.provider);
   const app = Fastify({
     logger: options.testing ? false : { redact: redactPaths },
     bodyLimit: 16 * 1024,
@@ -110,7 +113,7 @@ export async function buildApp(options: {
   app.get("/ready", async () => {
     try {
       const result = await options.db.query(
-        "select 1 from citygo_migrations where name='0002_vertical_slice.sql'",
+        "select 1 from citygo_migrations where name='0003_ai_access.sql'",
       );
       if (!result.rows.length) throw new Error("Pending migration");
     } catch {
@@ -174,8 +177,24 @@ export async function buildApp(options: {
     repo.dashboard(
       await authenticate(request),
       options.provider?.name ?? "unconfigured",
+      aiPolicy,
+      config.LLM_USER_DAILY_REQUEST_LIMIT,
     ),
   );
+  app.post("/v1/ai/consent", async (request) => {
+    const user = await authenticate(request);
+    const input = aiConsentSchema.parse(request.body);
+    if (
+      input.action === "granted" &&
+      (!aiPolicy || input.policyId !== aiPolicy.id)
+    )
+      throw new DomainError(
+        409,
+        "AI-получатель изменился. Обновите страницу и проверьте условия.",
+      );
+    await repo.aiConsent(user.id, input.action === "granted" ? aiPolicy : null);
+    return { ok: true };
+  });
   app.post("/v1/questionnaire", async (request) => {
     const user = await authenticate(request);
     await repo.questionnaire(user.id, questionnaireSchema.parse(request.body));
@@ -205,16 +224,26 @@ export async function buildApp(options: {
       const user = await authenticate(request);
       const threadId = questParams.parse(request.params).id;
       const input = chatInputSchema.parse(request.body);
-      if (!options.provider)
+      if (!options.provider || !aiPolicy)
         throw new DomainError(
           503,
           "AI пока не подключён. Администратору нужно настроить провайдера на сервере.",
+        );
+      if (input.policyId !== aiPolicy.id)
+        throw new DomainError(
+          409,
+          "AI-получатель изменился или не подтверждён. Обновите страницу и проверьте условия.",
         );
       const reservation = await repo.reserveChat(
         user.id,
         threadId,
         input.requestId,
         input.text,
+        {
+          policyId: aiPolicy.id,
+          userDailyLimit: config.LLM_USER_DAILY_REQUEST_LIMIT,
+          globalDailyLimit: config.LLM_GLOBAL_DAILY_REQUEST_LIMIT,
+        },
       );
       const routing = routeAgent(input.text, reservation.thread.agent_key);
       const abort = new AbortController();

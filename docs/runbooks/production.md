@@ -34,6 +34,17 @@ Rollback is a prior application build only when compatible with applied schema.
 Never edit an applied migration to roll back. Add a forward repair migration.
 Exact hosting commands and monitoring configuration depend on the chosen provider.
 
+AI consent rollout: apply `0003_ai_access.sql`, update Web/Expo and drain old API
+instances before serving the new version. Existing users must explicitly confirm
+the recipient; the questionnaire checkbox does not authorize chat. Configure
+`LLM_USER_DAILY_REQUEST_LIMIT` and `LLM_GLOBAL_DAILY_REQUEST_LIMIT` consistently
+on every replica (defaults 20/200 per UTC day; zero blocks new chat). These shared
+admission caps are not financial budgets or a replacement for provider-side caps.
+Do not revert to pre-consent application code with chat enabled. The technical
+disclosure is not an approved legal notice; RouterAI/GigaChat production remain
+blocked. See [AI provider rollout](ai-providers.md) for admission/revocation
+semantics and the remaining stage 4B launch requirements.
+
 ## Forwarded client address: required ingress contract
 
 Next.js preserves an existing X-Forwarded-For header. An allowlist at the API alone

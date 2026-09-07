@@ -1,4 +1,9 @@
-import type { Dashboard, Questionnaire, StreamEvent } from "@citygo/contracts";
+import type {
+  AiConsentInput,
+  Dashboard,
+  Questionnaire,
+  StreamEvent,
+} from "@citygo/contracts";
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -36,6 +41,8 @@ export function createClient(
       request<{ token?: string }>("/v1/auth/" + mode, { email, password }),
     logout: () => request("/v1/auth/logout", {}),
     dashboard: () => request<Dashboard>("/v1/dashboard"),
+    aiConsent: (input: AiConsentInput) =>
+      request<{ ok: true }>("/v1/ai/consent", input),
     questionnaire: (profile: Questionnaire) =>
       request("/v1/questionnaire", profile),
     start: (id: string) =>
@@ -55,6 +62,7 @@ export function createClient(
       requestId: string,
       onEvent: (event: StreamEvent) => void,
       signal?: AbortSignal,
+      policyId?: string,
     ) {
       const response = await fetch(
         base + "/v1/threads/" + threadId + "/messages",
@@ -62,7 +70,7 @@ export function createClient(
           method: "POST",
           credentials: "include",
           headers: headers(true),
-          body: JSON.stringify({ text, requestId }),
+          body: JSON.stringify({ text, requestId, policyId }),
           signal,
         },
       );
