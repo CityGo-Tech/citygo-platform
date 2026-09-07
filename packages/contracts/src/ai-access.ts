@@ -60,4 +60,27 @@ export type AiControlStatus = {
       "not_configured" | "production_blocked" | "server_disabled" | null;
   }[];
   audit: AiRoutingAudit[];
+  // Additive for older admin clients/servers. Never a billing statement.
+  attempts?: AiAttemptOverview;
+};
+
+export type AiAttemptOverview = {
+  day: string;
+  reservedToday: number;
+  userDailyLimit: number;
+  globalDailyLimit: number;
+  configurationMatches: boolean;
+  pinnedLimits: { userDailyLimit: number; globalDailyLimit: number } | null;
+  maxPerRequest: 2;
+  recent: {
+    userId: string;
+    threadId: string;
+    requestId: string;
+    attemptNumber: number;
+    provider: AiProviderId;
+    model: string;
+    routingRevision: number;
+    reservedAt: string;
+    requestStatus: "running" | "complete" | "interrupted";
+  }[];
 };

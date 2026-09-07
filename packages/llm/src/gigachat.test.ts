@@ -62,6 +62,43 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+for (const denied of [false, true]) {
+  test(`GigaChat auth retry awaits model-attempt permission (denied=${denied})`, async () => {
+    let chats = 0,
+      auth = 0,
+      guards = 0;
+    const provider = make(async (url) => {
+      if (url === gigaAuthUrl) {
+        auth++;
+        return token("token-" + auth);
+      }
+      chats++;
+      return chats === 1 ? new Response("", { status: 401 }) : sse();
+    });
+    const run = async () => {
+      for await (const event of provider.stream(
+        "",
+        [],
+        new AbortController().signal,
+        {
+          beforeRetry: async () => {
+            guards++;
+            assert.equal(chats, 1);
+            if (denied) throw new Error("test quota");
+          },
+        },
+      )) {
+        assert.ok(event);
+      }
+    };
+    if (denied) await assert.rejects(run());
+    else await run();
+    assert.equal(auth, 2);
+    assert.equal(chats, denied ? 1 : 2);
+    assert.equal(guards, 1);
+  });
+}
+
 test("GigaChat has separate OAuth and chat recipients, scope, UUID, limits and cached token", async () => {
   let auth = 0,
     chat = 0;

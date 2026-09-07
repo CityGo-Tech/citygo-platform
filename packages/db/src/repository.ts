@@ -10,6 +10,8 @@ import type {
   AiRouting,
   AiRoutingAudit,
   AiRoutingInput,
+  AiAttemptOverview,
+  AiProviderId,
 } from "@citygo/contracts";
 import { randomUUID } from "node:crypto";
 import { canTransitionQuest } from "@citygo/domain";
@@ -29,6 +31,177 @@ type User = { id: string; email: string; password_hash: string };
 type Thread = { id: string; agent_key: AgentKey; busy_until: string | null };
 export class Repository {
   constructor(public db: Database) {}
+  async reserveAiAttempt(input: {
+    userId: string;
+    threadId: string;
+    requestId: string;
+    lease: string;
+    attemptNumber: number;
+    provider: AiProviderId;
+    model: string;
+    policyId: string;
+    routingRevision: number;
+    userDailyLimit: number;
+    globalDailyLimit: number;
+  }) {
+    if (
+      !Number.isInteger(input.attemptNumber) ||
+      input.attemptNumber < 1 ||
+      input.attemptNumber > 2
+    )
+      fail(429, "Допустимое число попыток ответа исчерпано.");
+    if (input.userDailyLimit === 0 || input.globalDailyLimit === 0)
+      fail(503, "Обращения к AI временно отключены администратором.");
+    await this.db.transaction(async (tx) => {
+      // Same user -> thread -> daily-counter order as chat admission. Do not
+      // lock current routing: an admitted answer keeps its pinned recipient.
+      await tx.query("select id from users where id=$1 for update", [
+        input.userId,
+      ]);
+      const owner = await tx.query(
+        "select id from agent_threads where id=$1 and user_id=$2 and lease_token=$3 and busy_until>clock_timestamp() for update",
+        [input.threadId, input.userId, input.lease],
+      );
+      if (!owner.rows.length) fail(409, "Запрос AI устарел.");
+      const request = await tx.query(
+        "select request_id from chat_requests where thread_id=$1 and request_id=$2 and status='running' and ai_policy_id=$3 and ai_routing_revision=$4",
+        [
+          input.threadId,
+          input.requestId,
+          input.policyId,
+          input.routingRevision,
+        ],
+      );
+      if (!request.rows.length) fail(409, "Запрос AI устарел.");
+      const previous = (
+        await tx.query<{
+          attempt_number: number;
+          provider: string;
+          model: string;
+        }>(
+          "select attempt_number,provider,model from ai_model_attempts where thread_id=$1 and request_id=$2 order by attempt_number desc limit 1",
+          [input.threadId, input.requestId],
+        )
+      ).rows[0];
+      if (
+        (previous?.attempt_number ?? 0) + 1 !== input.attemptNumber ||
+        (previous &&
+          (previous.provider !== input.provider ||
+            previous.model !== input.model))
+      )
+        fail(409, "Попытка AI уже учтена или не соответствует запросу.");
+      const day = (
+        await tx.query<{ day: string }>(
+          "select (now() at time zone 'UTC')::date::text as day",
+        )
+      ).rows[0]!.day;
+      await tx.query(
+        "insert into ai_model_attempt_daily(usage_day,user_limit,global_limit) values ($1,$2,$3) on conflict do nothing",
+        [day, input.userDailyLimit, input.globalDailyLimit],
+      );
+      const global = (
+        await tx.query<{
+          reserved_attempts: number;
+          user_limit: number;
+          global_limit: number;
+        }>(
+          "select reserved_attempts,user_limit,global_limit from ai_model_attempt_daily where usage_day=$1 for update",
+          [day],
+        )
+      ).rows[0]!;
+      // The first reservation pins today's limits across replicas. A different
+      // configuration fails closed; it cannot silently raise/reset the cap.
+      if (
+        global.user_limit !== input.userDailyLimit ||
+        global.global_limit !== input.globalDailyLimit
+      )
+        fail(
+          503,
+          "Лимиты AI не согласованы между серверами. Обратитесь к администратору.",
+        );
+      const personal =
+        (
+          await tx.query<{ reserved_attempts: number }>(
+            "select reserved_attempts from ai_user_model_attempt_daily where user_id=$1 and usage_day=$2",
+            [input.userId, day],
+          )
+        ).rows[0]?.reserved_attempts ?? 0;
+      if (
+        global.reserved_attempts >= input.globalDailyLimit ||
+        personal >= input.userDailyLimit
+      )
+        fail(
+          429,
+          "Суточный лимит обращений к AI исчерпан. Попробуйте после 00:00 UTC.",
+        );
+      await tx.query(
+        "update ai_model_attempt_daily set reserved_attempts=reserved_attempts+1 where usage_day=$1",
+        [day],
+      );
+      await tx.query(
+        "insert into ai_user_model_attempt_daily(user_id,usage_day,reserved_attempts) values ($1,$2,1) on conflict(user_id,usage_day) do update set reserved_attempts=ai_user_model_attempt_daily.reserved_attempts+1",
+        [input.userId, day],
+      );
+      await tx.query(
+        "insert into ai_model_attempts(thread_id,request_id,attempt_number,user_id,provider,model,policy_id,routing_revision) values ($1,$2,$3,$4,$5,$6,$7,$8)",
+        [
+          input.threadId,
+          input.requestId,
+          input.attemptNumber,
+          input.userId,
+          input.provider,
+          input.model,
+          input.policyId,
+          input.routingRevision,
+        ],
+      );
+    });
+  }
+  async aiAttemptOverview(
+    userDailyLimit: number,
+    globalDailyLimit: number,
+  ): Promise<AiAttemptOverview> {
+    const today = (
+      await this.db.query<{
+        day: string;
+        reserved: number;
+        user_limit: number | null;
+        global_limit: number | null;
+      }>(
+        `select d.day::text,coalesce(a.reserved_attempts,0) as reserved,a.user_limit,a.global_limit
+       from (select (now() at time zone 'UTC')::date as day) d
+       left join ai_model_attempt_daily a on a.usage_day=d.day`,
+      )
+    ).rows[0]!;
+    const recent = (
+      await this.db.query<AiAttemptOverview["recent"][number]>(
+        `select a.user_id::text as "userId",a.thread_id::text as "threadId",a.request_id::text as "requestId",
+       a.attempt_number as "attemptNumber",a.provider,a.model,a.routing_revision as "routingRevision",
+       to_char(a.reserved_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "reservedAt",r.status as "requestStatus"
+       from ai_model_attempts a join chat_requests r using(thread_id,request_id)
+       order by a.reserved_at desc,a.thread_id desc,a.request_id desc,a.attempt_number desc limit 20`,
+      )
+    ).rows;
+    return {
+      day: today.day,
+      reservedToday: today.reserved,
+      userDailyLimit,
+      globalDailyLimit,
+      maxPerRequest: 2,
+      pinnedLimits:
+        today.user_limit === null
+          ? null
+          : {
+              userDailyLimit: today.user_limit,
+              globalDailyLimit: today.global_limit!,
+            },
+      configurationMatches:
+        today.user_limit === null ||
+        (today.user_limit === userDailyLimit &&
+          today.global_limit === globalDailyLimit),
+      recent,
+    };
+  }
   async initializeAiRouting(policy: AiPolicy | null) {
     await this.db.transaction(async (tx) => {
       const inserted = await tx.query<AiRouting>(

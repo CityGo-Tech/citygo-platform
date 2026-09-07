@@ -22,6 +22,20 @@ test("daily admission limits are bounded integers; zero disables admission", () 
   }
 });
 
+test("model attempt limits are separate bounded integers with a hard zero stop", () => {
+  assert.equal(readConfig({}).LLM_USER_DAILY_ATTEMPT_LIMIT, 20);
+  assert.equal(readConfig({}).LLM_GLOBAL_DAILY_ATTEMPT_LIMIT, 200);
+  for (const name of [
+    "LLM_USER_DAILY_ATTEMPT_LIMIT",
+    "LLM_GLOBAL_DAILY_ATTEMPT_LIMIT",
+  ] as const) {
+    assert.equal(readConfig({ [name]: "0" })[name], 0);
+    for (const value of ["-1", "1.5", "NaN", "Infinity", "1000001"])
+      assert.throws(() => readConfig({ [name]: value }));
+  }
+  assert.throws(() => readConfig({ LLM_USER_DAILY_ATTEMPT_LIMIT: "10001" }));
+});
+
 test("GigaChat settings are blank-safe and do not implicitly select a provider", () => {
   const config = readConfig({
     GIGACHAT_CREDENTIALS: " key ",

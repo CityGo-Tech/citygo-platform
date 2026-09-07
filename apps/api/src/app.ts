@@ -136,7 +136,7 @@ export async function buildApp(options: {
   app.get("/ready", async () => {
     try {
       const result = await options.db.query(
-        "select 1 from citygo_migrations where name='0004_ai_routing.sql'",
+        "select 1 from citygo_migrations where name='0005_ai_attempts.sql'",
       );
       if (!result.rows.length) throw new Error("Pending migration");
     } catch {
@@ -306,6 +306,33 @@ export async function buildApp(options: {
       let content = "";
       let saved = false;
       let generation: ModelGeneration | undefined;
+      let attemptNumber = 0;
+      let attemptError: DomainError | undefined;
+      const reserveAttempt = async () => {
+        signal.throwIfAborted();
+        try {
+          if (attemptNumber > 0 && content.length > 0)
+            throw new DomainError(409, "Повтор после начала ответа запрещён.");
+          await repo.reserveAiAttempt({
+            userId: user.id,
+            threadId,
+            requestId: input.requestId,
+            lease: reservation.lease,
+            attemptNumber: ++attemptNumber,
+            provider: provider.name,
+            model: provider.model,
+            policyId: aiPolicy.id,
+            routingRevision: current.revision,
+            userDailyLimit: config.LLM_USER_DAILY_ATTEMPT_LIMIT,
+            globalDailyLimit: config.LLM_GLOBAL_DAILY_ATTEMPT_LIMIT,
+          });
+        } catch (error) {
+          if (error instanceof DomainError) attemptError = error;
+          abort.abort();
+          throw error;
+        }
+        signal.throwIfAborted();
+      };
       try {
         if (routing.to !== reservation.thread.agent_key || routing.human) {
           await repo.handoff(
@@ -328,6 +355,9 @@ export async function buildApp(options: {
             "Запрос на помощь человека сохранён. Живой риелтор пока не подключён к CityGo; это не отправка сообщения внешнему специалисту. Не переводите деньги и не отправляйте документы до независимой проверки.";
           send({ type: "delta", text: content });
         } else {
+          // Reserve capacity before entering any adapter (including OAuth).
+          // Failures/cancellations never refund a possibly dispatched attempt.
+          await reserveAttempt();
           const messages = reservation.messages
             .filter((m) => m.status === "complete")
             .slice(-20)
@@ -341,6 +371,7 @@ export async function buildApp(options: {
             instructions(routing.to),
             [profileContext(reservation.profile), ...messages],
             signal,
+            { beforeRetry: reserveAttempt },
           )) {
             signal.throwIfAborted();
             if (completed)
@@ -395,6 +426,7 @@ export async function buildApp(options: {
         send({
           type: "error",
           message:
+            attemptError?.message ??
             "Ответ прерван. История сохранена; попробуйте отправить сообщение снова.",
         });
       } finally {
@@ -413,6 +445,10 @@ export async function buildApp(options: {
       automaticFallback: false,
       options: control.options,
       audit: await repo.aiRoutingAudit(),
+      attempts: await repo.aiAttemptOverview(
+        config.LLM_USER_DAILY_ATTEMPT_LIMIT,
+        config.LLM_GLOBAL_DAILY_ATTEMPT_LIMIT,
+      ),
     };
   });
   app.post("/v1/admin/ai", async (request) => {

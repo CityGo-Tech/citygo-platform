@@ -55,6 +55,19 @@ or granted by this rollout. Changing selection does not test real credentials.
 Never roll back to pre-4B1 API code with chat enabled: it ignores the saved disable
 and selection. Prefer a forward fix or a server-level stop on all replicas.
 
+Attempt-control rollout additionally requires `0005_ai_attempts.sql` and replacing
+all older API instances: old code does not reserve model attempts. Drain them and
+apply the migration before starting this version. `/ready` now checks migration 0005. The journal starts at rollout with no reconstructed historical counts, so
+check provider-side spending before choosing a launch window. Keep
+`LLM_USER_DAILY_ATTEMPT_LIMIT` / `LLM_GLOBAL_DAILY_ATTEMPT_LIMIT` identical on all
+replicas (defaults 20/200). The first reserve pins the two limits for that UTC day;
+schedule changes to positive limits for the next day. Zero remains a hard stop
+for new attempts, not cancellation of an already reserved call. Do not clear
+counters to change a limit. The admin journal is capacity accounting, not billing;
+approved financial envelopes and provider-side caps remain required. Never roll
+back to pre-attempt-control code with AI enabled; use a forward fix or the server
+hard-disable setting. See the model-attempt section of the AI runbook.
+
 ## Forwarded client address: required ingress contract
 
 Next.js preserves an existing X-Forwarded-For header. An allowlist at the API alone

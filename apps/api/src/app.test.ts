@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import { randomUUID } from "node:crypto";
-import { connectDatabase, migrate } from "@citygo/db";
+import { connectDatabase, migrate, Repository } from "@citygo/db";
 import { testProfile, TestProvider } from "@citygo/testkit";
 import {
   aiProviderIds,
@@ -11,6 +11,7 @@ import {
 } from "@citygo/contracts";
 import {
   RouterAIProvider,
+  OpenAIProvider,
   GigaChatProvider,
   type StreamingProvider,
 } from "@citygo/llm";
@@ -156,6 +157,414 @@ async function chatUser(f: Awaited<ReturnType<typeof fixture>>, grant = true) {
     policyId: board.aiAccess.policy!.id,
   };
 }
+
+test("model attempts share an atomic global cap across users, replicas and provider switches", async (t) => {
+  let calls = 0;
+  const counted: StreamingProvider = {
+    name: "openai",
+    model: "test-model",
+    async *stream() {
+      calls++;
+      yield { type: "delta", text: "Один ответ" };
+      yield { type: "complete", model: "test-model" };
+    },
+  };
+  const providers = { openai: counted, gigachat: new TestProvider("gigachat") };
+  const env = {
+    ADMIN_USER_IDS: "1",
+    LLM_USER_DAILY_ATTEMPT_LIMIT: "5",
+    LLM_GLOBAL_DAILY_ATTEMPT_LIMIT: "1",
+  };
+  const f = await fixture(counted, env, providers);
+  t.after(f.close);
+  const users = [await chatUser(f), await chatUser(f)];
+  const replica = await buildApp({
+    db: f.db,
+    provider: counted,
+    providers,
+    testing: true,
+    config: readConfig({ NODE_ENV: "test", ...env }),
+  });
+  t.after(() => replica.close());
+  const replies = await Promise.all(
+    users.map((user, index) =>
+      (index ? replica : f.app).inject({
+        method: "POST",
+        url: `/v1/threads/${user.thread}/messages`,
+        headers: {
+          origin: "http://localhost:3000",
+          cookie: "citygo=" + user.token,
+        },
+        payload: {
+          text: "quota-test-input",
+          requestId: randomUUID(),
+          policyId: user.policyId,
+        },
+      }),
+    ),
+  );
+  assert.equal(
+    replies.filter((r) => r.body.includes('"type":"done"')).length,
+    1,
+  );
+  assert.equal(
+    replies.filter((r) => r.body.includes("Суточный лимит обращений")).length,
+    1,
+  );
+  assert.equal(calls, 1);
+  let status = (
+    await f.call("GET", "/v1/admin/ai", users[0]!.token)
+  ).json<AiControlStatus>();
+  assert.equal(status.attempts!.reservedToday, 1);
+  assert.equal(status.attempts!.recent.length, 1);
+  assert.equal(status.attempts!.configurationMatches, true);
+  assert.doesNotMatch(JSON.stringify(status), /quota-test-input/);
+  await f.activate(users[0]!.token, f.app, "gigachat");
+  await f.consent(users[0]!.token);
+  const denied = await f.call(
+    "POST",
+    `/v1/threads/${users[0]!.thread}/messages`,
+    users[0]!.token,
+    {
+      text: "Новый вопрос",
+      requestId: randomUUID(),
+    },
+  );
+  assert.match(denied.body, /Суточный лимит обращений/);
+  status = (
+    await f.call("GET", "/v1/admin/ai", users[0]!.token)
+  ).json<AiControlStatus>();
+  assert.equal(status.attempts!.reservedToday, 1);
+  assert.equal(status.attempts!.recent[0]!.provider, "openai");
+  assert.equal(status.attempts!.recent[0]!.requestStatus, "complete");
+});
+
+test("model attempt exhaustion blocks an actual OpenAI SDK retry and survives restart", async (t) => {
+  let calls = 0;
+  const provider = new OpenAIProvider("test-not-live", "test-model", {
+    fetch: async () => {
+      calls++;
+      return new Response("{}", {
+        status: 500,
+        headers: { "content-type": "application/json", "retry-after-ms": "1" },
+      });
+    },
+  });
+  const env = {
+    ADMIN_USER_IDS: "1",
+    LLM_USER_DAILY_ATTEMPT_LIMIT: "1",
+    LLM_GLOBAL_DAILY_ATTEMPT_LIMIT: "10",
+  };
+  const f = await fixture(provider, env);
+  t.after(f.close);
+  const user = await chatUser(f);
+  const path = `/v1/threads/${user.thread}/messages`;
+  const first = await f.call("POST", path, user.token, {
+    text: "Квартира",
+    requestId: randomUUID(),
+  });
+  assert.match(first.body, /Суточный лимит обращений/);
+  assert.doesNotMatch(first.body, /"type":"done"/);
+  assert.equal(calls, 1);
+  const restarted = await buildApp({
+    db: f.db,
+    provider,
+    testing: true,
+    config: readConfig({ NODE_ENV: "test", ...env }),
+  });
+  t.after(() => restarted.close());
+  const result = await restarted.inject({
+    method: "POST",
+    url: path,
+    headers: {
+      origin: "http://localhost:3000",
+      cookie: "citygo=" + user.token,
+    },
+    payload: {
+      text: "Квартира",
+      requestId: randomUUID(),
+      policyId: user.policyId,
+    },
+  });
+  assert.match(result.body, /Суточный лимит обращений/);
+  assert.equal(calls, 1);
+  const rows = (await f.db.query("select * from ai_model_attempts")).rows;
+  assert.equal(rows.length, 1);
+  const board = (
+    await f.call("GET", "/v1/dashboard", user.token)
+  ).json<Dashboard>();
+  assert.equal(board.xp, 0);
+  assert.equal(board.thread!.messages.at(-1)!.status, "interrupted");
+  // Chat admissions are a separate counter; a denied model attempt is not retried/refunded.
+  assert.equal(
+    (
+      await f.db.query<{ accepted_requests: number }>(
+        "select accepted_requests from ai_usage_daily",
+      )
+    ).rows[0]!.accepted_requests,
+    2,
+  );
+});
+
+test("model attempt zero and changed daily configuration fail closed without model I/O", async (t) => {
+  let calls = 0;
+  const provider: StreamingProvider = {
+    name: "openai",
+    model: "test-model",
+    async *stream() {
+      calls++;
+      yield { type: "delta", text: "Ответ" };
+      yield { type: "complete", model: "test-model" };
+    },
+  };
+  const f = await fixture(provider, {
+    ADMIN_USER_IDS: "1",
+    LLM_USER_DAILY_ATTEMPT_LIMIT: "2",
+  });
+  t.after(f.close);
+  const user = await chatUser(f);
+  await f.call("POST", `/v1/threads/${user.thread}/messages`, user.token, {
+    text: "Квартира",
+    requestId: randomUUID(),
+  });
+  for (const limit of ["0", "3"]) {
+    const replica = await buildApp({
+      db: f.db,
+      provider,
+      testing: true,
+      config: readConfig({
+        NODE_ENV: "test",
+        ADMIN_USER_IDS: "1",
+        LLM_USER_DAILY_ATTEMPT_LIMIT: limit,
+      }),
+    });
+    t.after(() => replica.close());
+    const headers = {
+      origin: "http://localhost:3000",
+      cookie: "citygo=" + user.token,
+    };
+    const result = await replica.inject({
+      method: "POST",
+      url: `/v1/threads/${user.thread}/messages`,
+      headers,
+      payload: {
+        text: "Квартира",
+        requestId: randomUUID(),
+        policyId: user.policyId,
+      },
+    });
+    assert.match(
+      result.body,
+      limit === "0" ? /временно отключены/ : /не согласованы/,
+    );
+    const status = (
+      await replica.inject({ method: "GET", url: "/v1/admin/ai", headers })
+    ).json<AiControlStatus>();
+    assert.equal(status.attempts!.configurationMatches, false);
+    assert.deepEqual(status.attempts!.pinnedLimits, {
+      userDailyLimit: 2,
+      globalDailyLimit: 200,
+    });
+    assert.equal(status.attempts!.reservedToday, 1);
+  }
+  assert.equal(calls, 1);
+});
+
+test("model attempts count GigaChat 401 resubmission separately from OAuth", async (t) => {
+  let chats = 0,
+    auth = 0;
+  const provider = new GigaChatProvider("dGVzdA==", "test-model", {
+    scope: "GIGACHAT_API_PERS",
+    post: async (url) => {
+      if (url.includes("oauth")) {
+        auth++;
+        return Response.json({
+          access_token: "test-token-" + auth,
+          expires_at: Date.now() + 1800000,
+        });
+      }
+      chats++;
+      if (chats === 1) return new Response("", { status: 401 });
+      return new Response(
+        [
+          {
+            model: "test-model",
+            choices: [{ index: 0, delta: { content: "Ответ" } }],
+          },
+          {
+            model: "test-model",
+            choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+          },
+        ]
+          .map((event) => "data: " + JSON.stringify(event) + "\n\n")
+          .join("") + "data: [DONE]\n\n",
+        { headers: { "content-type": "text/event-stream" } },
+      );
+    },
+  });
+  const f = await fixture(provider, {
+    ADMIN_USER_IDS: "1",
+    LLM_USER_DAILY_ATTEMPT_LIMIT: "2",
+  });
+  t.after(f.close);
+  const user = await chatUser(f);
+  const response = await f.call(
+    "POST",
+    `/v1/threads/${user.thread}/messages`,
+    user.token,
+    { text: "Квартира", requestId: randomUUID() },
+  );
+  assert.match(response.body, /"type":"done"/);
+  assert.equal(chats, 2);
+  assert.equal(auth, 2);
+  const status = (
+    await f.call("GET", "/v1/admin/ai", user.token)
+  ).json<AiControlStatus>();
+  assert.equal(status.attempts!.reservedToday, 2);
+  assert.deepEqual(
+    status.attempts!.recent.map((entry) => entry.attemptNumber),
+    [2, 1],
+  );
+  assert.ok(
+    status.attempts!.recent.every(
+      (entry) => entry.provider === "gigachat" && entry.routingRevision === 1,
+    ),
+  );
+  assert.doesNotMatch(JSON.stringify(status), /test-token|dGVzdA/);
+});
+
+test("model attempt reservations reject duplicates, mismatched requests and expired leases atomically", async (t) => {
+  const f = await fixture();
+  t.after(f.close);
+  const user = await chatUser(f);
+  const repo = new Repository(f.db);
+  const requestId = randomUUID();
+  const reservation = await repo.reserveChat(
+    user.userId,
+    user.thread,
+    requestId,
+    "Квартира",
+    {
+      policyId: user.policyId,
+      revision: 1,
+      userDailyLimit: 20,
+      globalDailyLimit: 200,
+    },
+  );
+  const input = {
+    userId: user.userId,
+    threadId: user.thread,
+    requestId,
+    lease: reservation.lease,
+    attemptNumber: 1,
+    provider: "openai" as const,
+    model: "test-model",
+    policyId: user.policyId,
+    routingRevision: 1,
+    userDailyLimit: 20,
+    globalDailyLimit: 200,
+  };
+  const results = await Promise.allSettled([
+    repo.reserveAiAttempt(input),
+    repo.reserveAiAttempt(input),
+  ]);
+  assert.equal(
+    results.filter((entry) => entry.status === "fulfilled").length,
+    1,
+  );
+  for (const changed of [
+    { attemptNumber: 2, model: "other-model" },
+    { attemptNumber: 2, provider: "gigachat" as const },
+    { attemptNumber: 2, policyId: "a".repeat(64) },
+    { attemptNumber: 2, routingRevision: 2 },
+    { attemptNumber: 2, lease: randomUUID() },
+    { attemptNumber: 3 },
+  ])
+    await assert.rejects(repo.reserveAiAttempt({ ...input, ...changed }));
+  await f.db.query(
+    "update agent_threads set busy_until=now()-interval '1 second' where id=$1",
+    [user.thread],
+  );
+  await assert.rejects(repo.reserveAiAttempt({ ...input, attemptNumber: 2 }));
+  assert.equal((await repo.aiAttemptOverview(20, 200)).reservedToday, 1);
+  assert.equal(
+    (await f.db.query("select * from ai_model_attempts")).rows.length,
+    1,
+  );
+});
+
+test("model attempt UTC rollover and human handoff do not reuse or invent reservations", async (t) => {
+  const f = await fixture();
+  t.after(f.close);
+  const user = await chatUser(f);
+  await f.db.query(
+    "insert into ai_model_attempt_daily values ((now() at time zone 'UTC')::date-1,200,20,200)",
+  );
+  await f.db.query(
+    "insert into ai_user_model_attempt_daily values ($1,(now() at time zone 'UTC')::date-1,20)",
+    [user.userId],
+  );
+  const path = `/v1/threads/${user.thread}/messages`;
+  const handoff = await f.call("POST", path, user.token, {
+    text: "Нужен живой риелтор",
+    requestId: randomUUID(),
+  });
+  assert.match(handoff.body, /"type":"done"/);
+  assert.equal(
+    (await f.db.query("select * from ai_model_attempts")).rows.length,
+    0,
+  );
+  const response = await f.call("POST", path, user.token, {
+    text: "Как искать квартиру?",
+    requestId: randomUUID(),
+  });
+  assert.match(response.body, /"type":"done"/);
+  const today = await new Repository(f.db).aiAttemptOverview(20, 200);
+  assert.equal(today.reservedToday, 1);
+  assert.equal(
+    (await f.db.query("select * from ai_model_attempt_daily")).rows.length,
+    2,
+  );
+});
+
+test("model attempt guard refuses a third attempt or a retry after visible output", async (t) => {
+  for (const visible of [false, true]) {
+    let dispatches = 0;
+    const provider: StreamingProvider = {
+      name: "openai",
+      model: "test-model",
+      async *stream(_instructions, _messages, _signal, guard) {
+        dispatches++;
+        if (visible) yield { type: "delta", text: "Начало ответа" };
+        await guard!.beforeRetry();
+        dispatches++;
+        await guard!.beforeRetry();
+        dispatches++;
+        yield { type: "complete", model: "test-model" };
+      },
+    };
+    const f = await fixture(provider);
+    t.after(f.close);
+    const user = await chatUser(f);
+    const response = await f.call(
+      "POST",
+      `/v1/threads/${user.thread}/messages`,
+      user.token,
+      { text: "Квартира", requestId: randomUUID() },
+    );
+    assert.match(response.body, /"type":"error"/);
+    assert.doesNotMatch(response.body, /"type":"done"/);
+    assert.equal(dispatches, visible ? 1 : 2);
+    assert.equal(
+      (await new Repository(f.db).aiAttemptOverview(20, 200)).reservedToday,
+      dispatches,
+    );
+    assert.equal(
+      (await f.call("GET", "/v1/dashboard", user.token)).json<Dashboard>().xp,
+      0,
+    );
+  }
+});
 
 test("admin switching is authorized, audited, persistent and never grants user consent", async (t) => {
   const providers = {
@@ -1113,12 +1522,12 @@ test("revocation does not wait on model I/O and blocks admissions after the in-f
   );
 });
 
-test("readiness requires the AI routing migration", async (t) => {
+test("readiness requires the AI attempt migration", async (t) => {
   const f = await fixture(false);
   t.after(f.close);
   assert.equal((await f.call("GET", "/ready")).statusCode, 200);
   await f.db.query(
-    "delete from citygo_migrations where name='0004_ai_routing.sql'",
+    "delete from citygo_migrations where name='0005_ai_attempts.sql'",
   );
   assert.equal((await f.call("GET", "/ready")).statusCode, 503);
 });
