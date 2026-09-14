@@ -1,5 +1,9 @@
 # AI provider rollout — stage 4B2b of 5
 
+For the optional quality-first local GPT-6 Astra configuration, see
+[RouterAI Astra profile](routerai-astra.md). It adds RouterAI-only overrides without
+changing the direct OpenAI defaults, historical reservations or production gates.
+
 This release adds an explicit monetary-reserve budget to 4B2a's shared model-attempt
 reservations and retry guards, 4B1's persistent provider selector and 4A's recipient
 consent / accepted-chat caps. This is allocation accounting, not provider billing.
@@ -43,7 +47,9 @@ Do not use a RUB ceiling derived from a USD price without an explicitly reviewed
 conversion allowance; the application performs no conversion or tariff validation.
 
 The server derives a rule key from the recipient-policy hash (provider, requested
-model, upstream/account scope), `LLM_MAX_INPUT_BYTES` and `LLM_MAX_OUTPUT_TOKENS`.
+model, upstream/account scope), `LLM_MAX_INPUT_BYTES` and the effective provider's
+output limit (`ROUTERAI_MAX_OUTPUT_TOKENS` when explicitly configured for RouterAI,
+otherwise `LLM_MAX_OUTPUT_TOKENS`).
 Changing one requires fresh admin approval; credentials are not in the key/audit.
 The input cap defaults to 64000, bounded 1024–262144, and measures UTF-8 bytes of
 `JSON.stringify({instructions,messages})`, including profile context and at most
@@ -173,6 +179,9 @@ rejects redirects instead of following an unaccounted transport/recipient hop. O
 | `LLM_PROVIDER=gigachat`          | Local/test only; require a separate authorization key, model and account scope below. Production startup fails before database connection.         |
 | `LLM_REQUEST_TIMEOUT_MS`         | Integer 1000–60000, default 60000. Shared API deadline includes the provider's retry.                                                              |
 | `LLM_MAX_OUTPUT_TOKENS`          | Integer 1–8000, default 1400. Existing 24000-character response cap also applies.                                                                  |
+| `ROUTERAI_MAX_OUTPUT_TOKENS`     | Optional RouterAI-only integer 1–32768; blank inherits the shared output limit. Changes the execution approval key. |
+| `ROUTERAI_REQUEST_TIMEOUT_MS`    | Optional RouterAI-only integer 1000–240000; blank inherits the shared deadline. The chat lease includes a 30-second margin. |
+| `ROUTERAI_REASONING_EFFORT`      | Optional explicit Astra effort: low, medium, high, xhigh or max. Does not change direct OpenAI. |
 | `LLM_USER_DAILY_REQUEST_LIMIT`   | Integer 0–10000, default 20. Per-user accepted chats per UTC day. Zero blocks admission.                                                           |
 | `LLM_GLOBAL_DAILY_REQUEST_LIMIT` | Integer 0–1000000, default 200. Shared accepted chats per UTC day. Zero blocks admission.                                                          |
 
@@ -350,7 +359,10 @@ upstream, key or country is supplied. RouterAI construction does not call the AP
 The adapter sends Chat Completions to the fixed HTTPS endpoint
 `https://routerai.ru/api/v1/chat/completions`, with system instructions, existing
 history/profile context, `stream:true`, `stream_options.include_usage:true` and
-the configured output limit as `max_tokens`. It asks for exactly the configured
+the configured output limit as `max_tokens` for existing generic models. The exact
+`openai/gpt-6-astra` profile uses `max_completion_tokens` and optional native
+`reasoning_effort`; its bounded text/stream envelope is larger for long answers.
+It asks for exactly the configured
 upstream using `provider.only:[tag]` and `allow_fallbacks:false`, plus the optional
 country filter. It makes one HTTP attempt; redirects, client retries, default
 provider routing and automatic cross-provider fallback are not used. These are

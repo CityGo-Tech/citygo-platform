@@ -23,6 +23,140 @@ import { seedTestBudget } from "./test-budget.js";
 import { createAiExecution } from "./ai-execution.js";
 import { createAiPolicy } from "./ai-policy.js";
 
+for (const name of ["routerai", "openai", "gigachat"] as const) {
+  test(`${name} uses its own deadline and chat lease when RouterAI limits are extended`, async (t) => {
+    let remainingLeaseMs = 0;
+    const deadlines: number[] = [];
+    const provider: StreamingProvider = {
+      name,
+      model: name === "routerai" ? "openai/gpt-6-astra" : "test-model",
+      async *stream() {
+        const lease = await f.db.query<{ remaining: number }>(
+          "select extract(epoch from (busy_until-clock_timestamp()))*1000 as remaining from agent_threads where busy_until is not null",
+        );
+        remainingLeaseMs = Number(lease.rows[0]!.remaining);
+        yield { type: "delta", text: "Синтетический ответ" };
+        yield { type: "complete", model: this.model };
+      },
+    };
+    const f = await fixture(provider, {
+      ROUTERAI_MAX_OUTPUT_TOKENS: "32768",
+      ROUTERAI_REQUEST_TIMEOUT_MS: "240000",
+    });
+    t.after(f.close);
+    const user = await chatUser(f);
+    t.mock.method(AbortSignal, "timeout", (milliseconds: number) => {
+      deadlines.push(milliseconds);
+      return new AbortController().signal;
+    });
+    const response = await f.call(
+      "POST",
+      `/v1/threads/${user.thread}/messages`,
+      user.token,
+      {
+        text: "Помоги с квартирой",
+        requestId: randomUUID(),
+      },
+    );
+    assert.match(response.body, /"type":"done"/);
+    assert.deepEqual(deadlines, [name === "routerai" ? 240000 : 60000]);
+    const expectedLeaseMs = name === "routerai" ? 270000 : 90000;
+    assert.ok(
+      remainingLeaseMs <= expectedLeaseMs &&
+        remainingLeaseMs > expectedLeaseMs - 10000,
+    );
+  });
+}
+
+test("an extended chat lease rejects a second request after 90 seconds and expired leases retain the historical default", async (t) => {
+  const f = await fixture();
+  t.after(f.close);
+  const user = await chatUser(f);
+  const repo = new Repository(f.db);
+  const access = {
+    policyId: user.policyId,
+    revision: 1,
+    userDailyLimit: 20,
+    globalDailyLimit: 200,
+  };
+  await repo.reserveChat(user.userId, user.thread, randomUUID(), "Квартира", {
+    ...access,
+    leaseMs: 270000,
+  });
+  // Simulate 91 seconds passing without any long wait or model call.
+  await f.db.query(
+    "update agent_threads set busy_until=busy_until-interval '91 seconds' where id=$1",
+    [user.thread],
+  );
+  await assert.rejects(
+    repo.reserveChat(
+      user.userId,
+      user.thread,
+      randomUUID(),
+      "Другой вопрос",
+      access,
+    ),
+    /Дождитесь текущего ответа/,
+  );
+  const messages = await f.db.query(
+    "select id from messages where thread_id=$1 and role='user'",
+    [user.thread],
+  );
+  assert.equal(messages.rows.length, 1);
+  await f.db.query(
+    "update agent_threads set busy_until=clock_timestamp()-interval '1 second' where id=$1",
+    [user.thread],
+  );
+  await repo.reserveChat(
+    user.userId,
+    user.thread,
+    randomUUID(),
+    "После истечения",
+    access,
+  );
+  const defaultLease = await f.db.query<{ remaining: number }>(
+    "select extract(epoch from (busy_until-clock_timestamp()))*1000 as remaining from agent_threads where id=$1",
+    [user.thread],
+  );
+  const remaining = Number(defaultLease.rows[0]!.remaining);
+  assert.ok(remaining > 80000 && remaining <= 90000);
+});
+
+for (const model of ["openai/gpt-6-astra", "qwen/qwen3.7-flash"]) {
+  test(`API output cap is explicitly extended only for RouterAI ${model}`, async (t) => {
+    const provider: StreamingProvider = {
+      name: "routerai",
+      model,
+      async *stream() {
+        yield { type: "delta", text: "я".repeat(24001) };
+        yield { type: "complete", model };
+      },
+    };
+    const f = await fixture(provider);
+    t.after(f.close);
+    const user = await chatUser(f);
+    const response = await f.call(
+      "POST",
+      `/v1/threads/${user.thread}/messages`,
+      user.token,
+      {
+        text: "Помоги с квартирой",
+        requestId: randomUUID(),
+      },
+    );
+    if (model === "openai/gpt-6-astra") {
+      assert.match(response.body, /"type":"done"/);
+      const board = (
+        await f.call("GET", "/v1/dashboard", user.token)
+      ).json<Dashboard>();
+      assert.equal(board.thread!.messages.at(-1)!.content.length, 24001);
+    } else {
+      assert.match(response.body, /"type":"error"/);
+      assert.doesNotMatch(response.body, /"type":"done"/);
+    }
+  });
+}
+
 async function fixture(
   provider: boolean | StreamingProvider = true,
   env: NodeJS.ProcessEnv = {},

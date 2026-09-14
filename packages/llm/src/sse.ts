@@ -3,7 +3,15 @@
 export async function* readSseData(
   body: ReadableStream<Uint8Array>,
   signal: AbortSignal,
+  limits: { maxStreamBytes?: number } = {},
 ): AsyncIterable<string> {
+  const maxStreamBytes = limits.maxStreamBytes ?? 1024 * 1024;
+  if (
+    !Number.isSafeInteger(maxStreamBytes) ||
+    maxStreamBytes < 1 ||
+    maxStreamBytes > 16 * 1024 * 1024
+  )
+    throw new Error("Invalid SSE stream limit");
   const reader = body.getReader();
   const decoder = new TextDecoder("utf-8", { fatal: true });
   let buffer = "";
@@ -20,7 +28,7 @@ export async function* readSseData(
       const chunk = await reader.read();
       signal.throwIfAborted();
       bytes += chunk.value?.byteLength ?? 0;
-      if (bytes > 1024 * 1024) throw new Error("SSE response too large");
+      if (bytes > maxStreamBytes) throw new Error("SSE response too large");
       buffer += decoder.decode(chunk.value, { stream: !chunk.done });
       for (;;) {
         const index = buffer.search(/[\r\n]/);

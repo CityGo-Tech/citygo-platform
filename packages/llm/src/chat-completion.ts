@@ -27,13 +27,21 @@ function readUsage(value: unknown): ModelUsage {
 export async function* readChatCompletion(
   body: ReadableStream<Uint8Array>,
   signal: AbortSignal,
+  limits: { maxOutputCharacters?: number; maxStreamBytes?: number } = {},
 ): AsyncIterable<ModelStreamEvent> {
+  const maxOutputCharacters = limits.maxOutputCharacters ?? 24000;
+  if (
+    !Number.isSafeInteger(maxOutputCharacters) ||
+    maxOutputCharacters < 1 ||
+    maxOutputCharacters > 128000
+  )
+    throw new Error("Invalid Chat Completions output limit");
   let stopped = false;
   let model: string | undefined;
   let usage: ModelUsage | undefined;
   let characters = 0;
   let hasText = false;
-  for await (const data of readSseData(body, signal)) {
+  for await (const data of readSseData(body, signal, limits)) {
     signal.throwIfAborted();
     if (data === "[DONE]") {
       if (!stopped || !model || !hasText)
@@ -80,7 +88,7 @@ export async function* readChatCompletion(
       if (typeof delta.content !== "string")
         throw new Error("Invalid Chat Completions text");
       characters += delta.content.length;
-      if (characters > 24000)
+      if (characters > maxOutputCharacters)
         throw new Error("Chat Completions output too long");
       hasText ||= Boolean(delta.content.trim());
       if (delta.content) yield { type: "delta", text: delta.content };

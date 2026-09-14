@@ -1,11 +1,16 @@
 import { z } from "zod";
 import { isIP } from "node:net";
-import { aiProviderIdSchema } from "@citygo/contracts";
+import { aiProviderIdSchema, type AiProviderId } from "@citygo/contracts";
 
 const optionalSetting = z.preprocess(
   (value) => (typeof value === "string" ? value.trim() || undefined : value),
   z.string().optional(),
 );
+const optionalIntegerSetting = (min: number, max: number) =>
+  z.preprocess(
+    (value) => (typeof value === "string" ? value.trim() || undefined : value),
+    z.coerce.number().int().min(min).max(max).optional(),
+  );
 
 const trustedProxySchema = z
   .string()
@@ -93,6 +98,12 @@ export const serverConfigSchema = z.object({
   ROUTERAI_MODEL: optionalSetting,
   ROUTERAI_UPSTREAM: optionalSetting,
   ROUTERAI_COUNTRY: optionalSetting,
+  ROUTERAI_REASONING_EFFORT: z.preprocess(
+    (value) => (typeof value === "string" ? value.trim() || undefined : value),
+    z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
+  ),
+  ROUTERAI_MAX_OUTPUT_TOKENS: optionalIntegerSetting(1, 32768),
+  ROUTERAI_REQUEST_TIMEOUT_MS: optionalIntegerSetting(1000, 240000),
   GIGACHAT_CREDENTIALS: optionalSetting,
   GIGACHAT_MODEL: optionalSetting,
   GIGACHAT_SCOPE: optionalSetting,
@@ -114,4 +125,29 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env) {
       "Production requires explicit TRUSTED_PROXY_CIDRS for the Web proxy; see docs/runbooks/production.md",
     );
   return config;
+}
+
+export function effectiveLlmLimits(
+  config: ReturnType<typeof readConfig>,
+  provider: AiProviderId,
+  model?: string,
+) {
+  const requestTimeoutMs =
+    provider === "routerai"
+      ? (config.ROUTERAI_REQUEST_TIMEOUT_MS ?? config.LLM_REQUEST_TIMEOUT_MS)
+      : config.LLM_REQUEST_TIMEOUT_MS;
+  return {
+    maxOutputCharacters:
+      provider === "routerai" && model === "openai/gpt-6-astra"
+        ? 128000
+        : 24000,
+    maxOutputTokens:
+      provider === "routerai"
+        ? (config.ROUTERAI_MAX_OUTPUT_TOKENS ?? config.LLM_MAX_OUTPUT_TOKENS)
+        : config.LLM_MAX_OUTPUT_TOKENS,
+    requestTimeoutMs,
+    // Keep the historical 90s floor; a slow provider needs its full deadline
+    // plus time to persist the result before another request can take its lease.
+    chatLeaseMs: Math.max(90000, requestTimeoutMs + 30000),
+  };
 }

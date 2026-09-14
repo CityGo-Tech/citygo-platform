@@ -17,7 +17,7 @@ import {
   type AiPolicy,
 } from "@citygo/contracts";
 import { Repository, DomainError, type Database } from "@citygo/db";
-import { readConfig } from "@citygo/config";
+import { readConfig, effectiveLlmLimits } from "@citygo/config";
 import { instructions, profileContext, routeAgent } from "@citygo/agents";
 import { redactPaths } from "@citygo/observability";
 import type { StreamingProvider } from "@citygo/llm";
@@ -272,6 +272,7 @@ export async function buildApp(options: {
           409,
           "AI-получатель изменился или не подтверждён. Обновите страницу и проверьте условия.",
         );
+      const limits = effectiveLlmLimits(config, provider.name, provider.model);
       const reservation = await repo.reserveChat(
         user.id,
         threadId,
@@ -282,13 +283,14 @@ export async function buildApp(options: {
           revision: current.revision,
           userDailyLimit: config.LLM_USER_DAILY_REQUEST_LIMIT,
           globalDailyLimit: config.LLM_GLOBAL_DAILY_REQUEST_LIMIT,
+          leaseMs: limits.chatLeaseMs,
         },
       );
       const routing = routeAgent(input.text, reservation.thread.agent_key);
       const abort = new AbortController();
       const signal = AbortSignal.any([
         abort.signal,
-        AbortSignal.timeout(config.LLM_REQUEST_TIMEOUT_MS),
+        AbortSignal.timeout(limits.requestTimeoutMs),
       ]);
       reply.hijack();
       for (const [name, value] of Object.entries(reply.getHeaders()))
@@ -413,7 +415,8 @@ export async function buildApp(options: {
               };
             } else {
               content += event.text;
-              if (content.length > 24000) throw new Error("Response too large");
+              if (content.length > limits.maxOutputCharacters)
+                throw new Error("Response too large");
               send({ type: "delta", text: event.text });
             }
           }
