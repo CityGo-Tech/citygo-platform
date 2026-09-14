@@ -71,3 +71,34 @@ test("money settings are strict integers, explicit currency and unique bounded r
     }).success,
   );
 });
+
+test("personal daily cap distinguishes omitted, null, zero and exact currency microunits", () => {
+  const input = {
+    expectedRevision: 1,
+    enabled: false,
+    currency: "RUB",
+    dailyLimitMicros: 5000000000,
+    totalLimitMicros: 10000000000,
+    rules: [],
+  };
+  const omitted = aiBudgetInputSchema.parse(input);
+  assert.equal(Object.hasOwn(omitted, "userDailyLimitMicros"), false);
+  for (const cap of [null, 0, 1, 500000000, 500500000, 1000000000000]) {
+    const parsed = aiBudgetInputSchema.parse({
+      ...input,
+      userDailyLimitMicros: cap,
+    });
+    assert.equal(parsed.userDailyLimitMicros, cap);
+    assert.equal(parsed.enabled, false);
+    assert.equal(parsed.dailyLimitMicros, input.dailyLimitMicros);
+    assert.equal(parsed.totalLimitMicros, input.totalLimitMicros);
+  }
+  assert.equal(parseMoneyMicros("500,5"), 500500000);
+  for (const cap of [-1, 0.5, NaN, Infinity, "500", false, 1000000000001]) {
+    assert.equal(
+      aiBudgetInputSchema.safeParse({ ...input, userDailyLimitMicros: cap })
+        .success,
+      false,
+    );
+  }
+});

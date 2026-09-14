@@ -1,6 +1,10 @@
 import { z } from "zod";
 import { aiProviderIdSchema, type AiProviderId } from "./llm.js";
-import type { AiBudgetStatus, AiMoneyReservation } from "./ai-budget.js";
+import type {
+  AiBudgetStatus,
+  AiMoneyReservation,
+  AiUserBudgetStatus,
+} from "./ai-budget.js";
 
 export const aiPolicyIdSchema = z.string().regex(/^[a-f0-9]{64}$/);
 export const aiConsentSchema = z.discriminatedUnion("action", [
@@ -22,6 +26,7 @@ export type AiAccess = {
   policy: AiPolicy | null;
   granted: boolean;
   dailyLimit: number;
+  budget?: AiUserBudgetStatus;
 };
 
 const routingRevisionSchema = z.number().int().min(1).max(2147483647);

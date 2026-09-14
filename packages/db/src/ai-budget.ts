@@ -5,6 +5,7 @@ import {
   type AiBudgetStatus,
   type AiExecution,
   type AiMoneyReservation,
+  type AiUserBudgetStatus,
 } from "@citygo/contracts";
 import type { Database, Sql } from "./index.js";
 import { DomainError } from "./errors.js";
@@ -18,13 +19,16 @@ async function readBudget(tx: Sql) {
       daily_limit_micros: string;
       total_limit_micros: string;
       total_reserved_micros: string;
+      user_daily_limit_micros: string | null;
       rules: AiBudgetSettings["rules"];
       day: string;
       today: string;
       reserved_at: string;
+      reset_at: string;
     }>(`with moment as materialized (select clock_timestamp() as at)
     select b.*,(m.at at time zone 'UTC')::date::text as day,coalesce(a.reserved_micros,0)::text as today,
-    to_char(m.at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as reserved_at
+    to_char(m.at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as reserved_at,
+    to_char(((m.at at time zone 'UTC')::date+1)::timestamp,'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as reset_at
     from ai_budget b cross join moment m
     left join ai_budget_daily a on a.usage_day=(m.at at time zone 'UTC')::date where b.id=1`)
   ).rows[0];
@@ -40,12 +44,63 @@ async function readBudget(tx: Sql) {
       currency: row.currency,
       dailyLimitMicros: Number(row.daily_limit_micros),
       totalLimitMicros: Number(row.total_limit_micros),
+      userDailyLimitMicros:
+        row.user_daily_limit_micros == null
+          ? null
+          : Number(row.user_daily_limit_micros),
       rules: row.rules,
     },
     totalReservedMicros: Number(row.total_reserved_micros),
     day: row.day,
     reservedTodayMicros: Number(row.today),
     reservedAt: row.reserved_at,
+    resetAt: row.reset_at,
+  };
+}
+
+async function userReservedToday(
+  tx: Sql,
+  userId: string,
+  currency: AiBudgetSettings["currency"],
+  day: string,
+) {
+  const row = (
+    await tx.query<{ reserved: string }>(
+      `select coalesce(sum(money_reserved_micros),0)::text as reserved
+       from ai_model_attempts
+       where user_id=$1 and money_currency=$2 and money_reserved_micros is not null
+       and reserved_at >= ($3::date::timestamp at time zone 'UTC')
+       and reserved_at < (($3::date+1)::timestamp at time zone 'UTC')`,
+      [userId, currency, day],
+    )
+  ).rows[0]!;
+  return Number(row.reserved);
+}
+
+// Informational snapshot for the authenticated account only. Admission rechecks
+// the same ledger under the existing user/budget locks; this is not provider billing.
+export async function aiUserBudget(
+  db: Sql,
+  userId: string,
+): Promise<AiUserBudgetStatus> {
+  const current = await readBudget(db);
+  const reservedTodayMicros = await userReservedToday(
+    db,
+    userId,
+    current.settings.currency,
+    current.day,
+  );
+  const limitMicros = current.settings.userDailyLimitMicros;
+  return {
+    currency: current.settings.currency,
+    day: current.day,
+    resetAt: current.resetAt,
+    limitMicros,
+    reservedTodayMicros,
+    remainingMicros:
+      limitMicros === null
+        ? null
+        : Math.max(0, limitMicros - reservedTodayMicros),
   };
 }
 export async function aiBudget(
@@ -122,10 +177,17 @@ export async function changeAiBudget(
       currency: input.currency,
       dailyLimitMicros: input.dailyLimitMicros,
       totalLimitMicros: input.totalLimitMicros,
+      // Older clients omit this field: omission must never remove a newer cap.
+      // An administrator can explicitly lower it below already reserved amounts;
+      // that stops future reservations without rewriting history or refunding any.
+      userDailyLimitMicros:
+        input.userDailyLimitMicros === undefined
+          ? current.settings.userDailyLimitMicros
+          : input.userDailyLimitMicros,
       rules,
     };
     await tx.query(
-      `update ai_budget set revision=$1,enabled=$2,currency=$3,daily_limit_micros=$4,total_limit_micros=$5,rules=$6 where id=1`,
+      `update ai_budget set revision=$1,enabled=$2,currency=$3,daily_limit_micros=$4,total_limit_micros=$5,rules=$6,user_daily_limit_micros=$7 where id=1`,
       [
         next.revision,
         next.enabled,
@@ -133,6 +195,7 @@ export async function changeAiBudget(
         next.dailyLimitMicros,
         next.totalLimitMicros,
         JSON.stringify(rules),
+        next.userDailyLimitMicros,
       ],
     );
     await tx.query(
@@ -148,6 +211,7 @@ export async function changeAiBudget(
 export async function reserveAiMoney(
   tx: Sql,
   execution: AiExecution,
+  userId: string,
 ): Promise<AiMoneyReservation & { reservedAt: string }> {
   await tx.query("select id from ai_budget where id=1 for update");
   const current = await readBudget(tx);
@@ -169,6 +233,23 @@ export async function reserveAiMoney(
       "Денежный резерв для этой модели и её ограничений не подтверждён администратором.",
     );
   const amount = rule.attemptCeilingMicros;
+  if (settings.userDailyLimitMicros !== null) {
+    const reserved = await userReservedToday(
+      tx,
+      userId,
+      settings.currency,
+      current.day,
+    );
+    if (
+      !Number.isSafeInteger(reserved) ||
+      reserved < 0 ||
+      amount > settings.userDailyLimitMicros - reserved
+    )
+      throw new DomainError(
+        429,
+        "Суточный денежный резерв вашего аккаунта исчерпан. Следующие сутки начинаются в 00:00 UTC (03:00 по Москве).",
+      );
+  }
   if (
     !Number.isSafeInteger(amount) ||
     amount <= 0 ||

@@ -141,9 +141,9 @@ export async function buildApp(options: {
   app.get("/ready", async () => {
     try {
       const result = await options.db.query(
-        "select 1 from citygo_migrations where name='0006_ai_budget.sql'",
+        "select name from citygo_migrations where name in ('0006_ai_budget.sql','0007_ai_user_daily_budget.sql')",
       );
-      if (!result.rows.length) throw new Error("Pending migration");
+      if (result.rows.length !== 2) throw new Error("Pending migration");
     } catch {
       throw new DomainError(503, "База данных не готова: примените миграции");
     }

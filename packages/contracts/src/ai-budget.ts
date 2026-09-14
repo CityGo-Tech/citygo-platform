@@ -12,6 +12,9 @@ export const aiBudgetInputSchema = z
     currency: z.enum(["RUB", "USD"]),
     dailyLimitMicros: moneySchema,
     totalLimitMicros: moneySchema,
+    // Omitted preserves the server value; null removes the personal cap.
+    // Zero explicitly blocks new reservations for every account.
+    userDailyLimitMicros: moneySchema.nullable().optional(),
     rules: z
       .array(
         z.strictObject({
@@ -52,7 +55,16 @@ export type AiBudgetSettings = {
   currency: "RUB" | "USD" | null;
   dailyLimitMicros: number;
   totalLimitMicros: number;
+  userDailyLimitMicros: number | null;
   rules: (AiExecution & { attemptCeilingMicros: number })[];
+};
+export type AiUserBudgetStatus = {
+  currency: "RUB" | "USD" | null;
+  day: string;
+  resetAt: string;
+  limitMicros: number | null;
+  reservedTodayMicros: number;
+  remainingMicros: number | null;
 };
 export type AiBudgetStatus = {
   settings: AiBudgetSettings;

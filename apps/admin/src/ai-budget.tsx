@@ -27,6 +27,11 @@ export function AiBudgetControls({
   const [total, setTotal] = useState(
     formatMoneyMicros(settings.totalLimitMicros),
   );
+  const [userDaily, setUserDaily] = useState(
+    settings.userDailyLimitMicros == null
+      ? ""
+      : formatMoneyMicros(settings.userDailyLimitMicros),
+  );
   const [ceilings, setCeilings] = useState<Record<string, string>>(() =>
     Object.fromEntries(
       status.availableExecutions.map((execution) => {
@@ -39,12 +44,18 @@ export function AiBudgetControls({
     ),
   );
   const [confirmed, setConfirmed] = useState(false);
+  // Only a genuinely blank field clears the cap. Invalid nonblank text must
+  // fail validation, not be mistaken for an explicit null/clear operation.
+  const userDailyMicros = userDaily.trim()
+    ? (parseMoneyMicros(userDaily) ?? NaN)
+    : null;
   const parsed = aiBudgetInputSchema.safeParse({
     expectedRevision: settings.revision,
     enabled,
     currency,
     dailyLimitMicros: parseMoneyMicros(daily),
     totalLimitMicros: parseMoneyMicros(total),
+    userDailyLimitMicros: userDailyMicros,
     rules: status.availableExecutions
       .filter((item) => ceilings[item.key]?.trim())
       .map((item) => ({
@@ -52,6 +63,13 @@ export function AiBudgetControls({
         attemptCeilingMicros: parseMoneyMicros(ceilings[item.key]!),
       })),
   });
+  const ceilingsAboveUserCap =
+    userDailyMicros !== null && Number.isSafeInteger(userDailyMicros)
+      ? status.availableExecutions.filter((execution) => {
+          const ceiling = parseMoneyMicros(ceilings[execution.key] ?? "");
+          return ceiling !== null && ceiling > userDailyMicros;
+        })
+      : [];
   const lostRules = settings.rules.filter(
     (rule) => !status.availableExecutions.some((item) => item.key === rule.key),
   );
@@ -79,6 +97,13 @@ export function AiBudgetControls({
           каждой попыткой, включая повтор, резервируется весь заданный потолок.
           Автоматических возвратов нет. Исторические вызовы до включения учёта
           сюда не входят.
+        </p>
+        <p>
+          Действующий лимит на аккаунт в сутки UTC:{" "}
+          {settings.userDailyLimitMicros == null
+            ? "без отдельного ограничения"
+            : money(settings.userDailyLimitMicros)}
+          . Общий и суточный бюджеты проекта продолжают действовать независимо.
         </p>
         <p>
           До включения проверьте тариф, налоги и достаточность потолка для
@@ -131,6 +156,22 @@ export function AiBudgetControls({
               onChange={(event) => setDaily(event.target.value)}
             />
           </label>
+          <label className="cg-field">
+            <span>Лимит на аккаунт в сутки UTC</span>
+            <input
+              inputMode="decimal"
+              value={userDaily}
+              placeholder="500"
+              onChange={(event) => setUserDaily(event.target.value)}
+            />
+          </label>
+          <p>
+            Лимит для каждого аккаунта в той же валюте бюджета:{" "}
+            {currency || "не выбрана"}. Пустое поле — без отдельного лимита; 0
+            запрещает новые резервы. Учитываются выделенные резервы, не
+            фактические списания. Новый день начинается в 00:00 UTC (03:00 по
+            Москве); накопленные резервы проекта не сбрасываются.
+          </p>
           <p>
             Суммы в выбранной валюте, до 6 знаков после точки или запятой.
             Максимум 1 000 000. Пустой потолок оставляет модель без разрешения.
@@ -163,6 +204,19 @@ export function AiBudgetControls({
             </div>
           ))}
         </fieldset>
+        {ceilingsAboveUserCap.length > 0 && (
+          <p role="alert">
+            Потолок на попытку выше лимита на аккаунт в сутки для:{" "}
+            {ceilingsAboveUserCap
+              .map(
+                (execution) =>
+                  `${execution.policy.recipient} · ${execution.policy.model}`,
+              )
+              .join(", ")}
+            . Такие попытки будут недоступны. Модель, качество ответа и потолок
+            автоматически не снижаются — проверьте согласованные ограничения.
+          </p>
+        )}
         {lostRules.length > 0 && (
           <p role="alert">
             При сохранении будут сняты устаревшие разрешения:{" "}
@@ -213,8 +267,11 @@ export function AiBudgetControls({
               {item.payload.to.enabled ? "включён" : "отключён"} ·{" "}
               {formatMoneyMicros(item.payload.to.totalLimitMicros)}{" "}
               {item.payload.to.currency} общий /{" "}
-              {formatMoneyMicros(item.payload.to.dailyLimitMicros)} суточный ·
-              администратор #{item.actorUserId} ·{" "}
+              {formatMoneyMicros(item.payload.to.dailyLimitMicros)} суточный ·{" "}
+              {item.payload.to.userDailyLimitMicros == null
+                ? "без отдельного лимита на аккаунт"
+                : `${formatMoneyMicros(item.payload.to.userDailyLimitMicros)} ${item.payload.to.currency ?? ""} на аккаунт в сутки UTC`}{" "}
+              · администратор #{item.actorUserId} ·{" "}
               {new Date(item.createdAt).toLocaleString("ru-RU")}
             </li>
           ))}

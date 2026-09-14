@@ -2227,15 +2227,20 @@ test("revocation does not wait on model I/O and blocks admissions after the in-f
   );
 });
 
-test("readiness requires the AI attempt migration", async (t) => {
-  const f = await fixture(false);
-  t.after(f.close);
-  assert.equal((await f.call("GET", "/ready")).statusCode, 200);
-  await f.db.query(
-    "delete from citygo_migrations where name='0006_ai_budget.sql'",
-  );
-  assert.equal((await f.call("GET", "/ready")).statusCode, 503);
-});
+for (const migration of [
+  "0006_ai_budget.sql",
+  "0007_ai_user_daily_budget.sql",
+]) {
+  test(`readiness requires ${migration}`, async (t) => {
+    const f = await fixture(false);
+    t.after(f.close);
+    assert.equal((await f.call("GET", "/ready")).statusCode, 200);
+    await f.db.query("delete from citygo_migrations where name=$1", [
+      migration,
+    ]);
+    assert.equal((await f.call("GET", "/ready")).statusCode, 503);
+  });
+}
 
 test("trusted proxy clients have independent global, auth and chat rate limits", async (t) => {
   const f = await fixture(false, {

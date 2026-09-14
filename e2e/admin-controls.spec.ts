@@ -202,6 +202,7 @@ test("admin explicitly confirms money ceilings, refreshes conflicts and cannot s
       currency: null,
       dailyLimitMicros: 0,
       totalLimitMicros: 0,
+      userDailyLimitMicros: null,
       rules: [],
     },
     day: "2026-09-07",
@@ -229,6 +230,7 @@ test("admin explicitly confirms money ceilings, refreshes conflicts and cannot s
         currency: "RUB",
         totalLimitMicros: 2000000,
         dailyLimitMicros: 1000000,
+        userDailyLimitMicros: null,
         rules: [{ key: execution.key, attemptCeilingMicros: 125000 }],
       });
       const from = status.budget!.settings;
@@ -238,6 +240,7 @@ test("admin explicitly confirms money ceilings, refreshes conflicts and cannot s
         currency: "RUB",
         totalLimitMicros: 2000000,
         dailyLimitMicros: 1000000,
+        userDailyLimitMicros: null,
         rules: [{ ...execution, attemptCeilingMicros: 125000 }],
       };
       status.budget!.totalReservedMicros = 125000;
@@ -309,6 +312,126 @@ test("admin explicitly confirms money ceilings, refreshes conflicts and cannot s
   ).not.toBeChecked();
   await expect(confirm).not.toBeChecked();
   await expect(save).toBeDisabled();
+  expect(writes).toBe(2);
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBeTruthy();
+});
+
+test("admin saves a 500 RUB personal cap without changing global allowance or lowering model quality", async ({
+  page,
+}) => {
+  const status = fixture();
+  const execution = {
+    key: "d".repeat(64),
+    policy: status.options[0]!.policy!,
+    maxInputBytes: 64000,
+    maxOutputTokens: 32768,
+  };
+  status.budget = {
+    settings: {
+      revision: 1,
+      enabled: false,
+      currency: "RUB",
+      dailyLimitMicros: 5000000000,
+      totalLimitMicros: 10000000000,
+      userDailyLimitMicros: null,
+      rules: [{ ...execution, attemptCeilingMicros: 1666000000 }],
+    },
+    day: "2026-09-14",
+    reservedTodayMicros: 0,
+    totalReservedMicros: 0,
+    audit: [],
+    availableExecutions: [execution],
+  };
+  let writes = 0;
+  await page.route("**/api/v1/admin/overview", (route) =>
+    route.fulfill({
+      json: { counts: { users: 1, completed: 0, xp: 0 }, pendingHuman: [] },
+    }),
+  );
+  await page.route("**/api/v1/admin/ai", (route) =>
+    route.fulfill({ json: status }),
+  );
+  await page.route("**/api/v1/admin/ai/budget", (route) => {
+    writes++;
+    const input = route.request().postDataJSON();
+    expect(input).toEqual({
+      expectedRevision: writes,
+      enabled: false,
+      currency: "RUB",
+      dailyLimitMicros: 5000000000,
+      totalLimitMicros: 10000000000,
+      userDailyLimitMicros: writes === 1 ? 500000000 : null,
+      rules: [{ key: execution.key, attemptCeilingMicros: 1666000000 }],
+    });
+    const from = status.budget!.settings;
+    status.budget!.settings = {
+      ...from,
+      revision: from.revision + 1,
+      userDailyLimitMicros: input.userDailyLimitMicros,
+    };
+    status.budget!.audit.push({
+      id: String(writes),
+      actorUserId: "1",
+      createdAt: "2026-09-14T04:00:00Z",
+      payload: { from, to: status.budget!.settings },
+    });
+    return route.fulfill({ json: status.budget!.settings });
+  });
+  await page.goto("/admin");
+  await page.getByRole("button", { name: "Обновить сводку" }).click();
+  const budget = page.getByRole("region", { name: "Денежный бюджет AI" });
+  const personal = budget.getByLabel("Лимит на аккаунт в сутки UTC", {
+    exact: true,
+  });
+  const confirm = budget.getByRole("checkbox", {
+    name: "Подтверждаю бюджет, валюту и проверенные потолки для выбранных моделей.",
+  });
+  const save = budget.getByRole("button", {
+    name: "Сохранить денежный бюджет",
+  });
+  await expect(personal).toHaveValue("");
+  await expect(personal).toHaveAttribute("placeholder", "500");
+  await expect(
+    budget.getByLabel("Разрешить новые денежные резервы"),
+  ).not.toBeChecked();
+  await expect(budget).toContainText("00:00 UTC (03:00 по Москве)");
+  await personal.fill("invalid");
+  await expect(confirm).toBeDisabled();
+  await expect(save).toBeDisabled();
+  await personal.fill("500");
+  await expect(budget.getByRole("alert")).toContainText(
+    "Потолок на попытку выше лимита на аккаунт",
+  );
+  await expect(budget.getByRole("alert")).toContainText(
+    "автоматически не снижаются",
+  );
+  await expect(budget.getByLabel("Потолок на попытку · OpenAI")).toHaveValue(
+    "1666",
+  );
+  await expect(budget).toContainText("32768 токенов");
+  await confirm.check();
+  await save.click();
+  await expect(
+    page.getByText("Денежный бюджет AI сохранён.", { exact: true }),
+  ).toBeVisible();
+  await expect(personal).toHaveValue("500");
+  await expect(budget).toContainText("500 RUB на аккаунт в сутки UTC");
+  await expect(budget.getByLabel("Общий бюджет", { exact: true })).toHaveValue(
+    "10000",
+  );
+  await expect(
+    budget.getByLabel("Бюджет на сутки UTC", { exact: true }),
+  ).toHaveValue("5000");
+  await personal.fill("");
+  await expect(budget.getByRole("alert")).toHaveCount(0);
+  await confirm.check();
+  await save.click();
+  await expect(budget).toContainText("Версия бюджета: 3");
+  await expect(personal).toHaveValue("");
   expect(writes).toBe(2);
   expect(
     await page.evaluate(
