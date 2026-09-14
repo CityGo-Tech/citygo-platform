@@ -44,6 +44,8 @@ export class GigaChatProvider implements StreamingProvider {
       throw new Error(
         "GIGACHAT_SCOPE must be GIGACHAT_API_PERS, GIGACHAT_API_B2B or GIGACHAT_API_CORP",
       );
+    if (model === "GigaChat-3-Ultra" && options.scope !== "GIGACHAT_API_PERS")
+      throw new Error("GigaChat-3-Ultra requires GIGACHAT_API_PERS");
     this.post = options.post ?? createGigaPost(options.caBundleFile);
     this.tokens = new GigaTokenCache(
       credentials,

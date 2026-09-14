@@ -173,6 +173,94 @@ test("GigaChat shares one refresh across concurrent chats and refreshes before e
   assert.equal(auth, 2);
 });
 
+test("GigaChat Ultra uses personal OAuth and the default bounded streaming payload", async () => {
+  const model = "GigaChat-3-Ultra";
+  let auth = 0,
+    chats = 0;
+  const provider = new GigaChatProvider(credentials, model, {
+    scope: "GIGACHAT_API_PERS",
+    now: () => now,
+    post: async (url, init) => {
+      assert.equal(init.signal.aborted, false);
+      if (url === gigaAuthUrl) {
+        auth++;
+        assert.equal(init.headers.Authorization, `Basic ${credentials}`);
+        assert.equal(
+          init.headers["Content-Type"],
+          "application/x-www-form-urlencoded",
+        );
+        assert.equal(init.headers.Accept, "application/json");
+        assert.match(
+          init.headers.RqUID!,
+          /^[\da-f]{8}-[\da-f]{4}-4[\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/,
+        );
+        assert.equal(init.body, "scope=GIGACHAT_API_PERS");
+        return token();
+      }
+      chats++;
+      assert.equal(url, "https://api.giga.chat/v1/chat/completions");
+      assert.deepEqual(init.headers, {
+        Authorization: "Bearer test-access-token",
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+      });
+      assert.deepEqual(JSON.parse(init.body), {
+        model,
+        messages: [
+          { role: "system", content: "Housing instructions" },
+          { role: "user", content: "Квартира" },
+        ],
+        stream: true,
+        max_tokens: 1400,
+      });
+      return sse([{ ...delta, model }, { ...stop, model }, "[DONE]"]);
+    },
+  });
+  assert.equal(auth, 0);
+  assert.equal(chats, 0);
+  assert.deepEqual(await collect(provider), [
+    { type: "delta", text: "Ответ 🏠" },
+    {
+      type: "complete",
+      model,
+      usage: { inputTokens: 32, outputTokens: 16 },
+    },
+  ]);
+  assert.equal(auth, 1);
+  assert.equal(chats, 1);
+});
+
+test("GigaChat Ultra rejects business scopes before transport construction or OAuth", () => {
+  for (const scope of ["GIGACHAT_API_B2B", "GIGACHAT_API_CORP"]) {
+    let requests = 0;
+    assert.throws(
+      () =>
+        new GigaChatProvider(credentials, "GigaChat-3-Ultra", {
+          scope,
+          post: async () => {
+            requests++;
+            return token();
+          },
+        }),
+      { message: "GigaChat-3-Ultra requires GIGACHAT_API_PERS" },
+    );
+    assert.equal(requests, 0);
+    // Transport construction would reject this path; scope must fail first.
+    assert.throws(
+      () =>
+        new GigaChatProvider(credentials, "GigaChat-3-Ultra", {
+          scope,
+          caBundleFile: "missing-ultra-test-ca.pem",
+        }),
+      { message: "GigaChat-3-Ultra requires GIGACHAT_API_PERS" },
+    );
+    assert.equal(
+      new GigaChatProvider(credentials, "GigaChat-2-Max", { scope }).model,
+      "GigaChat-2-Max",
+    );
+  }
+});
+
 test("cancelling one OAuth waiter leaves other callers alive; cancelling all aborts refresh", async () => {
   const gate = deferred<Response>();
   let authSignal!: AbortSignal;

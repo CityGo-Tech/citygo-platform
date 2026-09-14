@@ -128,6 +128,51 @@ const gigaSettings = {
   GIGACHAT_SCOPE: "GIGACHAT_API_PERS",
 };
 
+test("personal Ultra is an optional configured provider and preserves OpenAI and RouterAI", () => {
+  const config = readConfig({
+    ...credentials,
+    ...routerSettings,
+    ...gigaSettings,
+    GIGACHAT_MODEL: "GigaChat-3-Ultra",
+  });
+  const registry = createProviderRegistry(config);
+  assert.equal(registry.provider?.name, "openai");
+  assert.equal(registry.providers.openai?.model, credentials.OPENAI_MODEL);
+  assert.equal(
+    registry.providers.routerai?.model,
+    routerSettings.ROUTERAI_MODEL,
+  );
+  assert.equal(registry.providers.gigachat?.model, "GigaChat-3-Ultra");
+  assert.equal(
+    createProvider({ ...config, LLM_PROVIDER: "gigachat" })?.model,
+    "GigaChat-3-Ultra",
+  );
+
+  for (const GIGACHAT_SCOPE of ["GIGACHAT_API_B2B", "GIGACHAT_API_CORP"]) {
+    const incompatible = { ...config, GIGACHAT_SCOPE };
+    const remaining = createProviderRegistry(incompatible);
+    assert.equal(remaining.provider?.name, "openai");
+    assert.equal(remaining.providers.openai?.model, credentials.OPENAI_MODEL);
+    assert.equal(
+      remaining.providers.routerai?.model,
+      routerSettings.ROUTERAI_MODEL,
+    );
+    assert.equal(remaining.providers.gigachat, undefined);
+    assert.throws(() =>
+      createProvider({ ...incompatible, LLM_PROVIDER: "gigachat" }),
+    );
+  }
+  assert.throws(
+    () =>
+      createProvider({
+        ...config,
+        NODE_ENV: "production",
+        LLM_PROVIDER: "gigachat",
+      }),
+    /GigaChat production activation is blocked/,
+  );
+});
+
 test("GigaChat selection is explicit and retains RouterAI, OpenAI and disabled behavior", () => {
   assert.equal(createProvider(readConfig(gigaSettings)), undefined);
   assert.equal(
