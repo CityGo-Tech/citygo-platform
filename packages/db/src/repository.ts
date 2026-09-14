@@ -18,7 +18,12 @@ import type {
 import { randomUUID } from "node:crypto";
 import { canTransitionQuest } from "@citygo/domain";
 import { DomainError } from "./errors.js";
-import { aiBudget, changeAiBudget, reserveAiMoney } from "./ai-budget.js";
+import {
+  aiBudget,
+  aiUserBudget,
+  changeAiBudget,
+  reserveAiMoney,
+} from "./ai-budget.js";
 
 export { DomainError } from "./errors.js";
 const fail = (status: number, message: string): never => {
@@ -156,7 +161,7 @@ export class Repository {
         "insert into ai_user_model_attempt_daily(user_id,usage_day,reserved_attempts) values ($1,$2,1) on conflict(user_id,usage_day) do update set reserved_attempts=ai_user_model_attempt_daily.reserved_attempts+1",
         [input.userId, day],
       );
-      const money = await reserveAiMoney(tx, input.execution);
+      const money = await reserveAiMoney(tx, input.execution, input.userId);
       await tx.query(
         "insert into ai_model_attempts(thread_id,request_id,attempt_number,user_id,provider,model,policy_id,routing_revision,money_currency,money_reserved_micros,money_budget_revision,money_rule_key,reserved_at) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)",
         [
@@ -396,6 +401,7 @@ export class Repository {
           : null,
         provider,
         aiAccess: {
+          budget: await aiUserBudget(tx, user.id),
           policy,
           granted: policy
             ? await this.hasAiConsent(tx, user.id, policy.id)

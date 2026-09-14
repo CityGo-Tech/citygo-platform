@@ -52,6 +52,50 @@ async function dashboard(page: Page, board: Dashboard) {
   );
 }
 
+test("personal daily reserve is visible outside consent details and survives reload without becoming a billing statement", async ({
+  page,
+}) => {
+  const board = fixture();
+  board.aiAccess.budget = {
+    currency: "RUB",
+    day: "2026-09-14",
+    resetAt: "2026-09-15T00:00:00.000Z",
+    limitMicros: 500000000,
+    reservedTodayMicros: 120000000,
+    remainingMicros: 380000000,
+  };
+  await dashboard(page, board);
+  await page.goto("/#chat");
+  const budget = page.locator(".ai-access [role=status]");
+  await expect(budget).toContainText("500 RUB в сутки");
+  await expect(budget).toContainText("Зарезервировано: 120");
+  await expect(budget).toContainText("Остаток резерва: 380");
+  await expect(budget).toContainText("03:00 по Москве");
+  await expect(budget).toContainText("не фактическое списание");
+  await page.reload();
+  await expect(budget).toContainText("Остаток резерва: 380");
+  board.aiAccess.budget.reservedTodayMicros = 500000000;
+  board.aiAccess.budget.remainingMicros = 0;
+  await page.reload();
+  await expect(budget).toContainText("Остаток резерва: 0");
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+});
+
+test("legacy dashboard does not invent a personal 500 RUB allowance", async ({
+  page,
+}) => {
+  await dashboard(page, fixture());
+  await page.goto("/#chat");
+  await expect(
+    page.getByRole("heading", { name: "Housing Navigator", exact: true }),
+  ).toBeVisible();
+  await expect(page.locator(".ai-access [role=status]")).toHaveCount(0);
+});
+
 for (const width of [320, 768, 1440]) {
   test(`assistant Markdown is readable and inert at ${width}px; user text stays literal`, async ({
     page,

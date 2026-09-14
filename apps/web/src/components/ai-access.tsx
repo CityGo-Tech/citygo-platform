@@ -1,6 +1,10 @@
 "use client";
 import { useState } from "react";
-import type { AiAccess, AiConsentInput } from "@citygo/contracts";
+import {
+  formatMoneyMicros,
+  type AiAccess,
+  type AiConsentInput,
+} from "@citygo/contracts";
 import { Button, Card } from "@citygo/ui-web";
 
 export function AiAccessPanel({
@@ -71,6 +75,19 @@ export function AiAccessPanel({
             </Button>
           )}
         </>
+      )}
+      {access.budget?.limitMicros != null && (
+        <p role="status">
+          Лимит AI вашего аккаунта:{" "}
+          {formatMoneyMicros(access.budget.limitMicros)}{" "}
+          {access.budget.currency ?? "(валюта не выбрана)"} в сутки.
+          Зарезервировано:{" "}
+          {formatMoneyMicros(access.budget.reservedTodayMicros)}. Остаток
+          резерва: {formatMoneyMicros(access.budget.remainingMicros ?? 0)}.
+          Обновление в 00:00 UTC (03:00 по Москве). Это резерв, не фактическое
+          списание провайдера; общий бюджет сервиса также может ограничить
+          отправку.
+        </p>
       )}
       <p>
         <small>
