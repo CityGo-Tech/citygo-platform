@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { AiExecution, AiPolicy } from "@citygo/contracts";
-import type { readConfig } from "@citygo/config";
+import { effectiveLlmLimits, type readConfig } from "@citygo/config";
 
 export function createAiExecution(
   config: ReturnType<typeof readConfig>,
@@ -8,7 +8,8 @@ export function createAiExecution(
 ): AiExecution {
   const limits = {
     maxInputBytes: config.LLM_MAX_INPUT_BYTES,
-    maxOutputTokens: config.LLM_MAX_OUTPUT_TOKENS,
+    maxOutputTokens: effectiveLlmLimits(config, policy.provider)
+      .maxOutputTokens,
   };
   const key = createHash("sha256")
     .update(

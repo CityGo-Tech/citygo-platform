@@ -10,6 +10,7 @@ type RouterAIOptions = {
   country?: string;
   timeoutMs?: number;
   maxOutputTokens?: number;
+  reasoningEffort?: "low" | "medium" | "high" | "xhigh" | "max";
   fetch?: typeof fetch;
 };
 
@@ -30,6 +31,13 @@ export class RouterAIProvider implements StreamingProvider {
       throw new Error("ROUTERAI_UPSTREAM must be one lowercase provider tag");
     if (options.country !== undefined && !/^[a-z]{2}$/.test(options.country))
       throw new Error("ROUTERAI_COUNTRY must be a lowercase two-letter code");
+    if (
+      options.reasoningEffort !== undefined &&
+      !["low", "medium", "high", "xhigh", "max"].includes(
+        options.reasoningEffort,
+      )
+    )
+      throw new Error("ROUTERAI_REASONING_EFFORT is not supported");
   }
 
   async *stream(
@@ -60,7 +68,16 @@ export class RouterAIProvider implements StreamingProvider {
             messages: [{ role: "system", content: instructions }, ...messages],
             stream: true,
             stream_options: { include_usage: true },
-            max_tokens: this.options.maxOutputTokens ?? 1400,
+            // Astra uses the native Chat Completions total-output cap, including
+            // reasoning. Keep the historical payload for other configured models.
+            ...(this.model === "openai/gpt-6-astra"
+              ? { max_completion_tokens: this.options.maxOutputTokens ?? 1400 }
+              : { max_tokens: this.options.maxOutputTokens ?? 1400 }),
+            ...(this.options.reasoningEffort
+              ? this.model === "openai/gpt-6-astra"
+                ? { reasoning_effort: this.options.reasoningEffort }
+                : { reasoning: { effort: this.options.reasoningEffort } }
+              : {}),
             provider: {
               only: [this.options.upstream],
               allow_fallbacks: false,
@@ -83,7 +100,13 @@ export class RouterAIProvider implements StreamingProvider {
         await response.body?.cancel();
         throw new Error("Invalid RouterAI HTTP response");
       }
-      yield* readChatCompletion(response.body, deadline);
+      yield* readChatCompletion(
+        response.body,
+        deadline,
+        this.model === "openai/gpt-6-astra"
+          ? { maxOutputCharacters: 128000, maxStreamBytes: 16 * 1024 * 1024 }
+          : undefined,
+      );
     } catch {
       // Do not leak provider error bodies, credentials, prompts or network URLs.
       throw new Error("RouterAI generation failed or was interrupted");

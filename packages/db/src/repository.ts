@@ -594,8 +594,12 @@ export class Repository {
       revision: number;
       userDailyLimit: number;
       globalDailyLimit: number;
+      leaseMs?: number;
     },
   ) {
+    const leaseMs = access.leaseMs ?? 90000;
+    if (!Number.isSafeInteger(leaseMs) || leaseMs < 90000 || leaseMs > 270000)
+      fail(400, "Недопустимый срок блокировки чата.");
     return this.db.transaction(async (tx) => {
       await this.guardAiRouting(tx, access.revision, access.policyId);
       await tx.query("select id from users where id=$1 for update", [userId]);
@@ -662,8 +666,8 @@ export class Repository {
       );
       const lease = randomUUID();
       await tx.query(
-        "update agent_threads set busy_until=now()+interval '90 seconds',lease_token=$2 where id=$1",
-        [threadId, lease],
+        "update agent_threads set busy_until=clock_timestamp()+($3::integer * interval '1 millisecond'),lease_token=$2 where id=$1",
+        [threadId, lease, leaseMs],
       );
       await tx.query(
         "insert into chat_requests(thread_id,request_id,status,ai_policy_id,ai_routing_revision) values ($1,$2,'running',$3,$4)",

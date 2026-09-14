@@ -1,4 +1,4 @@
-import type { readConfig } from "@citygo/config";
+import { effectiveLlmLimits, type readConfig } from "@citygo/config";
 import { aiProviderIds, type AiProviderId } from "@citygo/contracts";
 import {
   OpenAIProvider,
@@ -49,11 +49,13 @@ export function createProvider(
       throw new Error(
         "RouterAI requires ROUTERAI_API_KEY, ROUTERAI_MODEL and ROUTERAI_UPSTREAM",
       );
+    const limits = effectiveLlmLimits(config, "routerai");
     return new RouterAIProvider(apiKey, model, {
       upstream,
       country: config.ROUTERAI_COUNTRY,
-      timeoutMs: config.LLM_REQUEST_TIMEOUT_MS,
-      maxOutputTokens: config.LLM_MAX_OUTPUT_TOKENS,
+      reasoningEffort: config.ROUTERAI_REASONING_EFFORT,
+      timeoutMs: limits.requestTimeoutMs,
+      maxOutputTokens: limits.maxOutputTokens,
     });
   }
   if (selected === "gigachat") {

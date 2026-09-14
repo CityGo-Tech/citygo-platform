@@ -92,6 +92,95 @@ test("RouterAI uses separate credentials, fixed endpoint and explicit routing wi
   assert.equal(calls, 1);
 });
 
+test("RouterAI Astra uses an explicit total-output cap and native reasoning effort without sampling or tools", async () => {
+  let calls = 0;
+  const provider = new RouterAIProvider(
+    "synthetic-not-live",
+    "openai/gpt-6-astra",
+    {
+      upstream: "openai",
+      country: "us",
+      maxOutputTokens: 32768,
+      reasoningEffort: "high",
+      timeoutMs: 240000,
+      fetch: async (url, init) => {
+        calls++;
+        assert.equal(url, "https://routerai.ru/api/v1/chat/completions");
+        assert.equal(init?.redirect, "error");
+        assert.deepEqual(JSON.parse(String(init?.body)), {
+          model: "openai/gpt-6-astra",
+          messages: [
+            { role: "system", content: "Housing instructions" },
+            { role: "user", content: "Квартира" },
+          ],
+          stream: true,
+          stream_options: { include_usage: true },
+          max_completion_tokens: 32768,
+          reasoning_effort: "high",
+          provider: { only: ["openai"], allow_fallbacks: false, country: "us" },
+        });
+        return sse([delta, stop, usage, "[DONE]"]);
+      },
+    },
+  );
+  await collect(provider);
+  assert.equal(calls, 1);
+});
+
+test("RouterAI legacy models keep max_tokens and omit reasoning unless explicitly configured", async () => {
+  for (const configured of [false, true]) {
+    const provider = new RouterAIProvider(
+      "synthetic-not-live",
+      "qwen/qwen3.7-flash",
+      {
+        upstream: "alibaba",
+        ...(configured ? { reasoningEffort: "high" as const } : {}),
+        fetch: async (_url, init) => {
+          const body = JSON.parse(String(init?.body));
+          assert.equal(body.max_tokens, 1400);
+          assert.equal(body.max_completion_tokens, undefined);
+          assert.equal(body.reasoning_effort, undefined);
+          assert.deepEqual(
+            body.reasoning,
+            configured ? { effort: "high" } : undefined,
+          );
+          return sse([delta, stop, "[DONE]"]);
+        },
+      },
+    );
+    await collect(provider);
+  }
+});
+
+test("RouterAI constructor rejects unsupported reasoning efforts without leaking values", () => {
+  for (const value of ["none", "minimal", "ultra", "synthetic-secret"]) {
+    assert.throws(
+      () =>
+        new RouterAIProvider("test-key", "openai/gpt-6-astra", {
+          upstream: "openai",
+          reasoningEffort: value as "high",
+        }),
+      { message: "ROUTERAI_REASONING_EFFORT is not supported" },
+    );
+  }
+});
+
+test("only RouterAI Astra explicitly permits a visible answer above the legacy cap", async () => {
+  for (const model of ["openai/gpt-6-astra", "qwen/qwen3.7-flash"]) {
+    const provider = new RouterAIProvider("test-key", model, {
+      upstream: "test-upstream",
+      fetch: async () =>
+        sse([chunk({ content: "x".repeat(24001) }), stop, "[DONE]"]),
+    });
+    if (model === "openai/gpt-6-astra") {
+      const events = await collect(provider);
+      assert.equal(events.at(-1)!.type, "complete");
+    } else {
+      await assert.rejects(collect(provider), /RouterAI generation failed/);
+    }
+  }
+});
+
 test("RouterAI does not invent usage or country and ignores reasoning fields", async () => {
   const provider = makeProvider(async (_url, init) => {
     const request = JSON.parse(String(init?.body));

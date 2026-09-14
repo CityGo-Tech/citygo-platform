@@ -8,6 +8,66 @@ const credentials = {
   OPENAI_MODEL: "test-model",
 };
 
+test("RouterAI constructor receives provider-specific caps and reasoning without network", async (t) => {
+  const bodies: unknown[] = [];
+  const deadlines: number[] = [];
+  t.mock.method(AbortSignal, "timeout", (milliseconds: number) => {
+    deadlines.push(milliseconds);
+    return new AbortController().signal;
+  });
+  t.mock.method(
+    globalThis,
+    "fetch",
+    async (_url: unknown, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response(
+        [
+          {
+            model: "openai/gpt-6-astra",
+            choices: [
+              { index: 0, delta: { content: "test" }, finish_reason: "stop" },
+            ],
+          },
+          "[DONE]",
+        ]
+          .map(
+            (value) =>
+              `data: ${typeof value === "string" ? value : JSON.stringify(value)}\n\n`,
+          )
+          .join(""),
+        { headers: { "Content-Type": "text/event-stream" } },
+      );
+    },
+  );
+  const provider = createProvider(
+    readConfig({
+      LLM_PROVIDER: "routerai",
+      ROUTERAI_API_KEY: "synthetic-not-live",
+      ROUTERAI_MODEL: "openai/gpt-6-astra",
+      ROUTERAI_UPSTREAM: "openai",
+      ROUTERAI_REASONING_EFFORT: "high",
+      ROUTERAI_MAX_OUTPUT_TOKENS: "32768",
+      ROUTERAI_REQUEST_TIMEOUT_MS: "240000",
+    }),
+  )!;
+  for await (const event of provider.stream(
+    "test",
+    [],
+    new AbortController().signal,
+  ))
+    assert.ok(event.type === "delta" || event.type === "complete");
+  assert.deepEqual(deadlines, [240000]);
+  assert.equal(bodies.length, 1);
+  assert.equal(
+    (bodies[0] as { max_completion_tokens: number }).max_completion_tokens,
+    32768,
+  );
+  assert.equal(
+    (bodies[0] as { reasoning_effort: string }).reasoning_effort,
+    "high",
+  );
+});
+
 test("legacy complete OpenAI configuration still works without LLM_PROVIDER", () => {
   for (const LLM_PROVIDER of [undefined, "", "openai"]) {
     const provider = createProvider(

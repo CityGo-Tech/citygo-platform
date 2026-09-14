@@ -34,3 +34,29 @@ test("money approval binds recipient model and input/output caps, never credenti
   );
   assert.doesNotMatch(JSON.stringify(execution), /secret/);
 });
+
+test("RouterAI output override changes only its own money approval key", () => {
+  const defaults = readConfig({});
+  const configured = readConfig({
+    LLM_PROVIDER: "openai",
+    ROUTERAI_MAX_OUTPUT_TOKENS: "32768",
+    ROUTERAI_REQUEST_TIMEOUT_MS: "240000",
+    ROUTERAI_REASONING_EFFORT: "high",
+  });
+  for (const provider of ["openai", "routerai", "gigachat"] as const) {
+    const policy = createAiPolicy(defaults, {
+      name: provider,
+      model: "test-model",
+    })!;
+    const before = createAiExecution(defaults, policy);
+    const after = createAiExecution(configured, policy);
+    assert.equal(after.maxInputBytes, before.maxInputBytes);
+    if (provider === "routerai") {
+      assert.equal(after.maxOutputTokens, 32768);
+      assert.notEqual(after.key, before.key);
+    } else {
+      assert.deepEqual(after, before);
+      assert.equal(after.maxOutputTokens, 1400);
+    }
+  }
+});

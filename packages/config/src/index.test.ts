@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readConfig } from "./index.js";
+import { readConfig, effectiveLlmLimits } from "./index.js";
 
 const production = {
   NODE_ENV: "production",
@@ -72,6 +72,93 @@ test("RouterAI settings are trimmed, blank-safe and never implicitly select it",
   assert.equal(config.ROUTERAI_UPSTREAM, "test-upstream");
   assert.equal(config.ROUTERAI_COUNTRY, undefined);
   assert.equal(config.LLM_PROVIDER, undefined);
+});
+
+test("RouterAI optional output, deadline and reasoning settings are bounded and blank-safe", () => {
+  for (const blank of [undefined, "", " "]) {
+    const config = readConfig({
+      ROUTERAI_REASONING_EFFORT: blank,
+      ROUTERAI_MAX_OUTPUT_TOKENS: blank,
+      ROUTERAI_REQUEST_TIMEOUT_MS: blank,
+    });
+    assert.equal(config.ROUTERAI_REASONING_EFFORT, undefined);
+    assert.equal(config.ROUTERAI_MAX_OUTPUT_TOKENS, undefined);
+    assert.equal(config.ROUTERAI_REQUEST_TIMEOUT_MS, undefined);
+    assert.equal(config.LLM_PROVIDER, undefined);
+  }
+  for (const effort of ["low", "medium", "high", "xhigh", "max"])
+    assert.equal(
+      readConfig({ ROUTERAI_REASONING_EFFORT: ` ${effort} ` })
+        .ROUTERAI_REASONING_EFFORT,
+      effort,
+    );
+  for (const effort of ["none", "minimal", "ultra", "HIGH", "typo"])
+    assert.throws(() => readConfig({ ROUTERAI_REASONING_EFFORT: effort }));
+  for (const value of ["0", "-1", "32769", "1.5", "NaN", "Infinity"])
+    assert.throws(() => readConfig({ ROUTERAI_MAX_OUTPUT_TOKENS: value }));
+  for (const value of ["0", "999", "240001", "1000.5", "NaN", "Infinity"])
+    assert.throws(() => readConfig({ ROUTERAI_REQUEST_TIMEOUT_MS: value }));
+  for (const value of ["1", "32768"])
+    assert.equal(
+      readConfig({ ROUTERAI_MAX_OUTPUT_TOKENS: value })
+        .ROUTERAI_MAX_OUTPUT_TOKENS,
+      Number(value),
+    );
+  for (const value of ["1000", "240000"])
+    assert.equal(
+      readConfig({ ROUTERAI_REQUEST_TIMEOUT_MS: value })
+        .ROUTERAI_REQUEST_TIMEOUT_MS,
+      Number(value),
+    );
+});
+
+test("effective limits follow the selected provider and retain all historical defaults", () => {
+  const defaults = {
+    maxOutputTokens: 1400,
+    requestTimeoutMs: 60000,
+    chatLeaseMs: 90000,
+    maxOutputCharacters: 24000,
+  };
+  for (const provider of ["openai", "routerai", "gigachat"] as const)
+    assert.deepEqual(effectiveLlmLimits(readConfig({}), provider), defaults);
+  const overrides = readConfig({
+    LLM_PROVIDER: "openai",
+    ROUTERAI_MAX_OUTPUT_TOKENS: "32768",
+    ROUTERAI_REQUEST_TIMEOUT_MS: "240000",
+    ROUTERAI_REASONING_EFFORT: "high",
+  });
+  assert.deepEqual(effectiveLlmLimits(overrides, "routerai"), {
+    maxOutputTokens: 32768,
+    requestTimeoutMs: 240000,
+    chatLeaseMs: 270000,
+    maxOutputCharacters: 24000,
+  });
+  for (const provider of ["openai", "gigachat"] as const)
+    assert.deepEqual(effectiveLlmLimits(overrides, provider), defaults);
+  const common = readConfig({
+    LLM_MAX_OUTPUT_TOKENS: "2200",
+    LLM_REQUEST_TIMEOUT_MS: "12000",
+  });
+  assert.deepEqual(effectiveLlmLimits(common, "routerai"), {
+    maxOutputTokens: 2200,
+    requestTimeoutMs: 12000,
+    chatLeaseMs: 90000,
+    maxOutputCharacters: 24000,
+  });
+  assert.equal(
+    effectiveLlmLimits(overrides, "routerai", "openai/gpt-6-astra")
+      .maxOutputCharacters,
+    128000,
+  );
+  assert.equal(
+    effectiveLlmLimits(overrides, "openai", "gpt-6-astra").maxOutputCharacters,
+    24000,
+  );
+  assert.equal(
+    effectiveLlmLimits(overrides, "routerai", "qwen/qwen3.7-flash")
+      .maxOutputCharacters,
+    24000,
+  );
 });
 
 test("provider settings preserve blank defaults and validate IDs and limits", () => {
