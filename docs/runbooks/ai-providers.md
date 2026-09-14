@@ -179,9 +179,9 @@ rejects redirects instead of following an unaccounted transport/recipient hop. O
 | `LLM_PROVIDER=gigachat`          | Local/test only; require a separate authorization key, model and account scope below. Production startup fails before database connection.         |
 | `LLM_REQUEST_TIMEOUT_MS`         | Integer 1000–60000, default 60000. Shared API deadline includes the provider's retry.                                                              |
 | `LLM_MAX_OUTPUT_TOKENS`          | Integer 1–8000, default 1400. Existing 24000-character response cap also applies.                                                                  |
-| `ROUTERAI_MAX_OUTPUT_TOKENS`     | Optional RouterAI-only integer 1–32768; blank inherits the shared output limit. Changes the execution approval key. |
-| `ROUTERAI_REQUEST_TIMEOUT_MS`    | Optional RouterAI-only integer 1000–240000; blank inherits the shared deadline. The chat lease includes a 30-second margin. |
-| `ROUTERAI_REASONING_EFFORT`      | Optional explicit Astra effort: low, medium, high, xhigh or max. Does not change direct OpenAI. |
+| `ROUTERAI_MAX_OUTPUT_TOKENS`     | Optional RouterAI-only integer 1–32768; blank inherits the shared output limit. Changes the execution approval key.                                |
+| `ROUTERAI_REQUEST_TIMEOUT_MS`    | Optional RouterAI-only integer 1000–240000; blank inherits the shared deadline. The chat lease includes a 30-second margin.                        |
+| `ROUTERAI_REASONING_EFFORT`      | Optional explicit Astra effort: low, medium, high, xhigh or max. Does not change direct OpenAI.                                                    |
 | `LLM_USER_DAILY_REQUEST_LIMIT`   | Integer 0–10000, default 20. Per-user accepted chats per UTC day. Zero blocks admission.                                                           |
 | `LLM_GLOBAL_DAILY_REQUEST_LIMIT` | Integer 0–1000000, default 200. Shared accepted chats per UTC day. Zero blocks admission.                                                          |
 
@@ -433,7 +433,11 @@ within the same overall deadline. A second 401 fails. There is no retry after a
 visible delta, on stream errors, or for 403/429/5xx. Token acquisition itself does
 not retry. Separate API processes have separate token caches. Daily chat-admission
 quotas and model-attempt reservations are now shared. The reservation count is not
-proof of upstream acceptance; financial controls remain later work.
+proof of upstream acceptance or actual billing. Monetary reservations and the
+optional per-account daily money limit are also enforced; see
+[account budgets](ai-user-budget.md). They are not the provider's token balance.
+
+For the exact personal Freemium Ultra model, see [GigaChat Ultra](gigachat-ultra.md).
 
 RouterAI and GigaChat share the bounded text-only completion decoder, with the
 same stop + `[DONE]` requirement and interruption semantics. GigaChat `blacklist`,
