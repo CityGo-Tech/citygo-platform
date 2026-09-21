@@ -9,19 +9,22 @@ export const credentialsSchema = z.object({
     .transform((v) => v.trim().toLowerCase()),
   password: z.string().min(12).max(128),
 });
-export const questionnaireSchema = z
-  .object({
-    originCity: z.string().trim().min(2).max(100),
-    targetCity: z.string().trim().min(2).max(100),
-    monthlyBudget: z.number().int().min(5000).max(1000000),
-    moveTargetDate: z.iso.date(),
-    household: z.enum(["solo", "couple", "family"]),
-    aiConsent: z.literal(true),
-  })
-  .refine((v) => v.moveTargetDate >= new Date().toISOString().slice(0, 10), {
+// Stored profiles remain valid after the move date has passed.
+export const profileSchema = z.object({
+  originCity: z.string().trim().min(2).max(100),
+  targetCity: z.string().trim().min(2).max(100),
+  monthlyBudget: z.number().int().min(5000).max(1000000),
+  moveTargetDate: z.iso.date(),
+  household: z.enum(["solo", "couple", "family"]),
+  aiConsent: z.literal(true),
+});
+export const questionnaireSchema = profileSchema.refine(
+  (v) => v.moveTargetDate >= new Date().toISOString().slice(0, 10),
+  {
     path: ["moveTargetDate"],
     message: "Укажите сегодняшнюю или будущую дату",
-  });
+  },
+);
 export type Questionnaire = z.infer<typeof questionnaireSchema>;
 export const agentKeys = [
   "housing",

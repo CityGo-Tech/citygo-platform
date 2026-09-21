@@ -11,7 +11,14 @@ test("admin routing client sends the displayed revision and policy without auto-
     });
     return options?.method === "POST"
       ? Response.json({ error: "Настройка изменена" }, { status: 409 })
-      : Response.json({ current: { revision: 1 } });
+      : Response.json({
+          current: { provider: "disabled", policyId: null, revision: 1 },
+          effectiveProvider: "unconfigured",
+          environmentDisabled: false,
+          automaticFallback: false,
+          options: [],
+          audit: [],
+        });
   };
   try {
     const client = createClient("http://test");
@@ -39,7 +46,9 @@ test("client sends explicit consent actions and the viewed policy ID with chat",
       body: JSON.parse(String(options?.body)),
     });
     return String(url).endsWith("/messages")
-      ? new Response('data: {"type":"done","messageId":"1"}\n\n')
+      ? new Response('data: {"type":"done","messageId":"1"}\n\n', {
+          headers: { "Content-Type": "text/event-stream" },
+        })
       : Response.json({ ok: true });
   };
   try {
@@ -76,6 +85,7 @@ test("SSE decoder preserves split UTF-8, multiple events and terminal state", as
           controller.close();
         },
       }),
+      { headers: { "Content-Type": "text/event-stream" } },
     );
   try {
     const events: unknown[] = [];
@@ -93,7 +103,9 @@ test("SSE decoder preserves split UTF-8, multiple events and terminal state", as
 test("SSE connection closing without done is a visible error", async () => {
   const original = globalThis.fetch;
   globalThis.fetch = async () =>
-    new Response('data: {"type":"delta","text":"partial"}\n\n');
+    new Response('data: {"type":"delta","text":"partial"}\n\n', {
+      headers: { "Content-Type": "text/event-stream" },
+    });
   try {
     await assert.rejects(
       createClient("http://test").stream("1", "test", "uuid", () => {}),

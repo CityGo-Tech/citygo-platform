@@ -11,6 +11,7 @@ import {
 } from "react-native";
 import * as SecureStore from "expo-secure-store";
 import { randomUUID } from "expo-crypto";
+import { fetch as expoFetch } from "expo/fetch";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import {
   createClient,
@@ -38,6 +39,7 @@ export default function App() {
   const api = useMemo(
     () =>
       createClient(base, {
+        fetch: expoFetch,
         native: true,
         token: () => session.current,
         signal: () => lifetime.capture().signal,
@@ -119,6 +121,7 @@ export default function App() {
               const timer = setTimeout(() => controller.abort(), 10000);
               try {
                 await createClient(base, {
+                  fetch: expoFetch,
                   native: true,
                   token: () => oldToken,
                   signal: () => controller.signal,

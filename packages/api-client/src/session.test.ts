@@ -98,6 +98,7 @@ test("closing a session cancels a stalled SSE body without publishing late event
             cancelled = true;
           },
         }),
+        { headers: { "Content-Type": "text/event-stream" } },
       ),
   );
   const client = createClient("http://synthetic", {
