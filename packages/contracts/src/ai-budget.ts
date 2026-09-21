@@ -66,6 +66,14 @@ export type AiUserBudgetStatus = {
   reservedTodayMicros: number;
   remainingMicros: number | null;
 };
+// Immutable audit JSON written before migration 0007 has no personal cap field.
+// Keep absence distinct from an explicit null; live settings always include it.
+export type AiBudgetAuditSnapshot = Omit<
+  AiBudgetSettings,
+  "userDailyLimitMicros"
+> & {
+  userDailyLimitMicros?: number | null;
+};
 export type AiBudgetStatus = {
   settings: AiBudgetSettings;
   totalReservedMicros: number;
@@ -76,7 +84,7 @@ export type AiBudgetStatus = {
     id: string;
     actorUserId: string;
     createdAt: string;
-    payload: { from: AiBudgetSettings; to: AiBudgetSettings };
+    payload: { from: AiBudgetAuditSnapshot; to: AiBudgetAuditSnapshot };
   }[];
 };
 export type AiMoneyReservation = {

@@ -241,6 +241,59 @@ test("admin authorization failure does not reveal provider controls", async ({
   ).toHaveCount(0);
 });
 
+test("admin loads immutable pre-cap budget audit without losing the current personal limit", async ({
+  page,
+}) => {
+  const status = fixture();
+  const legacy = {
+    revision: 1,
+    enabled: false,
+    currency: "RUB" as const,
+    dailyLimitMicros: 1_000_000_000,
+    totalLimitMicros: 1_000_000_000,
+    rules: [],
+  };
+  status.budget = {
+    settings: { ...legacy, revision: 2, userDailyLimitMicros: 500_000_000 },
+    day: "2026-09-22",
+    reservedTodayMicros: 0,
+    totalReservedMicros: 0,
+    availableExecutions: [],
+    audit: [
+      {
+        id: "1",
+        actorUserId: "1",
+        createdAt: "2026-09-01T00:00:00Z",
+        payload: { from: legacy, to: legacy },
+      },
+    ],
+  };
+  let writes = 0;
+  await page.route("**/api/v1/admin/**", (route) => {
+    if (route.request().method() !== "GET") writes++;
+    return route.fulfill({
+      json: route.request().url().endsWith("/overview")
+        ? { counts: { users: 1, completed: 0, xp: 0 }, pendingHuman: [] }
+        : status,
+    });
+  });
+  await page.goto("/admin");
+  await page.getByRole("button", { name: "Обновить сводку" }).click();
+  const budget = page.getByRole("region", { name: "Денежный бюджет AI" });
+  await expect(budget).toBeVisible();
+  await expect(budget).toContainText(
+    "Действующий лимит на аккаунт в сутки UTC: 500 RUB",
+  );
+  await expect(budget.getByRole("listitem")).toContainText(
+    "без отдельного лимита на аккаунт",
+  );
+  await expect(
+    budget.getByRole("button", { name: "Сохранить денежный бюджет" }),
+  ).toBeDisabled();
+  await expect(page.locator(".admin-error")).toHaveCount(0);
+  expect(writes).toBe(0);
+});
+
 test("admin explicitly confirms money ceilings, refreshes conflicts and cannot silently change currency", async ({
   page,
 }) => {

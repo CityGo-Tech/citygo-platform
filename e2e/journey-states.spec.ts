@@ -229,7 +229,7 @@ for (const status of ["complete", "interrupted"] as const) {
         { type: "delta", text: content.slice(0, 25) },
         { type: "delta", text: content.slice(25) },
         status === "complete"
-          ? { type: "done" }
+          ? { type: "done", messageId: "stream-assistant" }
           : { type: "error", message: "Соединение прервано" },
       ];
       await route.fulfill({

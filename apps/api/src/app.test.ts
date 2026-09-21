@@ -5,6 +5,16 @@ import { connectDatabase, migrate, Repository } from "@citygo/db";
 import { testProfile, TestProvider } from "@citygo/testkit";
 import {
   aiProviderIds,
+  authResponseSchema,
+  okResponseSchema,
+  dashboardResponseSchema,
+  startResponseSchema,
+  completionResponseSchema,
+  aiControlResponseSchema,
+  aiRoutingResponseSchema,
+  aiBudgetSettingsSchema,
+  adminOverviewResponseSchema,
+  streamEventSchema,
   type AiProviderId,
   type Dashboard,
   type AiControlStatus,
@@ -337,6 +347,65 @@ async function chatUser(f: Awaited<ReturnType<typeof fixture>>, grant = true) {
     policyId: board.aiAccess.policy!.id,
   };
 }
+
+test("runtime response schemas accept the actual API journey and admin payloads", async (t) => {
+  const f = await fixture(true, { ADMIN_USER_IDS: "1" });
+  t.after(f.close);
+  const auth = await f.call("POST", "/v1/auth/register", "", {
+    email: "schemas@example.test",
+    password: "Synthetic-test-password",
+  });
+  authResponseSchema.parse(auth.json());
+  const token = auth.cookies[0]!.value;
+  okResponseSchema.parse(
+    (await f.call("POST", "/v1/questionnaire", token, testProfile)).json(),
+  );
+  const board = dashboardResponseSchema.parse(
+    (await f.call("GET", "/v1/dashboard", token)).json(),
+  );
+  const quest = board.quests[0]!.id;
+  const thread = startResponseSchema.parse(
+    (await f.call("POST", `/v1/quests/${quest}/start`, token, {})).json(),
+  ).id;
+  aiControlResponseSchema.parse(
+    (await f.call("GET", "/v1/admin/ai", token)).json(),
+  );
+  aiRoutingResponseSchema.parse(await f.activate(token));
+  aiBudgetSettingsSchema.parse(await f.approveBudget(token));
+  await f.consent(token);
+  const stream = await f.call("POST", `/v1/threads/${thread}/messages`, token, {
+    text: "Помоги с поиском жилья",
+    requestId: randomUUID(),
+  });
+  assert.equal(stream.statusCode, 200);
+  const events = stream.body
+    .split("\n")
+    .filter((line) => line.startsWith("data: "))
+    .map((line) => streamEventSchema.parse(JSON.parse(line.slice(6))));
+  assert.equal(events.at(-1)?.type, "done");
+  dashboardResponseSchema.parse(
+    (await f.call("GET", "/v1/dashboard", token)).json(),
+  );
+  aiControlResponseSchema.parse(
+    (await f.call("GET", "/v1/admin/ai", token)).json(),
+  );
+  adminOverviewResponseSchema.parse(
+    (await f.call("GET", "/v1/admin/overview", token)).json(),
+  );
+  assert.equal(
+    completionResponseSchema.parse(
+      (
+        await f.call("POST", `/v1/quests/${quest}/complete`, token, {
+          confirmed: true,
+        })
+      ).json(),
+    ).awarded,
+    60,
+  );
+  okResponseSchema.parse(
+    (await f.call("POST", "/v1/auth/logout", token, {})).json(),
+  );
+});
 
 test("money budget starts closed, protects admin writes and allows only explicitly approved attempts", async (t) => {
   let calls = 0;
