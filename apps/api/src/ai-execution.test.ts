@@ -35,6 +35,32 @@ test("money approval binds recipient model and input/output caps, never credenti
   assert.doesNotMatch(JSON.stringify(execution), /secret/);
 });
 
+test("moving RouterAI from Astra to DeepSeek requires its own policy and money approval", () => {
+  const astra = readConfig({
+    ROUTERAI_UPSTREAM: "openai",
+    ROUTERAI_COUNTRY: "us",
+    ROUTERAI_MAX_OUTPUT_TOKENS: "32768",
+  });
+  const deepseek = readConfig({
+    ROUTERAI_UPSTREAM: "deepseek",
+    ROUTERAI_COUNTRY: "us",
+    ROUTERAI_MAX_OUTPUT_TOKENS: "32768",
+  });
+  const before = createAiPolicy(astra, {
+    name: "routerai",
+    model: "openai/gpt-6-astra",
+  })!;
+  const after = createAiPolicy(deepseek, {
+    name: "routerai",
+    model: "deepseek/deepseek-v4-pro-0813",
+  })!;
+  assert.notEqual(before.id, after.id);
+  assert.notEqual(
+    createAiExecution(astra, before).key,
+    createAiExecution(deepseek, after).key,
+  );
+});
+
 test("RouterAI output override changes only its own money approval key", () => {
   const defaults = readConfig({});
   const configured = readConfig({

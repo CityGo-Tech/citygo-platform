@@ -173,6 +173,33 @@ test("personal Ultra is an optional configured provider and preserves OpenAI and
   );
 });
 
+test("RouterAI DeepSeek can be primary while OpenAI and GigaChat Ultra remain selectable", () => {
+  const config = readConfig({
+    ...credentials,
+    ...gigaSettings,
+    GIGACHAT_MODEL: "GigaChat-3-Ultra",
+    LLM_PROVIDER: "routerai",
+    ROUTERAI_API_KEY: "test-router-not-live",
+    ROUTERAI_MODEL: "deepseek/deepseek-v4-pro-0813",
+    ROUTERAI_UPSTREAM: "deepseek",
+    ROUTERAI_COUNTRY: "us",
+    ROUTERAI_REASONING_EFFORT: "high",
+    ROUTERAI_MAX_OUTPUT_TOKENS: "32768",
+    ROUTERAI_REQUEST_TIMEOUT_MS: "240000",
+  });
+  const registry = createProviderRegistry(config);
+  assert.equal(registry.provider, registry.providers.routerai);
+  assert.equal(registry.provider?.model, config.ROUTERAI_MODEL);
+  assert.equal(registry.providers.openai?.model, credentials.OPENAI_MODEL);
+  assert.equal(registry.providers.gigachat?.model, "GigaChat-3-Ultra");
+  for (const name of ["openai", "gigachat"] as const)
+    assert.equal(createProvider({ ...config, LLM_PROVIDER: name })?.name, name);
+  assert.equal(
+    createProvider({ ...config, LLM_PROVIDER: "disabled" }),
+    undefined,
+  );
+});
+
 test("GigaChat selection is explicit and retains RouterAI, OpenAI and disabled behavior", () => {
   assert.equal(createProvider(readConfig(gigaSettings)), undefined);
   assert.equal(

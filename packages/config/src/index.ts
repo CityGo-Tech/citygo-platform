@@ -138,7 +138,9 @@ export function effectiveLlmLimits(
       : config.LLM_REQUEST_TIMEOUT_MS;
   return {
     maxOutputCharacters:
-      provider === "routerai" && model === "openai/gpt-6-astra"
+      provider === "routerai" &&
+      (model === "openai/gpt-6-astra" ||
+        model === "deepseek/deepseek-v4-pro-0813")
         ? 128000
         : 24000,
     maxOutputTokens:
