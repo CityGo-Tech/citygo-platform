@@ -161,6 +161,37 @@ test("effective limits follow the selected provider and retain all historical de
   );
 });
 
+test("DeepSeek Pro quality limits apply only through RouterAI", () => {
+  const config = readConfig({
+    LLM_PROVIDER: "routerai",
+    ROUTERAI_MODEL: "deepseek/deepseek-v4-pro-0813",
+    ROUTERAI_UPSTREAM: "deepseek",
+    ROUTERAI_COUNTRY: "us",
+    ROUTERAI_REASONING_EFFORT: "high",
+    ROUTERAI_MAX_OUTPUT_TOKENS: "32768",
+    ROUTERAI_REQUEST_TIMEOUT_MS: "240000",
+  });
+  assert.deepEqual(
+    effectiveLlmLimits(config, "routerai", config.ROUTERAI_MODEL),
+    {
+      maxOutputTokens: 32768,
+      requestTimeoutMs: 240000,
+      chatLeaseMs: 270000,
+      maxOutputCharacters: 128000,
+    },
+  );
+  for (const provider of ["openai", "gigachat"] as const)
+    assert.deepEqual(
+      effectiveLlmLimits(config, provider, config.ROUTERAI_MODEL),
+      {
+        maxOutputTokens: 1400,
+        requestTimeoutMs: 60000,
+        chatLeaseMs: 90000,
+        maxOutputCharacters: 24000,
+      },
+    );
+});
+
 test("provider settings preserve blank defaults and validate IDs and limits", () => {
   assert.equal(readConfig({ LLM_PROVIDER: " " }).LLM_PROVIDER, undefined);
   for (const LLM_PROVIDER of ["openai", "routerai", "gigachat", "disabled"])

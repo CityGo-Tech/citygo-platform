@@ -127,6 +127,47 @@ test("RouterAI Astra uses an explicit total-output cap and native reasoning effo
   assert.equal(calls, 1);
 });
 
+test("RouterAI DeepSeek Pro pins its own recipient and uses max_tokens with reasoning", async () => {
+  let calls = 0;
+  const model = "deepseek/deepseek-v4-pro-0813";
+  const provider = new RouterAIProvider("synthetic-not-live", model, {
+    upstream: "deepseek",
+    country: "us",
+    maxOutputTokens: 32768,
+    reasoningEffort: "high",
+    timeoutMs: 240000,
+    fetch: async (url, init) => {
+      calls++;
+      assert.equal(url, "https://routerai.ru/api/v1/chat/completions");
+      assert.equal(init?.redirect, "error");
+      assert.deepEqual(JSON.parse(String(init?.body)), {
+        model,
+        messages: [
+          { role: "system", content: "Housing instructions" },
+          { role: "user", content: "Квартира" },
+        ],
+        stream: true,
+        stream_options: { include_usage: true },
+        max_tokens: 32768,
+        reasoning: { effort: "high" },
+        provider: { only: ["deepseek"], allow_fallbacks: false, country: "us" },
+      });
+      return sse([
+        { ...chunk({ reasoning: "private reasoning", content: null }), model },
+        { ...delta, model },
+        { ...stop, model },
+        { ...usage, model },
+        "[DONE]",
+      ]);
+    },
+  });
+  assert.deepEqual(await collect(provider), [
+    { type: "delta", text: "Ответ 🏠" },
+    { type: "complete", model, usage: { inputTokens: 23, outputTokens: 7 } },
+  ]);
+  assert.equal(calls, 1);
+});
+
 test("RouterAI legacy models keep max_tokens and omit reasoning unless explicitly configured", async () => {
   for (const configured of [false, true]) {
     const provider = new RouterAIProvider(
@@ -165,20 +206,47 @@ test("RouterAI constructor rejects unsupported reasoning efforts without leaking
   }
 });
 
-test("only RouterAI Astra explicitly permits a visible answer above the legacy cap", async () => {
-  for (const model of ["openai/gpt-6-astra", "qwen/qwen3.7-flash"]) {
+test("pinned RouterAI quality models permit a visible answer above the legacy cap", async () => {
+  for (const model of [
+    "openai/gpt-6-astra",
+    "deepseek/deepseek-v4-pro-0813",
+    "qwen/qwen3.7-flash",
+  ]) {
     const provider = new RouterAIProvider("test-key", model, {
       upstream: "test-upstream",
       fetch: async () =>
         sse([chunk({ content: "x".repeat(24001) }), stop, "[DONE]"]),
     });
-    if (model === "openai/gpt-6-astra") {
+    if (model !== "qwen/qwen3.7-flash") {
       const events = await collect(provider);
       assert.equal(events.at(-1)!.type, "complete");
     } else {
       await assert.rejects(collect(provider), /RouterAI generation failed/);
     }
   }
+});
+
+test("DeepSeek reasoning can exceed the legacy stream budget but visible output remains bounded", async () => {
+  const model = "deepseek/deepseek-v4-pro-0813";
+  const reasoning = Array.from({ length: 20 }, () =>
+    chunk({ reasoning: "r".repeat(60000) }),
+  );
+  const provider = new RouterAIProvider("test-key", model, {
+    upstream: "deepseek",
+    fetch: async () => sse([...reasoning, delta, stop, "[DONE]"]),
+  });
+  assert.equal((await collect(provider)).at(-1)!.type, "complete");
+  const oversized = new RouterAIProvider("test-key", model, {
+    upstream: "deepseek",
+    fetch: async () =>
+      sse([
+        chunk({ content: "x".repeat(64000) }),
+        chunk({ content: "x".repeat(64001) }),
+        stop,
+        "[DONE]",
+      ]),
+  });
+  await assert.rejects(collect(oversized), /RouterAI generation failed/);
 });
 
 test("RouterAI does not invent usage or country and ignores reasoning fields", async () => {

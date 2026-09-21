@@ -103,7 +103,8 @@ export class RouterAIProvider implements StreamingProvider {
       yield* readChatCompletion(
         response.body,
         deadline,
-        this.model === "openai/gpt-6-astra"
+        this.model === "openai/gpt-6-astra" ||
+          this.model === "deepseek/deepseek-v4-pro-0813"
           ? { maxOutputCharacters: 128000, maxStreamBytes: 16 * 1024 * 1024 }
           : undefined,
       );
