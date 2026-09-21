@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   dashboardResponseSchema,
   aiControlResponseSchema,
+  aiBudgetSettingsSchema,
 } from "./responses.js";
 import { questionnaireSchema, type Dashboard } from "./platform.js";
 const board: Dashboard = {
@@ -28,6 +29,71 @@ test("stored past move dates and legacy dashboards without optional money fields
     dashboardResponseSchema.parse({ ...board, futureField: true }),
     board,
   );
+});
+
+test("pre-cap budget audit snapshots stay readable without weakening current settings", () => {
+  const legacy = {
+    revision: 1,
+    enabled: false,
+    currency: "RUB",
+    dailyLimitMicros: 1_000_000_000,
+    totalLimitMicros: 1_000_000_000,
+    rules: [],
+  };
+  const settings = {
+    ...legacy,
+    revision: 2,
+    userDailyLimitMicros: 500_000_000,
+  };
+  const status = {
+    current: { provider: "disabled", policyId: null, revision: 1 },
+    effectiveProvider: "unconfigured",
+    environmentDisabled: false,
+    automaticFallback: false,
+    options: [],
+    audit: [],
+    budget: {
+      settings,
+      totalReservedMicros: 0,
+      reservedTodayMicros: 0,
+      day: "2026-09-22",
+      availableExecutions: [],
+      audit: [
+        {
+          id: "1",
+          actorUserId: "1",
+          createdAt: "2026-09-01T00:00:00Z",
+          payload: { from: legacy, to: legacy },
+        },
+      ],
+    },
+  };
+  const result = aiControlResponseSchema.parse(status);
+  assert.equal(result.budget?.settings.userDailyLimitMicros, 500_000_000);
+  assert.equal(
+    Object.hasOwn(result.budget!.audit[0]!.payload.to, "userDailyLimitMicros"),
+    false,
+  );
+  assert.equal(aiBudgetSettingsSchema.safeParse(legacy).success, false);
+  assert.equal(
+    aiControlResponseSchema.safeParse({
+      ...status,
+      budget: { ...status.budget, settings: legacy },
+    }).success,
+    false,
+  );
+  for (const side of ["from", "to"] as const) {
+    for (const value of [null, 0, 500_000_000, "500", -1]) {
+      const changed = structuredClone(status);
+      Object.assign(changed.budget.audit[0]!.payload[side], {
+        userDailyLimitMicros: value,
+      });
+      assert.equal(
+        aiControlResponseSchema.safeParse(changed).success,
+        typeof value !== "string" && value !== -1,
+      );
+    }
+  }
 });
 test("dashboard validates nested profile, quest, message, policy and budget fields", () => {
   for (const change of [

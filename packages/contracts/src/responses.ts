@@ -11,7 +11,11 @@ import {
   type AiControlStatus,
   type AiRouting,
 } from "./ai-access.js";
-import { MAX_MONEY_MICROS, type AiBudgetSettings } from "./ai-budget.js";
+import {
+  MAX_MONEY_MICROS,
+  type AiBudgetSettings,
+  type AiBudgetAuditSnapshot,
+} from "./ai-budget.js";
 
 // Response IDs are opaque strings (the current API also uses decimal IDs).
 // Objects intentionally allow additive fields, but validate every known field.
@@ -73,6 +77,10 @@ export const aiBudgetSettingsSchema = z.object({
   userDailyLimitMicros: money.nullable(),
   rules: z.array(execution.extend({ attemptCeilingMicros: money })).max(3),
 }) satisfies z.ZodType<AiBudgetSettings>;
+const budgetAuditSnapshot = aiBudgetSettingsSchema.extend({
+  // Historical snapshots are immutable and predate the personal-cap field.
+  userDailyLimitMicros: money.nullable().optional(),
+}) satisfies z.ZodType<AiBudgetAuditSnapshot>;
 const userBudget = z.object({
   currency: currency.nullable(),
   day: z.iso.date(),
@@ -94,8 +102,8 @@ const budget = z.object({
         actorUserId: id,
         createdAt: auditTimestamp,
         payload: z.object({
-          from: aiBudgetSettingsSchema,
-          to: aiBudgetSettingsSchema,
+          from: budgetAuditSnapshot,
+          to: budgetAuditSnapshot,
         }),
       }),
     )
