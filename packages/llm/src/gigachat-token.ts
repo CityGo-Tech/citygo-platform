@@ -133,17 +133,26 @@ export class GigaTokenCache {
     if (!value || typeof value !== "object" || Array.isArray(value))
       throw new Error("Invalid GigaChat token");
     const token = value as Record<string, unknown>;
-    // GigaChat SDK's AccessToken contract defines expires_at in milliseconds.
+    // The SDK uses milliseconds, while the REST documentation also shows Unix
+    // seconds. Normalize only numeric safe integers, then enforce the same
+    // short validity window for either representation.
+    const receivedAt = this.now();
+    const expiresAt =
+      typeof token.expires_at === "number" &&
+      Number.isSafeInteger(token.expires_at)
+        ? token.expires_at < 100_000_000_000
+          ? token.expires_at * 1000
+          : token.expires_at
+        : NaN;
     if (
       typeof token.access_token !== "string" ||
       !/^[A-Za-z0-9._~+/-]+=*$/.test(token.access_token) ||
       token.access_token.length > 16384 ||
-      typeof token.expires_at !== "number" ||
-      !Number.isSafeInteger(token.expires_at) ||
-      token.expires_at <= this.now() + 60000 ||
-      token.expires_at > this.now() + 24 * 60 * 60 * 1000
+      !Number.isSafeInteger(expiresAt) ||
+      expiresAt <= receivedAt + 60000 ||
+      expiresAt > receivedAt + 24 * 60 * 60 * 1000
     )
       throw new Error("Invalid GigaChat token");
-    return { value: token.access_token, expiresAt: token.expires_at };
+    return { value: token.access_token, expiresAt };
   }
 }

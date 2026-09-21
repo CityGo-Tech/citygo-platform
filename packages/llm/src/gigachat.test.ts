@@ -355,14 +355,50 @@ test("GigaChat allows one token recovery on pre-stream 401, never an infinite re
   }
 });
 
-test("GigaChat rejects invalid OAuth bodies, expiry units and status without calling chat", async () => {
+for (const divisor of [1, 1000]) {
+  test(`GigaChat normalizes expiry (divisor=${divisor}) and refreshes before expiration`, async () => {
+    let current = now,
+      auth = 0;
+    const cache = new GigaTokenCache(
+      credentials,
+      "GIGACHAT_API_PERS",
+      async () => {
+        auth++;
+        return token(
+          "test-access-token-" + auth,
+          Math.floor((current + 1800000) / divisor),
+        );
+      },
+      () => current,
+    );
+    const signal = new AbortController().signal;
+    const first = await cache.get(signal);
+    assert.equal(first.expiresAt, now + 1800000);
+    assert.equal(await cache.get(signal), first);
+    assert.equal(auth, 1);
+    current += 1800000 - 60000;
+    const refreshed = await cache.get(signal);
+    assert.equal(refreshed.expiresAt, current + 1800000);
+    assert.equal(auth, 2);
+  });
+}
+
+test("GigaChat rejects invalid OAuth bodies, expiry values and status without calling chat", async () => {
   for (const invalid of [
     {},
     { access_token: "", expires_at: now + 1800000 },
-    {
-      access_token: "test-token",
-      expires_at: Math.floor((now + 1800000) / 1000),
-    },
+    ...[1, 1000].flatMap((divisor) =>
+      [now - 1000, now + 60000, now + 86400000 + 1000].map((expiry) => ({
+        access_token: "test-token",
+        expires_at: expiry / divisor,
+      })),
+    ),
+    ...[null, 0, -1, 1800000000.5, Number.MAX_SAFE_INTEGER].map(
+      (expires_at) => ({
+        access_token: "test-token",
+        expires_at,
+      }),
+    ),
     { access_token: "test-token", expires_at: now - 1 },
     { access_token: "test-token", expires_at: now + 30000 },
     { access_token: "test-token", expires_at: String(now + 1800000) },
