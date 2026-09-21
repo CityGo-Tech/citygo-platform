@@ -1,11 +1,23 @@
 "use client";
-import { useState } from "react";
-import { createClient } from "@citygo/api-client";
+import { useEffect, useMemo, useState } from "react";
+import {
+  createClient,
+  createSessionGuard,
+  subscribeBrowserSessionChange,
+} from "@citygo/api-client";
 import { Button, Card } from "@citygo/ui-web";
 import { AiControls } from "./ai-control.js";
 import { AiBudgetControls } from "./ai-budget.js";
-const api = createClient();
 export function AdminOverview() {
+  const [session] = useState(createSessionGuard);
+  const api = useMemo(
+    () =>
+      createClient("/api", {
+        signal: () => session.capture().signal,
+        onUnauthorized: () => invalidate(),
+      }),
+    [session],
+  );
   const [data, setData] = useState<Awaited<
       ReturnType<typeof api.admin>
     > | null>(null),
@@ -16,38 +28,71 @@ export function AdminOverview() {
   > | null>(null);
   const [refreshVersion, setRefreshVersion] = useState(0);
   const [notice, setNotice] = useState("");
+  function invalidate() {
+    session.reset();
+    setData(null);
+    setControl(null);
+    setError("");
+    setNotice("");
+    setBusy(false);
+    setRefreshVersion((value) => value + 1);
+  }
+  useEffect(() => {
+    const unsubscribe = subscribeBrowserSessionChange(invalidate);
+    // Revalidate explicitly after returning from another app/tab, including
+    // browsers where storage events are unavailable. Never keep a stale admin form.
+    window.addEventListener("focus", invalidate);
+    return () => {
+      unsubscribe();
+      window.removeEventListener("focus", invalidate);
+      session.reset();
+    };
+  }, []);
   async function saveBudget(input: Parameters<typeof api.setAiBudget>[0]) {
+    const ticket = session.capture();
     setBusy(true);
     setError("");
     setNotice("");
     try {
       await api.setAiBudget(input);
+      ticket.check();
       setNotice("Денежный бюджет AI сохранён.");
     } catch (error) {
-      setError(
-        error instanceof Error ? error.message : "Не удалось сохранить бюджет",
-      );
+      if (ticket.active())
+        setError(
+          error instanceof Error
+            ? error.message
+            : "Не удалось сохранить бюджет",
+        );
     } finally {
       try {
-        await refresh();
+        if (ticket.active()) await refresh(ticket);
       } catch (error) {
-        setError(
-          error instanceof Error ? error.message : "Не удалось обновить сводку",
-        );
+        if (ticket.active())
+          setError(
+            error instanceof Error
+              ? error.message
+              : "Не удалось обновить сводку",
+          );
       } finally {
-        setBusy(false);
+        if (ticket.active()) setBusy(false);
       }
     }
   }
-  async function refresh() {
+  async function refresh(ticket = session.capture()) {
     try {
+      ticket.check();
       const [overview, ai] = await Promise.all([api.admin(), api.aiControl()]);
+      ticket.check();
       setData(overview);
       setControl(ai);
       setRefreshVersion((value) => value + 1);
     } catch (error) {
-      setData(null);
-      setControl(null);
+      if (ticket.active()) {
+        setData(null);
+        setControl(null);
+        setNotice("");
+      }
       throw error;
     }
   }
@@ -62,12 +107,17 @@ export function AdminOverview() {
         <Button
           disabled={busy}
           onClick={() => {
+            const ticket = session.capture();
             setBusy(true);
             setError("");
             setNotice("");
-            void refresh()
-              .catch((e) => setError(e.message))
-              .finally(() => setBusy(false));
+            void refresh(ticket)
+              .catch((e) => {
+                if (ticket.active()) setError(e.message);
+              })
+              .finally(() => {
+                if (ticket.active()) setBusy(false);
+              });
           }}
         >
           Обновить сводку
@@ -105,30 +155,34 @@ export function AdminOverview() {
           status={control}
           busy={busy}
           onSave={(input) => {
+            const ticket = session.capture();
             setBusy(true);
             setError("");
             setNotice("");
             void (async () => {
               try {
                 await api.setAiRouting(input);
+                ticket.check();
                 setNotice("Настройка AI сохранена.");
               } catch (error) {
-                setError(
-                  error instanceof Error
-                    ? error.message
-                    : "Не удалось изменить настройку AI",
-                );
-              } finally {
-                try {
-                  await refresh();
-                } catch (error) {
+                if (ticket.active())
                   setError(
                     error instanceof Error
                       ? error.message
-                      : "Не удалось обновить сводку",
+                      : "Не удалось изменить настройку AI",
                   );
+              } finally {
+                try {
+                  if (ticket.active()) await refresh(ticket);
+                } catch (error) {
+                  if (ticket.active())
+                    setError(
+                      error instanceof Error
+                        ? error.message
+                        : "Не удалось обновить сводку",
+                    );
                 } finally {
-                  setBusy(false);
+                  if (ticket.active()) setBusy(false);
                 }
               }
             })();

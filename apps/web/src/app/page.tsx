@@ -1,15 +1,24 @@
 "use client";
 import Image from "next/image";
 import Link from "next/link";
-import { useEffect, useRef, useState, type FormEvent } from "react";
-import { createClient, ApiError } from "@citygo/api-client";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import {
+  createClient,
+  createSessionGuard,
+  notifyBrowserSessionChange,
+  subscribeBrowserSessionChange,
+  type SessionTicket,
+} from "@citygo/api-client";
 import type { AgentKey, Dashboard, Questionnaire } from "@citygo/contracts";
 import { Button, Card, Field, Badge } from "@citygo/ui-web";
 import { Journey } from "../components/journey";
 import { QuestionnaireForm } from "../components/questionnaire";
 
-const api = createClient();
 export default function Home() {
+  const [session] = useState(createSessionGuard);
+  const [formVersion, setFormVersion] = useState(0);
+  const [logoutUnconfirmed, setLogoutUnconfirmed] = useState(false);
+  const refreshVersion = useRef(0);
   const [board, setBoard] = useState<Dashboard | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -22,49 +31,138 @@ export default function Home() {
   const [pending, setPending] = useState("");
   const [streamAgent, setStreamAgent] = useState<AgentKey | null>(null);
   const abort = useRef<AbortController | null>(null);
-  async function refresh() {
-    try {
-      setBoard(await api.dashboard());
-    } catch (e) {
-      if (e instanceof ApiError && e.status === 401) setBoard(null);
-      else throw e;
+  const api = useMemo(
+    () =>
+      createClient("/api", {
+        signal: () => session.capture().signal,
+        onUnauthorized: () => {
+          if (session.hasOwner()) notifyBrowserSessionChange();
+          clearUserState();
+          setNotice("Сессия завершилась. Войдите снова.");
+        },
+      }),
+    [session],
+  );
+  function clearUserState(owner?: string) {
+    session.reset(owner);
+    abort.current?.abort();
+    abort.current = null;
+    setBoard(null);
+    setText("");
+    setDraft("");
+    setPending("");
+    setStreamAgent(null);
+    setSending(false);
+    setBusy(false);
+    setError("");
+    setNotice("");
+    setLoading(false);
+    setLogoutUnconfirmed(false);
+    setFormVersion((value) => value + 1);
+    window.history.replaceState(
+      null,
+      "",
+      window.location.pathname + window.location.search,
+    );
+  }
+  async function refresh(ticket = session.capture()) {
+    ticket.check();
+    const version = ++refreshVersion.current;
+    const next = await api.dashboard();
+    ticket.check();
+    if (version !== refreshVersion.current) return;
+    if (session.ownerChanged(next.user.id)) {
+      notifyBrowserSessionChange();
+      clearUserState(next.user.id);
+      setBoard(next);
+      ticket.check(); // Do not run the previous owner's continuation.
     }
+    setBoard(next);
   }
   useEffect(() => {
-    void refresh()
-      .catch((e) => setError(e.message))
-      .finally(() => setLoading(false));
-    return () => abort.current?.abort();
+    const unsubscribe = subscribeBrowserSessionChange(() => clearUserState());
+    const onFocus = () => {
+      // Detect a changed HttpOnly session after returning from another tab,
+      // including browsers with disabled storage. Do not auto-restore a logout.
+      if (session.hasOwner()) void refresh(session.capture()).catch(() => {});
+    };
+    window.addEventListener("focus", onFocus);
+    const ticket = session.capture();
+    void refresh(ticket)
+      .catch((e) => {
+        if (ticket.active()) setError(e.message);
+      })
+      .finally(() => {
+        if (ticket.active()) setLoading(false);
+      });
+    return () => {
+      unsubscribe();
+      window.removeEventListener("focus", onFocus);
+      session.reset();
+      abort.current?.abort();
+    };
   }, []);
-  async function act(work: () => Promise<void>) {
+  async function act(work: (ticket: SessionTicket) => Promise<void>) {
+    const ticket = session.capture();
     setError("");
     setBusy(true);
     try {
-      await work();
+      await work(ticket);
+      ticket.check();
       return true;
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Не удалось выполнить запрос");
+      if (ticket.active())
+        setError(
+          e instanceof Error ? e.message : "Не удалось выполнить запрос",
+        );
       return false;
     } finally {
-      setBusy(false);
+      if (ticket.active()) setBusy(false);
     }
   }
   function auth(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (busy || logoutUnconfirmed) return;
     const data = new FormData(event.currentTarget);
-    void act(async () => {
+    notifyBrowserSessionChange();
+    clearUserState();
+    void act(async (ticket) => {
       await api.auth(
         mode,
         String(data.get("email")),
         String(data.get("password")),
       );
-      await refresh();
+      ticket.check();
+      await refresh(ticket);
     });
+  }
+  async function logout() {
+    notifyBrowserSessionChange();
+    clearUserState();
+    const ticket = session.capture();
+    setBusy(true);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10000);
+    try {
+      // Independent revocation request: closing the UI lifetime must not cancel it.
+      await createClient("/api", { signal: () => controller.signal }).logout();
+      if (ticket.active()) setNotice("Вы вышли из аккаунта.");
+    } catch {
+      if (ticket.active()) {
+        setLogoutUnconfirmed(true);
+        setError(
+          "Локальные данные очищены. Не удалось подтвердить выход на сервере. Повторите выход перед использованием устройства другим человеком.",
+        );
+      }
+    } finally {
+      clearTimeout(timer);
+      if (ticket.active()) setBusy(false);
+    }
   }
   function questionnaire(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
-    void act(async () => {
+    void act(async (ticket) => {
       if (data.get("aiConsent") !== "on")
         throw new Error("Подтвердите использование анкеты для плана");
       await api.questionnaire({
@@ -75,7 +173,7 @@ export default function Home() {
         household: String(data.get("household")) as Questionnaire["household"],
         aiConsent: true,
       });
-      await refresh();
+      await refresh(ticket);
     });
   }
   async function chat(event: FormEvent) {
@@ -83,12 +181,14 @@ export default function Home() {
     if (!board?.thread || !board.aiAccess?.granted || !text.trim() || busy)
       return;
     const message = text;
+    const ticket = session.capture();
     setText("");
     setDraft("");
     setPending(message);
     setSending(true);
     setStreamAgent(board.thread.agentKey);
-    abort.current = new AbortController();
+    const controller = new AbortController();
+    abort.current = controller;
     const succeeded = await act(async () => {
       try {
         await api.stream(
@@ -96,22 +196,25 @@ export default function Home() {
           message,
           crypto.randomUUID(),
           (event) => {
+            if (!ticket.active()) return;
             if (event.type === "delta") setDraft((value) => value + event.text);
             if (event.type === "handoff") {
               setNotice(event.reason);
               setStreamAgent(event.to);
             }
           },
-          abort.current!.signal,
+          controller.signal,
           board.aiAccess.policy?.id,
         );
       } catch (e) {
-        if (!abort.current?.signal.aborted) throw e;
+        if (!ticket.active()) return;
+        if (!controller.signal.aborted) throw e;
         setNotice("Ответ остановлен. Полученная часть останется в истории.");
       } finally {
-        await refresh();
+        if (ticket.active()) await refresh(ticket);
       }
     });
+    if (!ticket.active()) return;
     if (!succeeded) setText(message);
     setDraft("");
     setPending("");
@@ -135,17 +238,7 @@ export default function Home() {
         {board ? (
           <div className="account">
             <Badge>{board.xp} XP</Badge>
-            <Button
-              variant="ghost"
-              disabled={busy}
-              onClick={() =>
-                void act(async () => {
-                  await api.logout();
-                  setBoard(null);
-                  setNotice("");
-                })
-              }
-            >
+            <Button variant="ghost" onClick={() => void logout()}>
               Выйти
             </Button>
           </div>
@@ -166,6 +259,11 @@ export default function Home() {
           <div className="notice" role="status">
             {notice}
           </div>
+        )}
+        {logoutUnconfirmed && (
+          <Button disabled={busy} onClick={() => void logout()}>
+            Повторить выход на сервере
+          </Button>
         )}
         {loading ? (
           <Card>
@@ -204,7 +302,7 @@ export default function Home() {
                 {mode === "register" ? "Начнём вашу историю" : "С возвращением"}
               </h2>
               <p>Сохраним план, диалоги и каждый завершённый шаг.</p>
-              <form onSubmit={auth}>
+              <form key={formVersion} onSubmit={auth}>
                 <Field
                   label="Электронная почта"
                   name="email"
@@ -225,7 +323,7 @@ export default function Home() {
                   hint="Не менее 12 символов"
                   required
                 />
-                <Button disabled={busy} type="submit">
+                <Button disabled={busy || logoutUnconfirmed} type="submit">
                   {busy
                     ? "Подождите…"
                     : mode === "register"
@@ -251,7 +349,11 @@ export default function Home() {
             </Card>
           </div>
         ) : !board.profile ? (
-          <QuestionnaireForm busy={busy} onSubmit={questionnaire} />
+          <QuestionnaireForm
+            key={board.user.id + ":" + formVersion}
+            busy={busy}
+            onSubmit={questionnaire}
+          />
         ) : (
           <Journey
             key={board.user.id}
@@ -266,25 +368,27 @@ export default function Home() {
             onChat={chat}
             onStop={() => abort.current?.abort()}
             onConsent={(input) =>
-              void act(async () => {
+              void act(async (ticket) => {
                 try {
                   await api.aiConsent(input);
                 } finally {
-                  await refresh();
+                  if (ticket.active()) await refresh(ticket);
                 }
               })
             }
             onStart={(id) =>
-              act(async () => {
+              act(async (ticket) => {
                 await api.start(id);
-                await refresh();
+                await refresh(ticket);
+                ticket.check();
                 setNotice("");
               })
             }
             onComplete={(id) =>
-              act(async () => {
+              act(async (ticket) => {
                 const result = await api.complete(id);
-                await refresh();
+                await refresh(ticket);
+                ticket.check();
                 setNotice(
                   result.awarded
                     ? `+${result.awarded} XP — квест завершён!`

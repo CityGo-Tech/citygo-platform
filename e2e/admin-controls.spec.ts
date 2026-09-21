@@ -66,6 +66,62 @@ function fixture(): AiControlStatus {
   };
 }
 
+test("admin clears private overview and editable controls on session invalidation and 401", async ({
+  page,
+}) => {
+  let expired = false;
+  await page.route("**/api/v1/admin/overview", (route) =>
+    route.fulfill({
+      json: {
+        counts: { users: 1, completed: 0, xp: 0 },
+        pendingHuman: [
+          {
+            id: "synthetic",
+            thread_id: "A",
+            reason: "Обращение пользователя A",
+          },
+        ],
+      },
+    }),
+  );
+  await page.route("**/api/v1/admin/ai", (route) =>
+    route.fulfill({
+      status: expired ? 401 : 200,
+      json: expired ? { error: "expired" } : fixture(),
+    }),
+  );
+  await page.goto("/admin");
+  await page.getByRole("button", { name: "Обновить сводку" }).click();
+  await expect(
+    page.getByText("Обращение пользователя A", { exact: false }),
+  ).toBeVisible();
+  await page.evaluate(() =>
+    window.dispatchEvent(
+      new StorageEvent("storage", {
+        key: "citygo-session-changed",
+        newValue: "synthetic-invalidation-only",
+      }),
+    ),
+  );
+  await expect(
+    page.getByText("Обращение пользователя A", { exact: false }),
+  ).toHaveCount(0);
+  await expect(page.getByRole("checkbox")).toHaveCount(0);
+  await page.getByRole("button", { name: "Обновить сводку" }).click();
+  await expect(
+    page.getByText("Обращение пользователя A", { exact: false }),
+  ).toBeVisible();
+  expired = true;
+  await page.getByRole("button", { name: "Обновить сводку" }).click();
+  await expect(
+    page.getByText("Обращение пользователя A", { exact: false }),
+  ).toHaveCount(0);
+  await expect(page.getByRole("checkbox")).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Обновить сводку" }),
+  ).toBeEnabled();
+});
+
 test("admin confirms configured provider and refreshes stale state without reapplying", async ({
   page,
 }) => {
