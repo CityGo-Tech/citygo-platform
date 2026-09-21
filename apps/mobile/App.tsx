@@ -12,17 +12,40 @@ import {
 import * as SecureStore from "expo-secure-store";
 import { randomUUID } from "expo-crypto";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
-import { createClient, ApiError } from "@citygo/api-client";
+import {
+  createClient,
+  createSessionGuard,
+  createSessionStorage,
+  createSessionLogout,
+  type SessionTicket,
+} from "@citygo/api-client";
 import { questionnaireSchema, type Dashboard } from "@citygo/contracts";
 import { tokens } from "@citygo/design-tokens";
 import { Button, Card, Field } from "@citygo/ui-native";
 import { questChecklist } from "@citygo/content";
+const tokenStore = createSessionStorage({
+  get: () => SecureStore.getItemAsync("citygo.session"),
+  set: (token) => SecureStore.setItemAsync("citygo.session", token),
+  remove: () => SecureStore.deleteItemAsync("citygo.session"),
+});
 export default function App() {
   const session = useRef<string | null>(null);
+  const [lifetime] = useState(createSessionGuard);
+  const [logoutAttempt] = useState(() => createSessionLogout(tokenStore));
+  const refreshVersion = useRef(0);
+  const [storageBlocked, setStorageBlocked] = useState(false);
   const base = process.env.EXPO_PUBLIC_API_URL ?? "http://localhost:4000";
   const api = useMemo(
-    () => createClient(base, { native: true, token: () => session.current }),
-    [base],
+    () =>
+      createClient(base, {
+        native: true,
+        token: () => session.current,
+        signal: () => lifetime.capture().signal,
+        onUnauthorized: () => {
+          void endSession(false);
+        },
+      }),
+    [base, lifetime],
   );
   const [board, setBoard] = useState<Dashboard | null>(null),
     [ready, setReady] = useState(false),
@@ -44,39 +67,145 @@ export default function App() {
     [confirmed, setConfirmed] = useState(false),
     [notice, setNotice] = useState("");
   const abort = useRef<AbortController | null>(null);
-  async function refresh() {
+  function clearUserState(owner?: string) {
+    lifetime.reset(owner);
+    abort.current?.abort();
+    abort.current = null;
+    setBoard(null);
+    setEmail("");
+    setPassword("");
+    setOrigin("");
+    setTarget("");
+    setBudget("");
+    setDate("");
+    setHousehold("solo");
+    setConsent(false);
+    setConfirmed(false);
+    setText("");
+    setDraft("");
+    setNotice("");
+    setError("");
+    setBusy(false);
+    setReady(true);
+  }
+  async function refresh(ticket = lifetime.capture()) {
+    ticket.check();
+    const version = ++refreshVersion.current;
+    const next = await api.dashboard();
+    ticket.check();
+    if (version !== refreshVersion.current) return;
+    if (lifetime.ownerChanged(next.user.id)) {
+      clearUserState(next.user.id);
+      setBoard(next);
+      ticket.check();
+    }
+    setBoard(next);
+  }
+  async function endSession(revoke: boolean) {
+    const oldToken = session.current;
+    session.current = null;
+    clearUserState();
+    const ticket = lifetime.capture();
+    setBusy(true);
+    setStorageBlocked(true);
     try {
-      setBoard(await api.dashboard());
-    } catch (e) {
-      if (e instanceof ApiError && e.status === 401) {
-        session.current = null;
-        await SecureStore.deleteItemAsync("citygo.session");
-        setBoard(null);
-      } else throw e;
+      // Always remove the device credential, even when the server is offline.
+      const result = await logoutAttempt.run(
+        revoke && oldToken
+          ? async () => {
+              // This callback may run after retrying failed local deletion.
+              // Keep the original credential/intent, not the previous UI ticket.
+              const controller = new AbortController();
+              const timer = setTimeout(() => controller.abort(), 10000);
+              try {
+                await createClient(base, {
+                  native: true,
+                  token: () => oldToken,
+                  signal: () => controller.signal,
+                }).logout();
+              } finally {
+                clearTimeout(timer);
+              }
+            }
+          : undefined,
+      );
+      ticket.check();
+      setStorageBlocked(false);
+      setNotice(
+        !result.revocationRequested
+          ? "Сессия завершилась. Войдите снова."
+          : result.serverRevoked
+            ? "Вы вышли из аккаунта."
+            : "Локальный выход выполнен. Отзыв сессии на сервере не подтверждён: нет связи или сервер недоступен.",
+      );
+    } catch {
+      if (ticket.active())
+        setError(
+          "Не удалось удалить сохранённую сессию с устройства. Повторите очистку перед новым входом.",
+        );
+    } finally {
+      if (ticket.active()) setBusy(false);
     }
   }
+  function authenticate() {
+    if (busy || storageBlocked) return;
+    const input = { mode, email, password };
+    session.current = null;
+    clearUserState();
+    void act(async (ticket) => {
+      // A failed initial restore may leave A's credential on disk while the
+      // sign-in form is visible. Clear it before attempting a different login.
+      try {
+        await tokenStore.clear();
+      } catch {
+        if (ticket.active()) setStorageBlocked(true);
+        throw new Error(
+          "Не удалось удалить сохранённую сессию с устройства. Повторите очистку перед новым входом.",
+        );
+      }
+      ticket.check();
+      const result = await api.auth(input.mode, input.email, input.password);
+      if (!result.token) throw new Error("Сервер не вернул сессию");
+      await tokenStore.save(result.token, ticket);
+      ticket.check();
+      session.current = result.token;
+      await refresh(ticket);
+    });
+  }
   useEffect(() => {
+    const ticket = lifetime.capture();
     void (async () => {
-      session.current = await SecureStore.getItemAsync("citygo.session");
-      if (session.current) await refresh();
+      const token = await tokenStore.load(ticket);
+      ticket.check();
+      session.current = token;
+      if (token) await refresh(ticket);
     })()
-      .catch((e) => setError(e.message))
-      .finally(() => setReady(true));
-    return () => abort.current?.abort();
+      .catch((e) => {
+        if (ticket.active()) setError(e.message);
+      })
+      .finally(() => {
+        if (ticket.active()) setReady(true);
+      });
+    return () => {
+      lifetime.reset();
+      abort.current?.abort();
+    };
   }, []);
   const quest =
     board?.quests.find((q) => q.state === "in_progress") ??
     board?.quests.find((q) => q.state === "available");
   useEffect(() => setConfirmed(false), [quest?.id]);
-  async function act(work: () => Promise<void>) {
+  async function act(work: (ticket: SessionTicket) => Promise<void>) {
+    const ticket = lifetime.capture();
     setError("");
     setBusy(true);
     try {
-      await work();
+      await work(ticket);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Ошибка запроса");
+      if (ticket.active())
+        setError(e instanceof Error ? e.message : "Ошибка запроса");
     } finally {
-      setBusy(false);
+      if (ticket.active()) setBusy(false);
     }
   }
   return (
@@ -101,6 +230,13 @@ export default function App() {
               </Text>
             )}
             {!!notice && <Text>{notice}</Text>}
+            {storageBlocked && (
+              <Button
+                title="Повторить очистку сессии"
+                disabled={busy}
+                onPress={() => void endSession(false)}
+              />
+            )}
             {!ready ? (
               <Text>Загрузка…</Text>
             ) : !board ? (
@@ -127,21 +263,8 @@ export default function App() {
                 />
                 <Button
                   title={mode === "login" ? "Войти" : "Создать аккаунт"}
-                  disabled={busy}
-                  onPress={() =>
-                    void act(async () => {
-                      const result = await api.auth(mode, email, password);
-                      if (!result.token)
-                        throw new Error("Сервер не вернул сессию");
-                      session.current = result.token;
-                      await SecureStore.setItemAsync(
-                        "citygo.session",
-                        result.token,
-                      );
-                      setPassword("");
-                      await refresh();
-                    })
-                  }
+                  disabled={busy || storageBlocked}
+                  onPress={authenticate}
                 />
                 <Button
                   title={
@@ -204,7 +327,7 @@ export default function App() {
                   title="Получить план"
                   disabled={busy || !consent}
                   onPress={() =>
-                    void act(async () => {
+                    void act(async (ticket) => {
                       const parsed = questionnaireSchema.safeParse({
                         originCity: origin,
                         targetCity: target,
@@ -218,7 +341,7 @@ export default function App() {
                           "Проверьте города, бюджет от 5000 ₽ и будущую дату ГГГГ-ММ-ДД",
                         );
                       await api.questionnaire(parsed.data);
-                      await refresh();
+                      await refresh(ticket);
                     })
                   }
                 />
@@ -248,9 +371,9 @@ export default function App() {
                         title="Начать квест"
                         disabled={busy}
                         onPress={() =>
-                          void act(async () => {
+                          void act(async (ticket) => {
                             await api.start(quest.id);
-                            await refresh();
+                            await refresh(ticket);
                           })
                         }
                       />
@@ -273,14 +396,15 @@ export default function App() {
                           title="Завершить · +60 XP"
                           disabled={busy || !confirmed}
                           onPress={() =>
-                            void act(async () => {
+                            void act(async (ticket) => {
                               const result = await api.complete(quest.id);
+                              ticket.check();
                               setNotice(
                                 result.awarded
                                   ? "+60 XP — следующий шаг открыт"
                                   : "Награда уже получена",
                               );
-                              await refresh();
+                              await refresh(ticket);
                             })
                           }
                         />
@@ -320,14 +444,14 @@ export default function App() {
                           title="Разрешить передачу этому AI-получателю"
                           disabled={busy}
                           onPress={() =>
-                            void act(async () => {
+                            void act(async (ticket) => {
                               try {
                                 await api.aiConsent({
                                   action: "granted",
                                   policyId: board.aiAccess.policy!.id,
                                 });
                               } finally {
-                                await refresh();
+                                if (ticket.active()) await refresh(ticket);
                               }
                             })
                           }
@@ -349,11 +473,11 @@ export default function App() {
                     title="Отозвать разрешение AI"
                     disabled={busy}
                     onPress={() =>
-                      void act(async () => {
+                      void act(async (ticket) => {
                         try {
                           await api.aiConsent({ action: "revoked" });
                         } finally {
-                          await refresh();
+                          if (ticket.active()) await refresh(ticket);
                         }
                       })
                     }
@@ -385,36 +509,41 @@ export default function App() {
                       board.provider === "unconfigured"
                     }
                     onPress={() =>
-                      void act(async () => {
+                      void act(async (ticket) => {
                         const message = text;
                         setText("");
                         setDraft("");
-                        abort.current = new AbortController();
+                        const controller = new AbortController();
+                        abort.current = controller;
                         try {
                           await api.stream(
                             board.thread!.id,
                             message,
                             randomUUID(),
                             (event) => {
+                              if (!ticket.active()) return;
                               if (event.type === "delta")
                                 setDraft((v) => v + event.text);
                               if (event.type === "handoff")
                                 setNotice(event.reason);
                             },
-                            abort.current.signal,
+                            controller.signal,
                             board.aiAccess.policy?.id,
                           );
                         } catch (e) {
                           // A stale consent or quota rejection must not discard
                           // the user's draft; resubmission remains explicit.
-                          if (!abort.current?.signal.aborted) setText(message);
+                          if (ticket.active() && !controller.signal.aborted)
+                            setText(message);
                           throw e;
                         } finally {
                           try {
-                            await refresh();
+                            if (ticket.active()) await refresh(ticket);
                           } finally {
-                            setDraft("");
-                            abort.current = null;
+                            if (ticket.active()) {
+                              setDraft("");
+                              abort.current = null;
+                            }
                           }
                         }
                       })
@@ -430,18 +559,7 @@ export default function App() {
               </>
             )}
             {board && (
-              <Button
-                title="Выйти"
-                disabled={busy}
-                onPress={() =>
-                  void act(async () => {
-                    await api.logout();
-                    session.current = null;
-                    await SecureStore.deleteItemAsync("citygo.session");
-                    setBoard(null);
-                  })
-                }
-              />
+              <Button title="Выйти" onPress={() => void endSession(true)} />
             )}
           </ScrollView>
         </KeyboardAvoidingView>
