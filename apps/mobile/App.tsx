@@ -16,7 +16,7 @@ import {
   createClient,
   createSessionGuard,
   createSessionStorage,
-  clearSessionAndRevoke,
+  createSessionLogout,
   type SessionTicket,
 } from "@citygo/api-client";
 import { questionnaireSchema, type Dashboard } from "@citygo/contracts";
@@ -31,6 +31,7 @@ const tokenStore = createSessionStorage({
 export default function App() {
   const session = useRef<string | null>(null);
   const [lifetime] = useState(createSessionGuard);
+  const [logoutAttempt] = useState(() => createSessionLogout(tokenStore));
   const refreshVersion = useRef(0);
   const [storageBlocked, setStorageBlocked] = useState(false);
   const base = process.env.EXPO_PUBLIC_API_URL ?? "http://localhost:4000";
@@ -109,11 +110,11 @@ export default function App() {
     setStorageBlocked(true);
     try {
       // Always remove the device credential, even when the server is offline.
-      const result = await clearSessionAndRevoke(
-        tokenStore,
+      const result = await logoutAttempt.run(
         revoke && oldToken
           ? async () => {
-              ticket.check();
+              // This callback may run after retrying failed local deletion.
+              // Keep the original credential/intent, not the previous UI ticket.
               const controller = new AbortController();
               const timer = setTimeout(() => controller.abort(), 10000);
               try {
@@ -131,7 +132,7 @@ export default function App() {
       ticket.check();
       setStorageBlocked(false);
       setNotice(
-        !revoke
+        !result.revocationRequested
           ? "Сессия завершилась. Войдите снова."
           : result.serverRevoked
             ? "Вы вышли из аккаунта."

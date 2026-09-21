@@ -13,6 +13,7 @@ export {
   createSessionGuard,
   createSessionStorage,
   clearSessionAndRevoke,
+  createSessionLogout,
   notifyBrowserSessionChange,
   subscribeBrowserSessionChange,
   StaleSessionError,

@@ -4,6 +4,7 @@ import {
   createSessionGuard,
   createSessionStorage,
   clearSessionAndRevoke,
+  createSessionLogout,
   StaleSessionError,
 } from "./session.js";
 import { createClient } from "./index.js";
@@ -198,4 +199,86 @@ test("native stale storage reads/writes cannot restore A, and deletion failure s
     { serverRevoked: true },
   );
   assert.equal(revocations, 1);
+});
+
+test("native deletion retry preserves the original server revocation intent and credential", async () => {
+  let failDeletion = true;
+  let stored: string | null = "synthetic-token-A";
+  let memoryToken: string | null = stored;
+  const revoked: string[] = [];
+  const attempt = createSessionLogout({
+    async clear() {
+      if (failDeletion) throw new Error("storage unavailable");
+      stored = null;
+    },
+  });
+  const originalToken = memoryToken;
+  memoryToken = null;
+  await assert.rejects(
+    attempt.run(async () => {
+      assert.equal(stored, null, "device credential must be removed first");
+      revoked.push(originalToken);
+    }),
+    /storage unavailable/,
+  );
+  assert.equal(memoryToken, null);
+  assert.deepEqual(revoked, []);
+  failDeletion = false;
+  // The retry UI has no token; the original intent must survive its first failure.
+  const retry = attempt.run();
+  const duplicate = attempt.run(async () => {
+    throw new Error("must not replace the original intent");
+  });
+  assert.equal(
+    retry,
+    duplicate,
+    "double tapping must share one logout attempt",
+  );
+  assert.deepEqual(await retry, {
+    serverRevoked: true,
+    revocationRequested: true,
+  });
+  assert.deepEqual(revoked, ["synthetic-token-A"]);
+  assert.equal(stored, null);
+  assert.deepEqual(await attempt.run(), {
+    serverRevoked: false,
+    revocationRequested: false,
+  });
+  assert.equal(
+    revoked.length,
+    1,
+    "a later session must not reuse A's credential",
+  );
+});
+
+test("native retry reports unconfirmed server revocation honestly after successful local deletion", async () => {
+  let failDeletion = true;
+  let revocations = 0;
+  const attempt = createSessionLogout({
+    async clear() {
+      if (failDeletion) throw new Error("storage unavailable");
+    },
+  });
+  await assert.rejects(
+    attempt.run(async () => {
+      revocations++;
+      throw new Error("offline");
+    }),
+    /storage unavailable/,
+  );
+  failDeletion = false;
+  assert.deepEqual(await attempt.run(), {
+    serverRevoked: false,
+    revocationRequested: true,
+  });
+  assert.equal(revocations, 1);
+  assert.deepEqual(await attempt.run(), {
+    serverRevoked: false,
+    revocationRequested: false,
+  });
+  assert.equal(
+    revocations,
+    1,
+    "discard the in-memory credential after local cleanup",
+  );
 });

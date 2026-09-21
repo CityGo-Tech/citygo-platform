@@ -86,6 +86,32 @@ export async function clearSessionAndRevoke(
   }
 }
 
+export function createSessionLogout(storage: { clear(): Promise<void> }) {
+  // Retain only in memory and only across a failed local deletion. Once local
+  // cleanup succeeds, discard the credential even if server revocation is offline.
+  let pending: { revoke?: () => Promise<unknown> } | null = null;
+  let running: Promise<{
+    serverRevoked: boolean;
+    revocationRequested: boolean;
+  }> | null = null;
+  return {
+    run(revoke?: () => Promise<unknown>) {
+      if (running) return running;
+      const intent = (pending ??= { revoke });
+      running = (async () => {
+        try {
+          const result = await clearSessionAndRevoke(storage, intent.revoke);
+          if (pending === intent) pending = null;
+          return { ...result, revocationRequested: Boolean(intent.revoke) };
+        } finally {
+          running = null;
+        }
+      })();
+      return running;
+    },
+  };
+}
+
 const browserSessionEvent = "citygo-session-changed";
 export function notifyBrowserSessionChange() {
   window.dispatchEvent(new Event(browserSessionEvent));
