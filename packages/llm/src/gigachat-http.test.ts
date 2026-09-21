@@ -37,6 +37,10 @@ test("GigaChat HTTPS transport verifies TLS, isolates CA trust and never follows
       assert.equal(options.rejectUnauthorized, true);
       assert.equal(options.agent, false);
       assert.equal(options.method, "POST");
+      assert.equal(
+        (options.headers as Record<string, string>)["User-Agent"],
+        "CityGo-GigaChat/1.0",
+      );
       assert.equal(options.signal, init.signal);
       assert.equal((options.ca as string[]).at(-1), root);
       const responseBody = new PassThrough();
@@ -64,6 +68,47 @@ test("GigaChat HTTPS transport verifies TLS, isolates CA trust and never follows
     /Unexpected GigaChat endpoint/,
   );
   assert.equal(calls, 2);
+});
+
+test("GigaChat chat transport supplies User-Agent without changing auth or body", async (t) => {
+  const chatInit = {
+    ...init,
+    headers: { Authorization: "Bearer test-access-token" },
+    body: JSON.stringify({ model: "GigaChat-3-Ultra", stream: true }),
+  };
+  t.mock.method(
+    https,
+    "request",
+    (
+      url: string,
+      options: https.RequestOptions,
+      callback: (response: IncomingMessage) => void,
+    ) => {
+      assert.equal(url, gigaChatUrl);
+      assert.deepEqual(options.headers, {
+        ...chatInit.headers,
+        "User-Agent": "CityGo-GigaChat/1.0",
+      });
+      const incoming = new PassThrough() as unknown as IncomingMessage;
+      incoming.statusCode = 200;
+      incoming.rawHeaders = ["content-type", "text/event-stream"];
+      const request = new PassThrough();
+      request.end = ((body: string) => {
+        assert.equal(body, chatInit.body);
+        callback(incoming);
+        (incoming as unknown as PassThrough).end("data: [DONE]\n\n");
+        return request;
+      }) as typeof request.end;
+      return request as unknown as ClientRequest;
+    },
+  );
+  assert.equal(
+    await (await createGigaPost()(gigaChatUrl, chatInit)).text(),
+    "data: [DONE]\n\n",
+  );
+  assert.deepEqual(chatInit.headers, {
+    Authorization: "Bearer test-access-token",
+  });
 });
 
 test("GigaChat rejects invalid CA files before making network requests", (t) => {

@@ -57,7 +57,9 @@ export function createGigaPost(caBundleFile?: string): GigaPost {
         url,
         {
           method: "POST",
-          headers: init.headers,
+          // api.giga.chat may reject requests without User-Agent (HTTP 403).
+          // This fixed identifier contains no account or host information.
+          headers: { ...init.headers, "User-Agent": "CityGo-GigaChat/1.0" },
           signal: init.signal,
           agent: false,
           rejectUnauthorized: true,
