@@ -4,8 +4,8 @@
   "private": true,
   "main": "index.ts",
   "scripts": {
-    "dev": "expo start",
-    "export": "expo export --platform android --platform ios",
+    "dev": "node ../../scripts/with-env.mjs mobile pnpm exec expo start",
+    "export": "node ../../scripts/with-env.mjs mobile pnpm exec expo export --platform android --platform ios",
     "typecheck": "tsc --noEmit",
     "lint": "eslint App.tsx index.ts src",
     "test": "node --import tsx --test src/*.test.mts"

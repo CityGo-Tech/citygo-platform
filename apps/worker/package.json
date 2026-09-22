@@ -16,8 +16,7 @@
     "lint": "eslint src"
   },
   "dependencies": {
-    "@citygo/db": "workspace:*",
-    "@citygo/config": "workspace:*"
+    "@citygo/db": "workspace:*"
   },
   "devDependencies": {
     "tsup": "^8.5.0",

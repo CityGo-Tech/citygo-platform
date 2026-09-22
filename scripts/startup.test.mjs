@@ -2,11 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { serviceEnv } from "./env.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 function start(envOverrides) {
   const env = {
-    ...process.env,
+    ...serviceEnv("test"),
     DATABASE_URL: "pglite://:memory:",
     WEB_ORIGIN: "http://localhost:3000",
     TRUSTED_PROXY_CIDRS: "",
@@ -82,5 +83,28 @@ test("built API rejects HTTP and missing trusted proxy configuration before conn
   assert.match(
     noProxy.stderr,
     /Production requires explicit TRUSTED_PROXY_CIDRS/,
+  );
+});
+
+test("built worker rejects PGlite and has no API/AI startup dependency", () => {
+  const worker = (DATABASE_URL) =>
+    spawnSync(process.execPath, ["apps/worker/dist/index.js", "--once"], {
+      cwd: root,
+      env: { ...serviceEnv("test"), NODE_ENV: "production", DATABASE_URL },
+      encoding: "utf8",
+      timeout: 10000,
+      windowsHide: true,
+    });
+  const local = worker("pglite://:memory:");
+  assert.equal(local.status, 1, local.stderr);
+  assert.match(local.stderr, /Worker requires server PostgreSQL/);
+  const offline = worker(
+    "postgresql://synthetic:synthetic@127.0.0.1:1/not_used?connect_timeout=1",
+  );
+  assert.equal(offline.status, 1, offline.stderr);
+  assert.match(offline.stderr, /ECONNREFUSED/);
+  assert.doesNotMatch(
+    offline.stderr,
+    /WEB_ORIGIN|TRUSTED_PROXY|OPENAI|LLM|production activation/,
   );
 });

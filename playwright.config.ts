@@ -12,14 +12,16 @@ export default defineConfig({
   reporter: [["list"], ["html", { open: "never" }]],
   webServer: [
     {
-      command: "pnpm --filter @citygo/api exec tsx src/test-server.ts",
+      command:
+        "node scripts/with-env.mjs test pnpm --filter @citygo/api exec tsx src/test-server.ts",
       url: "http://127.0.0.1:4000/ready",
       env: { NODE_ENV: "test" },
       reuseExistingServer: false,
       timeout: 60000,
     },
     {
-      command: "pnpm --filter @citygo/web start",
+      command:
+        "node scripts/with-env.mjs web-test pnpm --filter @citygo/web exec next start",
       url: "http://localhost:3000",
       reuseExistingServer: false,
       timeout: 60000,

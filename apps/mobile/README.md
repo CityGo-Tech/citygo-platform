@@ -6,6 +6,9 @@ quests, streaming chat, saved history and completion.
 
 Build shared packages first: pnpm build.
 Set EXPO_PUBLIC_API_URL to the API address reachable from the device.
+Alternatively copy root .env.mobile.example to root .env.mobile. The mobile
+launcher allows only the named public URL and development-tool settings; it
+disables Expo's automatic dotenv loading. Do not put secrets in apps/mobile/.env.
 For an Android emulator use http://10.0.2.2:4000; a physical device needs the host's
 LAN address and API_HOST=0.0.0.0. Use HTTPS outside local development.
 Never put the OpenAI key into an EXPO_PUBLIC variable.

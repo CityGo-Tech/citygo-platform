@@ -1,5 +1,4 @@
 import { connectDatabase, type Database } from "@citygo/db";
-import { readConfig } from "@citygo/config";
 export async function maintain(db: Database) {
   return db.transaction(async (tx) => {
     await tx.query("delete from sessions where expires_at<now()");
@@ -25,12 +24,12 @@ export async function maintain(db: Database) {
   });
 }
 if (process.argv.includes("--once")) {
-  const config = readConfig();
-  if (!config.DATABASE_URL.startsWith("postgres"))
+  const databaseUrl = process.env.DATABASE_URL;
+  if (!databaseUrl || !/^postgres(?:ql)?:\/\//.test(databaseUrl))
     throw new Error(
       "Worker requires server PostgreSQL; do not open the API's local PGlite directory twice",
     );
-  const db = await connectDatabase(config.DATABASE_URL);
+  const db = await connectDatabase(databaseUrl);
   try {
     await maintain(db);
     console.log("CityGo maintenance completed");

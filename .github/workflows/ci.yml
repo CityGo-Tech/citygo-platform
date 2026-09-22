@@ -22,6 +22,14 @@ jobs:
         options: --health-cmd "pg_isready -U citygo -d citygo_test" --health-interval 5s --health-timeout 5s --health-retries 10
     env:
       TEST_DATABASE_URL: postgresql://citygo:citygo_test_only@localhost:5432/citygo_test
+      # Non-working canaries, NOT credentials. Launchers must keep them out of
+      # builds/tests/client bundles even when the parent runner contains them.
+      DATABASE_URL: postgresql://canary:citygo-env-isolation-canary-20260922@127.0.0.1:1/not_used
+      OPENAI_API_KEY: citygo-env-isolation-canary-20260922
+      ROUTERAI_API_KEY: citygo-env-isolation-canary-20260922
+      GIGACHAT_CREDENTIALS: citygo-env-isolation-canary-20260922
+      NEXT_PUBLIC_SHOULD_NOT_LEAK: citygo-env-isolation-canary-20260922
+      EXPO_PUBLIC_SHOULD_NOT_LEAK: citygo-env-isolation-canary-20260922
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
@@ -38,6 +46,7 @@ jobs:
       - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm test:e2e
       - run: pnpm mobile:export
+      - run: node scripts/check-env-artifacts.mjs
       - uses: actions/upload-artifact@v7
         if: failure()
         with:

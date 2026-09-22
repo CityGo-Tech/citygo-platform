@@ -30,6 +30,14 @@ change. Select a hosting environment and data region before deployment.
    evaluations. Add a shared per-account rate limiter for multiple replicas.
 10. Complete the security/privacy checklist before accepting real user data.
 
+Environment delivery is per process, not one global deployment environment:
+API receives its DB/AI settings, Web only its internal API route/port, the current
+maintenance worker only its DB URL, and the migrator only its migration-role DB
+URL. Build/test jobs must never be provisioned production credentials. Use the
+[scoped launchers](service-environments.md); do not inject API keys into a shared
+Web container or use raw framework CLIs as the security boundary. This repository
+does not provision DB roles, secret-store permissions or isolated containers.
+
 Rollback is a prior application build only when compatible with applied schema.
 Never edit an applied migration to roll back. Add a forward repair migration.
 Exact hosting commands and monitoring configuration depend on the chosen provider.
