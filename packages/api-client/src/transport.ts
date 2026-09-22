@@ -1,3 +1,5 @@
+import type { ApiErrorResponse } from "@citygo/contracts";
+
 export type ClientErrorCode =
   | "http"
   | "network"
@@ -12,13 +14,22 @@ export type ClientErrorCode =
   | "stream_interrupted"
   | "stream_error";
 export class ApiError extends Error {
+  public serverCode?: string;
+  public requestId?: string;
+  public retryable?: boolean;
+  public currentVersion?: number;
   constructor(
     public status: number,
     message: string,
     public code: ClientErrorCode = "http",
+    metadata?: Omit<ApiErrorResponse, "error">,
   ) {
     super(message);
     this.name = "ApiError";
+    this.serverCode = metadata?.code;
+    this.requestId = metadata?.requestId;
+    this.retryable = metadata?.retryable;
+    this.currentVersion = metadata?.currentVersion;
   }
 }
 export const clientDefaults = Object.freeze({

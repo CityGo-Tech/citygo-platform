@@ -154,6 +154,8 @@ export async function changeAiBudget(
       throw new DomainError(
         409,
         "Бюджет AI уже изменён. Обновите его и подтвердите заново.",
+        "REVISION_CONFLICT",
+        current.settings.revision,
       );
     if (
       current.totalReservedMicros > 0 &&
@@ -220,6 +222,7 @@ export async function reserveAiMoney(
     throw new DomainError(
       503,
       "Денежный бюджет AI не включён администратором.",
+      "AI_BUDGET_UNAVAILABLE",
     );
   const rule = settings.rules.find((item) => item.key === execution.key);
   if (
@@ -231,6 +234,7 @@ export async function reserveAiMoney(
     throw new DomainError(
       503,
       "Денежный резерв для этой модели и её ограничений не подтверждён администратором.",
+      "AI_BUDGET_UNAVAILABLE",
     );
   const amount = rule.attemptCeilingMicros;
   if (settings.userDailyLimitMicros !== null) {
@@ -248,6 +252,7 @@ export async function reserveAiMoney(
       throw new DomainError(
         429,
         "Суточный денежный резерв вашего аккаунта исчерпан. Следующие сутки начинаются в 00:00 UTC (03:00 по Москве).",
+        "AI_BUDGET_EXHAUSTED",
       );
   }
   if (
@@ -259,6 +264,7 @@ export async function reserveAiMoney(
     throw new DomainError(
       429,
       "Денежный резерв AI исчерпан. Обратитесь к администратору.",
+      "AI_BUDGET_EXHAUSTED",
     );
   await tx.query(
     "update ai_budget set total_reserved_micros=total_reserved_micros+$1 where id=1",
