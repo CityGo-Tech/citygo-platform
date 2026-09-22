@@ -204,9 +204,6 @@ importers:
 
   apps/worker:
     dependencies:
-      '@citygo/config':
-        specifier: workspace:*
-        version: link:../../packages/config
       '@citygo/db':
         specifier: workspace:*
         version: link:../../packages/db
@@ -295,9 +292,6 @@ importers:
       '@electric-sql/pglite':
         specifier: ^0.3.14
         version: 0.3.16
-      dotenv:
-        specifier: ^17.2.1
-        version: 17.4.2
       pg:
         specifier: ^8.16.3
         version: 8.23.0
@@ -2480,10 +2474,6 @@ packages:
 
   dnssd-advertise@1.1.6:
     resolution: {integrity: sha512-Ndrrf6BMPalkQPd/zubL+4YghH2J9NspapQ09uDXwYbvOPkP0oaqf5CkcwJ0b50kS2O3ul6yVu+jz+RY62Cejg==}
-
-  dotenv@17.4.2:
-    resolution: {integrity: sha512-nI4U3TottKAcAD9LLud4Cb7b2QztQMUEfHbvhTH09bqXTxnSie8WnjPALV/WMCrJZ6UV/qHJ6L03OqO3LcdYZw==}
-    engines: {node: '>=12'}
 
   ee-first@1.1.1:
     resolution: {integrity: sha512-WMwm9LhRUo+WUaRN+vRuETqG89IgZphVSNkdFgeb6sS/E4OrDIN7t48CAewSHXc6C8lefD8KKfr5vY61brQlow==}
@@ -6525,8 +6515,6 @@ snapshots:
       dequal: 2.0.3
 
   dnssd-advertise@1.1.6: {}
-
-  dotenv@17.4.2: {}
 
   ee-first@1.1.1: {}
 

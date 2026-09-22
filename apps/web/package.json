@@ -3,12 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "build": "node ../../scripts/sync-assets.mjs && next build",
+    "build": "node ../../scripts/with-env.mjs build node ../../scripts/sync-assets.mjs && node ../../scripts/with-env.mjs web pnpm exec next build",
     "clean": "node -e \"require('fs').rmSync('.next',{recursive:true,force:true})\"",
-    "dev": "node ../../scripts/sync-assets.mjs && next dev",
+    "dev": "node ../../scripts/with-env.mjs build node ../../scripts/sync-assets.mjs && node ../../scripts/with-env.mjs web pnpm exec next dev",
     "lint": "eslint src",
-    "start": "next start",
-    "typecheck": "next typegen && tsc --noEmit"
+    "start": "node ../../scripts/with-env.mjs web pnpm exec next start",
+    "typecheck": "node ../../scripts/with-env.mjs web pnpm exec next typegen && node ../../scripts/with-env.mjs build pnpm exec tsc --noEmit"
   },
   "dependencies": {
     "@citygo/contracts": "workspace:*",

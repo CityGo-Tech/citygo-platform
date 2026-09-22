@@ -12,7 +12,8 @@ packages, applies migrations and starts Web :3000 / API :4000 with an embedded
 PostgreSQL engine (PGlite). Persistent data lives in ignored .local/database.
 Use only one API process with this local store; the separate worker requires a server PostgreSQL connection.
 
-The root .env is optional. Copy .env.example, then configure OPENAI_API_KEY and
+The root .env.api is optional (legacy .env is still supported). Copy .env.example,
+then configure OPENAI_API_KEY and
 OPENAI_MODEL server-side for real chat. With both absent, the API returns an explicit
 503; partial configuration is a startup error. LLM_PROVIDER can be empty (legacy
 OpenAI selection), openai (both settings required), or disabled (explicitly off).
@@ -48,7 +49,7 @@ the [AI runbook](ai-providers.md). This is reserved allowance, never actual bill
 For PostgreSQL server:
 
 1. Start docker compose -f docker-compose.dev.yml up -d.
-2. Set DATABASE_URL=postgresql://citygo:citygo@localhost:5432/citygo in the root .env.
+2. Set DATABASE_URL=postgresql://citygo:citygo@localhost:5432/citygo in root .env.api.
 3. Run pnpm db:migrate and pnpm dev.
    This does not automatically transfer data from the embedded local database.
 
@@ -70,3 +71,9 @@ editing a shared package, restart pnpm dev to rebuild it, or run that package's
 dev script in a separate terminal. The launcher deliberately starts only the two
 application watchers to keep memory use bounded on development laptops.
 Web typecheck runs next typegen before tsc, including from a fresh checkout.
+
+Environment isolation: root commands filter inherited variables and optional
+service files before spawning children. Web/build receive no DB or LLM secrets;
+worker/migrator receive DB settings only; tests ignore all runtime .env files.
+See [service environments](service-environments.md) for allowlists, precedence,
+custom API ports, separate DB roles and direct-command limitations.

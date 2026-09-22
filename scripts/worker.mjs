@@ -1,4 +1,6 @@
-import { existsSync } from "node:fs";
-if (existsSync(".env")) process.loadEnvFile(".env");
-process.argv.push("--once");
-await import("../apps/worker/dist/index.js");
+import { root, serviceEnv } from "./env.mjs";
+import { launch } from "./process.mjs";
+await launch("node", ["apps/worker/dist/index.js", "--once"], {
+  cwd: root,
+  env: serviceEnv("worker"),
+}).done;

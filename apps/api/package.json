@@ -6,9 +6,9 @@
   "scripts": {
     "build": "tsup ./src/server.ts --format esm --sourcemap --clean",
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
-    "dev": "tsx watch src/dev.ts",
+    "dev": "node ../../scripts/with-env.mjs api pnpm exec tsx watch src/dev.ts",
     "lint": "eslint src",
-    "start": "node dist/server.js",
+    "start": "node ../../scripts/with-env.mjs api node dist/server.js",
     "test": "node --import tsx --test src/**/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
