@@ -66,7 +66,7 @@ export async function readEvents(
       onEvent(result.data);
       op.check();
       if (result.data.type === "error")
-        throw new ApiError(0, result.data.message, "stream_error");
+        throw new ApiError(0, result.data.message, "stream_error", result.data);
       return result.data.type === "done";
     }
     if (text.startsWith(":")) return false;

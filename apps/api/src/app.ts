@@ -12,6 +12,12 @@ import {
   aiConsentSchema,
   aiRoutingInputSchema,
   aiBudgetInputSchema,
+  CONTRACT_VERSION,
+  CONTRACT_VERSION_HEADER,
+  REQUEST_ID_HEADER,
+  supportsContractVersion,
+  errorMetadata,
+  errorCodeForStatus,
   type StreamEvent,
   type ModelGeneration,
   type AiPolicy,
@@ -64,7 +70,29 @@ export async function buildApp(options: {
     maxAge: 7 * 86400,
   };
   await app.register(cookie);
-  await app.register(cors, { origin: config.WEB_ORIGIN, credentials: true });
+  await app.register(cors, {
+    origin: config.WEB_ORIGIN,
+    credentials: true,
+    exposedHeaders: [CONTRACT_VERSION_HEADER, REQUEST_ID_HEADER],
+  });
+  app.addHook("onRequest", async (request, reply) => {
+    reply
+      .header(CONTRACT_VERSION_HEADER, CONTRACT_VERSION)
+      .header(REQUEST_ID_HEADER, request.id)
+      .header("Cache-Control", "no-store");
+    // CORS preflight has no version value. Health/readiness are not v1 resources.
+    if (request.method === "OPTIONS" || !request.url.startsWith("/v1/")) return;
+    if (
+      !supportsContractVersion(
+        request.headers[CONTRACT_VERSION_HEADER.toLowerCase()],
+      )
+    )
+      throw new DomainError(
+        400,
+        "Версия приложения не поддерживается. Обновите приложение перед продолжением.",
+        "CONTRACT_VERSION_UNSUPPORTED",
+      );
+  });
   // The limiter installs an onRoute hook: register it before declaring routes.
   await app.register(rateLimit, {
     max: 120,
@@ -113,26 +141,43 @@ export async function buildApp(options: {
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof z.ZodError)
       return reply.code(400).send({
+        ...errorMetadata("VALIDATION_ERROR", request.id),
         error: "Проверьте поля формы",
         fields: error.flatten().fieldErrors,
       });
     if (error instanceof DomainError)
-      return reply.code(error.statusCode).send({ error: error.message });
+      return reply.code(error.statusCode).send({
+        ...errorMetadata(error.code, request.id, error.currentVersion),
+        error: error.message,
+      });
     const status = (error as { statusCode?: number }).statusCode;
     if (status === 429)
-      return reply
-        .code(429)
-        .send({ error: "Слишком много запросов. Попробуйте позже." });
+      return reply.code(429).send({
+        ...errorMetadata("RATE_LIMITED", request.id),
+        error: "Слишком много запросов. Попробуйте позже.",
+      });
     if ((error as { code?: string }).code === "23505")
-      return reply.code(409).send({ error: "Запись уже существует" });
+      return reply.code(409).send({
+        ...errorMetadata("CONFLICT", request.id),
+        error: "Запись уже существует",
+      });
     request.log.error(
       { code: (error as { code?: string }).code, requestId: request.id },
       "Request failed",
     );
     return reply
       .code(status && status >= 400 && status < 500 ? status : 500)
-      .send({ error: "Не удалось выполнить запрос", requestId: request.id });
+      .send({
+        ...errorMetadata(errorCodeForStatus(status ?? 500), request.id),
+        error: "Не удалось выполнить запрос",
+      });
   });
+  app.setNotFoundHandler((request, reply) =>
+    reply.code(404).send({
+      ...errorMetadata("NOT_FOUND", request.id),
+      error: "Ресурс не найден",
+    }),
+  );
   app.get("/health", async () => ({
     service: "citygo-api",
     status: "ok",
@@ -223,6 +268,7 @@ export async function buildApp(options: {
       throw new DomainError(
         409,
         "AI-получатель изменился. Обновите страницу и проверьте условия.",
+        "AI_POLICY_CHANGED",
       );
     await repo.aiConsent(user.id, {
       policy: active.policy,
@@ -266,11 +312,13 @@ export async function buildApp(options: {
         throw new DomainError(
           503,
           "AI пока недоступен. Администратору нужно проверить выбранного провайдера и настройки сервера.",
+          "AI_UNAVAILABLE",
         );
       if (input.policyId !== aiPolicy.id)
         throw new DomainError(
           409,
           "AI-получатель изменился или не подтверждён. Обновите страницу и проверьте условия.",
+          "AI_POLICY_CHANGED",
         );
       const limits = effectiveLlmLimits(config, provider.name, provider.model);
       const reservation = await repo.reserveChat(
@@ -454,6 +502,11 @@ export async function buildApp(options: {
             );
         send({
           type: "error",
+          ...errorMetadata(
+            attemptError?.code ?? "STREAM_INTERRUPTED",
+            request.id,
+            attemptError?.currentVersion,
+          ),
           message:
             attemptError?.message ??
             "Ответ прерван. История сохранена; попробуйте отправить сообщение снова.",
@@ -493,6 +546,7 @@ export async function buildApp(options: {
         throw new DomainError(
           409,
           "Провайдер недоступен или его настройки изменились. Обновите список.",
+          "AI_POLICY_CHANGED",
         );
       policy = option.policy;
     }

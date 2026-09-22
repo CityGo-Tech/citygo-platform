@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { AiProviderId, ModelGeneration } from "./llm.js";
 import { aiPolicyIdSchema, type AiAccess } from "./ai-access.js";
+import type { ApiErrorResponse } from "./protocol.js";
 
 export const credentialsSchema = z.object({
   email: z
@@ -70,4 +71,4 @@ export type StreamEvent =
   | { type: "delta"; text: string }
   | { type: "handoff"; from: AgentKey; to: AgentKey; reason: string }
   | { type: "done"; messageId: string }
-  | { type: "error"; message: string };
+  | ({ type: "error"; message: string } & Omit<ApiErrorResponse, "error">);

@@ -14,6 +14,7 @@ import type {
   AiProviderId,
   AiExecution,
   AiBudgetInput,
+  ApiErrorCode,
 } from "@citygo/contracts";
 import { randomUUID } from "node:crypto";
 import { canTransitionQuest } from "@citygo/domain";
@@ -26,8 +27,13 @@ import {
 } from "./ai-budget.js";
 
 export { DomainError } from "./errors.js";
-const fail = (status: number, message: string): never => {
-  throw new DomainError(status, message);
+const fail = (
+  status: number,
+  message: string,
+  code?: ApiErrorCode,
+  currentVersion?: number,
+): never => {
+  throw new DomainError(status, message, code, currentVersion);
 };
 type User = { id: string; email: string; password_hash: string };
 type Thread = { id: string; agent_key: AgentKey; busy_until: string | null };
@@ -62,7 +68,11 @@ export class Repository {
       input.attemptNumber < 1 ||
       input.attemptNumber > 2
     )
-      fail(429, "Допустимое число попыток ответа исчерпано.");
+      fail(
+        429,
+        "Допустимое число попыток ответа исчерпано.",
+        "AI_QUOTA_EXHAUSTED",
+      );
     if (input.userDailyLimit === 0 || input.globalDailyLimit === 0)
       fail(503, "Обращения к AI временно отключены администратором.");
     await this.db.transaction(async (tx) => {
@@ -152,6 +162,7 @@ export class Repository {
         fail(
           429,
           "Суточный лимит обращений к AI исчерпан. Попробуйте после 00:00 UTC.",
+          "AI_QUOTA_EXHAUSTED",
         );
       await tx.query(
         "update ai_model_attempt_daily set reserved_attempts=reserved_attempts+1 where usage_day=$1",
@@ -278,6 +289,8 @@ export class Repository {
         fail(
           409,
           "Настройка AI уже изменена. Обновите её и подтвердите выбор заново.",
+          "REVISION_CONFLICT",
+          current.revision,
         );
       if (
         current.provider === input.provider &&
@@ -314,6 +327,7 @@ export class Repository {
       fail(
         409,
         "AI-получатель изменился. Обновите страницу и проверьте условия.",
+        "AI_POLICY_CHANGED",
       );
   }
   async register(email: string, passwordHash: string) {
@@ -631,7 +645,11 @@ export class Repository {
       )
         fail(409, "Этот запрос уже был принят");
       if (!(await this.hasAiConsent(tx, userId, access.policyId)))
-        fail(403, "Подтвердите передачу данных выбранному AI-получателю");
+        fail(
+          403,
+          "Подтвердите передачу данных выбранному AI-получателю",
+          "AI_CONSENT_REQUIRED",
+        );
       if (access.userDailyLimit === 0 || access.globalDailyLimit === 0)
         fail(503, "Чат временно отключён администратором.");
       // UTC day from the database, shared across processes/providers/restarts.
@@ -661,7 +679,11 @@ export class Repository {
         global.accepted_requests >= access.globalDailyLimit ||
         personal >= access.userDailyLimit
       )
-        fail(429, "Суточный лимит чата исчерпан. Попробуйте после 00:00 UTC.");
+        fail(
+          429,
+          "Суточный лимит чата исчерпан. Попробуйте после 00:00 UTC.",
+          "AI_QUOTA_EXHAUSTED",
+        );
       await tx.query(
         "update ai_usage_daily set accepted_requests=accepted_requests+1 where usage_day=$1",
         [day],

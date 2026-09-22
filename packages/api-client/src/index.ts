@@ -10,6 +10,10 @@ import {
   dashboardResponseSchema,
   okResponseSchema,
   startResponseSchema,
+  CONTRACT_VERSION,
+  CONTRACT_VERSION_HEADER,
+  supportsContractVersion,
+  type ApiErrorResponse,
   type AiConsentInput,
   type AiRoutingInput,
   type AiBudgetInput,
@@ -64,6 +68,7 @@ export function createClient(
     const token = options.token?.();
     return {
       Accept: streaming ? "text/event-stream" : "application/json",
+      [CONTRACT_VERSION_HEADER]: CONTRACT_VERSION,
       ...(json ? { "Content-Type": "application/json" } : {}),
       ...(token ? { Authorization: "Bearer " + token } : {}),
       ...(options.native ? { "X-CityGo-Client": "native" } : {}),
@@ -100,17 +105,31 @@ export function createClient(
     if (response.status === 401 && !path.startsWith("/v1/auth/"))
       options.onUnauthorized?.();
     op.check();
+    if (
+      !supportsContractVersion(response.headers.get(CONTRACT_VERSION_HEADER))
+    ) {
+      throw new ApiError(
+        response.status,
+        "Версия ответа сервера не поддерживается. Обновите приложение и проверьте состояние перед повтором действия.",
+        "invalid_response",
+        { code: "CONTRACT_VERSION_UNSUPPORTED", retryable: false },
+      );
+    }
     if (response.ok) return;
     let message = `Ошибка сервера (HTTP ${response.status}). Проверьте состояние перед повтором действия.`;
+    let metadata: ApiErrorResponse | undefined;
     try {
       const data = apiErrorResponseSchema.safeParse(
         await readJson(response, op, Math.min(limits.maxJsonBytes, 16 * 1024)),
       );
-      if (data.success) message = data.data.error;
+      if (data.success) {
+        message = data.data.error;
+        metadata = data.data;
+      }
     } catch {
       op.check(); /* Never expose HTML, raw body or parser errors. */
     }
-    throw new ApiError(response.status, message);
+    throw new ApiError(response.status, message, "http", metadata);
   }
   async function request<T>(
     path: string,

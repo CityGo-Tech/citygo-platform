@@ -15,6 +15,8 @@ import {
   aiBudgetSettingsSchema,
   adminOverviewResponseSchema,
   streamEventSchema,
+  apiErrorResponseSchema,
+  CONTRACT_VERSION_HEADER,
   type AiProviderId,
   type Dashboard,
   type AiControlStatus,
@@ -347,6 +349,194 @@ async function chatUser(f: Awaited<ReturnType<typeof fixture>>, grant = true) {
     policyId: board.aiAccess.policy!.id,
   };
 }
+
+test("v1 negotiation rejects unknown versions before writes and supports headerless clients", async (t) => {
+  const f = await fixture(false);
+  t.after(f.close);
+  const payload = {
+    email: "compatibility@example.test",
+    password: "Synthetic-test-password",
+  };
+  for (const version of ["2", "0", "1,2", ""]) {
+    const response = await f.app.inject({
+      method: "POST",
+      url: "/v1/auth/register",
+      headers: {
+        origin: "http://localhost:3000",
+        [CONTRACT_VERSION_HEADER]: version,
+      },
+      payload,
+    });
+    assert.equal(response.statusCode, 400);
+    const error = apiErrorResponseSchema.parse(response.json());
+    assert.equal(error.code, "CONTRACT_VERSION_UNSUPPORTED");
+    assert.equal(error.retryable, false);
+    assert.equal(error.requestId, response.headers["x-request-id"]);
+    assert.equal(response.headers[CONTRACT_VERSION_HEADER.toLowerCase()], "1");
+    assert.equal(response.cookies.length, 0);
+  }
+  // Same email succeeds: rejected requests did not create an account/session.
+  const legacy = await f.call("POST", "/v1/auth/register", "", payload);
+  assert.equal(legacy.statusCode, 200, legacy.body);
+  authResponseSchema.parse(legacy.json());
+  const cookie = "citygo=" + legacy.cookies[0]!.value;
+  const board = await f.app.inject({
+    method: "GET",
+    url: "/v1/dashboard",
+    headers: { cookie, [CONTRACT_VERSION_HEADER]: "1" },
+  });
+  assert.equal(board.statusCode, 200);
+  dashboardResponseSchema.parse(board.json());
+  const badLogout = await f.app.inject({
+    method: "POST",
+    url: "/v1/auth/logout",
+    headers: {
+      cookie,
+      origin: "http://localhost:3000",
+      [CONTRACT_VERSION_HEADER]: "2",
+    },
+    payload: {},
+  });
+  assert.equal(badLogout.statusCode, 400);
+  assert.equal(
+    (await f.app.inject({ url: "/v1/dashboard", headers: { cookie } }))
+      .statusCode,
+    200,
+  );
+  const preflight = await f.app.inject({
+    method: "OPTIONS",
+    url: "/v1/dashboard",
+    headers: {
+      origin: "http://localhost:3000",
+      "access-control-request-method": "GET",
+      "access-control-request-headers": CONTRACT_VERSION_HEADER,
+    },
+  });
+  assert.equal(preflight.statusCode, 204);
+  assert.match(
+    String(preflight.headers["access-control-allow-headers"]),
+    /X-CityGo-Contract-Version/i,
+  );
+  assert.match(
+    String(board.headers["access-control-expose-headers"]),
+    /X-CityGo-Contract-Version/i,
+  );
+});
+
+test("HTTP error envelopes cover auth, validation, parsing, not-found and conflicts without reflecting input", async (t) => {
+  const f = await fixture(false);
+  t.after(f.close);
+  const unauth = await f.app.inject({
+    url: "/v1/dashboard",
+    headers: { "x-request-id": "untrusted-correlation" },
+  });
+  assert.equal(unauth.statusCode, 401);
+  assert.equal(unauth.json().code, "UNAUTHENTICATED");
+  assert.notEqual(unauth.json().requestId, "untrusted-correlation");
+  const invalid = await f.call("POST", "/v1/auth/register", "", {
+    email: "bad",
+    password: "short",
+  });
+  assert.equal(invalid.json().code, "VALIDATION_ERROR");
+  const missing = await f.app.inject({
+    url: "/v1/missing?secret=do-not-reflect",
+  });
+  assert.equal(missing.json().code, "NOT_FOUND");
+  assert.ok(!missing.body.includes("do-not-reflect"));
+  const malformed = await f.app.inject({
+    method: "POST",
+    url: "/v1/auth/register",
+    headers: {
+      origin: "http://localhost:3000",
+      "content-type": "application/json",
+    },
+    payload: '{"password":"do-not-reflect"',
+  });
+  assert.equal(malformed.statusCode, 400);
+  assert.equal(malformed.json().code, "VALIDATION_ERROR");
+  assert.ok(!malformed.body.includes("do-not-reflect"));
+  for (const response of [unauth, invalid, missing, malformed]) {
+    const error = apiErrorResponseSchema.parse(response.json());
+    assert.equal(error.contractVersion, "1");
+    assert.equal(error.requestId, response.headers["x-request-id"]);
+    assert.equal(error.retryable, false);
+    assert.equal(typeof error.error, "string");
+  }
+});
+
+test("AI consent, policy, money, quota and CAS errors remain distinguishable over HTTP and SSE", async (t) => {
+  const f = await fixture(true, {
+    ADMIN_USER_IDS: "1",
+    LLM_USER_DAILY_REQUEST_LIMIT: "2",
+  });
+  t.after(f.close);
+  const user = await chatUser(f, false);
+  const path = `/v1/threads/${user.thread}/messages`;
+  const message = () => ({
+    text: "Синтетический тест жилья",
+    requestId: randomUUID(),
+    policyId: user.policyId,
+  });
+  const blockedVersion = await f.app.inject({
+    method: "POST",
+    url: path,
+    headers: {
+      cookie: "citygo=" + user.token,
+      origin: "http://localhost:3000",
+      [CONTRACT_VERSION_HEADER]: "2",
+    },
+    payload: message(),
+  });
+  assert.equal(blockedVersion.json().code, "CONTRACT_VERSION_UNSUPPORTED");
+  const noConsent = await f.call("POST", path, user.token, message());
+  assert.equal(noConsent.statusCode, 403);
+  assert.equal(noConsent.json().code, "AI_CONSENT_REQUIRED");
+  const wrongPolicy = await f.call("POST", path, user.token, {
+    ...message(),
+    policyId: "0".repeat(64),
+  });
+  assert.equal(wrongPolicy.json().code, "AI_POLICY_CHANGED");
+  await f.consent(user.token);
+  await f.approveBudget(user.token, f.app, { enabled: false });
+  for (const expected of ["AI_BUDGET_UNAVAILABLE", "AI_BUDGET_EXHAUSTED"]) {
+    if (expected === "AI_BUDGET_EXHAUSTED")
+      await f.approveBudget(user.token, f.app, { userDailyLimitMicros: 0 });
+    const response = await f.call("POST", path, user.token, message());
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.headers[CONTRACT_VERSION_HEADER.toLowerCase()], "1");
+    const events = response.body
+      .split("\n")
+      .filter((line) => line.startsWith("data: "))
+      .map((line) => streamEventSchema.parse(JSON.parse(line.slice(6))));
+    const last = events.at(-1);
+    assert.equal(last?.type, "error");
+    if (last?.type !== "error") throw new Error("Expected stream error");
+    assert.equal(last.code, expected);
+    assert.equal(last.requestId, response.headers["x-request-id"]);
+    assert.equal(last.retryable, false);
+    assert.ok(!events.some((event) => event.type === "done"));
+  }
+  const quota = await f.call("POST", path, user.token, message());
+  assert.equal(quota.statusCode, 429);
+  assert.equal(quota.json().code, "AI_QUOTA_EXHAUSTED");
+  const control = (
+    await f.call("GET", "/v1/admin/ai", user.token)
+  ).json<AiControlStatus>();
+  const conflict = await f.call("POST", "/v1/admin/ai/budget", user.token, {
+    expectedRevision: 1,
+    enabled: false,
+    currency: "RUB",
+    dailyLimitMicros: 0,
+    totalLimitMicros: 0,
+    rules: [],
+  });
+  assert.equal(conflict.statusCode, 409);
+  assert.equal(conflict.json().code, "REVISION_CONFLICT");
+  assert.equal(
+    conflict.json().currentVersion,
+    control.budget!.settings.revision,
+  );
+});
 
 test("runtime response schemas accept the actual API journey and admin payloads", async (t) => {
   const f = await fixture(true, { ADMIN_USER_IDS: "1" });

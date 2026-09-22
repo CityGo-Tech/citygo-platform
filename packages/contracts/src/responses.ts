@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { errorMetadataSchema } from "./protocol.js";
+export { apiErrorResponseSchema } from "./protocol.js";
 import {
   agentKeySchema,
   profileSchema,
@@ -49,9 +51,6 @@ export const nativeAuthResponseSchema = authResponseSchema.extend({
 });
 export const startResponseSchema = z.object({ id });
 export const completionResponseSchema = z.object({ awarded: count });
-export const apiErrorResponseSchema = z.object({
-  error: z.string().min(1).max(2000),
-});
 
 const policy = z.object({
   id: aiPolicyIdSchema,
@@ -251,5 +250,8 @@ export const streamEventSchema = z.discriminatedUnion("type", [
     reason: text,
   }),
   z.object({ type: z.literal("done"), messageId: id }),
-  z.object({ type: z.literal("error"), message: z.string().min(1).max(2000) }),
+  errorMetadataSchema.extend({
+    type: z.literal("error"),
+    message: z.string().min(1).max(2000),
+  }),
 ]) satisfies z.ZodType<StreamEvent>;
