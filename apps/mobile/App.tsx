@@ -24,6 +24,18 @@ import { questionnaireSchema, type Dashboard } from "@citygo/contracts";
 import { tokens } from "@citygo/design-tokens";
 import { Button, Card, Field } from "@citygo/ui-native";
 import { questChecklist } from "@citygo/content";
+import {
+  allQuestsCompleted,
+  canStopChat,
+  completeQuest,
+  completionNotice,
+  createOperations,
+  operationLabel,
+  type CompletionReceipt,
+  type OperationKind,
+  type OperationTicket,
+  type PendingOperation,
+} from "./src/flow";
 const tokenStore = createSessionStorage({
   get: () => SecureStore.getItemAsync("citygo.session"),
   set: (token) => SecureStore.setItemAsync("citygo.session", token),
@@ -34,6 +46,10 @@ export default function App() {
   const [lifetime] = useState(createSessionGuard);
   const [logoutAttempt] = useState(() => createSessionLogout(tokenStore));
   const refreshVersion = useRef(0);
+  const [pending, setPending] = useState<PendingOperation | null>(null);
+  const [operations] = useState(() => createOperations(setPending));
+  const busy = pending !== null;
+  const [completion, setCompletion] = useState<CompletionReceipt | null>(null);
   const [storageBlocked, setStorageBlocked] = useState(false);
   const base = process.env.EXPO_PUBLIC_API_URL ?? "http://localhost:4000";
   const api = useMemo(
@@ -51,7 +67,6 @@ export default function App() {
   );
   const [board, setBoard] = useState<Dashboard | null>(null),
     [ready, setReady] = useState(false),
-    [busy, setBusy] = useState(false),
     [error, setError] = useState("");
   const [email, setEmail] = useState(""),
     [password, setPassword] = useState(""),
@@ -86,8 +101,9 @@ export default function App() {
     setText("");
     setDraft("");
     setNotice("");
+    setCompletion(null);
     setError("");
-    setBusy(false);
+    operations.reset();
     setReady(true);
   }
   async function refresh(ticket = lifetime.capture()) {
@@ -102,13 +118,17 @@ export default function App() {
       ticket.check();
     }
     setBoard(next);
+    setCompletion((receipt) =>
+      receipt ? { ...receipt, quests: next.quests } : null,
+    );
+    return next;
   }
   async function endSession(revoke: boolean) {
     const oldToken = session.current;
     session.current = null;
     clearUserState();
     const ticket = lifetime.capture();
-    setBusy(true);
+    const operation = operations.begin("logout")!;
     setStorageBlocked(true);
     try {
       // Always remove the device credential, even when the server is offline.
@@ -147,15 +167,15 @@ export default function App() {
           "Не удалось удалить сохранённую сессию с устройства. Повторите очистку перед новым входом.",
         );
     } finally {
-      if (ticket.active()) setBusy(false);
+      operation.finish();
     }
   }
   function authenticate() {
-    if (busy || storageBlocked) return;
+    if (operations.current() || storageBlocked) return;
     const input = { mode, email, password };
     session.current = null;
     clearUserState();
-    void act(async (ticket) => {
+    void act("auth", async (ticket) => {
       // A failed initial restore may leave A's credential on disk while the
       // sign-in form is visible. Clear it before attempting a different login.
       try {
@@ -192,23 +212,29 @@ export default function App() {
     return () => {
       lifetime.reset();
       abort.current?.abort();
+      operations.reset();
     };
   }, []);
   const quest =
     board?.quests.find((q) => q.state === "in_progress") ??
     board?.quests.find((q) => q.state === "available");
   useEffect(() => setConfirmed(false), [quest?.id]);
-  async function act(work: (ticket: SessionTicket) => Promise<void>) {
+  async function act(
+    kind: OperationKind,
+    work: (ticket: SessionTicket, operation: OperationTicket) => Promise<void>,
+  ) {
+    const operation = operations.begin(kind);
+    if (!operation) return;
     const ticket = lifetime.capture();
     setError("");
-    setBusy(true);
+    setNotice("");
     try {
-      await work(ticket);
+      await work(ticket, operation);
     } catch (e) {
       if (ticket.active())
         setError(e instanceof Error ? e.message : "Ошибка запроса");
     } finally {
-      if (ticket.active()) setBusy(false);
+      operation.finish();
     }
   }
   return (
@@ -233,6 +259,16 @@ export default function App() {
               </Text>
             )}
             {!!notice && <Text>{notice}</Text>}
+            {completion && (
+              <Text accessibilityLiveRegion="polite">
+                {completionNotice(completion)}
+              </Text>
+            )}
+            {pending && (
+              <Text accessibilityLiveRegion="polite">
+                {operationLabel(pending)}
+              </Text>
+            )}
             {storageBlocked && (
               <Button
                 title="Повторить очистку сессии"
@@ -330,7 +366,7 @@ export default function App() {
                   title="Получить план"
                   disabled={busy || !consent}
                   onPress={() =>
-                    void act(async (ticket) => {
+                    void act("questionnaire", async (ticket) => {
                       const parsed = questionnaireSchema.safeParse({
                         originCity: origin,
                         targetCity: target,
@@ -364,17 +400,36 @@ export default function App() {
                       {q.state === "completed" ? "✓" : "○"} {q.title}
                     </Text>
                   ))}
+                  <Button
+                    title="Обновить план"
+                    disabled={busy}
+                    onPress={() =>
+                      void act("refresh", async (ticket) => {
+                        await refresh(ticket);
+                      })
+                    }
+                  />
                 </Card>
+                {allQuestsCompleted(board.quests) && (
+                  <Card>
+                    <Text style={styles.title}>Все квесты плана завершены</Text>
+                    <Text>
+                      Прогресс сохранён. История чата остаётся доступной; новых
+                      квестов в текущем плане пока нет.
+                    </Text>
+                  </Card>
+                )}
                 {quest && (
                   <Card>
                     <Text style={styles.title}>{quest.title}</Text>
-                    <Text>Награда: +60 XP</Text>
+                    <Text>Награда: +{quest.xpReward} XP</Text>
                     {quest.state === "available" ? (
                       <Button
                         title="Начать квест"
                         disabled={busy}
                         onPress={() =>
-                          void act(async (ticket) => {
+                          void act("start", async (ticket) => {
+                            setCompletion(null);
                             await api.start(quest.id);
                             await refresh(ticket);
                           })
@@ -390,25 +445,32 @@ export default function App() {
                             accessibilityLabel="Критерии обсуждены"
                             value={confirmed}
                             onValueChange={setConfirmed}
+                            disabled={busy || completion?.questId === quest.id}
                           />
                           <Text style={styles.flex}>
                             Обсудил(а) критерии и готов(а) двигаться дальше
                           </Text>
                         </View>
                         <Button
-                          title="Завершить · +60 XP"
-                          disabled={busy || !confirmed}
+                          title={`Завершить · +${quest.xpReward} XP`}
+                          disabled={
+                            busy ||
+                            !confirmed ||
+                            completion?.questId === quest.id
+                          }
                           onPress={() =>
-                            void act(async (ticket) => {
-                              const result = await api.complete(quest.id);
-                              ticket.check();
-                              setNotice(
-                                result.awarded
-                                  ? "+60 XP — следующий шаг открыт"
-                                  : "Награда уже получена",
-                              );
-                              await refresh(ticket);
-                            })
+                            void act("complete", (ticket) =>
+                              completeQuest({
+                                questId: quest.id,
+                                complete: api.complete,
+                                refresh,
+                                ticket,
+                                received: (receipt) => {
+                                  setCompletion(receipt);
+                                  setConfirmed(false);
+                                },
+                              }),
+                            )
                           }
                         />
                       </>
@@ -447,7 +509,7 @@ export default function App() {
                           title="Разрешить передачу этому AI-получателю"
                           disabled={busy}
                           onPress={() =>
-                            void act(async (ticket) => {
+                            void act("consent", async (ticket) => {
                               try {
                                 await api.aiConsent({
                                   action: "granted",
@@ -476,7 +538,7 @@ export default function App() {
                     title="Отозвать разрешение AI"
                     disabled={busy}
                     onPress={() =>
-                      void act(async (ticket) => {
+                      void act("consent", async (ticket) => {
                         try {
                           await api.aiConsent({ action: "revoked" });
                         } finally {
@@ -501,6 +563,7 @@ export default function App() {
                     onChangeText={setText}
                     multiline
                     maxLength={4000}
+                    editable={!busy}
                   />
                   <Button
                     title="Отправить"
@@ -512,7 +575,7 @@ export default function App() {
                       board.provider === "unconfigured"
                     }
                     onPress={() =>
-                      void act(async (ticket) => {
+                      void act("chat", async (ticket, operation) => {
                         const message = text;
                         setText("");
                         setDraft("");
@@ -536,10 +599,14 @@ export default function App() {
                         } catch (e) {
                           // A stale consent or quota rejection must not discard
                           // the user's draft; resubmission remains explicit.
-                          if (ticket.active() && !controller.signal.aborted)
+                          if (!ticket.active()) return;
+                          if (!controller.signal.aborted) {
                             setText(message);
-                          throw e;
+                            throw e;
+                          }
+                          setNotice("Ответ остановлен.");
                         } finally {
+                          operation.refreshing();
                           try {
                             if (ticket.active()) await refresh(ticket);
                           } finally {
@@ -552,10 +619,12 @@ export default function App() {
                       })
                     }
                   />
-                  {busy && (
+                  {canStopChat(pending) && (
                     <Button
                       title="Прервать ответ"
-                      onPress={() => abort.current?.abort()}
+                      onPress={() =>
+                        operations.stopChat(() => abort.current?.abort())
+                      }
                     />
                   )}
                 </Card>
