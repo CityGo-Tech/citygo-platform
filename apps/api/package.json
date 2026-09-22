@@ -15,15 +15,15 @@
   "dependencies": {
     "@citygo/contracts": "workspace:*",
     "@fastify/cors": "^11.1.0",
-    "fastify": "^5.5.0",
-    "zod": "^4.1.1",
+    "fastify": "^5.12.5",
+    "zod": "^4.6.5",
     "@citygo/db": "workspace:*",
     "@citygo/config": "workspace:*",
     "@citygo/agents": "workspace:*",
     "@citygo/llm": "workspace:*",
     "@citygo/observability": "workspace:*",
     "@fastify/cookie": "^11.0.2",
-    "@fastify/rate-limit": "^10.3.0"
+    "@fastify/rate-limit": "^11.2.0"
   },
   "devDependencies": {
     "tsup": "^8.5.0",
