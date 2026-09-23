@@ -6,6 +6,9 @@ const config = {
   output: process.env.CITYGO_WEB_STANDALONE === "1" ? "standalone" : undefined,
   outputFileTracingRoot: fileURLToPath(new URL("../../", import.meta.url)),
   poweredByHeader: false,
+  // Next 15's external rewrites otherwise abort a silent upstream after 30s.
+  // Keep a bounded budget above the approved 240s provider deadline.
+  experimental: { proxyTimeout: 300000 },
   transpilePackages: [
     "@citygo/contracts",
     "@citygo/ui-web",

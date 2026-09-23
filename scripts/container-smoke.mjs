@@ -4,6 +4,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { root, serviceEnv } from "./env.mjs";
+import { pilotSmoke } from "./pilot-smoke.mjs";
 
 // Explicitly opt in; this script builds images and deletes ONLY its own disposable volume.
 if (!process.argv.includes("--disposable"))
@@ -238,6 +239,27 @@ try {
   console.log(
     "Container smoke passed: migrations, restricted roles, assets, auth, persistence, AI gates",
   );
+  await pilotSmoke({
+    apiImage: docker([
+      "inspect",
+      "--format",
+      "{{.Image}}",
+      compose(["ps", "-q", "api"]).trim(),
+    ]).trim(),
+    webImage: docker([
+      "inspect",
+      "--format",
+      "{{.Image}}",
+      compose(["ps", "-q", "web"]).trim(),
+    ]).trim(),
+    jobsImage: docker([
+      "image",
+      "inspect",
+      "--format",
+      "{{.Id}}",
+      `${project}-migrator`,
+    ]).trim(),
+  });
 } finally {
   // Unique project generated above; never a user-supplied deployment name.
   try {
