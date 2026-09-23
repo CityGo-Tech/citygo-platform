@@ -10,7 +10,7 @@ import {
   command,
   failureSummary,
   publishImages,
-  repository,
+  organizationId,
   roles,
   validateEvidence,
 } from "./release-candidate.mjs";
@@ -102,6 +102,7 @@ try {
     attempt: "1",
     actor: "fixture",
     token: syntheticToken,
+    packageSourcesChecked: "true", // Synthetic operator confirmation, not a GHCR check.
     docker: transport,
     report: (stage) => console.log(`Registry rehearsal: ${stage}`),
     read: async (path) => {
@@ -112,7 +113,14 @@ try {
             `/orgs/CityGo-Tech/packages/container/citygo-platform-${role}`,
         ),
       );
-      return { visibility: "private", repository: { full_name: repository } };
+      // Exercise the documented REST shape without the optional repository field.
+      return {
+        id: 1,
+        name: path.split("/").at(-1),
+        package_type: "container",
+        visibility: "private",
+        owner: { id: organizationId, login: "CityGo-Tech" },
+      };
     },
   });
   assert.deepEqual(Object.keys(images), roles);
