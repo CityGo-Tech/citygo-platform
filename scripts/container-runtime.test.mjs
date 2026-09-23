@@ -24,6 +24,13 @@ test("API container stop allows the complete drain and cleanup deadline", () => 
     assert.match(api ?? "", /stop_grace_period: 330s/);
   }
 });
+test("Worker container stop allows the complete transaction and close deadline", () => {
+  for (const name of ["compose.pilot.yml", "compose.smoke.yml"]) {
+    const compose = readFileSync(join(root, "deploy", name), "utf8");
+    const worker = compose.split("\n  worker:\n")[1]?.split("\n  backup:\n")[0];
+    assert.match(worker ?? "", /stop_grace_period: 90s/);
+  }
+});
 function fixture(t) {
   const directory = mkdtempSync(join(tmpdir(), "citygo-container-unit-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));

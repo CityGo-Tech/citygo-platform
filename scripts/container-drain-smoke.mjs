@@ -5,7 +5,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { root } from "./env.mjs";
 import { assertCleanContainerStop } from "./container-stop-check.mjs";
 
-async function until(check, message, timeout = 5000) {
+export async function until(check, message, timeout = 5000) {
   const deadline = Date.now() + timeout;
   do {
     if (await check()) return;
@@ -15,7 +15,7 @@ async function until(check, message, timeout = 5000) {
 }
 
 // Keep promises handled even when an assertion fails before we await the child.
-function startDocker(args, env, timeout) {
+export function startDocker(args, env, timeout) {
   const child = spawn("docker", args, {
     cwd: root,
     env,

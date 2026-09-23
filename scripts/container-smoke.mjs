@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { root, serviceEnv } from "./env.mjs";
 import { pilotSmoke } from "./pilot-smoke.mjs";
 import { containerDrainSmoke } from "./container-drain-smoke.mjs";
+import { workerDrainSmoke } from "./worker-drain-smoke.mjs";
 import {
   candidateDir,
   validateBases,
@@ -292,6 +293,7 @@ try {
     psql,
     url: afterUrl,
   });
+  await workerDrainSmoke({ project, base, env, docker, compose, psql });
   console.log(
     "Container smoke passed: migrations, restricted roles, assets, auth, persistence, AI gates",
   );
