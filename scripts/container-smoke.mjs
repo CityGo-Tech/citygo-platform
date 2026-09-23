@@ -1,16 +1,41 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { root, serviceEnv } from "./env.mjs";
 import { pilotSmoke } from "./pilot-smoke.mjs";
+import {
+  candidateDir,
+  validateBases,
+  validateEvidence,
+} from "./release-candidate.mjs";
 
 // Explicitly opt in; this script builds images and deletes ONLY its own disposable volume.
 if (!process.argv.includes("--disposable"))
   throw new Error(
     "Container smoke requires --disposable; never run against a real deployment",
   );
+assert.ok(
+  process.argv
+    .slice(2)
+    .every((arg) => ["--disposable", "--release-candidate"].includes(arg)),
+);
+const releaseCandidate = process.argv.includes("--release-candidate");
+const bases = releaseCandidate
+  ? validateBases(
+      JSON.parse(readFileSync(join(candidateDir, "build-inputs.json"), "utf8")),
+    )
+  : null;
+const sourceSha = releaseCandidate
+  ? spawnSync("git", ["rev-parse", "HEAD"], {
+      cwd: root,
+      env: serviceEnv("test"),
+      encoding: "utf8",
+    }).stdout?.trim()
+  : null;
+if (releaseCandidate) assert.match(sourceSha ?? "", /^[a-f0-9]{40}$/);
+let evidence;
 const project = `citygo-smoke-${randomBytes(6).toString("hex")}`;
 const env = serviceEnv("test"); // No real root .env or cloud/LLM credentials passed to Docker.
 const base = [
@@ -24,6 +49,27 @@ const base = [
   "--profile",
   "jobs",
 ];
+if (bases) {
+  const override = join(candidateDir, "build-overrides.json");
+  const app = {
+    platform: "linux/amd64",
+    build: { args: { NODE_IMAGE: bases.node, SOURCE_SHA: sourceSha } },
+  };
+  writeFileSync(
+    override,
+    JSON.stringify({
+      services: {
+        api: app,
+        web: app,
+        migrator: app,
+        worker: app,
+        postgres: { image: bases.postgres, platform: "linux/amd64" },
+      },
+    }),
+    { flag: "wx" },
+  );
+  base.push("-f", override);
+}
 function docker(args, { fail = false, timeout = 120000 } = {}) {
   const result = spawnSync("docker", args, {
     cwd: root,
@@ -239,7 +285,7 @@ try {
   console.log(
     "Container smoke passed: migrations, restricted roles, assets, auth, persistence, AI gates",
   );
-  await pilotSmoke({
+  const testedImages = {
     apiImage: docker([
       "inspect",
       "--format",
@@ -259,7 +305,33 @@ try {
       "{{.Id}}",
       `${project}-migrator`,
     ]).trim(),
-  });
+  };
+  // Worker and migrator must be the identical jobs artifact, not separate builds.
+  assert.equal(
+    docker([
+      "image",
+      "inspect",
+      "--format",
+      "{{.Id}}",
+      `${project}-worker`,
+    ]).trim(),
+    testedImages.jobsImage,
+  );
+  await pilotSmoke({ ...testedImages, postgresImage: bases?.postgres });
+  if (bases)
+    evidence = validateEvidence(
+      {
+        version: 1,
+        sourceSha,
+        bases,
+        images: {
+          api: testedImages.apiImage,
+          web: testedImages.webImage,
+          jobs: testedImages.jobsImage,
+        },
+      },
+      sourceSha,
+    );
 } finally {
   // Unique project generated above; never a user-supplied deployment name.
   try {
@@ -268,3 +340,10 @@ try {
     rmSync(canaryDirectory, { recursive: true, force: true });
   }
 }
+// No publishable evidence if smoke OR cleanup failed; never reuse stale evidence.
+if (evidence)
+  writeFileSync(
+    join(candidateDir, "tested-images.json"),
+    JSON.stringify(evidence, null, 2) + "\n",
+    { flag: "wx" },
+  );

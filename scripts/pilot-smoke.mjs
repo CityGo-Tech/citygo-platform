@@ -8,7 +8,12 @@ import { randomBytes } from "node:crypto";
 import { root, serviceEnv } from "./env.mjs";
 import { renderNginx } from "../deploy/render-pilot.mjs";
 
-export async function pilotSmoke({ apiImage, webImage, jobsImage }) {
+export async function pilotSmoke({
+  apiImage,
+  webImage,
+  jobsImage,
+  postgresImage = "postgres:17-alpine",
+}) {
   const project = `citygo-pilot-test-${randomBytes(6).toString("hex")}`;
   const directory = mkdtempSync(join(tmpdir(), "citygo-pilot-test-"));
   const volume = `${project}_database`;
@@ -18,7 +23,7 @@ export async function pilotSmoke({ apiImage, webImage, jobsImage }) {
     CITYGO_API_IMAGE: apiImage,
     CITYGO_WEB_IMAGE: webImage,
     CITYGO_JOBS_IMAGE: jobsImage,
-    POSTGRES_IMAGE: "postgres:17-alpine",
+    POSTGRES_IMAGE: postgresImage,
     CITYGO_ORIGIN: origin,
     CITYGO_SECRETS_DIR: directory,
     CITYGO_DB_VOLUME: volume,
