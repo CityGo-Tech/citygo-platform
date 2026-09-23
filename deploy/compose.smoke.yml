@@ -83,6 +83,7 @@ services:
 
   worker:
     <<: *app
+    stop_grace_period: 90s
     profiles: [jobs]
     build:
       context: ..

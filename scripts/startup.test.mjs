@@ -102,7 +102,12 @@ test("built worker rejects PGlite and has no API/AI startup dependency", () => {
     "postgresql://synthetic:synthetic@127.0.0.1:1/not_used?connect_timeout=1",
   );
   assert.equal(offline.status, 1, offline.stderr);
-  assert.match(offline.stderr, /ECONNREFUSED/);
+  assert.equal(
+    offline.stderr.trim(),
+    "CityGo worker failed; maintenance completion is not confirmed",
+  );
+  assert.doesNotMatch(offline.stdout, /maintenance completed/);
+  assert.doesNotMatch(offline.stderr, /ECONNREFUSED|postgresql|synthetic/);
   assert.doesNotMatch(
     offline.stderr,
     /WEB_ORIGIN|TRUSTED_PROXY|OPENAI|LLM|production activation/,

@@ -1,4 +1,5 @@
 import { connectDatabase, type Database } from "@citygo/db";
+import { runWorkerOnce } from "./shutdown.js";
 export async function maintain(db: Database) {
   return db.transaction(async (tx) => {
     await tx.query("delete from sessions where expires_at<now()");
@@ -29,11 +30,22 @@ if (process.argv.includes("--once")) {
     throw new Error(
       "Worker requires server PostgreSQL; do not open the API's local PGlite directory twice",
     );
-  const db = await connectDatabase(databaseUrl);
   try {
-    await maintain(db);
-    console.log("CityGo maintenance completed");
-  } finally {
-    await db.close();
+    const result = await runWorkerOnce(
+      () => connectDatabase(databaseUrl),
+      maintain,
+    );
+    console.log(
+      result === "completed"
+        ? "CityGo maintenance completed"
+        : "CityGo worker stopped before maintenance",
+    );
+  } catch {
+    console.error(
+      "CityGo worker failed; maintenance completion is not confirmed",
+    );
+    // A timed-out connect/transaction/close may still hold sockets. Do not hang
+    // indefinitely or let a later resolution turn this failure into success.
+    process.exit(1);
   }
 }

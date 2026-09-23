@@ -102,6 +102,7 @@ services:
 
   worker:
     <<: *process
+    stop_grace_period: 90s
     image: ${CITYGO_JOBS_IMAGE:?Set the approved jobs image digest}
     profiles: [ops]
     mem_limit: 256m
