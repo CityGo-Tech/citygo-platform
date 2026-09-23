@@ -76,6 +76,74 @@ test("grace expiry cancels a stream but waits for its asynchronous settlement", 
   assert.equal(closed, true);
 });
 
+test("settlement failure is sticky but waits for other handlers and resource cleanup", async () => {
+  const drain = new ApiDrain();
+  await drain.run(() => drain.markSettlementFailed());
+  await drain.run(() => "later success cannot erase failure");
+  const other = deferred();
+  const cleanup = deferred();
+  const closing = deferred();
+  const work = drain.run(() => other.promise);
+  const shutdown = createShutdown(drain, async () => {
+    assert.equal(drain.active, 0);
+    closing.resolve();
+    await cleanup.promise;
+  });
+  const pending = shutdown();
+  const rejected = assert.rejects(pending, /API chat settlement failed/);
+  assert.equal(shutdown(), pending);
+  assert.equal(drain.active, 1);
+  other.resolve();
+  await work;
+  await closing.promise;
+  let finished = false;
+  void rejected.then(() => {
+    finished = true;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(finished, false, "failure must not bypass resource cleanup");
+  cleanup.resolve();
+  await rejected;
+  assert.throws(() => drain.assertSettled(), /API chat settlement failed/);
+});
+
+test("settlement failure follows the OS signal failure path with exit code 1, never a success log", async (t) => {
+  const app = Fastify();
+  const drain = new ApiDrain();
+  const exited = deferred();
+  let exitCode: string | number | null | undefined;
+  let closed = false;
+  const info = t.mock.method(app.log, "info");
+  const error = t.mock.method(app.log, "error");
+  t.mock.method(
+    process,
+    "exit",
+    (code?: Parameters<typeof process.exit>[0]) => {
+      exitCode = code;
+      exited.resolve();
+      return undefined as never;
+    },
+  );
+  app.addHook("onClose", async () => {
+    closed = true;
+  });
+  drain.markSettlementFailed();
+  const remove = installShutdown(app, drain);
+  try {
+    process.emit("SIGTERM");
+    await exited.promise;
+    assert.equal(exitCode, 1);
+    assert.equal(closed, true);
+    assert.equal(error.mock.callCount(), 1);
+    assert.equal(error.mock.calls[0]!.arguments[1], "API shutdown failed");
+    assert.equal(info.mock.callCount(), 1);
+    assert.equal(info.mock.calls[0]!.arguments[1], "API draining");
+  } finally {
+    remove();
+    await app.close();
+  }
+});
+
 test("a stuck handler or close has a bounded failure, never a false clean shutdown", async () => {
   const drain = new ApiDrain();
   const gate = deferred();

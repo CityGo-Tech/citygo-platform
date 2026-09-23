@@ -490,6 +490,7 @@ export async function buildApp(options: {
         saved = true;
         send({ type: "done", messageId });
       } catch {
+        let persistenceFailed = false;
         if (!saved)
           await repo
             .finishChat(
@@ -502,9 +503,11 @@ export async function buildApp(options: {
               !routing.human,
               generation,
             )
-            .catch(() =>
-              request.log.error("Failed to persist interrupted response"),
-            );
+            .catch(() => {
+              persistenceFailed = true;
+              drain.markSettlementFailed();
+              request.log.error("Failed to persist interrupted response");
+            });
         send({
           type: "error",
           ...errorMetadata(
@@ -512,9 +515,10 @@ export async function buildApp(options: {
             request.id,
             attemptError?.currentVersion,
           ),
-          message:
-            attemptError?.message ??
-            "Ответ прерван. История сохранена; попробуйте отправить сообщение снова.",
+          message: persistenceFailed
+            ? "Ответ прерван. Не удалось подтвердить сохранение истории. Обновите историю и обратитесь к администратору перед повторной отправкой."
+            : (attemptError?.message ??
+              "Ответ прерван. История сохранена; попробуйте отправить сообщение снова."),
         });
       } finally {
         clearInterval(heartbeat);

@@ -9,6 +9,7 @@ export const API_CLEANUP_MS = 30_000;
 export class ApiDrain {
   private draining = false;
   private count = 0;
+  private settlementFailed = false;
   private readonly waiters = new Set<() => void>();
   private readonly abort = new AbortController();
 
@@ -18,6 +19,16 @@ export class ApiDrain {
 
   get signal() {
     return this.abort.signal;
+  }
+
+  markSettlementFailed() {
+    // Sticky for this process, including failures before a shutdown signal.
+    // Never retain raw DB errors, chat text, request IDs or credentials here.
+    this.settlementFailed = true;
+  }
+
+  assertSettled() {
+    if (this.settlementFailed) throw new Error("API chat settlement failed");
   }
 
   begin() {
@@ -88,6 +99,8 @@ export function createShutdown(
         await drain.whenIdle();
         clearTimeout(cancelTimer);
         await close(); // Only now may Fastify's onClose hook close the DB.
+        // Idle means the handlers ended, not that their DB settlement succeeded.
+        drain.assertSettled();
       })(),
       deadline,
     ]).finally(() => {
