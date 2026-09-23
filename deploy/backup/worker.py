@@ -36,8 +36,8 @@ def pause(config):
         b.sync_directory(state)
 
 
-def admission(config):
-    return {"version": 1, "configuration_sha256": b.configuration_fingerprint(config)}
+def admission(config, *, inputs=None):
+    return {"version": 1, "configuration_sha256": b.configuration_fingerprint(config, inputs=inputs)}
 
 
 def open_admission(config):
@@ -91,8 +91,11 @@ class Docker:
     def __init__(self, config, directory):
         self.env = b.clean_env(directory)
         self.executable = b.executable("docker")
-        self.compose = ["compose", "--env-file", config["compose_env"], "-p", config["project"],
-                        "-f", config["compose_file"], "--profile", "ops"]
+        # Compose must read the bytes that passed admission, not mutable live
+        # paths. Preserve the release base directory for relative bind mounts.
+        self.compose = ["compose", "--project-directory", str(Path(config["compose_file"]).parent),
+                        "--env-file", str(directory / "admitted.env"), "-p", config["project"],
+                        "-f", str(directory / "admitted-compose.yml"), "--profile", "ops"]
 
     def capture(self, args, timeout=30):
         # Only fixed Docker commands; never shell, inherited environment or logs.
@@ -124,7 +127,9 @@ def perform(config, *, transport_factory=Docker):
             b.require(os.path.lexists(state / ADMISSION), "worker-paused")
             marker = b.protected(state / ADMISSION)
             try:
-                b.require(b.read_json(marker) == admission(config), "worker-approval-changed")
+                inputs = b.configuration_inputs(config)
+                approved = admission(config, inputs=inputs)
+                b.require(b.read_json(marker) == approved, "worker-approval-changed")
             except Exception:
                 # Observed configuration drift/invalid input revokes the grant,
                 # rather than letting a later file rollback resurrect it.
@@ -132,10 +137,17 @@ def perform(config, *, transport_factory=Docker):
                 b.sync_directory(state)
                 raise
             name = "citygo-worker-" + uuid.uuid4().hex
-            operation = b.begin_operation(state, "worker", b.configuration_fingerprint(config), container_name=name)
+            operation = b.begin_operation(state, "worker", approved["configuration_sha256"], container_name=name)
         # No finally block clears the pending record or retries a failed worker.
         with tempfile.TemporaryDirectory(prefix=".worker-", dir=state) as temp:
-            docker = transport_factory(config, Path(temp))
+            directory = Path(temp)
+            for key, filename in (("compose_file", "admitted-compose.yml"), ("compose_env", "admitted.env")):
+                fd = os.open(directory / filename, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(fd, "wb") as stream:
+                    stream.write(inputs[key])
+                    stream.flush()
+                    os.fsync(stream.fileno())
+            docker = transport_factory(config, directory)
             target = docker.start(name)
             b.require(re.fullmatch(r"[0-9a-f]{64}", target), "worker-target")
             before = validate_container(docker.inspect(target), config["project"])

@@ -62,6 +62,11 @@ class Evidence(unittest.TestCase):
             self.assertNotIn("--rm", args)
             self.assertIn("--no-deps", args)
             self.assertEqual(args[args.index("--pull") + 1], "never")
+            self.assertEqual(args[args.index("--env-file") + 1], str(Path("/tmp/synthetic/admitted.env")))
+            self.assertEqual(args[args.index("-f") + 1], str(Path("/tmp/synthetic/admitted-compose.yml")))
+            self.assertEqual(args[args.index("--project-directory") + 1], str(Path(sample()["compose_file"]).parent))
+            self.assertNotIn(sample()["compose_env"], args)
+            self.assertNotIn(sample()["compose_file"], args)
 
     def test_cli_permission_and_platform_fail_without_config_io(self):
         with patch.object(b, "load_config") as load:
@@ -162,6 +167,35 @@ class Coordination(unittest.TestCase):
         receipt = b.read_json(self.state / "worker-last-success.json")
         self.assertEqual(receipt["container_id"], "a" * 64)
         self.assertTrue((self.state / w.ADMISSION).exists())
+
+    def test_live_input_replacement_after_admission_cannot_change_launched_snapshot(self):
+        w.open_admission(self.config)
+        approved = b.configuration_fingerprint(self.config)
+        original = b.begin_operation
+        captured = []
+        def replacing_begin(*args, **kwargs):
+            for key in ("compose_file", "compose_env"):
+                Path(self.config[key]).write_text("configuration B after admission")
+            return original(*args, **kwargs)
+        def factory(config, directory):
+            # Even a later C replacement cannot change the input Docker reads.
+            for key in ("compose_file", "compose_env"):
+                Path(config[key]).write_text("configuration C before Docker")
+            for name in ("admitted-compose.yml", "admitted.env"):
+                path = directory / name
+                captured.append(path)
+                self.assertEqual(path.read_bytes(), b"# synthetic configuration")
+                self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(b.read_json(self.pending)["configuration_sha256"], approved)
+            return self.docker
+        with patch.object(b, "begin_operation", replacing_begin):
+            w.perform(self.config, transport_factory=factory)
+        self.assertEqual(b.read_json(self.state / "worker-last-success.json")["configuration_sha256"], approved)
+        self.assertTrue(all(not path.exists() for path in captured))
+        # A subsequent run observes the drift and revokes admission.
+        with self.assertRaisesRegex(b.BackupError, "worker-approval-changed"):
+            self.worker()
+        self.assertFalse((self.state / w.ADMISSION).exists())
 
     def test_pause_during_active_worker_closes_only_new_admission(self):
         w.open_admission(self.config)

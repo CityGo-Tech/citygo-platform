@@ -270,13 +270,27 @@ def atomic_json(path, data):
             os.unlink(temp)
 
 
-def configuration_fingerprint(config):
-    # A receipt for another release/DB volume/recipient/storage must not look fresh.
-    files = {}
+def configuration_inputs(config):
+    """Read bounded inputs once; callers may launch from these exact bytes."""
+    inputs = {}
     for key in ("compose_file", "compose_env"):
         path = protected(config[key], private=key != "compose_file")
-        require(path.stat().st_size <= 65536, "configuration")
-        files[key] = digest(path)[1]
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            require(stat.S_ISREG(info.st_mode) and info.st_uid == os.geteuid(), "permissions")
+            require(not info.st_mode & (0o077 if key == "compose_env" else 0o022), "permissions")
+            data = stream.read(65537)
+        require(0 < len(data) <= 65536, "configuration")
+        inputs[key] = data
+    return inputs
+
+
+def configuration_fingerprint(config, *, inputs=None):
+    # A receipt for another release/DB volume/recipient/storage must not look fresh.
+    if inputs is None:
+        inputs = configuration_inputs(config)
+    files = {key: hashlib.sha256(data).hexdigest() for key, data in inputs.items()}
     return hashlib.sha256(json.dumps({"config": config, "files": files}, sort_keys=True).encode()).hexdigest()
 
 
