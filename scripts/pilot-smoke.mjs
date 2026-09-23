@@ -123,6 +123,7 @@ export async function pilotSmoke({ apiImage, webImage, jobsImage }) {
       'export PGPASSWORD="$(cat /run/secrets/db_migrate_password)"; exec psql -U citygo_migrator -d citygo_pilot -v ON_ERROR_STOP=1 -f /opt/citygo/grants.sql',
     ]);
     compose(["up", "-d", "--wait", "--wait-timeout", "120", "api", "web"]);
+    console.log("Pilot fixture: mounted-secret startup and migrations ready");
     const url = "http://127.0.0.1:3000";
     const request = (path, options) =>
       fetch(url + path, { ...options, signal: AbortSignal.timeout(10000) });
@@ -260,10 +261,23 @@ export async function pilotSmoke({ apiImage, webImage, jobsImage }) {
       ),
       "t",
     );
+    console.log(
+      "Pilot fixture: restricted-role journey and separate DB restore passed",
+    );
     await ingressSmoke({ docker, compose, directory, project });
     console.log(
       "Pilot smoke passed: mounted secrets, runtime limits, least-privilege roles, dump/restore, TLS/headers/SSE",
     );
+  } catch (error) {
+    if (created) {
+      try {
+        // Strictly disposable fixture data. Never reuse this log collector on a host.
+        process.stderr.write(compose(["logs", "--no-color", "--tail", "60"]));
+      } catch {
+        /* Preserve the original failure if diagnostic collection also fails. */
+      }
+    }
+    throw error;
   } finally {
     try {
       if (created) {

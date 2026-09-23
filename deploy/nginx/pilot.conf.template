@@ -6,11 +6,15 @@ log_format citygo_minimal '$status $request_time';
 server {
     listen 80 default_server;
     server_name _;
+    access_log off;
+    error_log /var/log/nginx/citygo-error.log crit;
     return 444;
 }
 server {
     listen 80;
     server_name __CITYGO_HOST__;
+    access_log off;
+    error_log /var/log/nginx/citygo-error.log crit;
     location ^~ /.well-known/acme-challenge/ {
         root /var/lib/letsencrypt;
         default_type text/plain;
@@ -21,7 +25,10 @@ server {
 server {
     listen 443 ssl default_server;
     server_name _;
+    access_log off;
+    error_log /var/log/nginx/citygo-error.log crit;
     ssl_reject_handshake on;
+    return 444;
 }
 server {
     listen 443 ssl;
