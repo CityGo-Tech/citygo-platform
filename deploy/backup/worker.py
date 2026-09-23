@@ -141,7 +141,7 @@ def perform(config, *, transport_factory=Docker):
                 **operation, "container_id": target, "image": after["Image"],
                 "started_at": after["State"]["StartedAt"], "finished_at": after["State"]["FinishedAt"],
             })
-            b.complete_operation(state, operation)
+        b.complete_operation(state, operation)
 
 
 def main(argv=None):

@@ -326,8 +326,10 @@ def perform_backup(config, *, storage_factory=S3, encryptor=encrypt, min_free=MI
                 require(digest(downloaded)[:2] == digest(marker)[:2], "manifest-mismatch")
                 stage = "status"
                 atomic_json(state / "last-success.json", {**manifest, "verified_at": time.time()})
-                complete_operation(state, operation)
-                return manifest
+            # Keep the guard through temporary-file cleanup too. A cleanup
+            # failure must not silently re-admit work after a nonzero result.
+            complete_operation(state, operation)
+            return manifest
         except Exception:
             atomic_json(state / "last-failure.json", {"failed_at": time.time(), "stage": stage})
             raise BackupError("backup-failed-" + stage) from None

@@ -1,5 +1,6 @@
 """Synthetic transport only; real Linux flock, permissions and process death."""
 import copy
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -202,6 +203,24 @@ class Coordination(unittest.TestCase):
         self.assertTrue(self.pending.exists())
         with self.assertRaisesRegex(b.BackupError, "operation-unsettled"):
             self.backup()
+
+    def test_cleanup_failure_keeps_guard_after_verified_worker_or_backup(self):
+        original = tempfile.TemporaryDirectory
+        @contextmanager
+        def broken_cleanup(*args, **kwargs):
+            with original(*args, **kwargs) as path:
+                yield path
+                raise OSError("private cleanup detail")
+        w.open_admission(self.config)
+        for operation in (self.worker, self.backup):
+            with self.subTest(operation=operation.__name__):
+                with patch.object(tempfile, "TemporaryDirectory", broken_cleanup), self.assertRaises(Exception):
+                    operation()
+                self.assertTrue(self.pending.exists())
+                with self.assertRaisesRegex(b.BackupError, "operation-unsettled"):
+                    self.worker()
+                # Synthetic transport only, no live process to reconcile.
+                self.pending.unlink()
 
     def test_corrupt_or_dangling_pending_is_not_treated_as_idle(self):
         self.pending.symlink_to(self.state / "missing")
