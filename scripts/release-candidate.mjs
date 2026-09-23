@@ -17,6 +17,10 @@ import { fileURLToPath } from "node:url";
 import { root, serviceEnv } from "./env.mjs";
 
 export const repository = "CityGo-Tech/citygo-platform";
+// Verified GitHub identities, not just reusable organization/repository names.
+export const repositoryId = 1351070410;
+export const organizationId = 248379281;
+export const sourceUrl = `https://github.com/${repository}`;
 export const roles = ["api", "web", "jobs"];
 export const candidateDir = join(root, ".local/release-candidate");
 const shaPattern = /^[a-f0-9]{40}$/;
@@ -106,6 +110,10 @@ export function validateContext(env) {
     "publication approval",
   );
   requireValue(
+    env.PACKAGE_SOURCES_CHECKED === "true",
+    "operator package settings review required",
+  );
+  requireValue(
     /^[1-9][0-9]*$/.test(env.GITHUB_RUN_ID) &&
       /^[1-9][0-9]*$/.test(env.GITHUB_RUN_ATTEMPT),
     "run identity",
@@ -172,6 +180,49 @@ export async function github(path, { allowMissing = false } = {}) {
   );
   return response.json();
 }
+export function validatePackage(pkg, role, packageSourcesChecked) {
+  requireValue(
+    packageSourcesChecked === "true",
+    "operator package settings review required",
+  );
+  requireValue(roles.includes(role), "package role");
+  requireValue(
+    pkg?.visibility === "private",
+    "package visibility must be private",
+  );
+  requireValue(
+    Number.isSafeInteger(pkg.id) &&
+      pkg.id > 0 &&
+      pkg.package_type === "container" &&
+      pkg.name === `citygo-platform-${role}` &&
+      pkg.owner?.id === organizationId &&
+      typeof pkg.owner?.login === "string" &&
+      pkg.owner.login.toLowerCase() === "citygo-tech",
+    "package destination identity",
+  );
+  // REST's repository is optional/nullable. Its absence is NOT proof of a link.
+  // The operator reviews UI linkage/access; image origin is checked separately.
+  if (pkg.repository === undefined || pkg.repository === null)
+    return "not-reported";
+  requireValue(
+    pkg.repository.id === repositoryId &&
+      typeof pkg.repository.full_name === "string" &&
+      pkg.repository.full_name.toLowerCase() === repository.toLowerCase(),
+    "package reports a different or malformed repository",
+  );
+  return "reported-match";
+}
+export function validateImageOrigin(info, id, sha) {
+  requireValue(
+    info?.Id === id && info.Os === "linux" && info.Architecture === "amd64",
+    "tested image unavailable or wrong platform",
+  );
+  requireValue(
+    info.Config?.Labels?.["org.opencontainers.image.source"] === sourceUrl &&
+      info.Config?.Labels?.["org.opencontainers.image.revision"] === sha,
+    "image source/revision labels",
+  );
+}
 export async function gate(
   env = process.env,
   read = github,
@@ -181,8 +232,13 @@ export async function gate(
   requireValue(head() === sha, "checkout mismatch");
   const repo = await read(`/repos/${repository}`);
   requireValue(
-    repo.private === true && repo.default_branch === "main",
-    "private repository required",
+    repo.private === true &&
+      repo.default_branch === "main" &&
+      repo.id === repositoryId &&
+      repo.full_name === repository &&
+      repo.owner?.id === organizationId &&
+      repo.owner?.login === "CityGo-Tech",
+    "trusted private repository required",
   );
   const main = await read(`/repos/${repository}/git/ref/heads/main`);
   requireValue(
@@ -203,12 +259,7 @@ export async function gate(
       `/orgs/CityGo-Tech/packages/container/citygo-platform-${role}`,
       { allowMissing: true },
     );
-    requireValue(
-      pkg === null ||
-        (pkg.visibility === "private" &&
-          pkg.repository?.full_name === repository),
-      "package access/visibility",
-    );
+    if (pkg !== null) validatePackage(pkg, role, env.PACKAGE_SOURCES_CHECKED);
   }
   return checks;
 }
@@ -304,11 +355,16 @@ export async function publishImages({
   attempt,
   actor,
   token,
+  packageSourcesChecked,
   docker,
   read = github,
   report = () => {},
 }) {
   validateEvidence(evidence, sha);
+  requireValue(
+    packageSourcesChecked === "true",
+    "operator package settings review required",
+  );
   requireValue(
     /^[1-9][0-9]*$/.test(runId) && /^[1-9][0-9]*$/.test(attempt),
     "publish identity",
@@ -322,22 +378,19 @@ export async function publishImages({
     "publisher token",
   );
   const images = {};
+  // Validate ALL tested images before login/first push, not halfway through a release.
+  for (const role of roles) {
+    report(`${role}: inspect tested local image`);
+    const id = evidence.images[role];
+    const [info] = JSON.parse(docker(["image", "inspect", id]));
+    validateImageOrigin(info, id, sha);
+  }
   report("Registry login");
   docker(["login", "ghcr.io", "--username", actor, "--password-stdin"], {
     input: token,
   });
   for (const role of roles) {
-    report(`${role}: inspect tested local image`);
     const id = evidence.images[role];
-    const [info] = JSON.parse(docker(["image", "inspect", id]));
-    requireValue(
-      info.Id === id && info.Os === "linux" && info.Architecture === "amd64",
-      "tested image unavailable",
-    );
-    requireValue(
-      info.Config.Labels?.["org.opencontainers.image.revision"] === sha,
-      "image source label",
-    );
     const name = `ghcr.io/citygo-tech/citygo-platform-${role}`;
     const tag = `${name}:sha-${sha}-${runId}-${attempt}`;
     docker(["tag", id, tag]);
@@ -354,16 +407,19 @@ export async function publishImages({
     const [pulled] = JSON.parse(docker(["image", "inspect", ref]));
     report(`${role}: compare readback image identity`);
     requireValue(
-      pulled.Id === id,
+      pulled?.Id === id,
       "registry readback differs from tested image",
     );
-    report(`${role}: verify private package and repository link`);
+    validateImageOrigin(pulled, id, sha);
+    report(`${role}: verify private package destination`);
     const pkg = await read(
       `/orgs/CityGo-Tech/packages/container/citygo-platform-${role}`,
     );
-    requireValue(
-      pkg.visibility === "private" && pkg.repository?.full_name === repository,
-      "published package is not private/linked",
+    const link = validatePackage(pkg, role, packageSourcesChecked);
+    report(
+      link === "reported-match"
+        ? `${role}: repository metadata matches`
+        : `${role}: repository not reported by API; settings rely on operator review`,
     );
     images[role] = ref;
     report(`${role}: verified`);
@@ -389,6 +445,7 @@ export async function publishCandidate() {
       attempt: process.env.GITHUB_RUN_ATTEMPT,
       actor: process.env.GITHUB_ACTOR,
       token: process.env.GH_TOKEN,
+      packageSourcesChecked: process.env.PACKAGE_SOURCES_CHECKED,
       report: (stage) => console.log(`Release stage: ${stage}`),
     });
     // A manifest is written only after ALL three exact images pass registry readback.

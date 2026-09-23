@@ -12,11 +12,15 @@ import test from "node:test";
 import { root } from "./env.mjs";
 import {
   repository,
+  repositoryId,
+  organizationId,
+  sourceUrl,
   roles,
   runtimeFiles,
   validateContext,
   validateBases,
   validateEvidence,
+  validatePackage,
   selectCheckRun,
   gate,
   createManifest,
@@ -35,7 +39,12 @@ const evidence = {
   version: 1,
   sourceSha: sha,
   bases,
-  images: Object.fromEntries(roles.map((role) => [role, imageId])),
+  images: Object.fromEntries(
+    roles.map((role, index) => [
+      role,
+      "sha256:" + (12 + index).toString(16).repeat(64),
+    ]),
+  ),
 };
 const context = {
   GITHUB_ACTIONS: "true",
@@ -46,13 +55,27 @@ const context = {
   GITHUB_SHA: sha,
   RELEASE_ENABLED: "true",
   PUBLISH_CONFIRM: "PUBLISH_PRIVATE_IMAGES",
+  PACKAGE_SOURCES_CHECKED: "true",
   GITHUB_RUN_ID: "123",
   GITHUB_RUN_ATTEMPT: "1",
 };
-const privatePackage = {
-  visibility: "private",
-  repository: { full_name: repository },
+const owner = { id: organizationId, login: "CityGo-Tech" };
+const privateRepo = {
+  id: repositoryId,
+  full_name: repository,
+  owner,
+  private: true,
+  default_branch: "main",
 };
+const privatePackage = (role, overrides = {}) => ({
+  id: 42,
+  name: `citygo-platform-${role}`,
+  package_type: "container",
+  visibility: "private",
+  owner,
+  repository: { id: repositoryId, full_name: repository },
+  ...overrides,
+});
 const run = (workflow, overrides = {}) => ({
   id: 100,
   run_attempt: 1,
@@ -77,6 +100,7 @@ test("publication requires explicit trusted main manual context", () => {
     GITHUB_SHA: "d".repeat(40),
     RELEASE_ENABLED: "",
     PUBLISH_CONFIRM: "true",
+    PACKAGE_SOURCES_CHECKED: "false",
     GITHUB_RUN_ID: "../123",
     GITHUB_RUN_ATTEMPT: "0",
   }))
@@ -84,6 +108,51 @@ test("publication requires explicit trusted main manual context", () => {
       () => validateContext({ ...context, [key]: value }),
       /Release rejected/,
     );
+  for (const value of [undefined, "", true, "TRUE", "false"])
+    assert.throws(() =>
+      validateContext({ ...context, PACKAGE_SOURCES_CHECKED: value }),
+    );
+});
+
+test("package validation separates privacy/destination from optional repository metadata", () => {
+  for (const role of roles) {
+    const pkg = privatePackage(role);
+    assert.equal(validatePackage(pkg, role, "true"), "reported-match");
+    for (const repository of [undefined, null]) {
+      assert.equal(
+        validatePackage({ ...pkg, repository }, role, "true"),
+        "not-reported",
+      );
+    }
+    const omitted = { ...pkg };
+    delete omitted.repository;
+    assert.equal(validatePackage(omitted, role, "true"), "not-reported");
+    for (const value of [undefined, false, "false", ""])
+      assert.throws(() => validatePackage(omitted, role, value));
+    for (const invalid of [
+      null,
+      {},
+      [],
+      ...[
+        { visibility: "public" },
+        { visibility: "internal" },
+        { visibility: undefined },
+        { id: 0 },
+        { id: "42" },
+        { package_type: "npm" },
+        { name: "citygo-platform-other" },
+        { owner: undefined },
+        { owner: { ...owner, id: organizationId + 1 } },
+        { owner: { ...owner, login: "other" } },
+        { repository: {} },
+        { repository: "CityGo-Tech/citygo-platform" },
+        { repository: { id: repositoryId, full_name: "other/repo" } },
+        { repository: { id: repositoryId + 1, full_name: repository } },
+      ].map((overrides) => ({ ...pkg, ...overrides })),
+    ])
+      assert.throws(() => validatePackage(invalid, role, "true"));
+  }
+  assert.throws(() => validatePackage(privatePackage("api"), "other", "true"));
 });
 
 test("only fixed base repositories and real digests can enter Compose", () => {
@@ -154,7 +223,7 @@ test("newest matching main push check must pass; old green and PR checks cannot 
 function githubFixture(overrides = {}) {
   return async (path) => {
     if (path === `/repos/${repository}`)
-      return overrides.repo ?? { private: true, default_branch: "main" };
+      return { ...privateRepo, ...overrides.repo };
     if (path.endsWith("/git/ref/heads/main"))
       return { object: { sha: overrides.sha ?? sha } };
     if (path.includes("/actions/workflows/")) {
@@ -163,7 +232,13 @@ function githubFixture(overrides = {}) {
         : "container-smoke.yml";
       return { total_count: 1, workflow_runs: [run(workflow, overrides.run)] };
     }
-    if (path.includes("/packages/")) return overrides.pkg ?? privatePackage;
+    if (path.includes("/packages/")) {
+      const role = path.split("-").at(-1);
+      assert.ok(roles.includes(role));
+      return overrides.missingPackage
+        ? null
+        : privatePackage(role, overrides.pkg);
+    }
     throw new Error("Unexpected fixture request");
   };
 }
@@ -174,13 +249,23 @@ test("gate cross-checks checkout, live main, private repo/packages and both work
     checks.map((check) => check.workflow),
     ["ci.yml", "container-smoke.yml"],
   );
+  for (const overrides of [
+    { missingPackage: true },
+    { pkg: { repository: undefined } },
+    { pkg: { repository: null } },
+  ])
+    await gate(context, githubFixture(overrides), () => sha);
   await assert.rejects(gate(context, githubFixture(), () => "d".repeat(40)));
   for (const overrides of [
     { sha: "d".repeat(40) },
     { repo: { private: false, default_branch: "main" } },
+    { repo: { id: repositoryId + 1 } },
+    { repo: { full_name: "other/repo" } },
+    { repo: { owner: { ...owner, id: organizationId + 1 } } },
     { run: { conclusion: "cancelled" } },
-    { pkg: { ...privatePackage, visibility: "public" } },
-    { pkg: { ...privatePackage, repository: { full_name: "other/repo" } } },
+    { pkg: { visibility: "public" } },
+    { pkg: { repository: { full_name: "other/repo" } } },
+    { pkg: { owner: undefined } },
   ])
     await assert.rejects(gate(context, githubFixture(overrides), () => sha));
   await assert.rejects(
@@ -200,16 +285,31 @@ function publisherFixture(overrides = {}) {
     calls.push({ args, options });
     if (args[0] === "image") {
       const pulled = args[2].includes("@");
+      const role = roles.find((role) =>
+        pulled
+          ? args[2].includes(`citygo-platform-${role}@`)
+          : evidence.images[role] === args[2],
+      );
+      assert.ok(role);
+      const badLocal = !pulled && overrides.badLocalRole === role;
+      const labels = {
+        "org.opencontainers.image.revision": overrides.label ?? sha,
+        "org.opencontainers.image.source": badLocal
+          ? "https://github.com/other/repo"
+          : (overrides.source ?? sourceUrl),
+      };
+      if (overrides.missingSource)
+        delete labels["org.opencontainers.image.source"];
+      if (pulled && overrides.badReadbackSource)
+        labels["org.opencontainers.image.source"] =
+          "https://github.com/other/repo";
       return JSON.stringify([
         {
-          Id: pulled && overrides.wrongReadback ? digest : imageId,
+          Id:
+            pulled && overrides.wrongReadback ? digest : evidence.images[role],
           Os: "linux",
           Architecture: overrides.arch ?? "amd64",
-          Config: {
-            Labels: {
-              "org.opencontainers.image.revision": overrides.label ?? sha,
-            },
-          },
+          Config: { Labels: labels },
         },
       ]);
     }
@@ -230,11 +330,16 @@ function publisherFixture(overrides = {}) {
       attempt: "2",
       actor: "fixture-user",
       token: "synthetic-not-a-real-token",
+      packageSourcesChecked: "true",
       docker,
-      read: async () => ({
-        ...privatePackage,
-        visibility: overrides.visibility ?? "private",
-      }),
+      read: async (path) => {
+        const role = path.split("-").at(-1);
+        assert.ok(roles.includes(role));
+        return privatePackage(role, {
+          visibility: overrides.visibility ?? "private",
+          ...overrides.pkg,
+        });
+      },
     },
   };
 }
@@ -249,7 +354,12 @@ test("publisher sends token via stdin only and tags/pulls exactly the tested ima
       images[role],
       `ghcr.io/citygo-tech/citygo-platform-${role}@${digest}`,
     );
-  assert.equal(calls[0].options.input, args.token);
+  assert.deepEqual(
+    calls.slice(0, 3).map((call) => call.args),
+    roles.map((role) => ["image", "inspect", evidence.images[role]]),
+  );
+  assert.equal(calls[3].args[0], "login");
+  assert.equal(calls[3].options.input, args.token);
   assert.ok(calls.every((call) => !call.args.includes(args.token)));
   assert.ok(calls.every((call) => !call.args.includes("build")));
   assert.ok(
@@ -257,7 +367,8 @@ test("publisher sends token via stdin only and tags/pulls exactly the tested ima
       .filter((call) => call.args[0] === "tag")
       .every(
         (call) =>
-          call.args[1] === imageId && call.args[2].endsWith(`sha-${sha}-123-2`),
+          Object.values(evidence.images).includes(call.args[1]) &&
+          call.args[2].endsWith(`sha-${sha}-123-2`),
       ),
   );
 });
@@ -266,14 +377,47 @@ test("wrong platform/source/readback, registry outage or non-private package sto
   for (const overrides of [
     { arch: "arm64" },
     { label: "d".repeat(40) },
+    { source: "https://github.com/other/repo" },
+    { missingSource: true },
+    { badReadbackSource: true },
     { wrongReadback: true },
     { pushFailure: true },
     { noDigest: true },
     { visibility: "public" },
+    { pkg: { owner: undefined } },
+    { pkg: { repository: { id: repositoryId + 1, full_name: repository } } },
   ]) {
     const { calls, args } = publisherFixture(overrides);
     await assert.rejects(publishImages(args));
     assert.ok(calls.filter((call) => call.args[0] === "push").length <= 1);
+  }
+});
+
+test("no registry login/push until every tested image has the expected source", async () => {
+  for (const role of roles) {
+    const { calls, args } = publisherFixture({ badLocalRole: role });
+    await assert.rejects(publishImages(args), /image source\/revision labels/);
+    assert.ok(calls.every((call) => call.args[0] === "image"));
+  }
+});
+
+test("publisher requires operator review and reports absent REST link without claiming verification", async () => {
+  for (const value of [undefined, true, "false", ""]) {
+    const { calls, args } = publisherFixture();
+    await assert.rejects(
+      publishImages({ ...args, packageSourcesChecked: value }),
+    );
+    assert.equal(calls.length, 0);
+  }
+  for (const repository of [undefined, null]) {
+    const { args } = publisherFixture({ pkg: { repository } });
+    const stages = [];
+    await publishImages({ ...args, report: (stage) => stages.push(stage) });
+    assert.equal(
+      stages.filter((stage) => stage.includes("not reported by API")).length,
+      3,
+    );
+    assert.ok(stages.every((stage) => !stage.includes("metadata matches")));
   }
 });
 
@@ -369,6 +513,15 @@ test("release workflow is manual, disabled by default, pinned and has no server/
   assert.match(workflow, /\n {2}workflow_dispatch:/);
   assert.doesNotMatch(workflow, /\n {2}(push|pull_request|workflow_run):/);
   assert.match(workflow, /CITYGO_RELEASE_PUBLISH_ENABLED == 'true'/);
+  assert.match(workflow, /inputs\.package_sources_checked == true/);
+  assert.match(
+    workflow,
+    /package_sources_checked:\s+description:[^\n]+\s+required: true\s+type: boolean\s+default: false/,
+  );
+  assert.match(
+    workflow,
+    /PACKAGE_SOURCES_CHECKED: \$\{\{ inputs\.package_sources_checked \}\}/,
+  );
   assert.match(workflow, /cancel-in-progress: false/);
   for (const line of workflow
     .split("\n")
