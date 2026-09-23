@@ -171,7 +171,8 @@ class S3:
 def encrypt(config, destination, env, *, timeout=900):
     docker, age = executable("docker"), executable("age")
     name = "citygo-backup-" + uuid.uuid4().hex
-    args = [docker, "compose", "--env-file", config["compose_env"], "-p", config["project"],
+    args = [docker, "compose", "--project-directory", config.get("_compose_project_directory", str(Path(config["compose_file"]).parent)),
+            "--env-file", config["compose_env"], "-p", config["project"],
             "-f", config["compose_file"], "--profile", "ops", "run", "--rm", "--no-deps",
             "--pull", "never", "--name", name, "-T", "backup"]
     producer = consumer = None
@@ -248,9 +249,14 @@ def begin_operation(state, kind, fingerprint, **details):
     return record
 
 
-def complete_operation(state, record):
+def verify_operation(state, record):
     path = protected(state / "operation-pending.json")
     require(read_json(path) == record, "operation-changed")
+    return path
+
+
+def complete_operation(state, record):
+    path = verify_operation(state, record)
     path.unlink()
     sync_directory(state)
 
@@ -294,6 +300,79 @@ def configuration_fingerprint(config, *, inputs=None):
     return hashlib.sha256(json.dumps({"config": config, "files": files}, sort_keys=True).encode()).hexdigest()
 
 
+def _snapshot_config(config, directory, inputs):
+    """Internal execution copy only; never accepted by validate()/the CLI."""
+    runtime = {**config, "_compose_project_directory": str(Path(config["compose_file"]).parent)}
+    for key, filename in (("compose_file", "backup-compose.yml"), ("compose_env", "backup.env")):
+        path = directory / filename
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(inputs[key])
+            stream.flush()
+            os.fsync(stream.fileno())
+        runtime[key] = str(path)
+    return runtime
+
+
+def _backup_in_operation(config, operation, *, storage_factory=S3, encryptor=encrypt, min_free=MIN_FREE):
+    """Internal: caller owns maintenance.lock AND keeps the operation pending.
+
+    No lock reacquisition, pending removal, retry or authorization of migrations.
+    Standalone backup and the in-process release window use the same pipeline.
+    """
+    state = protected(config["state_dir"], directory=True)
+    started, stage = time.time(), "preflight"
+    try:
+        require(config["upload_enabled"], "upload-disabled")
+        verify_operation(state, operation)
+        inputs = configuration_inputs(config)
+        fingerprint = configuration_fingerprint(config, inputs=inputs)
+        require(operation["configuration_sha256"] == fingerprint, "configuration-changed")
+        require(shutil.disk_usage(state).free >= min_free, "disk-space")
+        with tempfile.TemporaryDirectory(prefix=".attempt-", dir=state) as temp:
+            directory = Path(temp)
+            runtime = _snapshot_config(config, directory, inputs)
+            storage = storage_factory(config, directory)
+            archive, downloaded = directory / "database.dump.age", directory / "readback.age"
+            stage = "dump-encrypt"
+            encryptor(runtime, archive, clean_env(directory))
+            size, sha, _ = digest(archive)
+            backup_id = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(started)) + "-" + uuid.uuid4().hex
+            key = config["prefix"] + "/" + backup_id + ".dump.age"
+            stage = "upload"
+            storage.put(key, archive)
+            stage = "readback"
+            storage.get(key, downloaded)
+            require(digest(downloaded)[:2] == (size, sha), "readback-mismatch")
+            manifest = {
+                "version": 1, "backup_id": backup_id, "snapshot_started_at": started,
+                "source_sha": config["source_sha"], "postgres_major": 17,
+                "configuration_sha256": fingerprint,
+                "format": "pg_dump-custom+age-x25519", "key": key, "bytes": size, "sha256": sha,
+                "recipient_sha256": hashlib.sha256(config["recipient"].encode()).hexdigest(),
+                "operation_id": operation["id"],
+            }
+            marker = directory / "complete.json"
+            atomic_json(marker, manifest)
+            stage = "manifest"
+            marker_key = config["prefix"] + "/" + backup_id + ".complete.json"
+            storage.put(marker_key, marker)
+            downloaded.unlink()
+            storage.get(marker_key, downloaded)
+            require(digest(downloaded)[:2] == digest(marker)[:2], "manifest-mismatch")
+            stage = "status"
+            verify_operation(state, operation)
+            require(configuration_fingerprint(config) == fingerprint, "configuration-changed")
+        # A cleanup failure must not refresh the success receipt.
+        verify_operation(state, operation)
+        require(configuration_fingerprint(config) == fingerprint, "configuration-changed")
+        atomic_json(state / "last-success.json", {**manifest, "verified_at": time.time()})
+        return manifest
+    except Exception:
+        atomic_json(state / "last-failure.json", {"failed_at": time.time(), "stage": stage})
+        raise BackupError("backup-failed-" + stage) from None
+
+
 def perform_backup(config, *, storage_factory=S3, encryptor=encrypt, min_free=MIN_FREE):
     """Dependency arguments are for isolated tests, never CLI/config overrides."""
     require(config["upload_enabled"], "upload-disabled")
@@ -302,51 +381,21 @@ def perform_backup(config, *, storage_factory=S3, encryptor=encrypt, min_free=MI
     protected(config["compose_env"])
     with lock(state):
         assert_operation_idle(state)
-        started = time.time()
-        stage = "preflight"
         try:
             fingerprint = configuration_fingerprint(config)
             require(shutil.disk_usage(state).free >= min_free, "disk-space")
             operation = begin_operation(state, "backup", fingerprint)
-            with tempfile.TemporaryDirectory(prefix=".attempt-", dir=state) as temp:
-                directory = Path(temp)
-                storage = storage_factory(config, directory)
-                archive, downloaded = directory / "database.dump.age", directory / "readback.age"
-                stage = "dump-encrypt"
-                encryptor(config, archive, clean_env(directory))
-                size, sha, _ = digest(archive)
-                # Unique object names; no overwritten latest pointer and no remote deletion.
-                backup_id = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(started)) + "-" + uuid.uuid4().hex
-                key = config["prefix"] + "/" + backup_id + ".dump.age"
-                stage = "upload"
-                storage.put(key, archive)
-                stage = "readback"
-                storage.get(key, downloaded)
-                require(digest(downloaded)[:2] == (size, sha), "readback-mismatch")
-                manifest = {
-                    "version": 1, "backup_id": backup_id, "snapshot_started_at": started,
-                    "source_sha": config["source_sha"], "postgres_major": 17,
-                    "configuration_sha256": fingerprint,
-                    "format": "pg_dump-custom+age-x25519", "key": key, "bytes": size, "sha256": sha,
-                    "recipient_sha256": hashlib.sha256(config["recipient"].encode()).hexdigest(),
-                }
-                marker = directory / "complete.json"
-                atomic_json(marker, manifest)
-                stage = "manifest"
-                marker_key = config["prefix"] + "/" + backup_id + ".complete.json"
-                storage.put(marker_key, marker)
-                downloaded.unlink()
-                storage.get(marker_key, downloaded)
-                require(digest(downloaded)[:2] == digest(marker)[:2], "manifest-mismatch")
-                stage = "status"
-                atomic_json(state / "last-success.json", {**manifest, "verified_at": time.time()})
-            # Keep the guard through temporary-file cleanup too. A cleanup
-            # failure must not silently re-admit work after a nonzero result.
-            complete_operation(state, operation)
-            return manifest
         except Exception:
-            atomic_json(state / "last-failure.json", {"failed_at": time.time(), "stage": stage})
-            raise BackupError("backup-failed-" + stage) from None
+            atomic_json(state / "last-failure.json", {"failed_at": time.time(), "stage": "preflight"})
+            raise BackupError("backup-failed-preflight") from None
+        manifest = _backup_in_operation(config, operation, storage_factory=storage_factory,
+                                        encryptor=encryptor, min_free=min_free)
+        try:
+            complete_operation(state, operation)
+        except Exception:
+            atomic_json(state / "last-failure.json", {"failed_at": time.time(), "stage": "status"})
+            raise BackupError("backup-failed-status") from None
+        return manifest
 
 
 def check_freshness(config, *, now=None):

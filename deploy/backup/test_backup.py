@@ -152,6 +152,17 @@ class Operations(unittest.TestCase):
         self.assertEqual(self.store.calls, [])
         self.assertFalse((self.state / "last-success.json").exists())
 
+    def test_failed_pending_completion_is_not_reported_as_fresh(self):
+        original = b.complete_operation
+        def failed_completion(state, operation):
+            original(state, operation)
+            raise OSError("synthetic post-unlink durability failure")
+        with patch.object(b, "complete_operation", failed_completion):
+            with self.assertRaisesRegex(b.BackupError, "backup-failed-status"):
+                self.perform()
+        with self.assertRaisesRegex(b.BackupError, "last-attempt-failed"):
+            b.check_freshness(self.config)
+
     def test_disabled_and_low_disk_never_upload(self):
         self.config["upload_enabled"] = False
         with self.assertRaisesRegex(b.BackupError, "upload-disabled"):

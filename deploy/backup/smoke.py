@@ -11,6 +11,8 @@ import sys
 import tempfile
 
 import backup as b
+import release as r
+import worker as w
 from test_backup import MemoryStore
 
 
@@ -38,6 +40,26 @@ def main():
         store = MemoryStore()
         result = b.perform_backup(config, storage_factory=lambda *_: store)
         b.check_freshness(config)
+        # Exercise the real dump/encryption pipeline inside one continuous lease.
+        # This harness does NOT claim application quiescence or migrate anything.
+        with r.release_window(config, "b" * 40) as window:
+            checkpoint = window.backup(storage_factory=lambda *_: store)
+            result = checkpoint["backup"]
+            if checkpoint["migration_authorized"] is not False:
+                raise RuntimeError("Backup must not authorize migration")
+            for action in (lambda: b.perform_backup(config), lambda: w.open_admission(config)):
+                try:
+                    action()
+                except b.BackupError as error:
+                    if str(error) != "already-running": raise
+                else:
+                    raise RuntimeError("Release window released its lock too early")
+        try:
+            w.open_admission(config)
+        except b.BackupError as error:
+            if str(error) != "operation-unsettled": raise
+        else:
+            raise RuntimeError("Finished checkpoint reopened admission")
         ciphertext = store.objects[result["key"]]
         if not ciphertext.startswith(b"age-encryption.org/v1\n"):
             raise RuntimeError("Not an age archive")
@@ -48,9 +70,9 @@ def main():
                                        env=env, stderr=subprocess.DEVNULL, timeout=60)
         if not dump.startswith(b"PGDMP"):
             raise RuntimeError("Not a custom PostgreSQL dump")
-        if len(store.objects) != 2:
-            raise RuntimeError("Archive and completion manifest required")
-        marker = next(value for key, value in store.objects.items() if key.endswith(".complete.json"))
+        if len(store.objects) != 4:
+            raise RuntimeError("Standalone and release archives/manifests required")
+        marker = store.objects[result["key"].replace(".dump.age", ".complete.json")]
         if json.loads(marker)["sha256"] != result["sha256"]:
             raise RuntimeError("Manifest mismatch")
         sys.stdout.buffer.write(dump)

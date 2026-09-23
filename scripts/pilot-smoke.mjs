@@ -271,6 +271,9 @@ export async function pilotSmoke({
       { cwd: root, env, timeout: 180000, maxBuffer: 32 * 1024 * 1024 },
     );
     assert.equal(encrypted.status, 0, encrypted.stderr?.toString());
+    console.log(
+      "Release checkpoint passed: real pg_dump/age under continuous lock, retained pending, no migration; local S3 fixture only",
+    );
     const dump = encrypted.stdout;
     assert.equal(dump.subarray(0, 5).toString(), "PGDMP");
     psql("create database citygo_restore_check owner citygo_migrator");
