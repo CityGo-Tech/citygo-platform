@@ -96,7 +96,7 @@ export function releasePrepareSmoke({
     assert.equal(proof.migration_authorized, false);
     assert.deepEqual(proof.roles, ["api", "postgres", "web", "worker"]);
     console.log(
-      "Release preparation passed: real closed TLS ingress, API/one-off inventory and clean stop, stable DB network, pg_dump/age/readback, retained pending; no migration/cloud/AI",
+      "Release preparation passed: synthetic approved target revalidated, real closed TLS ingress, API/one-off inventory and clean stop, stable DB network, pg_dump/age/readback, retained pending; no migration/cloud/AI",
     );
   } finally {
     // Exact container created by this random test project; never a general prune.

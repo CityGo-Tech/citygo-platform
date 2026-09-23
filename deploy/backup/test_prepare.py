@@ -13,6 +13,7 @@ import backup as b
 import prepare as p
 import worker as w
 from test_backup import sample, MemoryStore
+from test_target import synthetic_selection
 
 ROLES = ["postgres", "web", "api", "worker", "migrator", "backup"]
 IMAGES = {role: "sha256:" + str(i + 1) * 64 for i, role in enumerate(ROLES)}
@@ -170,9 +171,11 @@ class Preparation(unittest.TestCase):
         self.host, self.store = FakeHost(), MemoryStore()
         self.pending = self.state / "operation-pending.json"
         self.encrypt = lambda _c, dest, _e: dest.write_bytes(b"synthetic-encrypted" * 30)
+        self.selection = synthetic_selection(self.directory, self.config, IMAGES)
 
     def prepare(self, **kwargs):
         return p.prepare(self.config, "b" * 40, ORIGIN, self.ingress, IMAGES, allow_stop=True, allow_upload=True,
+                         selection=kwargs.pop("selection", self.selection),
                          host_factory=lambda *_: self.host, storage_factory=lambda *_: self.store,
                          encryptor=kwargs.pop("encryptor", self.encrypt), min_free=0, **kwargs)
 
@@ -188,6 +191,8 @@ class Preparation(unittest.TestCase):
         self.assertEqual(b.read_json(self.state / "release-prepared.json"), proof)
         self.assertEqual(proof["operation_id"], proof["backup"]["operation_id"])
         self.assertFalse(proof["migration_authorized"])
+        self.assertFalse(proof["target"]["migration_authorized"])
+        self.assertEqual(proof["target"]["target_sha"], proof["target_sha"])
         self.assertNotIn("must not enter receipt", json.dumps(proof))
         self.assertEqual([c["status"] for c in proof["containers"]], ["running", "running", "exited", "exited"])
         self.assertTrue(self.host.closed)
@@ -260,6 +265,33 @@ class Preparation(unittest.TestCase):
             probe.assert_called_once()
         self.assertFalse(marker.exists())
         self.assertTrue((self.directory / "pilot.env").exists())
+
+    def test_missing_or_tampered_target_never_pauses_or_stops(self):
+        w.open_admission(self.config)
+        with self.assertRaisesRegex(b.BackupError, "target-selection-required"): self.prepare(selection=None)
+        (self.selection.target_directory / "deploy/compose.pilot.yml").write_bytes(b"changed")
+        with self.assertRaisesRegex(b.BackupError, "target-file-hash"): self.prepare()
+        self.assertTrue((self.state / w.ADMISSION).exists())
+        self.assertFalse(self.pending.exists())
+        self.assertEqual(self.host.events, [])
+        self.assertEqual(self.store.calls, [])
+
+    def test_target_change_during_drain_refuses_before_backup(self):
+        self.host.on_stop = lambda: self.selection.approval_file.unlink(missing_ok=True)
+        with self.assertRaises(OSError): self.prepare()
+        self.assertTrue(self.host.closed)
+        self.assertTrue(self.pending.exists())
+        self.assertEqual(self.store.calls, [])
+        self.assertFalse((self.state / "release-prepared.json").exists())
+
+    def test_target_change_during_backup_cannot_create_prepared_receipt(self):
+        def encrypt(c, dest, env):
+            self.encrypt(c, dest, env)
+            (self.selection.target_directory / "deploy/compose.pilot.yml").write_bytes(b"changed")
+        with self.assertRaisesRegex(b.BackupError, "target-file-hash"): self.prepare(encryptor=encrypt)
+        self.assertTrue(self.pending.exists())
+        self.assertTrue(self.host.closed)
+        self.assertFalse((self.state / "release-prepared.json").exists())
 
 
 if __name__ == "__main__": unittest.main()
