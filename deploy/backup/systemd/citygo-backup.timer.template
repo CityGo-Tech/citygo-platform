@@ -1,0 +1,13 @@
+# Proposal only. Requires approved expiry/attempt ledger and separate activation.
+[Unit]
+Description=CityGo hourly backup proposal
+
+[Timer]
+OnCalendar=*-*-* *:05:00 UTC
+RandomizedDelaySec=30s
+AccuracySec=1s
+Persistent=true
+Unit=citygo-backup.service
+
+[Install]
+WantedBy=timers.target

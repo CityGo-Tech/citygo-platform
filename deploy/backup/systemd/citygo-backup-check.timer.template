@@ -1,0 +1,12 @@
+[Unit]
+Description=CityGo backup status check every fifteen minutes (proposal)
+
+[Timer]
+OnCalendar=*-*-* *:00/15:00 UTC
+RandomizedDelaySec=20s
+AccuracySec=1s
+Persistent=true
+Unit=citygo-backup-check.service
+
+[Install]
+WantedBy=timers.target
