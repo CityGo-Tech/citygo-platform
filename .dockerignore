@@ -41,3 +41,6 @@ apps/web/public/characters
 deploy/fixtures
 deploy/compose.smoke.yml
 deploy/smoke.env
+deploy/pilot.env
+deploy/postgres
+deploy/compose.pilot.yml

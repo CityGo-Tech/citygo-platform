@@ -13,6 +13,7 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { root, serviceEnv } from "./env.mjs";
 import { containerSpec } from "./container-runtime.mjs";
+import { renderNginx } from "../deploy/render-pilot.mjs";
 
 const db = "postgresql://synthetic:test@127.0.0.1:1/not-used";
 function fixture(t) {
@@ -20,6 +21,97 @@ function fixture(t) {
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   return directory;
 }
+
+test("mounted service config is explicit, closed, secret-safe and never available to Web", (t) => {
+  const directory = fixture(t);
+  for (const mode of ["api", "migrate", "worker"])
+    writeFileSync(
+      join(directory, `${mode}.json`),
+      JSON.stringify({ DATABASE_URL: db }),
+    );
+  const injected = { CITYGO_MOUNTED_CONFIG: "1", LLM_PROVIDER: "disabled" };
+  for (const mode of ["api", "migrate", "worker"]) {
+    const spec = containerSpec(mode, injected, directory, directory);
+    assert.equal(spec.env.DATABASE_URL, db);
+    assert.equal(spec.env.CITYGO_MOUNTED_CONFIG, undefined);
+    assert.equal(spec.env.NODE_ENV, "production");
+    assert.throws(
+      () =>
+        containerSpec(
+          mode,
+          { ...injected, DATABASE_URL: db },
+          directory,
+          directory,
+        ),
+      /Invalid mounted/,
+    );
+  }
+  assert.throws(
+    () => containerSpec("web", injected, directory, directory),
+    /Invalid mounted/,
+  );
+  for (const value of [
+    "{}",
+    "null",
+    "[]",
+    "invalid",
+    JSON.stringify({ DATABASE_URL: db, NODE_ENV: "development" }),
+    JSON.stringify({
+      DATABASE_URL: db,
+      OPENAI_API_KEY: "synthetic-hidden-secret",
+    }),
+  ]) {
+    writeFileSync(join(directory, "worker.json"), value);
+    assert.throws(
+      () => containerSpec("worker", injected, directory, directory),
+      (error) => {
+        assert.match(error.message, /Invalid mounted/);
+        assert.doesNotMatch(
+          error.message,
+          /synthetic-hidden-secret|postgresql/,
+        );
+        return true;
+      },
+    );
+  }
+  writeFileSync(
+    join(directory, "api.json"),
+    JSON.stringify({
+      DATABASE_URL: db,
+      OPENAI_API_KEY: "synthetic-hidden-secret",
+    }),
+  );
+  const api = containerSpec("api", injected, directory, directory);
+  assert.equal(api.env.OPENAI_API_KEY, "synthetic-hidden-secret");
+  assert.equal(api.env.LLM_PROVIDER, "disabled");
+  rmSync(join(directory, "api.json"));
+  assert.throws(
+    () => containerSpec("api", injected, directory, directory),
+    /Invalid mounted/,
+  );
+});
+
+test("Nginx rendering rejects directives and sets bounded streaming/header rules", () => {
+  for (const host of [
+    "",
+    "localhost",
+    "127.0.0.1",
+    "https://pilot.example.test",
+    "*.example.test",
+    "host.test;",
+    "host.test\ninclude /tmp/evil;",
+    "host.test:443",
+  ])
+    assert.throws(() => renderNginx(host));
+  const config = renderNginx("pilot.example.test");
+  assert.doesNotMatch(config, /__CITYGO_HOST__|proxy_add_x_forwarded_for/);
+  assert.match(config, /proxy_set_header X-Forwarded-For \$remote_addr;/);
+  assert.match(config, /proxy_read_timeout 300s;/);
+  assert.match(config, /proxy_buffering off;/);
+  assert.match(config, /proxy_next_upstream off;/);
+  const next = readFileSync(join(root, "apps/web/next.config.mjs"), "utf8");
+  assert.match(next, /proxyTimeout: 300000/);
+});
 
 test("container runtime ignores local env files and requires injected PostgreSQL for every DB mode", (t) => {
   const directory = fixture(t);

@@ -1,0 +1,149 @@
+# Server runtime only: prebuilt images, existing protected secrets and DB volume.
+# Do not use until cloud/TLS/backup/user-data launch gates are complete.
+x-process: &process
+  init: true
+  read_only: true
+  tmpfs: ["/tmp:size=64m,mode=1777"]
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  pids_limit: 128
+  stop_grace_period: 30s
+  logging: &logs
+    driver: json-file
+    options: { max-size: 10m, max-file: "3" }
+
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:?Set a reviewed PostgreSQL 17 image digest}
+    restart: unless-stopped
+    mem_limit: 1024m
+    shm_size: 128m
+    pids_limit: 128
+    stop_grace_period: 60s
+    security_opt: [no-new-privileges:true]
+    logging: *logs
+    environment:
+      POSTGRES_DB: citygo_pilot
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_admin_password
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256 --auth-local=scram-sha-256
+    command: [postgres, -c, config_file=/etc/postgresql/citygo.conf]
+    volumes:
+      - citygo_data:/var/lib/postgresql/data
+      - ./postgres/postgresql.conf:/etc/postgresql/citygo.conf:ro
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/01-citygo.sql:ro
+      - ./postgres/grants.sql:/opt/citygo/grants.sql:ro
+    secrets:
+      [
+        db_admin_password,
+        db_api_password,
+        db_migrate_password,
+        db_worker_password,
+        db_backup_password,
+      ]
+    networks: [database]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U postgres -d citygo_pilot"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  api:
+    <<: *process
+    image: ${CITYGO_API_IMAGE:?Set the approved API image digest}
+    restart: unless-stopped
+    mem_limit: 768m
+    environment:
+      CITYGO_MOUNTED_CONFIG: "1"
+      API_HOST: 0.0.0.0
+      API_PORT: "4000"
+      WEB_ORIGIN: ${CITYGO_ORIGIN:?Set the exact HTTPS origin}
+      TRUSTED_PROXY_CIDRS: 172.30.92.10/32
+      LLM_PROVIDER: disabled
+    secrets:
+      - source: api_config
+        target: api.json
+    networks:
+      web_api:
+        ipv4_address: 172.30.92.11
+      database:
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  web:
+    <<: *process
+    image: ${CITYGO_WEB_IMAGE:?Set the approved Web image digest}
+    restart: unless-stopped
+    mem_limit: 768m
+    environment: { PORT: "3000" }
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+      - /app/apps/web/.next/cache:size=64m,uid=1000,gid=1000
+    # The host Nginx is the only public entry point. Never remove 127.0.0.1.
+    ports: ["127.0.0.1:3000:3000"]
+    networks:
+      web_api:
+        ipv4_address: 172.30.92.10
+    depends_on:
+      api: { condition: service_healthy }
+
+  migrator:
+    <<: *process
+    image: ${CITYGO_JOBS_IMAGE:?Set the approved jobs image digest}
+    profiles: [ops]
+    mem_limit: 256m
+    command: [migrate]
+    environment: { CITYGO_MOUNTED_CONFIG: "1" }
+    secrets:
+      - source: migrate_config
+        target: migrate.json
+    networks: [database]
+
+  worker:
+    <<: *process
+    image: ${CITYGO_JOBS_IMAGE:?Set the approved jobs image digest}
+    profiles: [ops]
+    mem_limit: 256m
+    command: [worker]
+    environment: { CITYGO_MOUNTED_CONFIG: "1" }
+    secrets:
+      - source: worker_config
+        target: worker.json
+    networks: [database]
+
+  backup:
+    <<: *process
+    image: ${POSTGRES_IMAGE:?Set a reviewed PostgreSQL 17 image digest}
+    profiles: [ops]
+    user: postgres
+    mem_limit: 256m
+    entrypoint: [sh, /opt/citygo/dump.sh]
+    volumes:
+      - ./postgres/dump.sh:/opt/citygo/dump.sh:ro
+    secrets: [db_backup_password]
+    networks: [database]
+
+secrets:
+  db_admin_password:
+    {
+      file: "${CITYGO_SECRETS_DIR:?Set protected absolute secrets directory}/db_admin_password",
+    }
+  db_api_password: { file: "${CITYGO_SECRETS_DIR}/db_api_password" }
+  db_migrate_password: { file: "${CITYGO_SECRETS_DIR}/db_migrate_password" }
+  db_worker_password: { file: "${CITYGO_SECRETS_DIR}/db_worker_password" }
+  db_backup_password: { file: "${CITYGO_SECRETS_DIR}/db_backup_password" }
+  api_config: { file: "${CITYGO_SECRETS_DIR}/api.json" }
+  migrate_config: { file: "${CITYGO_SECRETS_DIR}/migrate.json" }
+  worker_config: { file: "${CITYGO_SECRETS_DIR}/worker.json" }
+
+volumes:
+  citygo_data:
+    external: true
+    name: ${CITYGO_DB_VOLUME:?Create and confirm the persistent DB volume first}
+networks:
+  web_api:
+    ipam:
+      config: [{ subnet: 172.30.92.0/24 }]
+  database:
+    internal: true
+    ipam:
+      config: [{ subnet: 172.30.93.0/24 }]

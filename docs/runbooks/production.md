@@ -36,7 +36,9 @@ maintenance worker only its DB URL, and the migrator only its migration-role DB
 URL. Build/test jobs must never be provisioned production credentials. Use the
 [scoped launchers](service-environments.md); do not inject API keys into a shared
 Web container or use raw framework CLIs as the security boundary. This repository
-does not provision DB roles, secret-store permissions or isolated containers.
+provides [container images](container-foundation.md) and a
+[pilot runtime configuration](cloudru-runtime.md), but has not provisioned them
+on a cloud host. Test credentials must never be used for a real deployment.
 
 Rollback is a prior application build only when compatible with applied schema.
 Never edit an applied migration to roll back. Add a forward repair migration.
@@ -102,7 +104,7 @@ location / {
     proxy_set_header X-Forwarded-Host $host;
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_buffering off;
-    proxy_read_timeout 75s;
+    proxy_read_timeout 300s;
     proxy_pass http://citygo_web;
 }
 ```

@@ -1,5 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
+import { readFileSync, statSync } from "node:fs";
 import { serviceEnv, root } from "./env.mjs";
 import { launch } from "./process.mjs";
 
@@ -10,12 +11,64 @@ const modes = {
   worker: { scope: "worker", args: ["dist/index.js", "--once"] },
 };
 
-export function containerSpec(mode, inherited = process.env, directory = root) {
+const secretKeys = {
+  api: [
+    "DATABASE_URL",
+    "ADMIN_USER_IDS",
+    "OPENAI_API_KEY",
+    "ROUTERAI_API_KEY",
+    "GIGACHAT_CREDENTIALS",
+  ],
+  migrate: ["DATABASE_URL"],
+  worker: ["DATABASE_URL"],
+};
+
+export function containerSpec(
+  mode,
+  inherited = process.env,
+  directory = root,
+  secretDirectory = "/run/secrets",
+) {
   if (!Object.hasOwn(modes, mode)) throw new Error("Unknown container mode");
   const { scope, args } = modes[mode];
+  let secrets = {};
+  if (inherited.CITYGO_MOUNTED_CONFIG !== undefined) {
+    try {
+      if (
+        inherited.CITYGO_MOUNTED_CONFIG !== "1" ||
+        !Object.hasOwn(secretKeys, mode)
+      )
+        throw new Error();
+      const file = resolve(secretDirectory, `${mode}.json`);
+      if (!statSync(file).isFile() || statSync(file).size > 65536)
+        throw new Error();
+      secrets = JSON.parse(readFileSync(file, "utf8"));
+      if (
+        !secrets ||
+        Array.isArray(secrets) ||
+        typeof secrets !== "object" ||
+        typeof secrets.DATABASE_URL !== "string" ||
+        Object.entries(secrets).some(
+          ([key, value]) =>
+            !secretKeys[mode].includes(key) ||
+            typeof value !== "string" ||
+            !value.trim() ||
+            /[\r\n\0]/.test(value),
+        )
+      )
+        throw new Error();
+      // Avoid an accidental second source silently selecting the wrong database/key.
+      if (Object.keys(secrets).some((key) => inherited[key] !== undefined))
+        throw new Error();
+    } catch {
+      throw new Error(
+        "Invalid mounted service configuration (contents hidden)",
+      );
+    }
+  }
   // Containers must not load a forgotten developer .env or reuse API DB fallback.
   const env = serviceEnv(scope, {
-    inherited,
+    inherited: { ...inherited, ...secrets },
     directory,
     loadFiles: false,
     overrides: { NODE_ENV: "production" },
