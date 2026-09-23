@@ -161,6 +161,30 @@ class ReleaseWindow(unittest.TestCase):
         self.assertEqual(self.store.calls, [])
         self.assert_pending_blocks()
 
+    def test_restoring_preflight_inputs_never_resurrects_failed_attempt(self):
+        for changed in ("configuration", "pending", "admission"):
+            with self.subTest(changed=changed), r.release_window(self.config, "b" * 40) as window:
+                env = Path(self.config["compose_env"])
+                original_env = env.read_bytes()
+                original_operation = b.read_json(self.pending)
+                if changed == "configuration":
+                    env.write_bytes(b"changed configuration")
+                elif changed == "pending":
+                    b.atomic_json(self.pending, {**original_operation, "id": "f" * 32})
+                else:
+                    b.atomic_json(self.state / w.ADMISSION, {"unexpected": True})
+                with self.assertRaises(b.BackupError): self.backup(window)
+                # Revert ONLY this synthetic mutation; the failed attempt stays poisoned.
+                env.write_bytes(original_env)
+                b.atomic_json(self.pending, original_operation)
+                if changed == "admission": (self.state / w.ADMISSION).unlink()
+                with self.assertRaisesRegex(b.BackupError, "release-backup-already-attempted"):
+                    self.backup(window)
+                self.assertEqual(self.store.calls, [])
+                self.assertFalse((self.state / "release-backup.json").exists())
+            self.assert_pending_blocks()
+            self.pending.unlink()  # Independent synthetic fault cases, no live operations.
+
     def test_dump_uses_snapshot_and_detects_live_drift_before_success(self):
         captured = []
         def encrypt(config, path, env):
@@ -202,6 +226,7 @@ class ReleaseWindow(unittest.TestCase):
             self.assertFalse(thread.is_alive())
             self.assertEqual(errors, ["release-window-inactive"])
             self.assertEqual(self.store.calls, [])
+            self.backup(window)  # A rejected foreign thread cannot poison the owner's attempt.
 
     def test_cleanup_failure_cannot_create_success_checkpoint(self):
         original = tempfile.TemporaryDirectory

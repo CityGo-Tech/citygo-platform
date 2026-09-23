@@ -23,17 +23,23 @@ class _Window:
         self._active = True
         self._attempted = False
 
-    def _check(self):
+    def _check_owner(self):
         b.require(self._active and self._owner == (os.getpid(), threading.get_ident()), "release-window-inactive")
+
+    def _check(self):
+        self._check_owner()
         b.verify_operation(self._state, self._operation)
         b.require(not os.path.lexists(self._state / "worker-admission.json"), "worker-not-paused")
         b.require(b.configuration_fingerprint(self._config) == self._operation["configuration_sha256"], "configuration-changed")
 
     def backup(self, *, storage_factory=b.S3, encryptor=b.encrypt, min_free=b.MIN_FREE):
         # Dependency arguments are only for isolated tests, never config/CLI input.
-        self._check()
+        self._check_owner()
         b.require(not self._attempted, "release-backup-already-attempted")
-        self._attempted = True  # A caught failure cannot permit retry in this window.
+        # Poison before mutable-state preflight too: restoring files/markers
+        # after an observed mismatch must not resurrect this release operation.
+        self._attempted = True
+        self._check()
         manifest = b._backup_in_operation(self._config, self._operation,
             storage_factory=storage_factory, encryptor=encryptor, min_free=min_free)
         self._check()
