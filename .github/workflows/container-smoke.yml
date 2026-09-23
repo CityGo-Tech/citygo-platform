@@ -30,6 +30,8 @@ jobs:
         run: node --test scripts/release-candidate.test.mjs
       - name: Verify container exit evidence without deployment
         run: node --test scripts/container-stop-check.test.mjs
+      - name: Verify closed ingress contract without deployment
+        run: node --test scripts/ingress-maintenance.test.mjs
       - name: Pin public bases for disposable candidate rehearsal
         run: node scripts/release-candidate.mjs prepare
       - name: Verify isolated production images with synthetic PostgreSQL

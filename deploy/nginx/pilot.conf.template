@@ -51,6 +51,11 @@ server {
     add_header Referrer-Policy strict-origin-when-cross-origin always;
     add_header X-Frame-Options DENY always;
     location / {
+        # Fail closed until an operator explicitly admits traffic on the HOST.
+        # No reload: each NEW request checks the marker, including keep-alive.
+        open_file_cache off;
+        error_page 503 = @citygo_maintenance;
+        if (!-f /var/lib/citygo/ingress/traffic-open) { return 503; }
         proxy_pass http://127.0.0.1:3000;
         proxy_http_version 1.1;
         proxy_set_header Connection "";
@@ -63,9 +68,23 @@ server {
         proxy_buffering off;
         proxy_request_buffering on;
         proxy_cache off;
+        # Preserve the application's own 503 body/contract when ingress is open.
+        proxy_intercept_errors off;
         proxy_connect_timeout 5s;
         proxy_read_timeout 300s;
         proxy_send_timeout 300s;
         proxy_next_upstream off;
+    }
+    location @citygo_maintenance {
+        default_type application/json;
+        charset utf-8;
+        charset_types application/json;
+        add_header Cache-Control no-store always;
+        add_header X-CityGo-Contract-Version 1 always;
+        add_header X-Request-Id $request_id always;
+        add_header X-Content-Type-Options nosniff always;
+        add_header Referrer-Policy strict-origin-when-cross-origin always;
+        add_header X-Frame-Options DENY always;
+        return 503 '{"error":"CityGo обновляется. Дождитесь завершения и проверьте историю перед повторной отправкой.","code":"SERVICE_UNAVAILABLE","contractVersion":"1","requestId":"$request_id","retryable":false}';
     }
 }
