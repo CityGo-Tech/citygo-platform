@@ -130,7 +130,9 @@ class FakeHost:
         self.exit_code = 0
         self.network_id = "e" * 64
         self.extra_peers = []
+        self.excluded_peers = set()
         self.on_inventory = lambda: None
+        self.on_network = lambda: None
         self.on_stop = lambda: None
 
     def close_ingress(self):
@@ -148,14 +150,126 @@ class FakeHost:
         return copy.deepcopy(next(v for v in self.values if v["Id"] == ident))
 
     def database_network(self):
+        self.on_network()
         return {"id": self.network_id, "peers": sorted([v["Id"] for v in self.values
-                if v["Labels"]["com.docker.compose.service"] != "web"] + self.extra_peers)}
+                if v["Labels"]["com.docker.compose.service"] != "web" and v["State"]["Running"]
+                and v["Id"] not in self.excluded_peers] + self.extra_peers)}
 
     def stop_writer(self, value):
         self.events.append("stop:" + value["Labels"]["com.docker.compose.service"])
         current = next(v for v in self.values if v["Id"] == value["Id"])
         current["State"].update(Status="exited", Running=False, ExitCode=self.exit_code, FinishedAt="2026-09-24T00:00:01Z")
         self.on_stop()
+
+
+class NetworkSnapshots(unittest.TestCase):
+    def setUp(self):
+        self.host = FakeHost()
+        self.before = p.validate_inventory(self.host.inventory(), "citygo-fixture", IMAGES, initial=True)
+        self.sleep = patch.object(p.time, "sleep").start()
+        self.addCleanup(patch.stopall)
+
+    def snapshot(self):
+        return p.network_snapshot(self.host, self.before, "citygo-fixture", IMAGES, initial=True)
+
+    def test_stable_snapshot_needs_no_refresh(self):
+        with patch.object(self.host, "inventory", wraps=self.host.inventory) as reads:
+            current, network = self.snapshot()
+        self.assertEqual(current, self.before)
+        p.check_network(network, current)
+        reads.assert_not_called()
+        self.sleep.assert_not_called()
+
+    def test_worker_exit_between_inventory_and_network_is_verified(self):
+        self.host.values[3] = container("worker", exited=True)
+        with patch.object(self.host, "inventory", wraps=self.host.inventory) as reads:
+            current, network = self.snapshot()
+        self.assertEqual(reads.call_count, 1)
+        p.same_inventory(self.before, current)
+        p.stopped_cleanly(current["4" * 64])
+        self.assertNotIn("4" * 64, network["peers"])
+        p.check_network(network, current)
+        self.assertEqual(self.host.events, [])  # Read-only reconciliation.
+
+    def test_endpoint_cleanup_can_precede_exited_state(self):
+        self.host.excluded_peers = {"4" * 64}
+        calls = 0
+        def publish_exit():
+            nonlocal calls
+            calls += 1
+            if calls == 3: self.host.values[3] = container("worker", exited=True)
+        self.host.on_inventory = publish_exit
+        current, _ = self.snapshot()
+        self.assertEqual(calls, 3)
+        p.stopped_cleanly(current["4" * 64])
+
+    def test_disconnected_or_reattached_running_worker_never_passes(self):
+        for reattach in (False, True):
+            self.host = FakeHost(); self.host.excluded_peers = {"4" * 64}
+            if reattach: self.host.on_inventory = lambda: self.host.excluded_peers.clear()
+            with self.subTest(reattach=reattach), patch.object(self.host, "inventory", wraps=self.host.inventory) as reads:
+                with self.assertRaisesRegex(b.BackupError, "worker-exit-unconfirmed"): self.snapshot()
+                self.assertEqual(reads.call_count, 5)
+            self.assertEqual(self.host.events, [])
+
+    def test_api_postgres_and_unexpected_peers_fail_without_refresh(self):
+        for fault in ("api", "postgres", "unknown", "web"):
+            self.host = FakeHost()
+            code = "database-network-missing-peer"
+            if fault in ("api", "postgres"):
+                self.host.excluded_peers = {container(fault)["Id"]}
+            else:
+                self.host.extra_peers = ["f" * 64 if fault == "unknown" else "2" * 64]
+                # Even together with a missing Worker, an unknown peer is fatal.
+                self.host.excluded_peers = {"4" * 64}
+                code = "database-network-unexpected-peer"
+            with self.subTest(fault=fault), patch.object(self.host, "inventory", wraps=self.host.inventory) as reads:
+                with self.assertRaisesRegex(b.BackupError, code): self.snapshot()
+                reads.assert_not_called()
+
+    def test_invalid_transition_is_never_refreshed_away(self):
+        for fault in ("unclean", "oom", "restarted", "process", "image", "removed", "added", "network", "peer", "api"):
+            self.host = FakeHost(); self.host.excluded_peers = {"4" * 64}
+            def change():
+                self.host.values[3] = container("worker", exited=True)
+                if fault == "unclean": self.host.values[3]["State"]["ExitCode"] = 137
+                elif fault == "oom": self.host.values[3]["State"]["OOMKilled"] = True
+                elif fault == "restarted": self.host.values[3]["RestartCount"] = 1
+                elif fault == "process": self.host.values[3]["State"]["StartedAt"] = "2026-09-24T00:00:00.1Z"
+                elif fault == "image": self.host.values[3]["Image"] = "sha256:" + "f" * 64
+                elif fault == "removed": self.host.values.pop()
+                elif fault == "added": self.host.values.append(container("backup", exited=True))
+                elif fault == "network": self.host.network_id = "f" * 64
+                elif fault == "peer": self.host.extra_peers = ["f" * 64]
+                elif fault == "api": self.host.excluded_peers.add("3" * 64)
+            self.host.on_inventory = change
+            with self.subTest(fault=fault), patch.object(self.host, "inventory", wraps=self.host.inventory) as reads:
+                with self.assertRaises(b.BackupError): self.snapshot()
+                self.assertEqual(reads.call_count, 1)
+
+    def test_each_disappearing_worker_must_exit_cleanly(self):
+        second = container("worker"); second["Id"] = "a" * 64; second["Name"] = "/fixture-worker-2"
+        self.host.values.append(second)
+        self.before = p.validate_inventory(self.host.inventory(), "citygo-fixture", IMAGES, initial=True)
+        self.host.excluded_peers = {"4" * 64}
+        calls = 0
+        def change():
+            nonlocal calls
+            calls += 1
+            self.host.values[3] = container("worker", exited=True)
+            self.host.excluded_peers.add("a" * 64)
+            if calls == 2:
+                self.host.values[4]["State"] = container("worker", exited=True)["State"]
+        self.host.on_inventory = change
+        current, network = self.snapshot()
+        self.assertEqual(calls, 2)
+        for ident in ("4" * 64, "a" * 64): p.stopped_cleanly(current[ident])
+        p.check_network(network, current)
+
+    def test_strict_check_still_refuses_stale_snapshot(self):
+        self.host.values[3] = container("worker", exited=True)
+        with self.assertRaisesRegex(b.BackupError, "database-network-missing-peer"):
+            p.check_network(self.host.database_network(), self.before)
 
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "Linux controller locks and protected paths")
@@ -220,9 +334,55 @@ class Preparation(unittest.TestCase):
 
     def test_unlabelled_database_network_peer_refuses_before_stop(self):
         self.host.extra_peers = ["f" * 64]
-        with self.assertRaisesRegex(b.BackupError, "database-network-peers"): self.prepare()
+        with self.assertRaisesRegex(b.BackupError, "database-network-unexpected-peer"): self.prepare()
         self.assertEqual(self.host.events, ["close"])
         self.assertEqual(self.store.calls, [])
+
+    def test_worker_exit_race_before_and_during_drain_preserves_gates_and_backup_order(self):
+        for network_read in (1, 2):
+            self.host, self.store = FakeHost(), MemoryStore()
+            calls = 0
+            def finish_worker():
+                nonlocal calls
+                calls += 1
+                if calls == network_read: self.host.values[3] = container("worker", exited=True)
+            self.host.on_network = finish_worker
+            def encrypt(c, dest, env):
+                self.assertEqual(self.host.events, ["close", "stop:api"])
+                self.assertTrue(self.pending.exists())
+                self.assertTrue(self.host.closed)
+                self.assertFalse((self.state / w.ADMISSION).exists())
+                p.stopped_cleanly(self.host.values[3])
+                self.encrypt(c, dest, env)
+            with self.subTest(network_read=network_read):
+                proof = self.prepare(encryptor=encrypt)
+                self.assertFalse(proof["migration_authorized"])
+                self.assertTrue(self.pending.exists())
+                self.assertEqual(b.read_json(self.state / "release-prepared.json"), proof)
+            self.pending.unlink()  # Independent synthetic cases only.
+
+    def test_unconfirmed_exit_or_new_peer_during_refresh_never_stops_or_uploads(self):
+        for fault in ("running", "peer", "unclean"):
+            self.host, self.store = FakeHost(), MemoryStore()
+            self.host.excluded_peers = {"4" * 64}
+            reads = 0
+            def change():
+                nonlocal reads
+                reads += 1
+                if reads < 2: return  # First read is the initial inventory.
+                if fault == "peer": self.host.extra_peers = ["f" * 64]
+                if fault == "unclean":
+                    self.host.values[3] = container("worker", exited=True)
+                    self.host.values[3]["State"]["ExitCode"] = 137
+            self.host.on_inventory = change
+            with self.subTest(fault=fault), patch.object(p.time, "sleep"):
+                with self.assertRaises(b.BackupError): self.prepare()
+                self.assertEqual(self.host.events, ["close"])
+                self.assertEqual(self.store.calls, [])
+                self.assertTrue(self.pending.exists())
+                self.assertFalse((self.state / w.ADMISSION).exists())
+                self.assertFalse((self.state / "release-prepared.json").exists())
+            self.pending.unlink()  # Independent synthetic cases only.
 
     def test_new_oneoff_after_stop_refuses_before_backup(self):
         self.host.on_stop = lambda: self.host.values.append(container("migrator"))

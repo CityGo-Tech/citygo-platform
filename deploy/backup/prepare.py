@@ -183,7 +183,7 @@ def evidence(value):
             "exit_code": value["State"].get("ExitCode"), "finished_at": value["State"].get("FinishedAt")}
 
 
-def check_network(network, containers, original=None):
+def missing_network_peers(network, containers, original=None):
     b.require(type(network) is dict and type(network.get("id")) is str
               and re.fullmatch(r"[0-9a-f]{64}", network["id"]), "database-network")
     peers = network.get("peers")
@@ -191,9 +191,41 @@ def check_network(network, containers, original=None):
               and len(set(peers)) == len(peers), "database-network")
     allowed = {i for i, v in containers.items() if identity(v)["role"] != "web"}
     required = {i for i in allowed if containers[i]["State"]["Running"]}
-    b.require(required <= set(peers) <= allowed, "database-network-peers")
+    # Never refresh away an unexpected endpoint or a replaced network.
+    b.require(set(peers) <= allowed, "database-network-unexpected-peer")
     if original is not None:
         b.require(network["id"] == original["id"], "database-network-changed")
+    return required - set(peers)
+
+
+def check_network(network, containers, original=None):
+    b.require(not missing_network_peers(network, containers, original), "database-network-missing-peer")
+
+
+def network_snapshot(host, containers, project, images, original=None, *, initial):
+    """Reconcile only a disappearing Worker's clean exit, never a new peer.
+
+    Docker inventory and network inspection are separate reads. Endpoint cleanup
+    can precede the published exited state. Up to five read-only refreshes allow
+    that transition, anchored to the SAME IDs/processes/network throughout.
+    A disconnected/re-attached but still running Worker is not sufficient proof.
+    """
+    current, network = containers, host.database_network()
+    anchor = original if original is not None else network
+    awaiting_exit = set()
+    for attempt in range(6):
+        missing = missing_network_peers(network, current, anchor)
+        b.require(all(identity(current[i])["role"] == "worker" for i in missing), "database-network-missing-peer")
+        awaiting_exit.update(missing)
+        if all(not current[i]["State"]["Running"] for i in awaiting_exit):
+            for ident in awaiting_exit:
+                stopped_cleanly(current[ident])
+            return current, network
+        b.require(attempt < 5, "database-network-worker-exit-unconfirmed")
+        time.sleep(0.1)
+        current = validate_inventory(host.inventory(), project, images, initial=initial)
+        same_inventory(containers, current)
+        network = host.database_network()
 
 
 def prepare(config, target_sha, origin, ingress_directory, images, *, allow_stop=False,
@@ -223,8 +255,7 @@ def prepare(config, target_sha, origin, ingress_directory, images, *, allow_stop
             host = host_factory(config, Path(temp), ingress_directory, origin)
             host.close_ingress()
             before = validate_inventory(host.inventory(), config["project"], images, initial=True)
-            network = host.database_network()
-            check_network(network, before)
+            before, network = network_snapshot(host, before, config["project"], images, initial=True)
             # Stop only fully validated API/Worker IDs, never names/wildcards.
             for ident, value in sorted(before.items(), key=lambda pair: (identity(pair[1])["role"] != "api", pair[0])):
                 role = identity(value)["role"]
@@ -232,7 +263,7 @@ def prepare(config, target_sha, origin, ingress_directory, images, *, allow_stop
                     continue
                 current_set = validate_inventory(host.inventory(), config["project"], images, initial=None)
                 same_inventory(before, current_set)
-                check_network(host.database_network(), current_set, network)
+                current_set, _ = network_snapshot(host, current_set, config["project"], images, network, initial=None)
                 current = current_set[ident]
                 if current["State"]["Running"]:
                     host.stop_writer(current)
@@ -241,14 +272,13 @@ def prepare(config, target_sha, origin, ingress_directory, images, *, allow_stop
                 stopped_cleanly(after)
             stopped = validate_inventory(host.inventory(), config["project"], images, initial=False)
             same_inventory(before, stopped)
-            check_network(host.database_network(), stopped, network)
+            stopped, _ = network_snapshot(host, stopped, config["project"], images, network, initial=False)
             host.assert_closed()
             check_selection()
             checkpoint = window.backup(storage_factory=storage_factory, encryptor=encryptor, min_free=min_free)
             final = validate_inventory(host.inventory(), config["project"], images, initial=False)
             same_inventory(stopped, final)
-            final_network = host.database_network()
-            check_network(final_network, final, network)
+            final, final_network = network_snapshot(host, final, config["project"], images, network, initial=False)
             host.assert_closed()
             proof = {"version": 1, "operation_id": checkpoint["operation_id"], "target_sha": target_sha,
                      "origin": origin, "ingress_directory": str(ingress_directory),
