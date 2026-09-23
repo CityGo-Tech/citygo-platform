@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { root, serviceEnv } from "./env.mjs";
 import { renderNginx } from "../deploy/render-pilot.mjs";
+import { ingressMaintenanceSmoke } from "./ingress-maintenance-smoke.mjs";
 
 export async function pilotSmoke({
   apiImage,
@@ -367,6 +368,12 @@ async function ingressSmoke({ docker, compose, directory, project }) {
   assert.equal(cert.status, 0, "Could not generate disposable TLS fixture");
   const nginx = join(directory, "nginx.conf");
   writeFileSync(nginx, renderNginx(host));
+  const ingressDirectory = join(directory, "ingress");
+  mkdirSync(ingressDirectory, { mode: 0o755 });
+  const trafficFile = join(ingressDirectory, "traffic-open");
+  const challenges = join(directory, "acme", ".well-known", "acme-challenge");
+  mkdirSync(challenges, { recursive: true });
+  writeFileSync(join(challenges, "fixture"), "synthetic-acme-proof");
   const name = `${project}-ingress`;
   // Linux CI host networking reproduces the planned HOST Nginx -> loopback Web.
   docker([
@@ -380,6 +387,10 @@ async function ingressSmoke({ docker, compose, directory, project }) {
     `${nginx}:/etc/nginx/conf.d/default.conf:ro`,
     "-v",
     `${join(directory, "tls")}:/etc/letsencrypt/live:ro`,
+    "-v",
+    `${ingressDirectory}:/var/lib/citygo/ingress:ro`,
+    "-v",
+    `${join(directory, "acme")}:/var/lib/letsencrypt:ro`,
     "nginx:stable-alpine",
   ]);
   try {
@@ -417,9 +428,37 @@ async function ingressSmoke({ docker, compose, directory, project }) {
     }
     // Nginx -t does not guarantee listen readiness yet.
     for (let attempt = 0; attempt < 30; attempt++) {
-      if (curl("/api/ready", { fail: true }) === "200") break;
+      if (curl("/api/ready", { fail: true }) === "503") break;
       await new Promise((r) => setTimeout(r, 100));
     }
+    assert.equal(
+      curl("/api/ready"),
+      "503",
+      "Missing operator marker must fail closed",
+    );
+    assert.equal(curl("/"), "503");
+    const acme = spawnSync(
+      "curl",
+      [
+        "--silent",
+        "--show-error",
+        "--noproxy",
+        "*",
+        "--resolve",
+        `${host}:80:127.0.0.1`,
+        "--max-time",
+        "10",
+        `http://${host}/.well-known/acme-challenge/fixture`,
+      ],
+      { encoding: "utf8" },
+    );
+    assert.equal(acme.status, 0, acme.stderr);
+    assert.equal(
+      acme.stdout,
+      "synthetic-acme-proof",
+      "ACME must work during maintenance",
+    );
+    writeFileSync(trafficFile, "", { flag: "wx", mode: 0o644 });
     assert.equal(curl("/api/ready"), "200");
     // Spoofing XFF must not create fresh identities. A genuinely different socket
     // client must still get its own rate-limit bucket through the complete chain.
@@ -442,7 +481,7 @@ async function ingressSmoke({ docker, compose, directory, project }) {
     const front = Object.keys(network).find((n) => n.endsWith("_web_api"));
     compose(["rm", "-f", "api"]);
     const fixtureName = `${project}-stream`;
-    const script = `require('node:http').createServer((q,s)=>{if(q.url==='/slow'){setTimeout(()=>{s.writeHead(200,{'content-type':'text/event-stream'});s.write('data: first\\n\\n');setTimeout(()=>s.end('data: last\\n\\n'),1100)},35000)}else{s.writeHead(200,{'content-type':'application/json'});s.end(JSON.stringify({status:'ok'}))}}).listen(4000,'0.0.0.0')`;
+    const script = `let writes=0;require('node:http').createServer((q,s)=>{if(q.url==='/maintenance-stream'){s.writeHead(200,{'content-type':'text/event-stream'});s.write('data: first\\n\\n');setTimeout(()=>s.end('data: last\\n\\n'),5000)}else if(q.url==='/slow'){setTimeout(()=>{s.writeHead(200,{'content-type':'text/event-stream'});s.write('data: first\\n\\n');setTimeout(()=>s.end('data: last\\n\\n'),1100)},35000)}else if(q.url==='/upstream-unavailable'){s.writeHead(503,{'content-type':'application/json'});s.end(JSON.stringify({fixtureUpstream:true}))}else{if(q.method==='POST')writes++;s.writeHead(200,{'content-type':'application/json'});s.end(JSON.stringify({status:'ok',writes}))}}).listen(4000,'0.0.0.0')`;
     docker([
       "run",
       "-d",
@@ -462,6 +501,7 @@ async function ingressSmoke({ docker, compose, directory, project }) {
     try {
       // Recreate Web to clear any pooled connection/DNS cache of the stopped API.
       compose(["up", "-d", "--no-deps", "--force-recreate", "--wait", "web"]);
+      await ingressMaintenanceSmoke({ certificate, trafficFile });
       const r = spawnSync(
         "curl",
         [

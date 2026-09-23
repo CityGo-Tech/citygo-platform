@@ -13,7 +13,7 @@
     "lint": "node scripts/with-env.mjs build pnpm exec turbo run lint --concurrency=3 && node scripts/with-env.mjs build pnpm exec eslint scripts e2e playwright.config.ts",
     "test": "node scripts/with-env.mjs test pnpm exec turbo run test --concurrency=3 && pnpm test:env",
     "test:env": "node scripts/with-env.mjs test node --test scripts/env.test.mjs",
-    "test:containers": "node scripts/with-env.mjs test node --test scripts/container-runtime.test.mjs scripts/container-stop-check.test.mjs",
+    "test:containers": "node scripts/with-env.mjs test node --test scripts/container-runtime.test.mjs scripts/container-stop-check.test.mjs scripts/ingress-maintenance.test.mjs",
     "test:release": "node scripts/with-env.mjs test node --test scripts/release-candidate.test.mjs",
     "test:container-smoke": "node scripts/container-smoke.mjs",
     "typecheck": "node scripts/with-env.mjs build pnpm exec turbo run typecheck --concurrency=3",
