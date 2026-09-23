@@ -9,6 +9,7 @@ import { root, serviceEnv } from "./env.mjs";
 import { renderNginx } from "../deploy/render-pilot.mjs";
 import { ingressMaintenanceSmoke } from "./ingress-maintenance-smoke.mjs";
 import { workerCoordinationSmoke } from "./worker-coordination-smoke.mjs";
+import { releasePrepareSmoke } from "./release-prepare-smoke.mjs";
 
 export async function pilotSmoke({
   apiImage,
@@ -477,6 +478,29 @@ async function ingressSmoke({ docker, compose, directory, project }) {
       });
     assert.equal(status, "429");
     assert.equal(curl("/api/health", { local: "127.0.0.2" }), "200");
+    releasePrepareSmoke({
+      project,
+      directory,
+      origin: `https://${host}`,
+      ingressDirectory,
+      certificate,
+      docker,
+      compose,
+    });
+    assert.equal(curl("/api/ready"), "503");
+    // Reset ONLY this disposable harness for its existing SSE tests. The real
+    // preparation module has no restart/reopen/unlock path.
+    compose([
+      "up",
+      "-d",
+      "--no-deps",
+      "--wait",
+      "--wait-timeout",
+      "120",
+      "api",
+    ]);
+    writeFileSync(trafficFile, "", { flag: "wx", mode: 0o644 });
+    assert.equal(curl("/api/ready"), "200");
     // Replace ONLY the disposable API with a fixture bound to the same container
     // namespace. No test route enters the production application or image.
     compose(["stop", "api"]);
