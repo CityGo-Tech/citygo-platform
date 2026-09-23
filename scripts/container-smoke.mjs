@@ -161,15 +161,19 @@ try {
   assert.equal(forbidden.status, 403);
   compose(["run", "--rm", "--no-deps", "worker"]);
   for (const mode of ["routerai", "gigachat"]) {
+    // Reuse the API container's namespace: a second compose run would collide
+    // with its fixed /32 address before it could exercise the provider gate.
     const output = compose(
       [
-        "run",
-        "--rm",
-        "--no-deps",
+        "exec",
+        "-T",
         "-e",
         "NODE_ENV=development",
         "-e",
         `LLM_PROVIDER=${mode}`,
+        "api",
+        "node",
+        "scripts/container-runtime.mjs",
         "api",
       ],
       { fail: true },
