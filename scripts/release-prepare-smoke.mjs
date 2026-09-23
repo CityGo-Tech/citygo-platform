@@ -4,8 +4,9 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { root, serviceEnv } from "./env.mjs";
+import { until } from "./container-drain-smoke.mjs";
 
-export function releasePrepareSmoke({
+export async function releasePrepareSmoke({
   project,
   directory,
   origin,
@@ -32,20 +33,9 @@ export function releasePrepareSmoke({
     }),
   );
   const fixture = join(directory, "prepare-fixture.json");
-  writeFileSync(
-    fixture,
-    JSON.stringify({
-      backup: JSON.parse(
-        readFileSync(join(directory, "backup-fixture.json"), "utf8"),
-      ),
-      origin,
-      ingress_directory: ingressDirectory,
-      certificate,
-      images,
-    }),
-    { mode: 0o600, flag: "wx" },
-  );
-  // Retain a real one-off jobs container so preparation must account for it.
+  // Test-only latch in the jobs image: Python forces its clean exit BETWEEN the
+  // inventory and network reads. Actual Worker transactions/drain are covered
+  // separately by worker-drain-smoke, not by this synthetic process.
   const worker = compose([
     "run",
     "-d",
@@ -54,7 +44,11 @@ export function releasePrepareSmoke({
     "never",
     "--name",
     `${project}-prepare-worker`,
+    "--entrypoint",
+    "node",
     "worker",
+    "-e",
+    "process.on('SIGTERM', () => process.exit(0)); setInterval(() => {}, 1000); console.log('citygo-worker-race-ready');",
   ]).trim();
   assert.match(worker, /^[a-f0-9]{64}$/);
   try {
@@ -66,6 +60,24 @@ export function releasePrepareSmoke({
         worker,
       ]).trim(),
       project,
+    );
+    await until(
+      () => docker(["logs", worker]).includes("citygo-worker-race-ready"),
+      "Preparation Worker lifecycle fixture did not become ready",
+    );
+    writeFileSync(
+      fixture,
+      JSON.stringify({
+        backup: JSON.parse(
+          readFileSync(join(directory, "backup-fixture.json"), "utf8"),
+        ),
+        origin,
+        ingress_directory: ingressDirectory,
+        certificate,
+        images,
+        worker_id: worker,
+      }),
+      { mode: 0o600, flag: "wx" },
     );
     const result = spawnSync(
       "python3",
@@ -94,9 +106,10 @@ export function releasePrepareSmoke({
     const proof = JSON.parse(result.stdout);
     assert.equal(proof.ok, true);
     assert.equal(proof.migration_authorized, false);
+    assert.equal(proof.worker_exit_race_verified, true);
     assert.deepEqual(proof.roles, ["api", "postgres", "web", "worker"]);
     console.log(
-      "Release preparation passed: synthetic approved target revalidated, real closed TLS ingress, API/one-off inventory and clean stop, stable DB network, pg_dump/age/readback, retained pending; no migration/cloud/AI",
+      "Release preparation passed: deterministic real-container Worker exit between inventory/network reads, strict stale-snapshot rejection, synthetic approved target revalidated, real closed TLS ingress, clean stop, pg_dump/age/readback, retained pending; no migration/cloud/AI",
     );
   } finally {
     // Exact container created by this random test project; never a general prune.

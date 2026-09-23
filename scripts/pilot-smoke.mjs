@@ -478,7 +478,7 @@ async function ingressSmoke({ docker, compose, directory, project }) {
       });
     assert.equal(status, "429");
     assert.equal(curl("/api/health", { local: "127.0.0.2" }), "200");
-    releasePrepareSmoke({
+    await releasePrepareSmoke({
       project,
       directory,
       origin: `https://${host}`,
