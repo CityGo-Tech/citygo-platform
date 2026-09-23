@@ -278,4 +278,17 @@ test("context audit rejects nested secret files and synthetic secret content", (
     result.stderr,
     /do-not-print|citygo-container-context-canary-20260923/,
   );
+  rmSync(join(nested, "source.txt"));
+  for (const file of ["copied.age", "backup-storage.json"]) {
+    writeFileSync(join(nested, file), "synthetic fixture");
+    assert.equal(run().status, 1);
+    rmSync(join(nested, file));
+  }
+  writeFileSync(
+    join(nested, "identity.txt"),
+    "AGE-SECRET-KEY-1" + "A".repeat(58),
+  );
+  const keyResult = run();
+  assert.equal(keyResult.status, 1);
+  assert.doesNotMatch(keyResult.stderr, /AGE-SECRET-KEY/);
 });

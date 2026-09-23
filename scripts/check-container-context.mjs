@@ -7,7 +7,8 @@ async function check(directory) {
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     if (
       /^(\.env($|\.)|\.local$|\.ssh$|\.git$)/.test(entry.name) ||
-      /\.(pem|key|dump|backup)$/.test(entry.name)
+      /\.(pem|key|dump|backup|age)$/.test(entry.name) ||
+      entry.name === "backup-storage.json"
     )
       throw new Error("Disallowed file in container build context");
     const path = join(directory, entry.name);
@@ -18,7 +19,11 @@ async function check(directory) {
       !path.endsWith("container-smoke.mjs") &&
       !path.endsWith("container-runtime.test.mjs")
     ) {
-      if ((await readFile(path)).includes(Buffer.from(canary)))
+      const data = await readFile(path);
+      if (
+        data.includes(Buffer.from(canary)) ||
+        /AGE-SECRET-KEY-1[0-9A-Z]{20,}/.test(data.toString("utf8"))
+      )
         throw new Error("Test secret entered container build context");
     }
   }

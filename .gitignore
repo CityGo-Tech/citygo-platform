@@ -14,6 +14,12 @@ coverage/
 .env
 .env.*
 deploy/pilot.env
+deploy/backup/config.json
+**/backup-storage.json
+*.age
+*.dump
+*.backup
+__pycache__/
 !.env.example
 !.env.*.example
 

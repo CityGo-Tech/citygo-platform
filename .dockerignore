@@ -44,3 +44,7 @@ deploy/smoke.env
 deploy/pilot.env
 deploy/postgres
 deploy/compose.pilot.yml
+deploy/backup
+**/*.age
+**/backup-storage.json
+**/__pycache__

@@ -229,9 +229,41 @@ export async function pilotSmoke({ apiImage, webImage, jobsImage }) {
     psql(
       "update ai_budget set total_limit_micros=123456,total_reserved_micros=123456 where id=1",
     );
-    const dump = compose(["run", "--rm", "--no-deps", "-T", "backup"], {
-      binary: true,
+    const backupEnv = join(directory, "backup.env");
+    writeFileSync(
+      backupEnv,
+      Object.entries(env)
+        .filter(
+          ([key]) => key.startsWith("CITYGO_") || key === "POSTGRES_IMAGE",
+        )
+        .map(([key, value]) => `${key}=${value}`)
+        .join("\n"),
+      { mode: 0o600 },
+    );
+    const backupFixture = join(directory, "backup-fixture.json");
+    const source = spawnSync("git", ["rev-parse", "HEAD"], {
+      cwd: root,
+      env,
+      encoding: "utf8",
     });
+    assert.equal(source.status, 0);
+    writeFileSync(
+      backupFixture,
+      JSON.stringify({
+        source_sha: source.stdout.trim(),
+        project,
+        compose_file: join(root, "deploy/compose.pilot.yml"),
+        compose_env: backupEnv,
+      }),
+      { mode: 0o600 },
+    );
+    const encrypted = spawnSync(
+      "python3",
+      ["-B", "deploy/backup/smoke.py", "--disposable", backupFixture],
+      { cwd: root, env, timeout: 180000, maxBuffer: 32 * 1024 * 1024 },
+    );
+    assert.equal(encrypted.status, 0, encrypted.stderr?.toString());
+    const dump = encrypted.stdout;
     assert.equal(dump.subarray(0, 5).toString(), "PGDMP");
     psql("create database citygo_restore_check owner citygo_migrator");
     compose(
@@ -272,7 +304,7 @@ export async function pilotSmoke({ apiImage, webImage, jobsImage }) {
         "f",
       );
     console.log(
-      "Pilot fixture: restricted-role journey and separate DB restore passed",
+      "Pilot fixture: restricted-role journey and age-encrypted backup/restore passed (local S3 transport fixture)",
     );
     await ingressSmoke({ docker, compose, directory, project });
     console.log(
