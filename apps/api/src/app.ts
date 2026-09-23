@@ -31,6 +31,7 @@ import { hashPassword, verifyPassword, tokenHash, newToken } from "./auth.js";
 import { createAiControl } from "./ai-control.js";
 import type { ProviderMap } from "./provider.js";
 import { createAiExecution } from "./ai-execution.js";
+import { ApiDrain, registerDrain } from "./shutdown.js";
 
 export async function buildApp(options: {
   db: Database;
@@ -38,7 +39,9 @@ export async function buildApp(options: {
   providers?: ProviderMap;
   config?: ReturnType<typeof readConfig>;
   testing?: boolean;
+  drain?: ApiDrain;
 }) {
+  const drain = options.drain ?? new ApiDrain();
   const config = options.config ?? readConfig();
   const repo = new Repository(options.db);
   const providers: ProviderMap = { ...options.providers };
@@ -61,6 +64,7 @@ export async function buildApp(options: {
       : false,
   });
   const secure = config.NODE_ENV === "production";
+  registerDrain(app, drain);
   const sessionName = secure ? "__Host-citygo" : "citygo";
   const cookieOptions = {
     path: "/",
@@ -338,6 +342,7 @@ export async function buildApp(options: {
       const abort = new AbortController();
       const signal = AbortSignal.any([
         abort.signal,
+        drain.signal,
         AbortSignal.timeout(limits.requestTimeoutMs),
       ]);
       reply.hijack();

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   copyFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -366,6 +367,61 @@ test("launcher can stop its own long-running child and clean signal handlers", a
   await done;
   assert.equal(process.listenerCount("SIGTERM"), before);
 });
+
+test(
+  "Linux launcher keeps forwarding repeated signals until its child completes",
+  { skip: process.platform === "win32", timeout: 10000 },
+  async (t) => {
+    const directory = fixture(t);
+    const marker = join(directory, "signals.txt");
+    const before = process.listenerCount("SIGTERM");
+    const task = launch(
+      "node",
+      [
+        "--input-type=module",
+        "-e",
+        `
+    import { writeFileSync } from 'node:fs';
+    let count = 0;
+    const marker = ${JSON.stringify(marker)};
+    process.on('SIGTERM', () => {
+      writeFileSync(marker, String(++count));
+      if (count === 2) process.exit(0);
+    });
+    writeFileSync(marker, '0');
+    setInterval(() => {}, 1000);
+  `,
+      ],
+      {
+        cwd: directory,
+        env: serviceEnv("test", { directory, inherited: process.env }),
+      },
+    );
+    task.done.catch(() => {});
+    t.after(async () => {
+      task.stop("SIGKILL");
+      await task.done.catch(() => {});
+    });
+    async function waitFor(value) {
+      const deadline = Date.now() + 3000;
+      while (!existsSync(marker) || readFileSync(marker, "utf8") !== value) {
+        assert.ok(
+          Date.now() < deadline,
+          "child did not receive the expected signal",
+        );
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    }
+    await waitFor("0");
+    process.emit("SIGTERM");
+    await waitFor("1");
+    assert.equal(process.listenerCount("SIGTERM"), before + 1);
+    process.emit("SIGTERM");
+    await task.done;
+    assert.equal(readFileSync(marker, "utf8"), "2");
+    assert.equal(process.listenerCount("SIGTERM"), before);
+  },
+);
 
 test("migration CLI cannot silently restore the broad root dotenv", () => {
   assert.doesNotMatch(

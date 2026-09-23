@@ -47,7 +47,7 @@ export function launch(command, args, { env, cwd, inherited = process.env }) {
   };
   const handlers = ["SIGINT", "SIGTERM"].map((signal) => {
     const handler = () => stop(signal);
-    process.once(signal, handler);
+    process.on(signal, handler);
     return [signal, handler];
   });
   const done = new Promise((resolve, reject) => {

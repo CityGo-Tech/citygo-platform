@@ -49,6 +49,8 @@ services:
 
   api:
     <<: *process
+    # 270s drain + 30s cancellation/close + 30s container margin.
+    stop_grace_period: 330s
     image: ${CITYGO_API_IMAGE:?Set the approved API image digest}
     restart: unless-stopped
     mem_limit: 768m
