@@ -56,7 +56,8 @@ export async function containerDrainSmoke({
       docker([
         "inspect",
         "--format",
-        '{"Id":{{json .Id}},"Image":{{json .Image}},"RestartCount":{{json .RestartCount}},"State":{{json .State}},"Labels":{{json .Config.Labels}},"StopTimeout":{{json .Config.StopTimeout}},"Init":{{json .HostConfig.Init}}}',
+        // PostgreSQL need not set StopTimeout/init. API must set both below.
+        '{"Id":{{json .Id}},"Image":{{json .Image}},"RestartCount":{{json .RestartCount}},"State":{{json .State}},"Labels":{{json .Config.Labels}},"StopTimeout":{{json (index .Config "StopTimeout")}},"Init":{{json (index .HostConfig "Init")}}}',
         id,
       ]),
     );
