@@ -202,10 +202,15 @@ def encrypt(config, destination, env, *, timeout=900):
 
 
 @contextmanager
-def lock(state):
+def lock(state, name="maintenance.lock"):
     import fcntl
-    fd = os.open(state / "maintenance.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    require(name in ("maintenance.lock", "worker-admission.lock"), "lock-name")
+    state = protected(state, directory=True)
+    fd = os.open(state / name, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
     try:
+        info = os.fstat(fd)
+        require(stat.S_ISREG(info.st_mode) and info.st_uid == os.geteuid()
+                and not info.st_mode & 0o077 and info.st_nlink == 1, "lock-permissions")
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
@@ -213,6 +218,41 @@ def lock(state):
         yield
     finally:
         os.close(fd)
+
+
+def sync_directory(path):
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def assert_operation_idle(state):
+    # Even corrupt/dangling markers fail closed; never infer success from a PID
+    # disappearing or a released flock (the Docker container can outlive its CLI).
+    require(not os.path.lexists(state / "operation-pending.json"), "operation-unsettled")
+
+
+def begin_operation(state, kind, fingerprint, **details):
+    assert_operation_idle(state)
+    record = {"version": 1, "operation": kind, "id": uuid.uuid4().hex,
+              "configuration_sha256": fingerprint, **details}
+    path = state / "operation-pending.json"
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        json.dump(record, stream, sort_keys=True)
+        stream.flush()
+        os.fsync(stream.fileno())
+    sync_directory(state)  # Durable BEFORE the first external side effect.
+    return record
+
+
+def complete_operation(state, record):
+    path = protected(state / "operation-pending.json")
+    require(read_json(path) == record, "operation-changed")
+    path.unlink()
+    sync_directory(state)
 
 
 def atomic_json(path, data):
@@ -224,6 +264,7 @@ def atomic_json(path, data):
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temp, path)
+        sync_directory(path.parent)
     finally:
         if os.path.exists(temp):
             os.unlink(temp)
@@ -246,11 +287,13 @@ def perform_backup(config, *, storage_factory=S3, encryptor=encrypt, min_free=MI
     protected(config["compose_file"], private=False)
     protected(config["compose_env"])
     with lock(state):
+        assert_operation_idle(state)
         started = time.time()
         stage = "preflight"
         try:
             fingerprint = configuration_fingerprint(config)
             require(shutil.disk_usage(state).free >= min_free, "disk-space")
+            operation = begin_operation(state, "backup", fingerprint)
             with tempfile.TemporaryDirectory(prefix=".attempt-", dir=state) as temp:
                 directory = Path(temp)
                 storage = storage_factory(config, directory)
@@ -283,6 +326,7 @@ def perform_backup(config, *, storage_factory=S3, encryptor=encrypt, min_free=MI
                 require(digest(downloaded)[:2] == digest(marker)[:2], "manifest-mismatch")
                 stage = "status"
                 atomic_json(state / "last-success.json", {**manifest, "verified_at": time.time()})
+                complete_operation(state, operation)
                 return manifest
         except Exception:
             atomic_json(state / "last-failure.json", {"failed_at": time.time(), "stage": stage})
@@ -304,6 +348,7 @@ def check_freshness(config, *, now=None):
             failed = read_json(protected(failure))["failed_at"]
             require(type(failed) in (int, float) and 0 < failed <= now, "invalid-status")
             require(failed < start, "last-attempt-failed")
+        assert_operation_idle(state)
     except (KeyError, ValueError, OSError):
         raise BackupError("missing-or-invalid-status") from None
 

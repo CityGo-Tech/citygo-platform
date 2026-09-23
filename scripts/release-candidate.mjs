@@ -35,6 +35,7 @@ export const runtimeFiles = [
   "deploy/postgres/grants.sql",
   "deploy/postgres/dump.sh",
   "deploy/backup/backup.py",
+  "deploy/backup/worker.py",
   "deploy/backup/config.example.json",
   "deploy/backup/notify.py",
   "deploy/backup/schedule.py",
@@ -47,6 +48,7 @@ export const runtimeFiles = [
   "docs/runbooks/cloudru-runtime.md",
   "docs/runbooks/encrypted-backup.md",
   "docs/runbooks/backup-operations.md",
+  "docs/runbooks/worker-coordination.md",
   "docs/runbooks/release-candidate.md",
 ];
 // Only messages created here are safe to expose. Never serialize upstream errors,

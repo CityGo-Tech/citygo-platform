@@ -64,6 +64,7 @@ test("runtime bundle includes disabled backup scheduling and email modules", () 
   for (const path of [
     "deploy/backup/notify.py",
     "deploy/backup/schedule.py",
+    "deploy/backup/worker.py",
     "deploy/backup/mail.example.json",
     "deploy/backup/schedule.example.json",
     "deploy/backup/systemd/citygo-backup.service.template",
@@ -71,6 +72,7 @@ test("runtime bundle includes disabled backup scheduling and email modules", () 
     "deploy/backup/systemd/citygo-backup-check.service.template",
     "deploy/backup/systemd/citygo-backup-check.timer.template",
     "docs/runbooks/backup-operations.md",
+    "docs/runbooks/worker-coordination.md",
   ]) {
     assert.ok(runtimeFiles.includes(path), path);
     assert.ok(readFileSync(join(root, path), "utf8").length > 0);

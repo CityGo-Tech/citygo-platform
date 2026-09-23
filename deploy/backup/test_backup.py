@@ -134,6 +134,11 @@ class Operations(unittest.TestCase):
                 with self.assertRaisesRegex(b.BackupError, "last-attempt-failed"):
                     b.check_freshness(self.config)
                 self.assertFalse(list(self.state.glob(".attempt-*")))
+                # Failed uploads now require explicit operator reconciliation.
+                # This fixture has no real Docker/S3 side effects; discard ONLY
+                # its synthetic pending record before exercising the next fault.
+                self.assertTrue((self.state / "operation-pending.json").exists())
+                (self.state / "operation-pending.json").unlink()
         self.store.fault = None
         self.perform()
         b.check_freshness(self.config)

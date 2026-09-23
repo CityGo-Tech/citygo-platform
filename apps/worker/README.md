@@ -14,5 +14,8 @@ The job is idempotent, but a failed stop is not approval to migrate or retry.
 Keep ingress closed and investigate the stored container exit evidence first.
 This does not disable external schedulers or coordinate concurrent invocations:
 the future deployment controller still needs a shared lock/admission barrier.
+An opt-in Linux operator wrapper now coordinates managed Worker/backup runs;
+see [worker-coordination](../../docs/runbooks/worker-coordination.md). Direct
+developer/Compose launches bypass it; no server schedule has been migrated.
 No schedule is installed or enabled. The job does not send notifications,
 scrape sources, contact realtors or call AI providers.

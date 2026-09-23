@@ -8,6 +8,7 @@ import { randomBytes } from "node:crypto";
 import { root, serviceEnv } from "./env.mjs";
 import { renderNginx } from "../deploy/render-pilot.mjs";
 import { ingressMaintenanceSmoke } from "./ingress-maintenance-smoke.mjs";
+import { workerCoordinationSmoke } from "./worker-coordination-smoke.mjs";
 
 export async function pilotSmoke({
   apiImage,
@@ -231,6 +232,7 @@ export async function pilotSmoke({
     );
     assert.equal(psql("show max_connections"), "40");
     compose(["run", "--rm", "--no-deps", "worker"]);
+    workerCoordinationSmoke({ directory, project, config, docker, jobsImage });
     // A canary counter proves financial reservations survive a logical restore.
     psql(
       "update ai_budget set total_limit_micros=123456,total_reserved_micros=123456 where id=1",
