@@ -12,6 +12,7 @@ import backup as b
 import prepare as p
 import worker as w
 from test_backup import MemoryStore
+from test_target import synthetic_selection
 
 
 def main():
@@ -40,9 +41,12 @@ def main():
                 # Trust only this synthetic certificate; verification stays ON.
                 self.context = ssl.create_default_context(cafile=fixture["certificate"])
         store = MemoryStore()
+        # This is a synthetic offline approval fixture, NOT GitHub provenance or
+        # authorization for the user's server. No target file is ever executed.
+        selection = synthetic_selection(directory, config, fixture["images"], fixture["origin"])
         w.open_admission(config)
         proof = p.prepare(config, "b" * 40, fixture["origin"], fixture["ingress_directory"], fixture["images"],
-            allow_stop=True, allow_upload=True, host_factory=FixtureHost, storage_factory=lambda *_: store)
+            allow_stop=True, allow_upload=True, selection=selection, host_factory=FixtureHost, storage_factory=lambda *_: store)
         b.require(proof["migration_authorized"] is False and (state / "operation-pending.json").exists(), "fixture-pending")
         b.require(not (state / w.ADMISSION).exists(), "fixture-admission")
         b.require(not (Path(fixture["ingress_directory"]) / "traffic-open").exists(), "fixture-ingress")
@@ -58,6 +62,7 @@ def main():
                                        env=env, stderr=subprocess.DEVNULL, timeout=60)
         b.require(dump.startswith(b"PGDMP") and len(store.objects) == 2, "fixture-dump")
         b.require(b.read_json(state / "release-prepared.json") == proof, "fixture-receipt")
+        b.require(proof["target"]["artifact_id"] == "456" and proof["target"]["migration_authorized"] is False, "fixture-target")
         print(json.dumps({"ok": True, "migration_authorized": False,
                           "roles": sorted(v["role"] for v in proof["containers"])}))
 

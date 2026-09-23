@@ -16,6 +16,7 @@ import time
 
 import backup as b
 import release as r
+import target as t
 import worker as w
 
 SERVICES = {"api", "web", "postgres", "worker", "migrator", "backup"}
@@ -196,7 +197,7 @@ def check_network(network, containers, original=None):
 
 
 def prepare(config, target_sha, origin, ingress_directory, images, *, allow_stop=False,
-            allow_upload=False, host_factory=Host, storage_factory=b.S3, encryptor=b.encrypt, min_free=b.MIN_FREE):
+            allow_upload=False, selection=None, host_factory=Host, storage_factory=b.S3, encryptor=b.encrypt, min_free=b.MIN_FREE):
     """Prepare only; keep pending/ingress closed on success AND every failure.
 
     Explicit booleans are required by trusted callers. No command/config hook or
@@ -209,6 +210,10 @@ def prepare(config, target_sha, origin, ingress_directory, images, *, allow_stop
     b.require(type(target_sha) is str and re.fullmatch(r"[0-9a-f]{40}", target_sha), "release-target")
     b.require(config["upload_enabled"], "upload-disabled")
     ingress_directory = b.protected(ingress_directory, directory=True, private=False)
+    b.require(type(selection) is t.Selection, "target-selection-required")
+    selected = selection.verify(config, target_sha, origin, images)
+    def check_selection():
+        b.require(selection.verify(config, target_sha, origin, images) == selected, "target-selection-changed")
     # Closing admission is restrictive and does not interrupt an active Worker.
     # If one still owns maintenance.lock, entry fails; there is no polling/retry.
     w.pause(config)
@@ -238,6 +243,7 @@ def prepare(config, target_sha, origin, ingress_directory, images, *, allow_stop
             same_inventory(before, stopped)
             check_network(host.database_network(), stopped, network)
             host.assert_closed()
+            check_selection()
             checkpoint = window.backup(storage_factory=storage_factory, encryptor=encryptor, min_free=min_free)
             final = validate_inventory(host.inventory(), config["project"], images, initial=False)
             same_inventory(stopped, final)
@@ -246,8 +252,10 @@ def prepare(config, target_sha, origin, ingress_directory, images, *, allow_stop
             host.assert_closed()
             proof = {"version": 1, "operation_id": checkpoint["operation_id"], "target_sha": target_sha,
                      "origin": origin, "ingress_directory": str(ingress_directory),
+                     "target": selected,
                      "database_network": final_network, "containers": [evidence(final[i]) for i in sorted(final)],
                      "backup": checkpoint["backup"], "prepared_at": time.time(), "migration_authorized": False}
         window._check()  # Cleanup too must finish before any prepared receipt.
+        check_selection()
         b.atomic_json(state / "release-prepared.json", proof)
         return copy.deepcopy(proof)

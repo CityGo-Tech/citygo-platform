@@ -38,6 +38,7 @@ export const runtimeFiles = [
   "deploy/backup/worker.py",
   "deploy/backup/release.py",
   "deploy/backup/prepare.py",
+  "deploy/backup/target.py",
   "deploy/backup/config.example.json",
   "deploy/backup/notify.py",
   "deploy/backup/schedule.py",
@@ -53,6 +54,7 @@ export const runtimeFiles = [
   "docs/runbooks/worker-coordination.md",
   "docs/runbooks/release-backup-window.md",
   "docs/runbooks/release-preparation.md",
+  "docs/runbooks/release-target.md",
   "docs/runbooks/release-candidate.md",
 ];
 // Only messages created here are safe to expose. Never serialize upstream errors,
