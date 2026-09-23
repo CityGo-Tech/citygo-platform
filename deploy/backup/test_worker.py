@@ -130,6 +130,25 @@ class Coordination(unittest.TestCase):
         with self.assertRaisesRegex(b.BackupError, "worker-approval-changed"):
             self.worker()
         self.assertEqual(self.docker.calls, [])
+        self.assertFalse((self.state / w.ADMISSION).exists())
+        (self.directory / "pilot.env").write_text("# synthetic configuration")
+        with self.assertRaisesRegex(b.BackupError, "worker-paused"):
+            self.worker()
+        self.assertEqual(self.docker.calls, [])
+        w.open_admission(self.config)
+        self.worker()
+
+    def test_invalid_configuration_revokes_admission_even_after_file_restore(self):
+        w.open_admission(self.config)
+        path = self.directory / "compose.yml"
+        path.unlink()
+        with self.assertRaises(FileNotFoundError):
+            self.worker()
+        path.write_text("# synthetic configuration")
+        path.chmod(0o600)
+        with self.assertRaisesRegex(b.BackupError, "worker-paused"):
+            self.worker()
+        self.assertEqual(self.docker.calls, [])
 
     def test_success_retains_receipt_and_no_container_cleanup(self):
         w.open_admission(self.config)

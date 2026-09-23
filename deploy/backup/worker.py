@@ -122,7 +122,15 @@ def perform(config, *, transport_factory=Docker):
         b.assert_operation_idle(state)
         with b.lock(state, "worker-admission.lock"):
             b.require(os.path.lexists(state / ADMISSION), "worker-paused")
-            b.require(b.read_json(b.protected(state / ADMISSION)) == admission(config), "worker-approval-changed")
+            marker = b.protected(state / ADMISSION)
+            try:
+                b.require(b.read_json(marker) == admission(config), "worker-approval-changed")
+            except Exception:
+                # Observed configuration drift/invalid input revokes the grant,
+                # rather than letting a later file rollback resurrect it.
+                marker.unlink()
+                b.sync_directory(state)
+                raise
             name = "citygo-worker-" + uuid.uuid4().hex
             operation = b.begin_operation(state, "worker", b.configuration_fingerprint(config), container_name=name)
         # No finally block clears the pending record or retries a failed worker.
