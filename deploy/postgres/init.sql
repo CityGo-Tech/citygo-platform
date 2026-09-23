@@ -32,5 +32,6 @@ alter role citygo_backup set default_transaction_read_only = on;
 -- Defaults apply to the actual migration owner, not the bootstrap superuser.
 alter default privileges for role citygo_migrator in schema public grant select on tables to citygo_backup;
 alter default privileges for role citygo_migrator in schema public grant select on sequences to citygo_backup;
-alter default privileges for role citygo_migrator in schema public revoke execute on functions from public;
+-- PUBLIC EXECUTE is a global default: a per-schema REVOKE cannot remove it.
+alter default privileges for role citygo_migrator revoke execute on functions from public;
 -- API/worker permissions are explicit and fail closed for new tables.

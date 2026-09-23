@@ -261,6 +261,16 @@ export async function pilotSmoke({ apiImage, webImage, jobsImage }) {
       ),
       "t",
     );
+    psql(
+      "set role citygo_migrator; create function future_function_fixture() returns int language sql as $$ select 1 $$",
+    );
+    for (const role of ["citygo_api", "citygo_worker", "citygo_backup"])
+      assert.equal(
+        psql(
+          `select has_function_privilege('${role}','future_function_fixture()','EXECUTE')`,
+        ),
+        "f",
+      );
     console.log(
       "Pilot fixture: restricted-role journey and separate DB restore passed",
     );
