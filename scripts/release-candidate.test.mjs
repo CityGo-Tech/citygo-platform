@@ -21,6 +21,7 @@ import {
   gate,
   createManifest,
   publishImages,
+  failureSummary,
 } from "./release-candidate.mjs";
 
 const sha = "a".repeat(40);
@@ -274,6 +275,40 @@ test("wrong platform/source/readback, registry outage or non-private package sto
     await assert.rejects(publishImages(args));
     assert.ok(calls.filter((call) => call.args[0] === "push").length <= 1);
   }
+});
+
+test("failure diagnostics expose only internal checks, never raw errors or assertion diffs", async () => {
+  const marker = "SYNTHETIC_SECRET_MUST_NOT_BE_LOGGED";
+  for (const error of [
+    new Error(marker),
+    new Error(`Release rejected: ${marker}`),
+    new assert.AssertionError({
+      actual: marker,
+      expected: "ok",
+      operator: "===",
+    }),
+    { message: marker },
+    null,
+  ]) {
+    assert.equal(
+      failureSummary(error),
+      "Release rejected: unexpected operation failure (details suppressed)",
+    );
+  }
+  const stages = [];
+  const fixture = publisherFixture({ wrongReadback: true });
+  await assert.rejects(
+    publishImages({ ...fixture.args, report: (stage) => stages.push(stage) }),
+    (error) => {
+      assert.equal(
+        failureSummary(error),
+        "Release rejected: registry readback differs from tested image",
+      );
+      return true;
+    },
+  );
+  assert.equal(stages.at(-1), "api: compare readback image identity");
+  assert.ok(stages.every((stage) => !stage.includes(fixture.args.token)));
 });
 
 test("manifest has exact migration/runtime checksums, image digests and closed deployment gates", (t) => {
