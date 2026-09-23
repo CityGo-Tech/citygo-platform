@@ -36,8 +36,16 @@ export const runtimeFiles = [
   "docs/runbooks/encrypted-backup.md",
   "docs/runbooks/release-candidate.md",
 ];
+// Only messages created here are safe to expose. Never serialize upstream errors,
+// assertion diffs, subprocess output or request headers (including error causes).
+class ReleaseRejection extends Error {}
+export function failureSummary(error) {
+  return error instanceof ReleaseRejection
+    ? error.message
+    : "Release rejected: unexpected operation failure (details suppressed)";
+}
 function requireValue(value, code) {
-  if (!value) throw new Error(`Release rejected: ${code}`);
+  if (!value) throw new ReleaseRejection(`Release rejected: ${code}`);
 }
 function keys(value, expected) {
   requireValue(
@@ -121,7 +129,7 @@ export function selectCheckRun(runs, sha, workflow) {
   );
   return { workflow, id: run.id, attempt: run.run_attempt };
 }
-function command(program, args, options = {}) {
+export function command(program, args, options = {}) {
   const result = spawnSync(program, args, {
     cwd: root,
     env: serviceEnv("test"),
@@ -158,7 +166,10 @@ export async function github(path, { allowMissing = false } = {}) {
     signal: AbortSignal.timeout(30000),
   });
   if (allowMissing && response.status === 404) return null;
-  requireValue(response.ok, "GitHub verification unavailable");
+  requireValue(
+    response.ok,
+    `GitHub verification unavailable (HTTP ${response.status})`,
+  );
   return response.json();
 }
 export async function gate(
@@ -295,6 +306,7 @@ export async function publishImages({
   token,
   docker,
   read = github,
+  report = () => {},
 }) {
   validateEvidence(evidence, sha);
   requireValue(
@@ -310,10 +322,12 @@ export async function publishImages({
     "publisher token",
   );
   const images = {};
+  report("Registry login");
   docker(["login", "ghcr.io", "--username", actor, "--password-stdin"], {
     input: token,
   });
   for (const role of roles) {
+    report(`${role}: inspect tested local image`);
     const id = evidence.images[role];
     const [info] = JSON.parse(docker(["image", "inspect", id]));
     requireValue(
@@ -327,18 +341,23 @@ export async function publishImages({
     const name = `ghcr.io/citygo-tech/citygo-platform-${role}`;
     const tag = `${name}:sha-${sha}-${runId}-${attempt}`;
     docker(["tag", id, tag]);
+    report(`${role}: push`);
     const output = docker(["push", tag], { timeout: 10 * 60 * 1000 });
+    report(`${role}: parse push digest`);
     const digest = output.match(/digest: (sha256:[a-f0-9]{64})(?:\s|$)/)?.[1];
     requireValue(digestPattern.test(digest ?? ""), "push digest missing");
     const ref = `${name}@${digest}`;
+    report(`${role}: pull by digest`);
     docker(["pull", "--platform", "linux/amd64", ref], {
       timeout: 5 * 60 * 1000,
     });
     const [pulled] = JSON.parse(docker(["image", "inspect", ref]));
+    report(`${role}: compare readback image identity`);
     requireValue(
       pulled.Id === id,
       "registry readback differs from tested image",
     );
+    report(`${role}: verify private package and repository link`);
     const pkg = await read(
       `/orgs/CityGo-Tech/packages/container/citygo-platform-${role}`,
     );
@@ -347,6 +366,7 @@ export async function publishImages({
       "published package is not private/linked",
     );
     images[role] = ref;
+    report(`${role}: verified`);
   }
   return images;
 }
@@ -369,6 +389,7 @@ export async function publishCandidate() {
       attempt: process.env.GITHUB_RUN_ATTEMPT,
       actor: process.env.GITHUB_ACTOR,
       token: process.env.GH_TOKEN,
+      report: (stage) => console.log(`Release stage: ${stage}`),
     });
     // A manifest is written only after ALL three exact images pass registry readback.
     const manifest = createManifest({
@@ -412,11 +433,9 @@ if (
       default:
         throw new Error("Release rejected: unknown command");
     }
-  } catch {
+  } catch (error) {
     // Do not serialize assertion diffs: future inputs may accidentally hold secrets.
-    console.error(
-      "Release candidate stopped. Check main/CI/approval, image evidence and private package access. No deployment attempted.",
-    );
+    console.error(`${failureSummary(error)}. No deployment attempted.`);
     process.exitCode = 1;
   }
 }

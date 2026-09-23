@@ -32,4 +32,6 @@ jobs:
         run: node scripts/release-candidate.mjs prepare
       - name: Verify isolated production images with synthetic PostgreSQL
         run: node scripts/container-smoke.mjs --disposable --release-candidate
-        # No registry push, deployment access, provider credentials or live model calls.
+      - name: Rehearse publisher against disposable loopback registry
+        run: node scripts/registry-smoke.mjs --disposable
+        # No external publication, deployment access, provider credentials or live model calls.

@@ -57,6 +57,8 @@ jobs:
         run: node scripts/release-candidate.mjs prepare
       - name: Build and test exact candidate images with synthetic data
         run: node scripts/container-smoke.mjs --disposable --release-candidate
+      - name: Rehearse publisher on loopback before external publication
+        run: node scripts/registry-smoke.mjs --disposable
       - name: Recheck gates, publish privately and read back exact digests
         env:
           GH_TOKEN: ${{ github.token }}
