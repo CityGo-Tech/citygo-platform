@@ -26,6 +26,10 @@ jobs:
           age --version
       - name: Verify backup failure handling without cloud access
         run: python3 -B -m unittest discover -s deploy/backup -p 'test_*.py' -v
+      - name: Verify release guards without publication
+        run: node --test scripts/release-candidate.test.mjs
+      - name: Pin public bases for disposable candidate rehearsal
+        run: node scripts/release-candidate.mjs prepare
       - name: Verify isolated production images with synthetic PostgreSQL
-        run: node scripts/container-smoke.mjs --disposable
+        run: node scripts/container-smoke.mjs --disposable --release-candidate
         # No registry push, deployment access, provider credentials or live model calls.

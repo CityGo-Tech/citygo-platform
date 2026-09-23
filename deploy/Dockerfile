@@ -17,6 +17,9 @@ RUN pnpm --filter @citygo/api deploy --legacy --prod /out/api \
  && pnpm --filter @citygo/worker deploy --legacy --prod /out/jobs
 
 FROM ${NODE_IMAGE} AS runtime
+ARG SOURCE_SHA=development
+LABEL org.opencontainers.image.source="https://github.com/CityGo-Tech/citygo-platform" \
+      org.opencontainers.image.revision=${SOURCE_SHA}
 ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1
 WORKDIR /app
 COPY --chown=node:node scripts/env.mjs scripts/process.mjs scripts/container-runtime.mjs scripts/container-health.mjs ./scripts/
