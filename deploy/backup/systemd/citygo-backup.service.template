@@ -1,0 +1,28 @@
+[Unit]
+Description=CityGo approved bounded encrypted backup
+After=network-online.target docker.service
+Wants=network-online.target
+OnFailure=citygo-backup-check.service
+
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+ExecStart=/usr/bin/python3 -E -s -B /opt/citygo/releases/APPROVED_SHA/deploy/backup/schedule.py backup --config /etc/citygo/backup-schedule.json --allow-upload
+# No app build/pull, automatic restart, deletion or enablement here.
+TimeoutStartSec=60min
+TimeoutStopSec=30s
+KillMode=control-group
+LimitCORE=0
+MemoryMax=512M
+CPUQuota=50%
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/citygo-backup /var/lib/citygo-backup-ops
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=LANG=C.UTF-8

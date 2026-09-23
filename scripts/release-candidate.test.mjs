@@ -59,6 +59,34 @@ const context = {
   GITHUB_RUN_ID: "123",
   GITHUB_RUN_ATTEMPT: "1",
 };
+
+test("runtime bundle includes disabled backup scheduling and email modules", () => {
+  for (const path of [
+    "deploy/backup/notify.py",
+    "deploy/backup/schedule.py",
+    "deploy/backup/mail.example.json",
+    "deploy/backup/schedule.example.json",
+    "deploy/backup/systemd/citygo-backup.service.template",
+    "deploy/backup/systemd/citygo-backup.timer.template",
+    "deploy/backup/systemd/citygo-backup-check.service.template",
+    "deploy/backup/systemd/citygo-backup-check.timer.template",
+    "docs/runbooks/backup-operations.md",
+  ]) {
+    assert.ok(runtimeFiles.includes(path), path);
+    assert.ok(readFileSync(join(root, path), "utf8").length > 0);
+  }
+  const config = JSON.parse(
+    readFileSync(join(root, "deploy/backup/schedule.example.json"), "utf8"),
+  );
+  assert.equal(config.schedule_enabled, false);
+  assert.equal(config.monitor_enabled, false);
+  assert.equal(config.approved_until, 0);
+  const mail = JSON.parse(
+    readFileSync(join(root, "deploy/backup/mail.example.json"), "utf8"),
+  );
+  assert.equal(mail.enabled, false);
+  assert.ok(mail.to_address.endsWith("@example.invalid"));
+});
 const owner = { id: organizationId, login: "CityGo-Tech" };
 const privateRepo = {
   id: repositoryId,

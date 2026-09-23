@@ -1,0 +1,22 @@
+[Unit]
+Description=CityGo backup freshness and email notification
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+ExecStart=/usr/bin/python3 -E -s -B /opt/citygo/releases/APPROVED_SHA/deploy/backup/schedule.py check --config /etc/citygo/backup-schedule.json --allow-send
+TimeoutStartSec=2min
+LimitCORE=0
+MemoryMax=128M
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/citygo-backup-email
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+Environment=PATH=/usr/bin:/bin
+Environment=LANG=C.UTF-8
+# No OnFailure loop: an unavailable email provider cannot email its own failure.

@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "schedule_enabled": false,
+  "monitor_enabled": false,
+  "backup_config": "/etc/citygo/backup.json",
+  "mail_config": "/etc/citygo/backup-mail.json",
+  "state_dir": "/var/lib/citygo-backup-ops",
+  "approved_until": 0,
+  "max_attempts": 48
+}

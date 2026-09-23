@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "enabled": false,
+  "host": "smtp.gmail.com",
+  "port": 465,
+  "username": "citygo-alerts@example.invalid",
+  "from_address": "citygo-alerts@example.invalid",
+  "to_address": "owner@example.invalid",
+  "password_file": "/etc/citygo/backup-mail-password.json",
+  "state_dir": "/var/lib/citygo-backup-email"
+}
