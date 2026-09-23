@@ -2,6 +2,10 @@
   "name": "@citygo/db",
   "version": "0.1.0",
   "private": true,
+  "files": [
+    "dist",
+    "migrations"
+  ],
   "type": "module",
   "exports": {
     ".": {

@@ -15,13 +15,13 @@
     },
     "@citygo/web#build": {
       "dependsOn": ["^build"],
-      "env": ["API_INTERNAL_URL"],
+      "env": ["API_INTERNAL_URL", "CITYGO_WEB_STANDALONE"],
       "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/.env.web"],
       "outputs": [".next/**", "!.next/cache/**"]
     },
     "@citygo/web#typecheck": {
       "dependsOn": ["^build"],
-      "env": ["API_INTERNAL_URL"],
+      "env": ["API_INTERNAL_URL", "CITYGO_WEB_STANDALONE"],
       "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/.env.web"],
       "outputs": []
     },

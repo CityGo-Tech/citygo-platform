@@ -73,6 +73,7 @@ const webKeys = [
   "API_INTERNAL_URL",
   "PORT",
   "NEXT_TELEMETRY_DISABLED",
+  "CITYGO_WEB_STANDALONE",
 ];
 const mobileKeys = [
   "NODE_ENV",
@@ -89,7 +90,7 @@ const scopes = {
   mobile: mobileKeys,
   worker: ["NODE_ENV", "DATABASE_URL"],
   migrator: ["NODE_ENV", "DATABASE_URL"],
-  build: ["API_INTERNAL_URL"],
+  build: ["API_INTERNAL_URL", "CITYGO_WEB_STANDALONE"],
   test: ["TEST_DATABASE_URL", "PLAYWRIGHT_BROWSERS_PATH"],
   "web-test": [],
 };
@@ -142,13 +143,18 @@ export function assertNoWebEnvFiles(directory = root) {
 
 export function serviceEnv(
   scope,
-  { inherited = process.env, directory = root, overrides = {} } = {},
+  {
+    inherited = process.env,
+    directory = root,
+    overrides = {},
+    loadFiles = true,
+  } = {},
 ) {
   if (!Object.hasOwn(scopes, scope))
     throw new Error("Unknown environment scope");
   const allowed = scopes[scope];
   let settings = {};
-  if (["api", "worker", "migrator"].includes(scope)) {
+  if (loadFiles && ["api", "worker", "migrator"].includes(scope)) {
     settings = pick(readFile(directory, ".env"), allowed);
     // A split API file remains the DB fallback for local compatibility. A
     // dedicated worker/migrator file or injected DATABASE_URL takes precedence.
@@ -160,7 +166,7 @@ export function serviceEnv(
   }
   // Build sees only Web's non-secret routing input, before Turbo hashes it.
   const fileScope = scope === "build" ? "web" : scope;
-  if (fileScopes.has(fileScope)) {
+  if (loadFiles && fileScopes.has(fileScope)) {
     const values = readFile(directory, `.env.${fileScope}`);
     if (Object.keys(values).some((key) => !scopes[fileScope].includes(key)))
       throw new Error(
