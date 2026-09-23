@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "upload_enabled": false,
+  "source_sha": "REPLACE_WITH_APPROVED_FULL_COMMIT_SHA",
+  "project": "citygo-pilot",
+  "compose_file": "/opt/citygo/releases/APPROVED_SHA/deploy/compose.pilot.yml",
+  "compose_env": "/etc/citygo/pilot.env",
+  "state_dir": "/var/lib/citygo-backup",
+  "recipient": "REPLACE_WITH_PUBLIC_AGE_RECIPIENT_ONLY",
+  "storage_credentials_file": "/etc/citygo/backup-storage.json",
+  "endpoint": "https://s3.cloud.ru",
+  "bucket": "replace-with-approved-private-bucket",
+  "prefix": "citygo/pilot"
+}

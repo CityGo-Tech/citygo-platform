@@ -55,7 +55,8 @@ API не меняет схему автоматически. Образы зап
 
 ## Как выполнить контейнерную проверку
 
-Нужны Linux, Docker Engine с Compose v2 и Node 24. Проверка не требует pnpm на
+Нужны Linux, Docker Engine с Compose v2, Node 24, Python 3, age, openssl и curl.
+Проверка не требует pnpm на
 хосте: установка зависимостей и сборка выполняются внутри builder. На Windows без
 Docker используйте workflow **Container smoke** в GitHub Actions; установка Docker
 Desktop/WSL для этого PR не обязательна.

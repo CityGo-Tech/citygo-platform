@@ -1,6 +1,7 @@
 #!/bin/sh
 # Emits a sensitive custom-format dump to stdout, NEVER to logs/terminal.
-# Encryption/off-host transfer and a tested retention policy are a later gate.
+# Use deploy/backup/backup.py for encryption/verified upload after launch approval.
+# This low-level producer is not a complete backup service on its own.
 set -eu
 umask 077
 PGPASSWORD="$(cat /run/secrets/db_backup_password)"
