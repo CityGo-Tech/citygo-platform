@@ -34,6 +34,134 @@ import type { ProviderMap } from "./provider.js";
 import { seedTestBudget } from "./test-budget.js";
 import { createAiExecution } from "./ai-execution.js";
 import { createAiPolicy } from "./ai-policy.js";
+import { ApiDrain, createShutdown } from "./shutdown.js";
+
+for (const cancelled of [false, true]) {
+  test(
+    `API drain blocks all new DB operations and settles chat (${cancelled ? "cancelled" : "completed"})`,
+    { timeout: 15000 },
+    async (t) => {
+      let entered!: () => void;
+      let release!: () => void;
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const hold = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const f = await fixture({
+        name: "openai",
+        model: "test-drain",
+        async *stream(_instructions, _messages, signal) {
+          signal.addEventListener("abort", release, { once: true });
+          yield { type: "delta", text: "Синтетический ответ" };
+          entered();
+          await hold;
+          signal.throwIfAborted();
+          yield { type: "complete", model: "test-drain" };
+        },
+      });
+      t.after(async () => {
+        release();
+        await f.close();
+      });
+      const user = await chatUser(f);
+      const path = `/v1/threads/${user.thread}/messages`;
+      const pending = f.call("POST", path, user.token, {
+        text: "Квартира",
+        requestId: randomUUID(),
+        policyId: user.policyId,
+      });
+      await started;
+      const before = (
+        await f.db.query("select total_reserved_micros from ai_budget")
+      ).rows;
+      assert.ok(Number(before[0]!.total_reserved_micros) > 0);
+      const queries = t.mock.method(f.db, "query");
+      let closed = false;
+      const shutdown = createShutdown(f.drain, async () => {
+        closed = true;
+      });
+      const stopped = shutdown();
+      assert.equal(f.drain.active, 1);
+      for (const [method, url, payload] of [
+        ["GET", "/ready"],
+        ["GET", "/v1/dashboard"],
+        [
+          "POST",
+          "/v1/auth/register",
+          { email: "blocked@example.test", password: "CityGo-test-password" },
+        ],
+        ["POST", "/v1/questionnaire", testProfile],
+        [
+          "POST",
+          path,
+          {
+            text: "Не отправлять",
+            requestId: randomUUID(),
+            policyId: user.policyId,
+          },
+        ],
+      ] as const) {
+        const response = await f.call(method, url, user.token, payload);
+        assert.equal(response.statusCode, 503, response.body);
+        const error = apiErrorResponseSchema.parse(response.json());
+        assert.equal(error.code, "SERVICE_UNAVAILABLE");
+        assert.equal(error.retryable, false);
+        assert.ok(response.headers[CONTRACT_VERSION_HEADER.toLowerCase()]);
+      }
+      assert.equal((await f.call("GET", "/health")).statusCode, 200);
+      assert.equal(
+        queries.mock.callCount(),
+        0,
+        "draining requests must not access DB or reserve money",
+      );
+      assert.equal(closed, false);
+      if (cancelled) f.drain.cancel();
+      else release();
+      const response = await pending;
+      await stopped;
+      assert.equal(closed, true);
+      assert.equal(f.drain.active, 0);
+      assert.match(
+        response.body,
+        cancelled ? /"code":"STREAM_INTERRUPTED"/ : /"type":"done"/,
+      );
+      if (cancelled) assert.doesNotMatch(response.body, /"type":"done"/);
+      const history = await new Repository(f.db).dashboard(
+        { id: user.userId, email: user.email },
+        "openai",
+        null,
+        20,
+      );
+      assert.equal(
+        history.thread!.messages.at(-1)!.status,
+        cancelled ? "interrupted" : "complete",
+      );
+      assert.equal(
+        history.thread!.messages.at(-1)!.content,
+        "Синтетический ответ",
+      );
+      assert.deepEqual(
+        (await f.db.query("select total_reserved_micros from ai_budget")).rows,
+        before,
+      );
+      assert.equal(
+        (await f.db.query("select * from ai_model_attempts")).rows.length,
+        1,
+      );
+      assert.equal(
+        (await f.db.query("select * from chat_requests")).rows.length,
+        1,
+      );
+      const lease = await f.db.query(
+        "select busy_until from agent_threads where id=$1",
+        [user.thread],
+      );
+      assert.equal(lease.rows[0]!.busy_until, null);
+    },
+  );
+}
 
 for (const name of ["routerai", "openai", "gigachat"] as const) {
   test(`${name} uses its own deadline and chat lease when RouterAI limits are extended`, async (t) => {
@@ -191,6 +319,7 @@ async function fixture(
   const instance =
     provider === true ? new TestProvider() : provider || undefined;
   const config = readConfig({ NODE_ENV: "test", ...env });
+  const drain = new ApiDrain();
   if (seedBudget)
     await seedTestBudget(db, config, {
       ...providers,
@@ -202,6 +331,7 @@ async function fixture(
     providers,
     testing: true,
     config,
+    drain,
   });
   async function close() {
     await app.close();
@@ -324,7 +454,17 @@ async function fixture(
     assert.equal(result.statusCode, 200, result.body);
     return result.json();
   }
-  return { app, db, call, consent, activate, register, close, approveBudget };
+  return {
+    app,
+    db,
+    drain,
+    call,
+    consent,
+    activate,
+    register,
+    close,
+    approveBudget,
+  };
 }
 
 async function chatUser(f: Awaited<ReturnType<typeof fixture>>, grant = true) {
