@@ -1,0 +1,101 @@
+# SYNTHETIC, DISPOSABLE TEST HARNESS. Not a public deployment template.
+# All passwords below are deliberately non-secret fixtures; never use with real data.
+x-app: &app
+  init: true
+  read_only: true
+  tmpfs: [/tmp]
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  stop_grace_period: 30s
+  logging:
+    driver: json-file
+    options:
+      max-size: 5m
+      max-file: "2"
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: citygo_smoke
+      POSTGRES_PASSWORD: synthetic-admin-only
+    volumes:
+      - smoke_database:/var/lib/postgresql/data
+      - ./fixtures/init.sql:/docker-entrypoint-initdb.d/01-roles.sql:ro
+      - ./fixtures/grants.sql:/fixtures/grants.sql:ro
+    networks:
+      smoke:
+        ipv4_address: 172.29.91.12
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U postgres -d citygo_smoke"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  api:
+    <<: *app
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: api
+    environment:
+      DATABASE_URL: postgresql://citygo_api:synthetic-api-only@postgres:5432/citygo_smoke
+      API_HOST: 0.0.0.0
+      API_PORT: "4000"
+      WEB_ORIGIN: https://pilot.example.test
+      TRUSTED_PROXY_CIDRS: 172.29.91.10/32
+      LLM_PROVIDER: disabled
+    networks:
+      smoke:
+        ipv4_address: 172.29.91.11
+
+  web:
+    <<: *app
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: web
+      args:
+        API_INTERNAL_URL: http://api:4000
+    environment:
+      PORT: "3000"
+    # Next can use a writable cache without write access to the application.
+    tmpfs:
+      - /tmp
+      - /app/apps/web/.next/cache:uid=1000,gid=1000
+    ports: ["127.0.0.1::3000"]
+    networks:
+      smoke:
+        ipv4_address: 172.29.91.10
+
+  migrator:
+    <<: *app
+    profiles: [jobs]
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: jobs
+    command: [migrate]
+    environment:
+      DATABASE_URL: postgresql://citygo_migrator:synthetic-migrator-only@postgres:5432/citygo_smoke
+    networks: [smoke]
+
+  worker:
+    <<: *app
+    profiles: [jobs]
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: jobs
+    command: [worker]
+    environment:
+      DATABASE_URL: postgresql://citygo_worker:synthetic-worker-only@postgres:5432/citygo_smoke
+    networks: [smoke]
+
+volumes:
+  smoke_database:
+networks:
+  smoke:
+    ipam:
+      config:
+        - subnet: 172.29.91.0/24

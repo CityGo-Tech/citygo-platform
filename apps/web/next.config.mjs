@@ -1,5 +1,11 @@
+import { fileURLToPath } from "node:url";
+
 /** @type {import('next').NextConfig} */
 const config = {
+  // Opt-in on the Linux image builder; keep existing local/Windows workflows.
+  output: process.env.CITYGO_WEB_STANDALONE === "1" ? "standalone" : undefined,
+  outputFileTracingRoot: fileURLToPath(new URL("../../", import.meta.url)),
+  poweredByHeader: false,
   transpilePackages: [
     "@citygo/contracts",
     "@citygo/ui-web",

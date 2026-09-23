@@ -262,7 +262,9 @@ test("Turbo caches only non-secret Web configuration and passes the test DB only
     );
     assert.deepEqual(
       task.env ?? [],
-      name.startsWith("@citygo/web#") ? ["API_INTERNAL_URL"] : [],
+      name.startsWith("@citygo/web#")
+        ? ["API_INTERNAL_URL", "CITYGO_WEB_STANDALONE"]
+        : [],
     );
   }
   assert.ok(
