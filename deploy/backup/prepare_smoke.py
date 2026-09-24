@@ -13,6 +13,7 @@ import prepare as p
 import worker as w
 from test_backup import MemoryStore
 from test_target import synthetic_selection
+from test_image_gate import selection_store
 
 
 def main():
@@ -82,9 +83,13 @@ def main():
         # This is a synthetic offline approval fixture, NOT GitHub provenance or
         # authorization for the user's server. No target file is ever executed.
         selection = synthetic_selection(directory, config, fixture["images"], fixture["origin"])
+        # This approval and its images are synthetic. Real digest/blob inspection
+        # is exercised separately after the disposable loopback registry push.
+        image_store = selection_store(selection, fixture["images"])
         w.open_admission(config)
         proof = p.prepare(config, "b" * 40, fixture["origin"], fixture["ingress_directory"], fixture["images"],
-            allow_stop=True, allow_upload=True, selection=selection, host_factory=FixtureHost, storage_factory=lambda *_: store)
+            allow_stop=True, allow_upload=True, selection=selection, image_store_factory=lambda _: image_store,
+            host_factory=FixtureHost, storage_factory=lambda *_: store)
         b.require(proof["migration_authorized"] is False and (state / "operation-pending.json").exists(), "fixture-pending")
         b.require(not (state / w.ADMISSION).exists(), "fixture-admission")
         b.require(not (Path(fixture["ingress_directory"]) / "traffic-open").exists(), "fixture-ingress")

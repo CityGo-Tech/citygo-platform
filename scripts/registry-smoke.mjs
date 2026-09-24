@@ -2,7 +2,7 @@
 // All GHCR names are mapped to a loopback-only registry; no real login/API call.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -124,6 +124,56 @@ try {
     },
   });
   assert.deepEqual(Object.keys(images), roles);
+  const content = {};
+  const registryJson = async (path) => {
+    const response = await fetch(`http://${address}/v2/${path}`, {
+      headers: {
+        accept:
+          "application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json",
+      },
+      redirect: "error",
+      signal: AbortSignal.timeout(10000),
+    });
+    assert.equal(response.status, 200);
+    const text = await response.text();
+    assert.ok(Buffer.byteLength(text) <= 262144);
+    return text;
+  };
+  for (const role of roles) {
+    const name = `fixture/citygo-platform-${role}`;
+    const digest = images[role].split("@")[1];
+    const manifest = await registryJson(`${name}/manifests/${digest}`);
+    const configDigest = JSON.parse(manifest).config.digest;
+    assert.match(configDigest, /^sha256:[a-f0-9]{64}$/);
+    content[role] = {
+      manifest,
+      config: await registryJson(`${name}/blobs/${configDigest}`),
+    };
+  }
+  const fixture = join(config, "image-fixture.json");
+  writeFileSync(
+    fixture,
+    JSON.stringify({ address, sha, images, ids: evidence.images, content }),
+    { mode: 0o600, flag: "wx" },
+  );
+  const imageProof = JSON.parse(
+    command("python3", [
+      "-E",
+      "-s",
+      "-B",
+      "deploy/backup/image_smoke.py",
+      "--disposable",
+      fixture,
+    ]),
+  );
+  assert.equal(imageProof.ok, true);
+  assert.deepEqual(imageProof.roles, [...roles].sort());
+  assert.equal(imageProof.missing_and_wrong_rejected, true);
+  assert.equal(imageProof.real_content_simulated_containerd, true);
+  assert.equal(imageProof.migration_authorized, false);
+  console.log(
+    "Local release image gate passed: real Docker digest inspection; missing/wrong images rejected; containerd contract tested with real manifest/config bytes and simulated backend, not a real containerd daemon; no deploy/pull/AI by verifier.",
+  );
   console.log(
     "Registry rehearsal passed for all three tested images; no external publication or release manifest.",
   );
