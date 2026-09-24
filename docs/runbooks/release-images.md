@@ -30,7 +30,10 @@ login, pull, tag, удаления, переключения Docker backend ил
 протестированным ID. У containerd `.Id` может быть manifest digest. Простое
 игнорирование различия небезопасно: проверяется точный descriptor и SHA-256
 локальных manifest/config bytes, связь manifest → config, платформа, RootFS
-и source/revision. Размеры descriptor/config также должны совпасть. Читаются
+и source/revision. При наличии descriptor допустим local ID, равный одному из
+двух проверенных digest (manifest или config), **только после** проверки обоих
+blobs. Совпадение config ID не обходит чтение content. Размеры descriptor/config
+также должны совпасть. Читаются
 только два фиксированных digest через `ctr content get`, namespace `moby`, socket
 `/run/containerd/containerd.sock`; никакие команды из образа не выполняются.
 

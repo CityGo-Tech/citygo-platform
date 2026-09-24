@@ -60,16 +60,19 @@ def main():
         g.content(raw_config, config_id)
         class ContentStore:
             corrupt = False
+            local_id = manifest_id
             def inspect(self, expected_ref):
                 value = store.inspect(expected_ref)
-                value["Id"] = manifest_id
+                value["Id"] = self.local_id
                 value["Descriptor"] = {"digest": manifest_id, "size": len(raw_manifest), "mediaType": manifest["mediaType"]}
                 return value
             def blob(self, digest):
                 value = {manifest_id: raw_manifest, config_id: raw_config}[digest]
                 return value + b" " if self.corrupt else value
         projected = ContentStore()
-        b.require(g.verify_image(projected, ref, tested, fixture["sha"])["config_id"] == config_id, "fixture-content")
+        for local_id in (config_id, manifest_id):
+            projected.local_id = local_id
+            b.require(g.verify_image(projected, ref, tested, fixture["sha"])["config_id"] == config_id, "fixture-content")
         projected.corrupt = True
         try:
             g.verify_image(projected, ref, tested, fixture["sha"])

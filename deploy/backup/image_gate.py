@@ -85,8 +85,7 @@ def verify_image(store, ref, tested_id, sha):
         # blobs and verify manifest -> config -> RootFS/OCI source/revision.
         manifest_id = ref.split("@")[1]
         b.require(type(descriptor) is dict and descriptor.get("digest") == manifest_id
-                  and descriptor.get("mediaType") in MANIFEST_TYPES
-                  and info["Id"] == manifest_id, "image-descriptor")
+                  and descriptor.get("mediaType") in MANIFEST_TYPES, "image-descriptor")
         raw = store.blob(manifest_id)
         manifest = content(raw, manifest_id)
         b.require(type(descriptor.get("size")) is int and descriptor["size"] == len(raw), "image-content-size")
@@ -98,6 +97,9 @@ def verify_image(store, ref, tested_id, sha):
         b.require(tested_id in (config_id, manifest_id), "image-tested-id")
         raw_config = store.blob(config_id)
         config = content(raw_config, config_id)
+        # Backend/API versions can expose either config or manifest in .Id.
+        # Neither is accepted until BOTH blobs have been hashed and linked.
+        b.require(info["Id"] in (config_id, manifest_id), "image-local-id")
         b.require(type(link.get("size")) is int and link["size"] == len(raw_config), "image-content-size")
         b.require(config.get("os") == "linux" and config.get("architecture") == "amd64", "image-platform")
         b.require(type(config.get("rootfs")) is dict and config["rootfs"].get("type") == "layers"

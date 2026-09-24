@@ -99,14 +99,17 @@ class Images(unittest.TestCase):
 
     def test_containerd_requires_hashed_manifest_config_chain_even_when_tested_id_is_manifest(self):
         store, ref, config_id = containerd_fixture()
-        for tested_id in (config_id, ref.split("@")[1]):
-            proof = g.verify_image(store, ref, tested_id, "b" * 40)
-            self.assertEqual(proof["config_id"], config_id)
-            self.assertEqual(proof["mode"], "containerd-content")
-        self.assertEqual([kind for kind, _ in store.calls], ["inspect", "blob", "blob"] * 2)
+        for local_id in (config_id, ref.split("@")[1]):
+            for tested_id in (config_id, ref.split("@")[1]):
+                store.values[ref]["Id"] = local_id
+                proof = g.verify_image(store, ref, tested_id, "b" * 40)
+                self.assertEqual(proof["local_id"], local_id)
+                self.assertEqual(proof["config_id"], config_id)
+                self.assertEqual(proof["mode"], "containerd-content")
+        self.assertEqual([kind for kind, _ in store.calls], ["inspect", "blob", "blob"] * 4)
 
     def test_containerd_rejects_modified_missing_or_unlinked_content(self):
-        for fault in ("manifest", "config", "missing", "rootfs", "source", "descriptor", "size", "index", "tested"):
+        for fault in ("manifest", "config", "missing", "rootfs", "source", "descriptor", "size", "index", "tested", "local"):
             store, ref, config_id = containerd_fixture()
             if fault == "manifest": store.blobs[ref.split("@")[1]] += b" "
             elif fault == "config": store.blobs[config_id] += b" "
@@ -117,7 +120,15 @@ class Images(unittest.TestCase):
             elif fault == "size": store.values[ref]["Descriptor"]["size"] += 1
             elif fault == "index": store.values[ref]["Descriptor"]["mediaType"] = "application/vnd.oci.image.index.v1+json"
             elif fault == "tested": config_id = "sha256:" + "a" * 64
+            elif fault == "local": store.values[ref]["Id"] = "sha256:" + "a" * 64
             with self.subTest(fault=fault), self.assertRaises(b.BackupError): g.verify_image(store, ref, config_id, "b" * 40)
+
+    def test_config_id_with_descriptor_does_not_bypass_content_verification(self):
+        store, ref, config_id = containerd_fixture()
+        store.values[ref]["Id"] = config_id
+        store.blobs[config_id] += b" "
+        with self.assertRaisesRegex(b.BackupError, "image-content-hash"):
+            g.verify_image(store, ref, config_id, "b" * 40)
 
     def test_projection_covers_both_releases_and_binds_current_service_roles(self):
         selected = selected_fixture(); images = {role: "sha256:" + "c" * 64 for role in t.SERVICES}
