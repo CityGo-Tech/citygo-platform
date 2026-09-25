@@ -45,7 +45,7 @@ test("mounted service config is explicit, closed, secret-safe and never availabl
       JSON.stringify({ DATABASE_URL: db }),
     );
   const injected = { CITYGO_MOUNTED_CONFIG: "1", LLM_PROVIDER: "disabled" };
-  for (const mode of ["api", "migrate", "worker"]) {
+  for (const mode of ["api", "migrate", "migrate-release", "worker"]) {
     const spec = containerSpec(mode, injected, directory, directory);
     assert.equal(spec.env.DATABASE_URL, db);
     assert.equal(spec.env.CITYGO_MOUNTED_CONFIG, undefined);
@@ -135,7 +135,7 @@ test("container runtime ignores local env files and requires injected PostgreSQL
       join(directory, name),
       `DATABASE_URL=${db}\nOPENAI_API_KEY=never-load`,
     );
-  for (const mode of ["api", "worker", "migrate"]) {
+  for (const mode of ["api", "worker", "migrate", "migrate-release"]) {
     for (const DATABASE_URL of [
       undefined,
       "",
@@ -194,7 +194,7 @@ test("container commands and environment are closed allowlists", (t) => {
     NEXT_PUBLIC_KEY: "test-secret",
     NODE_ENV: "test",
   };
-  for (const mode of ["api", "web", "migrate", "worker"]) {
+  for (const mode of ["api", "web", "migrate", "migrate-release", "worker"]) {
     const { env } = containerSpec(mode, inherited, directory);
     assert.equal(env.NODE_ENV, "production");
     for (const key of [

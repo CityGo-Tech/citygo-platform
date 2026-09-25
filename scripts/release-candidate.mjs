@@ -57,6 +57,7 @@ export const runtimeFiles = [
   "docs/runbooks/release-preparation.md",
   "docs/runbooks/release-target.md",
   "docs/runbooks/release-images.md",
+  "docs/runbooks/release-migration.md",
   "docs/runbooks/release-candidate.md",
 ];
 // Only messages created here are safe to expose. Never serialize upstream errors,

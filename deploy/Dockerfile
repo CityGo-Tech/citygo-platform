@@ -34,6 +34,7 @@ CMD ["api"]
 
 FROM runtime AS jobs
 COPY --from=builder --chown=node:node /out/jobs/ ./
+COPY --chown=node:node deploy/postgres/grants.sql ./release-grants.sql
 # Migrations and maintenance are explicit one-shot operations, never API startup.
 CMD ["migrate"]
 
