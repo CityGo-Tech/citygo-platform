@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { root } from "./env.mjs";
+import { spawnSync } from "node:child_process";
+import { root, serviceEnv } from "./env.mjs";
 
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
 export async function releaseMigrationSmoke({
@@ -242,8 +243,59 @@ export async function releaseMigrationSmoke({
       docker(["rm", id]);
     }
   }
-  const result = run();
-  assert.deepEqual(result.applied, [last]);
+  // Exercise the host-side retained-container transport for the actual upgrade.
+  // Synthetic image approval/local S3 only; no production controller or GHCR.
+  const configuration = JSON.parse(compose(["config", "--format", "json"]));
+  const imageId = docker([
+    "image",
+    "inspect",
+    "--format",
+    "{{.Id}}",
+    configuration.services.migrator.image,
+  ]).trim();
+  const networkId = docker([
+    "network",
+    "inspect",
+    "--format",
+    "{{.Id}}",
+    `${project}_database`,
+  ]).trim();
+  const fixture = join(directory, "migration-job-fixture.json");
+  writeFileSync(
+    fixture,
+    JSON.stringify({
+      project,
+      image_id: imageId,
+      network_id: networkId,
+      compose: configuration,
+      secret: join(directory, "migrate.json"),
+      plan,
+    }),
+    { mode: 0o600 },
+  );
+  const execution = spawnSync(
+    "python3",
+    ["-B", "deploy/backup/migration_job_smoke.py", "--disposable", fixture],
+    {
+      cwd: root,
+      env: serviceEnv("test"),
+      encoding: "utf8",
+      timeout: 420000,
+      maxBuffer: 1024 * 1024,
+    },
+  );
+  assert.equal(execution.status, 0, execution.stderr);
+  const proof = JSON.parse(execution.stdout);
+  assert.equal(proof.ok, true);
+  assert.equal(proof.containers.length, 2);
+  for (const ident of proof.containers) {
+    assert.match(ident, /^[a-f0-9]{64}$/);
+    assert.equal(
+      docker(["inspect", "--format", "{{.State.Status}}", ident]).trim(),
+      "exited",
+    );
+    docker(["rm", ident]); // Exact disposable fixtures ONLY; runtime retains them.
+  }
   assert.equal(psql("select count(*) from citygo_migrations"), "7");
   assert.equal(
     psql(
