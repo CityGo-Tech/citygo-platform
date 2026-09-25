@@ -109,6 +109,8 @@ test("SQL wrapper removal never executes embedded transaction boundaries or psql
     "begin; select $x$unterminated; commit;",
     "begin; select 1; /* unclosed",
     "begin; select 1; commit; select 2",
+    "begin work; select 1; commit;",
+    "begin; select 1; commit work;",
     "select 1;",
     "begin; commit;",
   ])
@@ -117,6 +119,11 @@ test("SQL wrapper removal never executes embedded transaction boundaries or psql
     () => transactionBody("begin; create role nope; commit;", true),
     /sql-command/,
   );
+});
+
+test("SQL lexer handles token-dense input without retaining its full token list", () => {
+  const sql = `select ${"1+".repeat(200000)}1`;
+  assert.deepEqual(transactionBody(`begin;${sql};commit;`), [sql]);
 });
 
 function fixture({
@@ -344,6 +351,33 @@ test("asset loader matches publisher SQL and ACL size boundaries", async (t) => 
   await assert.rejects(
     loadReleaseMigrationAssets(migrations, acl),
     /image-file/,
+  );
+});
+test("asset loader rejects aggregate SQL overflow even when each file fits", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "citygo-migration-total-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const migrations = join(directory, "migrations");
+  const acl = join(directory, "grants.sql");
+  await mkdir(migrations);
+  await writeFile(acl, grants);
+  await writeFile(
+    join(migrations, "0001_fixture.sql"),
+    Buffer.alloc(4 * 1024 * 1024, 32),
+  );
+  await writeFile(
+    join(migrations, "0002_fixture.sql"),
+    Buffer.alloc(4 * 1024 * 1024 - 1, 32),
+  );
+  await writeFile(join(migrations, "0003_fixture.sql"), " ");
+  const loaded = await loadReleaseMigrationAssets(migrations, acl);
+  assert.equal(
+    loaded.migrations.reduce((sum, item) => sum + item.bytes.length, 0),
+    8 * 1024 * 1024,
+  );
+  await writeFile(join(migrations, "0003_fixture.sql"), "  ");
+  await assert.rejects(
+    loadReleaseMigrationAssets(migrations, acl),
+    /image-total-size/,
   );
 });
 test("all shipped SQL and ACL files satisfy the guarded transaction grammar", async () => {

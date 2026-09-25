@@ -21,6 +21,7 @@ export interface ReleaseMigrationPlan {
 // A selected manifest is bounded to 256 KiB; this request carries inventories
 // from TWO such manifests. Do not reject an otherwise valid selected release.
 export const releaseInputLimit = 2 * 262144;
+export const releaseSqlBytesLimit = 8 * 1024 * 1024;
 const hashPattern = /^[a-f0-9]{64}$/;
 export const sha256 = (data: string | Buffer) =>
   createHash("sha256").update(data).digest("hex");
@@ -121,9 +122,16 @@ export function transactionBody(source: string, grants = false): string[] {
   let text = source.replaceAll("\r\n", "\n");
   if (grants) text = text.replace(/^\\set ON_ERROR_STOP on\n/, "");
   requireValue(!text.includes("\0"), "sql-shape");
-  const statements: { sql: string; words: string[] }[] = [];
+  const statements: { sql: string; first: string; count: number }[] = [];
   let start = 0;
-  let words: string[] = [];
+  let first = "";
+  let count = 0;
+  // Only the leading token and whether it is alone are needed. Do not retain
+  // millions of tokens for a large statement in the 256 MiB jobs container.
+  const token = (word: string) => {
+    if (count === 0) first = word;
+    count = Math.min(2, count + 1);
+  };
   for (let i = 0; i < text.length;) {
     if (/\s/.test(text[i]!)) {
       i++;
@@ -173,37 +181,40 @@ export function transactionBody(source: string, grants = false): string[] {
         i++;
       }
       requireValue(closed, "sql-quote");
-      words.push("<quoted>");
+      token("<quoted>");
       continue;
     }
     const dollar = text.slice(i).match(/^\$(?:[a-zA-Z_][a-zA-Z0-9_]*)?\$/)?.[0];
     if (dollar) {
       const end = text.indexOf(dollar, i + dollar.length);
       requireValue(end >= 0, "sql-dollar");
-      words.push("<body>");
+      token("<body>");
       i = end + dollar.length;
       continue;
     }
     if (text[i] === ";") {
-      if (words.length) statements.push({ sql: text.slice(start, i), words });
-      words = [];
+      if (count) statements.push({ sql: text.slice(start, i), first, count });
+      count = 0;
+      first = "";
       start = ++i;
       continue;
     }
     const word = text.slice(i).match(/^[a-zA-Z_][a-zA-Z0-9_$]*/)?.[0];
     if (word) {
-      words.push(word.toLowerCase());
+      token(word.toLowerCase());
       i += word.length;
     } else {
-      words.push(text[i]!);
+      token(text[i]!);
       i++;
     }
   }
-  requireValue(words.length === 0, "sql-terminator");
+  requireValue(count === 0, "sql-terminator");
   requireValue(
     statements.length >= 3 &&
-      statements[0]!.words.join(" ") === "begin" &&
-      statements.at(-1)!.words.join(" ") === "commit",
+      statements[0]!.first === "begin" &&
+      statements[0]!.count === 1 &&
+      statements.at(-1)!.first === "commit" &&
+      statements.at(-1)!.count === 1,
     "sql-wrapper",
   );
   const body = statements.slice(1, -1);
@@ -223,7 +234,7 @@ export function transactionBody(source: string, grants = false): string[] {
         "revoke",
       ];
   requireValue(
-    body.every(({ words: tokens }) => allowed.includes(tokens[0]!)),
+    body.every(({ first: leading }) => allowed.includes(leading)),
     "sql-command",
   );
   return body.map(({ sql }) => sql);
@@ -247,6 +258,13 @@ export async function loadReleaseMigrationAssets(
       entries.every((item) => item.isFile()),
     "image-files",
   );
+  let total = 0;
+  for (const { name } of entries) {
+    const info = await lstat(join(directory, name));
+    requireValue(info.isFile() && info.size <= 4 * 1024 * 1024, "image-file");
+    total += info.size;
+    requireValue(total <= releaseSqlBytesLimit, "image-total-size");
+  }
   const read = async (file: string, limit = 4 * 1024 * 1024) => {
     const info = await lstat(file);
     requireValue(
@@ -257,17 +275,15 @@ export async function loadReleaseMigrationAssets(
     requireValue(data.length <= limit, "image-file");
     return data;
   };
-  return {
-    migrations: await Promise.all(
-      entries
-        .sort((a, b) => a.name.localeCompare(b.name))
-        .map(async ({ name }) => ({
-          name,
-          bytes: await read(join(directory, name)),
-        })),
-    ),
-    grants: await read(grantsFile, 262144),
-  };
+  const migrations: ReleaseMigrationAssets["migrations"] = [];
+  total = 0;
+  for (const { name } of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+    const bytes = await read(join(directory, name));
+    total += bytes.length;
+    requireValue(total <= releaseSqlBytesLimit, "image-total-size");
+    migrations.push({ name, bytes });
+  }
+  return { migrations, grants: await read(grantsFile, 262144) };
 }
 function prepared(plan: ReleaseMigrationPlan, assets: ReleaseMigrationAssets) {
   requireValue(

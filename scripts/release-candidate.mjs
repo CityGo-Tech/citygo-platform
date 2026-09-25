@@ -306,11 +306,15 @@ export function prepareBases() {
   }
   jsonWrite(join(candidateDir, "build-inputs.json"), validateBases(bases));
 }
-export function hashFile(path, limit = 262144) {
+export function hashFile(path, limit = 262144, budget) {
   const info = lstatSync(path);
   requireValue(info.isFile() && info.size <= limit, "asset size/type");
   const bytes = readFileSync(path);
   requireValue(bytes.length <= limit, "asset size/type");
+  if (budget) {
+    budget.remaining -= bytes.length;
+    requireValue(budget.remaining >= 0, "migration total size");
+  }
   return createHash("sha256").update(bytes).digest("hex");
 }
 export function createManifest({
@@ -352,6 +356,19 @@ export function createManifest({
       ),
     "migration inventory",
   );
+  // Match the executor's aggregate budget, not just its per-file cap. Stat the
+  // entire inventory before reading any SQL, then recheck actual bytes below.
+  const budget = { remaining: 8 * 1024 * 1024 };
+  let total = 0;
+  for (const name of migrations) {
+    const info = lstatSync(join(directory, "packages/db/migrations", name));
+    requireValue(
+      info.isFile() && info.size <= 4 * 1024 * 1024,
+      "asset size/type",
+    );
+    total += info.size;
+    requireValue(total <= budget.remaining, "migration total size");
+  }
   const manifest = {
     version: 1,
     kind: "candidate-not-deployed",
@@ -368,6 +385,7 @@ export function createManifest({
       sha256: hashFile(
         join(directory, "packages/db/migrations", name),
         4 * 1024 * 1024,
+        budget,
       ),
     })),
     runtimeFiles: runtimeFiles.map((path) => ({

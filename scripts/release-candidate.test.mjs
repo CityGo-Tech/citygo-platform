@@ -614,3 +614,36 @@ test("publisher rejects oversized migration/ACL/runtime assets before any Docker
   );
   assert.equal(oversizedManifest.calls.length, 0);
 });
+
+test("publisher bounds the aggregate SQL payload before any Docker call", async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "citygo-release-total-test-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  for (const path of runtimeFiles) {
+    mkdirSync(dirname(join(directory, path)), { recursive: true });
+    writeFileSync(join(directory, path), "fixture\n");
+  }
+  const migrations = join(directory, "packages/db/migrations");
+  mkdirSync(migrations, { recursive: true });
+  writeFileSync(
+    join(migrations, "0001_fixture.sql"),
+    Buffer.alloc(4 * 1024 * 1024, 32),
+  );
+  writeFileSync(
+    join(migrations, "0002_fixture.sql"),
+    Buffer.alloc(4 * 1024 * 1024 - 1, 32),
+  );
+  writeFileSync(join(migrations, "0003_fixture.sql"), " ");
+  const boundary = publisherFixture();
+  await publishImages({ ...boundary.args, directory });
+  assert.equal(
+    boundary.calls.filter((call) => call.args[0] === "push").length,
+    3,
+  );
+  writeFileSync(join(migrations, "0003_fixture.sql"), "  ");
+  const oversized = publisherFixture();
+  await assert.rejects(
+    publishImages({ ...oversized.args, directory }),
+    /migration total size/,
+  );
+  assert.equal(oversized.calls.length, 0);
+});
