@@ -21,7 +21,7 @@ export interface ReleaseMigrationPlan {
 // A selected manifest is bounded to 256 KiB; this request carries inventories
 // from TWO such manifests. Do not reject an otherwise valid selected release.
 export const releaseInputLimit = 2 * 262144;
-export const releaseSqlBytesLimit = 8 * 1024 * 1024;
+export const releaseSqlBytesLimit = 4 * 1024 * 1024;
 const hashPattern = /^[a-f0-9]{64}$/;
 export const sha256 = (data: string | Buffer) =>
   createHash("sha256").update(data).digest("hex");

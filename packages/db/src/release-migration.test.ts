@@ -362,17 +362,17 @@ test("asset loader rejects aggregate SQL overflow even when each file fits", asy
   await writeFile(acl, grants);
   await writeFile(
     join(migrations, "0001_fixture.sql"),
-    Buffer.alloc(4 * 1024 * 1024, 32),
+    Buffer.alloc(2 * 1024 * 1024, 32),
   );
   await writeFile(
     join(migrations, "0002_fixture.sql"),
-    Buffer.alloc(4 * 1024 * 1024 - 1, 32),
+    Buffer.alloc(2 * 1024 * 1024 - 1, 32),
   );
   await writeFile(join(migrations, "0003_fixture.sql"), " ");
   const loaded = await loadReleaseMigrationAssets(migrations, acl);
   assert.equal(
     loaded.migrations.reduce((sum, item) => sum + item.bytes.length, 0),
-    8 * 1024 * 1024,
+    4 * 1024 * 1024,
   );
   await writeFile(join(migrations, "0003_fixture.sql"), "  ");
   await assert.rejects(

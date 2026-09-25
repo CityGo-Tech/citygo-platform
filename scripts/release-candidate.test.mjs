@@ -626,11 +626,11 @@ test("publisher bounds the aggregate SQL payload before any Docker call", async 
   mkdirSync(migrations, { recursive: true });
   writeFileSync(
     join(migrations, "0001_fixture.sql"),
-    Buffer.alloc(4 * 1024 * 1024, 32),
+    Buffer.alloc(2 * 1024 * 1024, 32),
   );
   writeFileSync(
     join(migrations, "0002_fixture.sql"),
-    Buffer.alloc(4 * 1024 * 1024 - 1, 32),
+    Buffer.alloc(2 * 1024 * 1024 - 1, 32),
   );
   writeFileSync(join(migrations, "0003_fixture.sql"), " ");
   const boundary = publisherFixture();

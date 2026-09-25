@@ -358,7 +358,7 @@ export function createManifest({
   );
   // Match the executor's aggregate budget, not just its per-file cap. Stat the
   // entire inventory before reading any SQL, then recheck actual bytes below.
-  const budget = { remaining: 8 * 1024 * 1024 };
+  const budget = { remaining: 4 * 1024 * 1024 };
   let total = 0;
   for (const name of migrations) {
     const info = lstatSync(join(directory, "packages/db/migrations", name));
