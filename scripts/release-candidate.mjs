@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import {
   copyFileSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -305,8 +306,12 @@ export function prepareBases() {
   }
   jsonWrite(join(candidateDir, "build-inputs.json"), validateBases(bases));
 }
-export function hashFile(path) {
-  return createHash("sha256").update(readFileSync(path)).digest("hex");
+export function hashFile(path, limit = 262144) {
+  const info = lstatSync(path);
+  requireValue(info.isFile() && info.size <= limit, "asset size/type");
+  const bytes = readFileSync(path);
+  requireValue(bytes.length <= limit, "asset size/type");
+  return createHash("sha256").update(bytes).digest("hex");
 }
 export function createManifest({
   sha,
@@ -338,10 +343,16 @@ export function createManifest({
   ).sort();
   requireValue(
     migrations.length > 0 &&
-      migrations.every((name) => /^\d{4}_[a-z0-9_]+\.sql$/.test(name)),
+      migrations.length <= 1000 &&
+      migrations.every(
+        (name, i) =>
+          /^\d{4}_[a-z0-9_]+\.sql$/.test(name) &&
+          Number(name.slice(0, 4)) >
+            Number(migrations[i - 1]?.slice(0, 4) ?? 0),
+      ),
     "migration inventory",
   );
-  return {
+  const manifest = {
     version: 1,
     kind: "candidate-not-deployed",
     repository,
@@ -354,7 +365,10 @@ export function createManifest({
     imageIds: evidence.images,
     migrations: migrations.map((name) => ({
       name,
-      sha256: hashFile(join(directory, "packages/db/migrations", name)),
+      sha256: hashFile(
+        join(directory, "packages/db/migrations", name),
+        4 * 1024 * 1024,
+      ),
     })),
     runtimeFiles: runtimeFiles.map((path) => ({
       path,
@@ -367,6 +381,12 @@ export function createManifest({
       schemaCompatibility: "operator-review-required",
     },
   };
+  // Match target.py's exact on-disk JSON/file cap, including pretty-printing.
+  requireValue(
+    Buffer.byteLength(JSON.stringify(manifest, null, 2) + "\n") <= 262144,
+    "manifest size",
+  );
+  return manifest;
 }
 export async function publishImages({
   evidence,
@@ -379,6 +399,8 @@ export async function publishImages({
   docker,
   read = github,
   report = () => {},
+  directory = root,
+  checks = [],
 }) {
   validateEvidence(evidence, sha);
   requireValue(
@@ -398,6 +420,23 @@ export async function publishImages({
     "publisher token",
   );
   const images = {};
+  // Preflight source SQL (4 MiB), runtime/ACL files (256 KiB), inventory and
+  // manifest size BEFORE even inspecting Docker or logging into the registry.
+  // Digest placeholders have exactly the same length as final immutable refs.
+  createManifest({
+    sha,
+    runId,
+    attempt,
+    checks,
+    evidence,
+    directory,
+    images: Object.fromEntries(
+      roles.map((role) => [
+        role,
+        `ghcr.io/citygo-tech/citygo-platform-${role}@sha256:${"0".repeat(64)}`,
+      ]),
+    ),
+  });
   // Validate ALL tested images before login/first push, not halfway through a release.
   for (const role of roles) {
     report(`${role}: inspect tested local image`);
@@ -459,6 +498,7 @@ export async function publishCandidate() {
   try {
     const images = await publishImages({
       evidence,
+      checks,
       sha,
       docker,
       runId: process.env.GITHUB_RUN_ID,

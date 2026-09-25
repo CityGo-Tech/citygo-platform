@@ -573,3 +573,44 @@ test("release workflow is manual, disabled by default, pinned and has no server/
   const compose = readFileSync(join(root, "deploy/compose.pilot.yml"), "utf8");
   assert.match(compose, /LLM_PROVIDER: disabled/);
 });
+
+test("publisher rejects oversized migration/ACL/runtime assets before any Docker or registry call", async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "citygo-release-bounds-test-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const migration = "packages/db/migrations/0001_fixture.sql";
+  for (const path of [...runtimeFiles, migration]) {
+    mkdirSync(dirname(join(directory, path)), { recursive: true });
+    writeFileSync(join(directory, path), "fixture\n");
+  }
+  for (const [path, limit] of [
+    [migration, 4 * 1024 * 1024],
+    ["deploy/postgres/grants.sql", 262144],
+    ["deploy/compose.pilot.yml", 262144],
+  ]) {
+    writeFileSync(join(directory, path), Buffer.alloc(limit, 32));
+    const boundary = publisherFixture();
+    await publishImages({ ...boundary.args, directory });
+    assert.equal(
+      boundary.calls.filter((call) => call.args[0] === "push").length,
+      3,
+    );
+    writeFileSync(join(directory, path), Buffer.alloc(limit + 1, 32));
+    const oversized = publisherFixture();
+    await assert.rejects(
+      publishImages({ ...oversized.args, directory }),
+      /asset size\/type/,
+    );
+    assert.equal(oversized.calls.length, 0);
+    writeFileSync(join(directory, path), "fixture\n");
+  }
+  const oversizedManifest = publisherFixture();
+  await assert.rejects(
+    publishImages({
+      ...oversizedManifest.args,
+      directory,
+      checks: [{ fixture: "a".repeat(262144) }],
+    }),
+    /manifest size/,
+  );
+  assert.equal(oversizedManifest.calls.length, 0);
+});

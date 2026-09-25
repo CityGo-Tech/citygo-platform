@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Database, Sql } from "./index.js";
 import {
@@ -317,6 +320,30 @@ test("input budget accommodates both selected manifest inventories", () => {
   assert.throws(
     () => parseReleaseMigrationPlan(" ".repeat(524289)),
     /input-size/,
+  );
+});
+test("asset loader matches publisher SQL and ACL size boundaries", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "citygo-migration-bounds-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const migrations = join(directory, "migrations");
+  const sql = join(migrations, "0001_fixture.sql");
+  const acl = join(directory, "grants.sql");
+  await mkdir(migrations);
+  await writeFile(sql, Buffer.alloc(4 * 1024 * 1024, 32));
+  await writeFile(acl, Buffer.alloc(262144, 32));
+  const loaded = await loadReleaseMigrationAssets(migrations, acl);
+  assert.equal(loaded.migrations[0]?.bytes.length, 4 * 1024 * 1024);
+  assert.equal(loaded.grants.length, 262144);
+  await writeFile(sql, Buffer.alloc(4 * 1024 * 1024 + 1, 32));
+  await assert.rejects(
+    loadReleaseMigrationAssets(migrations, acl),
+    /image-file/,
+  );
+  await writeFile(sql, first);
+  await writeFile(acl, Buffer.alloc(262145, 32));
+  await assert.rejects(
+    loadReleaseMigrationAssets(migrations, acl),
+    /image-file/,
   );
 });
 test("all shipped SQL and ACL files satisfy the guarded transaction grammar", async () => {

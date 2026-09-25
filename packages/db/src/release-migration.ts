@@ -247,14 +247,14 @@ export async function loadReleaseMigrationAssets(
       entries.every((item) => item.isFile()),
     "image-files",
   );
-  const read = async (file: string) => {
+  const read = async (file: string, limit = 4 * 1024 * 1024) => {
     const info = await lstat(file);
     requireValue(
-      info.isFile() && !info.isSymbolicLink() && info.size <= 4 * 1024 * 1024,
+      info.isFile() && !info.isSymbolicLink() && info.size <= limit,
       "image-file",
     );
     const data = await readFile(file);
-    requireValue(data.length <= 4 * 1024 * 1024, "image-file");
+    requireValue(data.length <= limit, "image-file");
     return data;
   };
   return {
@@ -266,7 +266,7 @@ export async function loadReleaseMigrationAssets(
           bytes: await read(join(directory, name)),
         })),
     ),
-    grants: await read(grantsFile),
+    grants: await read(grantsFile, 262144),
   };
 }
 function prepared(plan: ReleaseMigrationPlan, assets: ReleaseMigrationAssets) {
