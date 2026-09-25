@@ -18,7 +18,9 @@ export interface ReleaseMigrationPlan {
   targetMigrations: MigrationDigest[];
   grantsSha256: string;
 }
-export const releaseInputLimit = 262144;
+// A selected manifest is bounded to 256 KiB; this request carries inventories
+// from TWO such manifests. Do not reject an otherwise valid selected release.
+export const releaseInputLimit = 2 * 262144;
 const hashPattern = /^[a-f0-9]{64}$/;
 export const sha256 = (data: string | Buffer) =>
   createHash("sha256").update(data).digest("hex");
@@ -52,7 +54,7 @@ function inventory(value: unknown): asserts value is MigrationDigest[] {
     exactKeys(item, ["name", "sha256"]);
     requireValue(
       typeof item.name === "string" &&
-        /^\d{4}_[a-z0-9_]{1,100}\.sql$/.test(item.name) &&
+        /^\d{4}_[a-z0-9_]+\.sql$/.test(item.name) &&
         typeof item.sha256 === "string" &&
         hashPattern.test(item.sha256),
       "inventory",

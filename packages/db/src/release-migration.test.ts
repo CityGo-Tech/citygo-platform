@@ -283,6 +283,42 @@ test("raw manifest bytes and historical LF-normalized checksums are both verifie
     crlf,
   );
 });
+test("executor accepts long migration names already accepted by publisher and target gate", async () => {
+  const name = `0002_${"a".repeat(150)}.sql`;
+  const targetMigrations = [
+    plan.targetMigrations[0]!,
+    { ...plan.targetMigrations[1]!, name },
+  ];
+  const changed = {
+    ...assets,
+    migrations: [assets.migrations[0]!, { ...assets.migrations[1]!, name }],
+  };
+  const f = fixture();
+  const result = await migrateRelease(
+    f.db,
+    { ...plan, targetMigrations },
+    changed,
+  );
+  assert.equal(result.applied[0]?.name, name);
+});
+test("input budget accommodates both selected manifest inventories", () => {
+  const migrations = Array.from({ length: 1000 }, (_, i) => ({
+    name: `${String(i + 1).padStart(4, "0")}_${"a".repeat(150)}.sql`,
+    sha256: "a".repeat(64),
+  }));
+  assert.ok(Buffer.byteLength(JSON.stringify(migrations)) < 262144);
+  const input = {
+    ...plan,
+    currentMigrations: migrations,
+    targetMigrations: migrations,
+  };
+  assert.ok(Buffer.byteLength(JSON.stringify(input)) > 262144);
+  assert.deepEqual(parse(input), input);
+  assert.throws(
+    () => parseReleaseMigrationPlan(" ".repeat(524289)),
+    /input-size/,
+  );
+});
 test("all shipped SQL and ACL files satisfy the guarded transaction grammar", async () => {
   const files = await loadReleaseMigrationAssets(
     fileURLToPath(new URL("../migrations", import.meta.url)),
