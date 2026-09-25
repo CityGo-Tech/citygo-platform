@@ -17,6 +17,20 @@ import { renderNginx } from "../deploy/render-pilot.mjs";
 
 const db = "postgresql://synthetic:test@127.0.0.1:1/not-used";
 
+test("release jobs include only the reviewed PostgreSQL grants build input", () => {
+  const ignore = readFileSync(join(root, ".dockerignore"), "utf8");
+  assert.match(
+    ignore,
+    /deploy\/postgres\/\*\r?\n!deploy\/postgres\/grants\.sql/,
+  );
+  assert.doesNotMatch(ignore, /^!deploy\/postgres\/(?:\*|\*\*)$/m);
+  const dockerfile = readFileSync(join(root, "deploy/Dockerfile"), "utf8");
+  assert.match(
+    dockerfile.split("FROM runtime AS jobs")[1],
+    /COPY --chown=node:node deploy\/postgres\/grants\.sql \.\/release-grants\.sql/,
+  );
+});
+
 test("API container stop allows the complete drain and cleanup deadline", () => {
   for (const name of ["compose.pilot.yml", "compose.smoke.yml"]) {
     const compose = readFileSync(join(root, "deploy", name), "utf8");
