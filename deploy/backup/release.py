@@ -22,6 +22,8 @@ class _Window:
         self._owner = (os.getpid(), threading.get_ident())
         self._active = True
         self._attempted = False
+        self._checkpoint = None
+        self._migration_attempted = False
 
     def _check_owner(self):
         b.require(self._active and self._owner == (os.getpid(), threading.get_ident()), "release-window-inactive")
@@ -47,6 +49,7 @@ class _Window:
                       "target_sha": self._operation["target_sha"], "backup": manifest,
                       "verified_at": time.time(), "migration_authorized": False}
         b.atomic_json(self._state / "release-backup.json", checkpoint)
+        self._checkpoint = copy.deepcopy(checkpoint)
         return copy.deepcopy(checkpoint)
 
 
