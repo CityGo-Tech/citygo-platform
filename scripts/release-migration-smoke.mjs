@@ -201,7 +201,7 @@ export async function releaseMigrationSmoke({
     "select id from ai_budget where id=1 for update",
   ]) {
     const name = `${project}-migration-lock`;
-    const script = `import {readFileSync} from 'node:fs'; import {connectDatabase} from '@citygo/db'; const db=await connectDatabase(JSON.parse(readFileSync('/run/secrets/migrate.json','utf8')).DATABASE_URL); await db.transaction(async tx=>{await tx.exec("set local statement_timeout='90s';set local idle_in_transaction_session_timeout='90s'");await tx.query(${JSON.stringify(query)});console.log('synthetic-lock-held');await tx.query('select pg_sleep(60)');});await db.close();`;
+    const script = `import {readFileSync} from 'node:fs'; import {connectDatabase} from '@citygo/db'; const db=await connectDatabase(JSON.parse(readFileSync('/run/secrets/migrate.json','utf8')).DATABASE_URL); let release; const stopped=new Promise(resolve=>release=resolve);process.once('SIGTERM',()=>release());const deadline=setTimeout(()=>release(),60000);try{await db.transaction(async tx=>{await tx.exec("set local idle_in_transaction_session_timeout='90s'");await tx.query(${JSON.stringify(query)});console.log('synthetic-lock-held');await stopped;});}finally{clearTimeout(deadline);await db.close();}`;
     const id = compose([
       "run",
       "-d",
@@ -229,7 +229,17 @@ export async function releaseMigrationSmoke({
       run(plan, { fail: true });
       assertOld();
     } finally {
-      docker(["rm", "-f", id]);
+      // Killing a client in pg_sleep need not immediately release its server-side
+      // lock. End the fixture transaction, confirm clean exit AND lock release.
+      docker(["stop", "--time", "10", id]);
+      assert.equal(
+        docker(["inspect", "--format", "{{.State.ExitCode}}", id]).trim(),
+        "0",
+      );
+      psql(
+        "begin; select id from citygo_migration_lock where id=1 for update nowait; select id from ai_budget where id=1 for update nowait; rollback",
+      );
+      docker(["rm", id]);
     }
   }
   const result = run();
