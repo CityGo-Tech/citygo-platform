@@ -17,6 +17,20 @@ import { renderNginx } from "../deploy/render-pilot.mjs";
 
 const db = "postgresql://synthetic:test@127.0.0.1:1/not-used";
 
+test("release jobs include only the reviewed PostgreSQL grants build input", () => {
+  const ignore = readFileSync(join(root, ".dockerignore"), "utf8");
+  assert.match(
+    ignore,
+    /deploy\/postgres\/\*\r?\n!deploy\/postgres\/grants\.sql/,
+  );
+  assert.doesNotMatch(ignore, /^!deploy\/postgres\/(?:\*|\*\*)$/m);
+  const dockerfile = readFileSync(join(root, "deploy/Dockerfile"), "utf8");
+  assert.match(
+    dockerfile.split("FROM runtime AS jobs")[1],
+    /COPY --chown=node:node deploy\/postgres\/grants\.sql \.\/release-grants\.sql/,
+  );
+});
+
 test("API container stop allows the complete drain and cleanup deadline", () => {
   for (const name of ["compose.pilot.yml", "compose.smoke.yml"]) {
     const compose = readFileSync(join(root, "deploy", name), "utf8");
@@ -45,7 +59,7 @@ test("mounted service config is explicit, closed, secret-safe and never availabl
       JSON.stringify({ DATABASE_URL: db }),
     );
   const injected = { CITYGO_MOUNTED_CONFIG: "1", LLM_PROVIDER: "disabled" };
-  for (const mode of ["api", "migrate", "worker"]) {
+  for (const mode of ["api", "migrate", "migrate-release", "worker"]) {
     const spec = containerSpec(mode, injected, directory, directory);
     assert.equal(spec.env.DATABASE_URL, db);
     assert.equal(spec.env.CITYGO_MOUNTED_CONFIG, undefined);
@@ -135,7 +149,7 @@ test("container runtime ignores local env files and requires injected PostgreSQL
       join(directory, name),
       `DATABASE_URL=${db}\nOPENAI_API_KEY=never-load`,
     );
-  for (const mode of ["api", "worker", "migrate"]) {
+  for (const mode of ["api", "worker", "migrate", "migrate-release"]) {
     for (const DATABASE_URL of [
       undefined,
       "",
@@ -194,7 +208,7 @@ test("container commands and environment are closed allowlists", (t) => {
     NEXT_PUBLIC_KEY: "test-secret",
     NODE_ENV: "test",
   };
-  for (const mode of ["api", "web", "migrate", "worker"]) {
+  for (const mode of ["api", "web", "migrate", "migrate-release", "worker"]) {
     const { env } = containerSpec(mode, inherited, directory);
     assert.equal(env.NODE_ENV, "production");
     for (const key of [

@@ -40,7 +40,7 @@ FILES = frozenset({
     "docs/runbooks/cloudru-runtime.md", "docs/runbooks/encrypted-backup.md",
     "docs/runbooks/backup-operations.md", "docs/runbooks/worker-coordination.md",
     "docs/runbooks/release-backup-window.md", "docs/runbooks/release-preparation.md",
-    "docs/runbooks/release-target.md", "docs/runbooks/release-images.md", "docs/runbooks/release-candidate.md",
+    "docs/runbooks/release-target.md", "docs/runbooks/release-images.md", "docs/runbooks/release-migration.md", "docs/runbooks/release-candidate.md",
 })
 # The first delivered candidate predates Worker/drain/prepare helpers. Current
 # manifests may contain this baseline plus known additions, never arbitrary paths.

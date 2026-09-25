@@ -8,6 +8,10 @@ const modes = {
   api: { scope: "api", args: ["dist/server.js"] },
   web: { scope: "web", args: ["apps/web/server.js"] },
   migrate: { scope: "migrator", args: ["node_modules/@citygo/db/dist/cli.js"] },
+  "migrate-release": {
+    scope: "migrator",
+    args: ["node_modules/@citygo/db/dist/release-cli.js"],
+  },
   worker: { scope: "worker", args: ["dist/index.js", "--once"] },
 };
 
@@ -20,6 +24,7 @@ const secretKeys = {
     "GIGACHAT_CREDENTIALS",
   ],
   migrate: ["DATABASE_URL"],
+  "migrate-release": ["DATABASE_URL"],
   worker: ["DATABASE_URL"],
 };
 
@@ -39,7 +44,10 @@ export function containerSpec(
         !Object.hasOwn(secretKeys, mode)
       )
         throw new Error();
-      const file = resolve(secretDirectory, `${mode}.json`);
+      const file = resolve(
+        secretDirectory,
+        `${mode === "migrate-release" ? "migrate" : mode}.json`,
+      );
       if (!statSync(file).isFile() || statSync(file).size > 65536)
         throw new Error();
       secrets = JSON.parse(readFileSync(file, "utf8"));

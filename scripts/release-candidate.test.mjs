@@ -573,3 +573,77 @@ test("release workflow is manual, disabled by default, pinned and has no server/
   const compose = readFileSync(join(root, "deploy/compose.pilot.yml"), "utf8");
   assert.match(compose, /LLM_PROVIDER: disabled/);
 });
+
+test("publisher rejects oversized migration/ACL/runtime assets before any Docker or registry call", async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "citygo-release-bounds-test-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const migration = "packages/db/migrations/0001_fixture.sql";
+  for (const path of [...runtimeFiles, migration]) {
+    mkdirSync(dirname(join(directory, path)), { recursive: true });
+    writeFileSync(join(directory, path), "fixture\n");
+  }
+  for (const [path, limit] of [
+    [migration, 4 * 1024 * 1024],
+    ["deploy/postgres/grants.sql", 262144],
+    ["deploy/compose.pilot.yml", 262144],
+  ]) {
+    writeFileSync(join(directory, path), Buffer.alloc(limit, 32));
+    const boundary = publisherFixture();
+    await publishImages({ ...boundary.args, directory });
+    assert.equal(
+      boundary.calls.filter((call) => call.args[0] === "push").length,
+      3,
+    );
+    writeFileSync(join(directory, path), Buffer.alloc(limit + 1, 32));
+    const oversized = publisherFixture();
+    await assert.rejects(
+      publishImages({ ...oversized.args, directory }),
+      /asset size\/type/,
+    );
+    assert.equal(oversized.calls.length, 0);
+    writeFileSync(join(directory, path), "fixture\n");
+  }
+  const oversizedManifest = publisherFixture();
+  await assert.rejects(
+    publishImages({
+      ...oversizedManifest.args,
+      directory,
+      checks: [{ fixture: "a".repeat(262144) }],
+    }),
+    /manifest size/,
+  );
+  assert.equal(oversizedManifest.calls.length, 0);
+});
+
+test("publisher bounds the aggregate SQL payload before any Docker call", async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "citygo-release-total-test-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  for (const path of runtimeFiles) {
+    mkdirSync(dirname(join(directory, path)), { recursive: true });
+    writeFileSync(join(directory, path), "fixture\n");
+  }
+  const migrations = join(directory, "packages/db/migrations");
+  mkdirSync(migrations, { recursive: true });
+  writeFileSync(
+    join(migrations, "0001_fixture.sql"),
+    Buffer.alloc(2 * 1024 * 1024, 32),
+  );
+  writeFileSync(
+    join(migrations, "0002_fixture.sql"),
+    Buffer.alloc(2 * 1024 * 1024 - 1, 32),
+  );
+  writeFileSync(join(migrations, "0003_fixture.sql"), " ");
+  const boundary = publisherFixture();
+  await publishImages({ ...boundary.args, directory });
+  assert.equal(
+    boundary.calls.filter((call) => call.args[0] === "push").length,
+    3,
+  );
+  writeFileSync(join(migrations, "0003_fixture.sql"), "  ");
+  const oversized = publisherFixture();
+  await assert.rejects(
+    publishImages({ ...oversized.args, directory }),
+    /migration total size/,
+  );
+  assert.equal(oversized.calls.length, 0);
+});

@@ -42,7 +42,8 @@ deploy/fixtures
 deploy/compose.smoke.yml
 deploy/smoke.env
 deploy/pilot.env
-deploy/postgres
+deploy/postgres/*
+!deploy/postgres/grants.sql
 deploy/compose.pilot.yml
 deploy/backup
 **/*.age
