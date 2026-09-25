@@ -14,9 +14,11 @@ import prepare as p
 import worker as w
 from test_backup import sample, MemoryStore
 from test_target import synthetic_selection
+from test_image_gate import selection_store
 
 ROLES = ["postgres", "web", "api", "worker", "migrator", "backup"]
 IMAGES = {role: "sha256:" + str(i + 1) * 64 for i, role in enumerate(ROLES)}
+IMAGES.update(migrator=IMAGES["worker"], backup=IMAGES["postgres"])
 ORIGIN = "https://pilot.example.test"
 
 
@@ -286,10 +288,12 @@ class Preparation(unittest.TestCase):
         self.pending = self.state / "operation-pending.json"
         self.encrypt = lambda _c, dest, _e: dest.write_bytes(b"synthetic-encrypted" * 30)
         self.selection = synthetic_selection(self.directory, self.config, IMAGES)
+        self.image_store = selection_store(self.selection, IMAGES)
 
     def prepare(self, **kwargs):
         return p.prepare(self.config, "b" * 40, ORIGIN, self.ingress, IMAGES, allow_stop=True, allow_upload=True,
                          selection=kwargs.pop("selection", self.selection),
+                         image_store_factory=lambda _: self.image_store,
                          host_factory=lambda *_: self.host, storage_factory=lambda *_: self.store,
                          encryptor=kwargs.pop("encryptor", self.encrypt), min_free=0, **kwargs)
 
@@ -306,6 +310,7 @@ class Preparation(unittest.TestCase):
         self.assertEqual(proof["operation_id"], proof["backup"]["operation_id"])
         self.assertFalse(proof["migration_authorized"])
         self.assertFalse(proof["target"]["migration_authorized"])
+        self.assertFalse(proof["local_images"]["migration_authorized"])
         self.assertEqual(proof["target"]["target_sha"], proof["target_sha"])
         self.assertNotIn("must not enter receipt", json.dumps(proof))
         self.assertEqual([c["status"] for c in proof["containers"]], ["running", "running", "exited", "exited"])
@@ -452,6 +457,40 @@ class Preparation(unittest.TestCase):
         self.assertTrue(self.pending.exists())
         self.assertTrue(self.host.closed)
         self.assertFalse((self.state / "release-prepared.json").exists())
+
+    def test_missing_local_image_never_pauses_or_stops(self):
+        w.open_admission(self.config)
+        self.image_store.values.clear()
+        with self.assertRaisesRegex(b.BackupError, "image-local-unavailable"): self.prepare()
+        self.assertTrue((self.state / w.ADMISSION).exists())
+        self.assertFalse(self.pending.exists())
+        self.assertEqual(self.host.events, [])
+        self.assertEqual(self.store.calls, [])
+
+    def test_image_drift_during_drain_prevents_backup(self):
+        self.host.on_stop = lambda: self.image_store.values.clear()
+        with self.assertRaisesRegex(b.BackupError, "image-local-unavailable"): self.prepare()
+        self.assertTrue(self.pending.exists())
+        self.assertTrue(self.host.closed)
+        self.assertEqual(self.store.calls, [])
+        self.assertFalse((self.state / "release-prepared.json").exists())
+
+    def test_image_drift_during_backup_prevents_receipt(self):
+        def encrypt(c, dest, env):
+            self.encrypt(c, dest, env)
+            self.image_store.values.clear()
+        with self.assertRaisesRegex(b.BackupError, "image-local-unavailable"): self.prepare(encryptor=encrypt)
+        self.assertTrue(self.pending.exists())
+        self.assertTrue(self.host.closed)
+        self.assertFalse((self.state / "release-prepared.json").exists())
+
+    def test_revoked_approval_during_image_read_cannot_start_downtime(self):
+        w.open_admission(self.config)
+        self.image_store.on_inspect = lambda: self.selection.approval_file.unlink(missing_ok=True)
+        with self.assertRaises(OSError): self.prepare()
+        self.assertTrue((self.state / w.ADMISSION).exists())
+        self.assertFalse(self.pending.exists())
+        self.assertEqual(self.host.events, [])
 
 
 if __name__ == "__main__": unittest.main()

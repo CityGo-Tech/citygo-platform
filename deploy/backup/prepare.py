@@ -15,6 +15,7 @@ import tempfile
 import time
 
 import backup as b
+import image_gate as g
 import release as r
 import target as t
 import worker as w
@@ -229,7 +230,8 @@ def network_snapshot(host, containers, project, images, original=None, *, initia
 
 
 def prepare(config, target_sha, origin, ingress_directory, images, *, allow_stop=False,
-            allow_upload=False, selection=None, host_factory=Host, storage_factory=b.S3, encryptor=b.encrypt, min_free=b.MIN_FREE):
+            allow_upload=False, selection=None, image_store_factory=g.Store,
+            host_factory=Host, storage_factory=b.S3, encryptor=b.encrypt, min_free=b.MIN_FREE):
     """Prepare only; keep pending/ingress closed on success AND every failure.
 
     Explicit booleans are required by trusted callers. No command/config hook or
@@ -244,8 +246,14 @@ def prepare(config, target_sha, origin, ingress_directory, images, *, allow_stop
     ingress_directory = b.protected(ingress_directory, directory=True, private=False)
     b.require(type(selection) is t.Selection, "target-selection-required")
     selected = selection.verify(config, target_sha, origin, images)
+    image_store = image_store_factory(b.protected(config["state_dir"], directory=True))
+    local_images = g.verify(image_store, selected, images)
     def check_selection():
         b.require(selection.verify(config, target_sha, origin, images) == selected, "target-selection-changed")
+        b.require(g.verify(image_store, selected, images) == local_images, "image-selection-changed")
+        # Local content reads must not outlive a revoked/expired approval.
+        b.require(selection.verify(config, target_sha, origin, images) == selected, "target-selection-changed")
+    check_selection()  # Missing/wrong local images must fail BEFORE closing admission.
     # Closing admission is restrictive and does not interrupt an active Worker.
     # If one still owns maintenance.lock, entry fails; there is no polling/retry.
     w.pause(config)
@@ -280,9 +288,11 @@ def prepare(config, target_sha, origin, ingress_directory, images, *, allow_stop
             same_inventory(stopped, final)
             final, final_network = network_snapshot(host, final, config["project"], images, network, initial=False)
             host.assert_closed()
+            check_selection()
             proof = {"version": 1, "operation_id": checkpoint["operation_id"], "target_sha": target_sha,
                      "origin": origin, "ingress_directory": str(ingress_directory),
                      "target": selected,
+                     "local_images": local_images,
                      "database_network": final_network, "containers": [evidence(final[i]) for i in sorted(final)],
                      "backup": checkpoint["backup"], "prepared_at": time.time(), "migration_authorized": False}
         window._check()  # Cleanup too must finish before any prepared receipt.

@@ -31,7 +31,7 @@ def manifest_fixture(sha="b" * 40, *, current=False):
                 {"workflow": "container-smoke.yml", "id": 102, "attempt": 1}]},
             "bases": {"node": "node:24-bookworm-slim@sha256:" + "c" * 64,
                       "postgres": "postgres:17-alpine@sha256:" + "d" * 64},
-            "images": {role: f"ghcr.io/citygo-tech/citygo-platform-{role}@sha256:" + "e" * 64 for role in t.ROLES},
+            "images": {role: f"ghcr.io/citygo-tech/citygo-platform-{role}@sha256:" + ("d" if current else "e") * 64 for role in t.ROLES},
             "imageIds": {role: "sha256:" + "c" * 64 for role in t.ROLES},
             "migrations": [{"name": "0001_fixture.sql", "sha256": "f" * 64}],
             "runtimeFiles": [{"path": p, "sha256": t.sha256(b"# synthetic fixture, never executed\n")} for p in sorted(files)],
@@ -52,6 +52,7 @@ def synthetic_selection(directory, config, images, origin=ORIGIN):
     """Only disposable tests import this writer; it is absent from runtime bundle."""
     current, target = directory / "current-bundle", directory / "target-bundle"
     values = [manifest_fixture(config["source_sha"], current=True), manifest_fixture()]
+    values[0]["imageIds"] = {"api": images["api"], "web": images["web"], "jobs": images["worker"]}
     values[1]["migrations"].append({"name": "0002_fixture.sql", "sha256": "e" * 64})
     for root, value in zip((current, target), values):
         root.mkdir(mode=0o700)

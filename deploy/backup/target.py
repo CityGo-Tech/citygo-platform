@@ -31,7 +31,7 @@ FILES = frozenset({
     "deploy/nginx/pilot.conf.template", "deploy/postgres/postgresql.conf",
     "deploy/postgres/init.sql", "deploy/postgres/grants.sql", "deploy/postgres/dump.sh",
     "deploy/backup/backup.py", "deploy/backup/worker.py", "deploy/backup/release.py",
-    "deploy/backup/prepare.py", "deploy/backup/target.py", "deploy/backup/config.example.json",
+    "deploy/backup/prepare.py", "deploy/backup/target.py", "deploy/backup/image_gate.py", "deploy/backup/config.example.json",
     "deploy/backup/notify.py", "deploy/backup/schedule.py", "deploy/backup/mail.example.json",
     "deploy/backup/schedule.example.json", "deploy/backup/systemd/citygo-backup.service.template",
     "deploy/backup/systemd/citygo-backup.timer.template",
@@ -40,7 +40,7 @@ FILES = frozenset({
     "docs/runbooks/cloudru-runtime.md", "docs/runbooks/encrypted-backup.md",
     "docs/runbooks/backup-operations.md", "docs/runbooks/worker-coordination.md",
     "docs/runbooks/release-backup-window.md", "docs/runbooks/release-preparation.md",
-    "docs/runbooks/release-target.md", "docs/runbooks/release-candidate.md",
+    "docs/runbooks/release-target.md", "docs/runbooks/release-images.md", "docs/runbooks/release-candidate.md",
 })
 # The first delivered candidate predates Worker/drain/prepare helpers. Current
 # manifests may contain this baseline plus known additions, never arbitrary paths.
@@ -253,6 +253,8 @@ class Selection:
                 "target_manifest_sha256": approved["target_manifest_sha256"], "target_sha": target_sha,
                 "release_id": target["releaseId"], "run": target["run"], "images": target["images"],
                 "image_ids": target["imageIds"], "new_migrations": target["migrations"][len(old):],
+                "current": {"source_sha": current["sourceSha"], "images": current["images"],
+                            "image_ids": current["imageIds"], "postgres": current["bases"]["postgres"]},
                 "expires_at": approved["expires_at"], "migration_authorized": False})
         except Exception:
             self._failed = True
