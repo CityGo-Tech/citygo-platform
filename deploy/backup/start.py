@@ -1,13 +1,16 @@
 """Internal AI-disabled API/Web replacement + read-only health, not full deploy.
 
 Requires independent startup approval AND the live migration continuation.
-No CLI, publication, traffic/Worker opening, pending removal or automatic rollback.
+start() retains pending. Only the internal live continuation can feed the separately
+approved closed finish. No CLI, traffic/Worker opening or automatic rollback.
 """
 import copy
+from contextlib import contextmanager
 import http.client
 import os
 from pathlib import Path, PurePosixPath
 import tempfile
+import threading
 import time
 from urllib.parse import urlsplit
 
@@ -218,6 +221,16 @@ def runtime(value, role, image, project, origin, secret_file, networks):
 
 def start(config, target_sha, origin, ingress_directory, images, secret_file, api_secret_file, *,
           startup_authorization=None, allow_start=False, **options):
+    b.require("authorization_check" not in options, "start-only")
+    with _started_window(config, target_sha, origin, ingress_directory, images, secret_file, api_secret_file,
+                         startup_authorization=startup_authorization, allow_start=allow_start, **options) as stage:
+        result = copy.deepcopy(stage["result"])
+    return result
+
+
+@contextmanager
+def _started_window(config, target_sha, origin, ingress_directory, images, secret_file, api_secret_file, *,
+                    startup_authorization=None, allow_start=False, authorization_check=None, **options):
     b.require(allow_start is True and type(startup_authorization) is Approval, "explicit-start-permission-required")
     b.require("authorization_check" not in options, "start-only")
     config, images = copy.deepcopy(b.validate(config)), p.expected_images(images)
@@ -229,6 +242,7 @@ def start(config, target_sha, origin, ingress_directory, images, secret_file, ap
     reservation = None
     host_factory = options.setdefault("host_factory", Host)
     def check(*, initial=False):
+        if authorization_check is not None: authorization_check()
         b.require(startup_authorization.verify(selected, migration_auth, config, target_sha, origin, images, api_secret_file) == approved, "start-approval-changed")
         if reservation is None: b.require(not os.path.lexists(used), "start-approval-used")
         else: b.require(t.read_file(used, private=True) == reservation, "start-reservation-changed")
@@ -261,16 +275,18 @@ def start(config, target_sha, origin, ingress_directory, images, secret_file, ap
         network_ids = {"web_api": approved["web_network_id"], "database": stage["network"]["id"]}
         target_images = stage["proof"]["local_images"]["target"]
         spec = compose_spec(config["project"], origin, target_images, api_secret_file)
-        def guard(*, final=False):
+        def guard(*, final=False, cutover=False):
             if final:
                 # Read-only receipt gate after context cleanup, NOT a resumed
                 # release window or permission to mutate services/the database.
                 b.verify_operation(state, window._operation)
                 b.require(not os.path.lexists(state / w.ADMISSION), "worker-not-paused")
-                b.require(b.configuration_fingerprint(config) == window._operation["configuration_sha256"], "configuration-changed")
+                if not cutover:
+                    b.require(b.configuration_fingerprint(config) == window._operation["configuration_sha256"], "configuration-changed")
             else:
                 window._check()
-            stage["check_selection"](); host.assert_closed()
+            if not cutover: stage["check_selection"]()
+            host.assert_closed()
             values = host.inventory()
             retained = {v["Id"]: v for v in values if v.get("Id") in baseline}
             b.require(set(retained) == set(baseline), "start-retained-missing")
@@ -300,9 +316,9 @@ def start(config, target_sha, origin, ingress_directory, images, secret_file, ap
             # it. The post-start inventory guard intentionally allows new writers.
             stage["assert_migrated"]()
             host.replace(Path(tmp), spec)
-            def verified_apps(*, final=False):
+            def verified_apps(*, final=False, cutover=False):
                 result = {}
-                for value in guard(final=final):
+                for value in guard(final=final, cutover=cutover):
                     role = value["Labels"]["com.docker.compose.service"]
                     b.require(value["Id"] != old_apps[role], "start-not-replaced")
                     detail = host.detail(value["Id"])
@@ -329,5 +345,22 @@ def start(config, target_sha, origin, ingress_directory, images, secret_file, ap
         # revoked/expired approval. This last authorization read does no I/O
         # to Docker or the application.
         b.require(startup_authorization.verify(selected, migration_auth, config, target_sha, origin, images, api_secret_file) == approved, "start-approval-changed")
+        if authorization_check is not None: authorization_check()
         b.atomic_json(state / ("start-" + operation + ".success.json"), proof)
-    return copy.deepcopy(result)
+        # Only this live owner may continue. A saved startup receipt is evidence,
+        # never permission to finish/retry an interrupted release.
+        active = True
+        owner = (os.getpid(), threading.get_ident())
+        def recheck(*, cutover=False):
+            nonlocal host
+            b.require(active and owner == (os.getpid(), threading.get_ident()), "start-window-inactive")
+            with tempfile.TemporaryDirectory(prefix=".finish-health-", dir=state) as tmp:
+                host = host_factory(config, Path(tmp), ingress_directory, origin)
+                b.require(verified_apps(final=True, cutover=cutover) == started, "start-process-changed")
+                host.probe()
+                b.require(verified_apps(final=True, cutover=cutover) == started, "start-process-changed")
+            if not cutover: check()
+        try:
+            yield {"result": copy.deepcopy(result), "operation": copy.deepcopy(window._operation), "recheck": recheck}
+        finally:
+            active = False

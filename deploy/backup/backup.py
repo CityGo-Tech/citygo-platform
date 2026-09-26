@@ -324,8 +324,11 @@ def verify_operation(state, record):
     return path
 
 
-def complete_operation(state, record):
+def complete_operation(state, record, *, before_clear=None):
     path = verify_operation(state, record)
+    # Optional live controller boundary, never loaded from configuration/disk.
+    # Run AFTER the last pending-file read, immediately before barrier removal.
+    if before_clear is not None: before_clear()
     path.unlink()
     sync_directory(state)
 

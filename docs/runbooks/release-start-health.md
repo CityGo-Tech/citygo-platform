@@ -1,8 +1,9 @@
 # Запуск API/Web и проверка до открытия доступа
 
 Продолжение CG-037 / §10.5. `deploy/backup/start.py` — внутренняя библиотека,
-**не production CLI и ещё не завершённый rollout**. Пока отсутствуют finish,
-переключение active release/configuration и recovery drill, на рабочей ВМ не запускать.
+**не production CLI и ещё не завершённый rollout**. Отдельный
+[closed finish](release-finish.md) уже умеет переключать active release/configuration
+в живом продолжении. До recovery/compatibility drill и операторского CLI на рабочей ВМ не запускать.
 Публичные `prepare()` и `migrate()` сохранили прежние ограниченные полномочия.
 
 ## Отдельное разрешение запуска
