@@ -9,11 +9,15 @@ import sys
 import tempfile
 
 import backup as b
+import migrate as c
 import prepare as p
+import target as t
 import worker as w
 from test_backup import MemoryStore
 from test_target import synthetic_selection
 from test_image_gate import selection_store
+from test_migrate import synthetic_authorization
+from test_target import encoded
 
 
 def main():
@@ -83,13 +87,41 @@ def main():
         # This is a synthetic offline approval fixture, NOT GitHub provenance or
         # authorization for the user's server. No target file is ever executed.
         selection = synthetic_selection(directory, config, fixture["images"], fixture["origin"])
+        # Use the real 7-entry journal and packaged ACL for a real no-new-DDL
+        # transaction after preparation. The separate migration smoke tests 6->7.
+        root = Path(__file__).resolve().parents[2]
+        migrations = [{"name": path.name, "sha256": t.sha256(path.read_bytes())}
+                      for path in sorted((root / "packages/db/migrations").glob("*.sql"))]
+        grants = (root / "deploy/postgres/grants.sql").read_bytes()
+        manifests = []
+        for folder in (selection.current_directory, selection.target_directory):
+            value = t.strict_json((folder / "release.json").read_bytes())
+            value["migrations"] = migrations
+            value["imageIds"] = {"api": fixture["images"]["api"], "web": fixture["images"]["web"], "jobs": fixture["images"]["worker"]}
+            (folder / "deploy/postgres/grants.sql").write_bytes(grants)
+            for entry in value["runtimeFiles"]:
+                if entry["path"] == "deploy/postgres/grants.sql": entry["sha256"] = t.sha256(grants)
+            (folder / "release.json").write_bytes(encoded(value))
+            manifests.append(t.sha256(encoded(value)))
+        approved = t.strict_json(selection.approval_file.read_bytes())
+        approved.update(current_manifest_sha256=manifests[0], target_manifest_sha256=manifests[1])
+        selection.approval_file.write_bytes(encoded(approved))
+        network = subprocess.check_output([b.executable("docker"), "network", "inspect", "--format", "{{.Id}}",
+                                          config["project"] + "_database"], env=env, text=True).strip()
+        authorization = synthetic_authorization(directory, selection, config, network)
         # This approval and its images are synthetic. Real digest/blob inspection
         # is exercised separately after the disposable loopback registry push.
         image_store = selection_store(selection, fixture["images"])
         w.open_admission(config)
-        proof = p.prepare(config, "b" * 40, fixture["origin"], fixture["ingress_directory"], fixture["images"],
+        complete = c.migrate(config, "b" * 40, fixture["origin"], fixture["ingress_directory"], fixture["images"],
+            path.parent / "migrate.json", allow_migration=True, authorization=authorization,
             allow_stop=True, allow_upload=True, selection=selection, image_store_factory=lambda _: image_store,
             host_factory=FixtureHost, storage_factory=lambda *_: store)
+        proof = complete["preparation"]
+        migrated = complete["migration"]
+        b.require(migrated["result"]["committed"] is True and migrated["result"]["applied"] == []
+                  and complete["traffic_authorized"] is False, "fixture-migration")
+        b.require(len(list(state.glob("migration-approval-*.used.json"))) == 1, "fixture-approval-use")
         b.require(proof["migration_authorized"] is False and (state / "operation-pending.json").exists(), "fixture-pending")
         b.require(not (state / w.ADMISSION).exists(), "fixture-admission")
         b.require(not (Path(fixture["ingress_directory"]) / "traffic-open").exists(), "fixture-ingress")
@@ -108,6 +140,7 @@ def main():
         b.require(proof["target"]["artifact_id"] == "456" and proof["target"]["migration_authorized"] is False, "fixture-target")
         b.require(observed["worker_exit_race_verified"], "fixture-race-not-reproduced")
         print(json.dumps({"ok": True, "migration_authorized": False, **observed,
+                          "migration_committed": True, "migration_container": migrated["container_id"],
                           "roles": sorted(v["role"] for v in proof["containers"])}))
 
 

@@ -4,6 +4,7 @@ No CLI, migration, image download, removal, restart, admission reopening or unlo
 Scope is the declared Compose project on one host, not arbitrary DB clients/root.
 """
 import copy
+from contextlib import contextmanager
 import http.client
 import json
 import os
@@ -229,10 +230,20 @@ def network_snapshot(host, containers, project, images, original=None, *, initia
         network = host.database_network()
 
 
-def prepare(config, target_sha, origin, ingress_directory, images, *, allow_stop=False,
+def prepare(config, target_sha, origin, ingress_directory, images, **options):
+    # The preparation-only public API cannot inject a migration continuation.
+    b.require(not ({"authorization_check", "expected_network_id"} & set(options)), "prepare-only")
+    with _prepared_window(config, target_sha, origin, ingress_directory, images, **options) as stage:
+        proof = copy.deepcopy(stage["proof"])
+    return proof
+
+
+@contextmanager
+def _prepared_window(config, target_sha, origin, ingress_directory, images, *, allow_stop=False,
             allow_upload=False, selection=None, image_store_factory=g.Store,
-            host_factory=Host, storage_factory=b.S3, encryptor=b.encrypt, min_free=b.MIN_FREE):
-    """Prepare only; keep pending/ingress closed on success AND every failure.
+            host_factory=Host, storage_factory=b.S3, encryptor=b.encrypt, min_free=b.MIN_FREE,
+            authorization_check=None, expected_network_id=None):
+    """Internal continuation under the SAME live window, never a stored receipt.
 
     Explicit booleans are required by trusted callers. No command/config hook or
     CLI exposes the injected transports (only the disposable tests replace them).
@@ -253,6 +264,8 @@ def prepare(config, target_sha, origin, ingress_directory, images, *, allow_stop
         b.require(g.verify(image_store, selected, images) == local_images, "image-selection-changed")
         # Local content reads must not outlive a revoked/expired approval.
         b.require(selection.verify(config, target_sha, origin, images) == selected, "target-selection-changed")
+        if authorization_check is not None:
+            authorization_check()
     check_selection()  # Missing/wrong local images must fail BEFORE closing admission.
     # Closing admission is restrictive and does not interrupt an active Worker.
     # If one still owns maintenance.lock, entry fails; there is no polling/retry.
@@ -261,9 +274,12 @@ def prepare(config, target_sha, origin, ingress_directory, images, *, allow_stop
         state = b.protected(config["state_dir"], directory=True)
         with tempfile.TemporaryDirectory(prefix=".prepare-", dir=state) as temp:
             host = host_factory(config, Path(temp), ingress_directory, origin)
+            check_selection()
             host.close_ingress()
             before = validate_inventory(host.inventory(), config["project"], images, initial=True)
             before, network = network_snapshot(host, before, config["project"], images, initial=True)
+            if expected_network_id is not None:
+                b.require(network["id"] == expected_network_id, "approved-network-changed")
             # Stop only fully validated API/Worker IDs, never names/wildcards.
             for ident, value in sorted(before.items(), key=lambda pair: (identity(pair[1])["role"] != "api", pair[0])):
                 role = identity(value)["role"]
@@ -274,6 +290,7 @@ def prepare(config, target_sha, origin, ingress_directory, images, *, allow_stop
                 current_set, _ = network_snapshot(host, current_set, config["project"], images, network, initial=None)
                 current = current_set[ident]
                 if current["State"]["Running"]:
+                    check_selection()
                     host.stop_writer(current)
                 after = host.inspect(ident)
                 b.require(identity(after) == identity(value), "container-replaced")
@@ -295,7 +312,9 @@ def prepare(config, target_sha, origin, ingress_directory, images, *, allow_stop
                      "local_images": local_images,
                      "database_network": final_network, "containers": [evidence(final[i]) for i in sorted(final)],
                      "backup": checkpoint["backup"], "prepared_at": time.time(), "migration_authorized": False}
+            yield {"window": window, "host": host, "proof": copy.deepcopy(proof),
+                   "containers": copy.deepcopy(final), "network": copy.deepcopy(final_network),
+                   "check_selection": check_selection}
         window._check()  # Cleanup too must finish before any prepared receipt.
         check_selection()
         b.atomic_json(state / "release-prepared.json", proof)
-        return copy.deepcopy(proof)

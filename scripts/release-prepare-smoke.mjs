@@ -93,7 +93,7 @@ export async function releasePrepareSmoke({
         cwd: root,
         env: serviceEnv("test"),
         encoding: "utf8",
-        timeout: 180000,
+        timeout: 360000,
         maxBuffer: 65536,
       },
     );
@@ -107,9 +107,19 @@ export async function releasePrepareSmoke({
     assert.equal(proof.ok, true);
     assert.equal(proof.migration_authorized, false);
     assert.equal(proof.worker_exit_race_verified, true);
+    assert.equal(proof.migration_committed, true);
+    assert.match(proof.migration_container, /^[a-f0-9]{64}$/);
+    const migrated = JSON.parse(
+      docker(["inspect", "--format", "{{json .}}", proof.migration_container]),
+    );
+    assert.equal(migrated.Config.Labels["com.docker.compose.project"], project);
+    assert.equal(migrated.State.Status, "exited");
+    assert.equal(migrated.State.ExitCode, 0);
+    // Test-only cleanup of this exact, verified exited fixture container.
+    docker(["rm", proof.migration_container]);
     assert.deepEqual(proof.roles, ["api", "postgres", "web", "worker"]);
     console.log(
-      "Release preparation passed: deterministic real-container Worker exit between inventory/network reads, strict stale-snapshot rejection, synthetic approved target revalidated, real closed TLS ingress, clean stop, pg_dump/age/readback, retained pending; no migration/cloud/AI",
+      "Approved migration continuation passed: real closed TLS ingress, Worker exit race, API drain, pg_dump/age/readback, same-lock retained jobs container and committed no-new-DDL transaction; synthetic separate approval consumed once, pending retained; no start/reopen/cloud/AI",
     );
   } finally {
     // Exact container created by this random test project; never a general prune.
