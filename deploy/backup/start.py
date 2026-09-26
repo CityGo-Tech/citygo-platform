@@ -228,18 +228,29 @@ def start(config, target_sha, origin, ingress_directory, images, secret_file, ap
     used = state / ("start-approval-" + approved["approval_sha256"] + ".used.json")
     reservation = None
     host_factory = options.setdefault("host_factory", Host)
-    def check():
+    def check(*, initial=False):
         b.require(startup_authorization.verify(selected, migration_auth, config, target_sha, origin, images, api_secret_file) == approved, "start-approval-changed")
         if reservation is None: b.require(not os.path.lexists(used), "start-approval-used")
         else: b.require(t.read_file(used, private=True) == reservation, "start-reservation-changed")
         # Read-only preflight, repeated at migration boundaries. A stale web
         # network approval must fail BEFORE pause/drain/backup/DDL, not after it.
         with tempfile.TemporaryDirectory(prefix=".start-preflight-", dir=state) as tmp:
-            network = host_factory(config, Path(tmp), ingress_directory, origin).web_network()
+            probe_host = host_factory(config, Path(tmp), ingress_directory, origin)
+            values = probe_host.inventory()
+            if initial:
+                p.validate_inventory(values, config["project"], images, initial=True)
+            apps = [v for v in values if v.get("Labels", {}).get("com.docker.compose.service") in ("api", "web")]
+            b.require(len(apps) == 2 and {v["Labels"]["com.docker.compose.service"] for v in apps} == {"api", "web"}
+                      and all(v["Labels"].get("com.docker.compose.project") == config["project"]
+                              and t.matches(v.get("Id"), t.HASH) for v in apps), "start-container-set")
+            allowed = {v["Id"] for v in apps}
+            required = {v["Id"] for v in apps if v["State"]["Running"]}
+            network = probe_host.web_network()
             b.require(network.get("id") == approved["web_network_id"], "start-network-changed")
+            b.require(required <= set(network["peers"]) <= allowed, "start-network-peers")
         # The Docker read must not outlive a revoked/expired approval.
         b.require(startup_authorization.verify(selected, migration_auth, config, target_sha, origin, images, api_secret_file) == approved, "start-approval-changed")
-    check()
+    check(initial=True)
     with c._migrated_window(config, target_sha, origin, ingress_directory, images, secret_file,
                             authorization_check=check, **options) as stage:
         window, host, migration = stage["window"], stage["host"], stage["result"]["migration"]

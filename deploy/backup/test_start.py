@@ -187,6 +187,27 @@ class Startup(unittest.TestCase):
         with self.assertRaises(OSError): self.start()
         self.assertEqual(self.start_events, []); self.assertTrue(self.pending.exists())
 
+    def test_unexpected_or_missing_web_peer_refuses_before_any_mutation(self):
+        original = self.host.web_network
+        w.open_admission(self.config)
+        for peers in (original()["peers"] + ["d" * 64], original()["peers"][:-1]):
+            self.host.web_network = lambda: {"id": WEB_NETWORK, "peers": peers}
+            with self.subTest(peers=peers), self.assertRaisesRegex(b.BackupError, "start-network-peers"):
+                self.start()
+            self.assertTrue((self.state / w.ADMISSION).exists())
+            self.assertFalse(self.pending.exists())
+            self.assertEqual(self.host.events, [])
+            self.assertEqual(self.store.calls, [])
+            self.assertEqual(self.transport.events, [])
+            self.assertEqual(self.start_events, [])
+
+    def test_unverified_initial_container_is_not_a_valid_web_peer(self):
+        self.host.values[2]["Image"] = "sha256:" + "d" * 64
+        with self.assertRaisesRegex(b.BackupError, "container-image"): self.start()
+        self.assertFalse(self.pending.exists())
+        self.assertEqual(self.host.events, [])
+        self.assertEqual(self.transport.events, [])
+
     def test_replacement_failure_keeps_pending_and_consumed_approval_no_success(self):
         def fail(): raise b.BackupError("fixture-start-failed")
         self.on_replace = fail

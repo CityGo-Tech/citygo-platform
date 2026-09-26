@@ -54,7 +54,7 @@ def main():
 
             def inventory(self):
                 values = super().inventory()
-                if self.first_inventory is None:
+                if self.first_inventory is None and not observed["worker_exit_race_verified"]:
                     self.first_inventory = p.validate_inventory(values, base["project"], fixture["images"], initial=True)
                 return values
 
