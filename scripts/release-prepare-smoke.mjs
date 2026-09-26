@@ -110,6 +110,7 @@ export async function releasePrepareSmoke({
     assert.equal(proof.migration_committed, true);
     assert.equal(proof.startup_verified, true);
     assert.equal(proof.finish_verified, true);
+    assert.equal(proof.commit_recovery_verified, true);
     assert.equal(proof.new_backup_verified, true);
     assert.deepEqual(Object.keys(proof.apps).sort(), ["api", "web"]);
     assert.match(proof.migration_container, /^[a-f0-9]{64}$/);
