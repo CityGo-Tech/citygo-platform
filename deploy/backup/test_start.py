@@ -1,5 +1,6 @@
 """Synthetic startup approvals and containers; Linux locks are real."""
 import copy
+from contextlib import contextmanager
 import json
 from pathlib import Path
 import sys
@@ -214,6 +215,32 @@ class Startup(unittest.TestCase):
         with self.assertRaisesRegex(b.BackupError, "fixture-start-failed"): self.start()
         self.assertTrue(self.pending.exists())
         self.assertTrue(list(self.state.glob("start-approval-*.used.json")))
+        self.assertFalse(list(self.state.glob("start-*.success.json")))
+
+    def test_revocation_on_outer_window_exit_leaves_no_success_receipt(self):
+        original = s.c._migrated_window
+        @contextmanager
+        def revoke_on_exit(*args, **kwargs):
+            with original(*args, **kwargs) as stage:
+                yield stage
+                self.start_approval.path.unlink()
+        with patch.object(s.c, "_migrated_window", revoke_on_exit), self.assertRaises(OSError):
+            self.start()
+        self.assertEqual(self.start_events, ["replace", "probe"])
+        self.assertTrue(self.pending.exists()); self.assertTrue(self.host.closed)
+        self.assertFalse(list(self.state.glob("start-*.success.json")))
+
+    def test_failed_outer_window_exit_leaves_no_success_receipt(self):
+        original = s.c._migrated_window
+        @contextmanager
+        def fail_on_exit(*args, **kwargs):
+            with original(*args, **kwargs) as stage:
+                yield stage
+            raise b.BackupError("fixture-finalization-failed")
+        with patch.object(s.c, "_migrated_window", fail_on_exit), self.assertRaisesRegex(b.BackupError, "fixture-finalization-failed"):
+            self.start()
+        self.assertEqual(self.start_events, ["replace", "probe"])
+        self.assertTrue(self.pending.exists()); self.assertTrue(self.host.closed)
         self.assertFalse(list(self.state.glob("start-*.success.json")))
 
     def test_health_failure_never_opens_or_writes_success(self):

@@ -308,6 +308,9 @@ def start(config, target_sha, origin, ingress_directory, images, secret_file, ap
         proof = {"version": 1, "operation_id": operation, "target_sha": target_sha, "approval_sha256": approved["approval_sha256"],
                  "apps": started, "health": {"ready": True, "v1_unauthorized": True, "legacy_unauthorized": True},
                  "traffic_authorized": False, "worker_authorized": False}
-        b.atomic_json(state / ("start-" + operation + ".success.json"), proof)
         result = {**stage["result"], "startup": proof}
+    # The enclosing preparation context performs final authorization/file
+    # checks on exit. Never leave success evidence if that finalization fails.
+    check()
+    b.atomic_json(state / ("start-" + operation + ".success.json"), proof)
     return copy.deepcopy(result)
