@@ -13,6 +13,7 @@ import migrate as c
 import prepare as p
 import target as t
 import start as s
+import finish as f
 import worker as w
 from test_backup import MemoryStore
 from test_target import synthetic_selection
@@ -20,6 +21,7 @@ from test_image_gate import selection_store
 from test_migrate import synthetic_authorization
 from test_target import encoded
 from test_start import synthetic_start_approval
+from test_finish import synthetic_finish_approval
 
 
 def main():
@@ -44,6 +46,9 @@ def main():
         config = b.validate({**base, "version": 1, "upload_enabled": True,
             "state_dir": str(state), "recipient": recipient, "storage_credentials_file": str(directory / "unused"),
             "endpoint": b.ENDPOINT, "bucket": "synthetic-no-upload", "prefix": "citygo/fixture"})
+        config_path = directory / "backup.json"
+        b.atomic_json(config_path, config)
+        config = b.load_config(config_path)
         observed = {"worker_exit_race_verified": False}
         class FixtureHost(s.Host):
             def __init__(self, *args):
@@ -117,9 +122,14 @@ def main():
         # This approval and its images are synthetic. Real digest/blob inspection
         # is exercised separately after the disposable loopback registry push.
         image_store = selection_store(selection, fixture["images"])
+        selected = selection.verify(config, "b" * 40, fixture["origin"], fixture["images"])
+        plan = f.generation(config, "b" * 40, fixture["origin"], f.g.verify(image_store, selected, fixture["images"]),
+                            path.parent / "api.json", path.parent / "worker.json", path.parent / "db_backup_password")
+        finish_auth = synthetic_finish_approval(directory, config, startup, plan)
         w.open_admission(config)
-        complete = s.start(config, "b" * 40, fixture["origin"], fixture["ingress_directory"], fixture["images"],
-            path.parent / "migrate.json", path.parent / "api.json", allow_start=True, startup_authorization=startup,
+        complete = f.finish(config, "b" * 40, fixture["origin"], fixture["ingress_directory"], fixture["images"],
+            path.parent / "migrate.json", path.parent / "api.json", path.parent / "worker.json", path.parent / "db_backup_password",
+            allow_finish=True, finish_authorization=finish_auth, allow_start=True, startup_authorization=startup,
             allow_migration=True, authorization=authorization,
             allow_stop=True, allow_upload=True, selection=selection, image_store_factory=lambda _: image_store,
             host_factory=FixtureHost, storage_factory=lambda *_: store)
@@ -131,13 +141,13 @@ def main():
         b.require(complete["startup"]["traffic_authorized"] is False
                   and complete["startup"]["worker_authorized"] is False
                   and len(list(state.glob("start-approval-*.used.json"))) == 1, "fixture-startup")
-        b.require(proof["migration_authorized"] is False and (state / "operation-pending.json").exists(), "fixture-pending")
+        b.require(proof["migration_authorized"] is False and not (state / "operation-pending.json").exists(), "fixture-pending")
         b.require(not (state / w.ADMISSION).exists(), "fixture-admission")
         b.require(not (Path(fixture["ingress_directory"]) / "traffic-open").exists(), "fixture-ingress")
         try:
             w.open_admission(config)
         except b.BackupError as error:
-            b.require(str(error) == "operation-unsettled", "fixture-pending")
+            b.require(str(error) in ("configuration-superseded", "configuration-invalidated"), "fixture-stale-config")
         else:
             raise b.BackupError("fixture-reopened")
         archive = directory / "readback.age"
@@ -148,9 +158,21 @@ def main():
         b.require(b.read_json(state / "release-prepared.json") == proof, "fixture-receipt")
         b.require(proof["target"]["artifact_id"] == "456" and proof["target"]["migration_authorized"] is False, "fixture-target")
         b.require(observed["worker_exit_race_verified"], "fixture-race-not-reproduced")
+        fresh = b.load_config(config_path)
+        b.require(f.active_release(fresh) == complete["finish"], "fixture-active")
+        # Exercise the generated Compose with real pg_dump/age and real jobs.
+        # Only this random disposable project is admitted, then paused again.
+        after_store = MemoryStore()
+        after_backup = b.perform_backup(fresh, storage_factory=lambda *_: after_store)
+        b.require(after_backup["source_sha"] == "b" * 40 and len(after_store.objects) == 2, "fixture-new-backup")
+        w.open_admission(fresh)
+        w.perform(fresh)
+        worker_result = b.read_json(state / "worker-last-success.json")
+        w.pause(fresh)
         print(json.dumps({"ok": True, "migration_authorized": False, **observed,
                           "migration_committed": True, "migration_container": migrated["container_id"],
                           "startup_verified": True, "apps": complete["startup"]["apps"],
+                          "finish_verified": True, "new_backup_verified": True, "worker_container": worker_result["container_id"],
                           "roles": sorted(v["role"] for v in proof["containers"])}))
 
 

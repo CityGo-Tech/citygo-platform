@@ -109,6 +109,8 @@ export async function releasePrepareSmoke({
     assert.equal(proof.worker_exit_race_verified, true);
     assert.equal(proof.migration_committed, true);
     assert.equal(proof.startup_verified, true);
+    assert.equal(proof.finish_verified, true);
+    assert.equal(proof.new_backup_verified, true);
     assert.deepEqual(Object.keys(proof.apps).sort(), ["api", "web"]);
     assert.match(proof.migration_container, /^[a-f0-9]{64}$/);
     const migrated = JSON.parse(
@@ -119,9 +121,24 @@ export async function releasePrepareSmoke({
     assert.equal(migrated.State.ExitCode, 0);
     // Test-only cleanup of this exact, verified exited fixture container.
     docker(["rm", proof.migration_container]);
+    assert.match(proof.worker_container, /^[a-f0-9]{64}$/);
+    const finishedWorker = JSON.parse(
+      docker(["inspect", "--format", "{{json .}}", proof.worker_container]),
+    );
+    assert.equal(
+      finishedWorker.Config.Labels["com.docker.compose.project"],
+      project,
+    );
+    assert.equal(
+      finishedWorker.Config.Labels["com.docker.compose.service"],
+      "worker",
+    );
+    assert.equal(finishedWorker.State.Status, "exited");
+    assert.equal(finishedWorker.State.ExitCode, 0);
+    docker(["rm", proof.worker_container]);
     assert.deepEqual(proof.roles, ["api", "postgres", "web", "worker"]);
     console.log(
-      "Approved startup continuation passed: real TLS/drain/backup/migration, replaced API/Web under same lock, unchanged PostgreSQL, read-only readiness and headered/headerless v1 checks; access and Worker remain closed, pending retained; no cloud/AI",
+      "Closed release commit passed: real TLS/drain/backup/migration/start/health, atomic active config, unchanged PostgreSQL; new config pg_dump/age and Worker verified in disposable fixture only; traffic/AI remain closed, no cloud",
     );
   } finally {
     // Exact container created by this random test project; never a general prune.
