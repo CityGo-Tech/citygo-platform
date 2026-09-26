@@ -4,6 +4,7 @@ No startup, traffic opening, pending removal, retry, rollback or approval writer
 Until start/health/finish exist, this must NOT be run against the pilot server.
 """
 import copy
+from contextlib import contextmanager
 import os
 from pathlib import Path
 import sys
@@ -84,10 +85,19 @@ class Approval:
             raise
 
 
-def migrate(config, target_sha, origin, ingress_directory, images, secret_file, *,
+def migrate(config, target_sha, origin, ingress_directory, images, secret_file, **options):
+    b.require("authorization_check" not in options, "migration-only")
+    with _migrated_window(config, target_sha, origin, ingress_directory, images, secret_file, **options) as stage:
+        result = copy.deepcopy(stage["result"])
+    return result
+
+
+@contextmanager
+def _migrated_window(config, target_sha, origin, ingress_directory, images, secret_file, *,
             allow_stop=False, allow_upload=False, allow_migration=False, selection=None,
             authorization=None, image_store_factory=g.Store, host_factory=p.Host,
-            storage_factory=b.S3, encryptor=b.encrypt, min_free=b.MIN_FREE, transport_factory=m.Docker):
+            storage_factory=b.S3, encryptor=b.encrypt, min_free=b.MIN_FREE, transport_factory=m.Docker,
+            authorization_check=None):
     b.require(allow_stop is True and allow_upload is True and allow_migration is True,
               "explicit-migration-permission-required")
     b.require(type(authorization) is Approval, "migration-approval-required")
@@ -107,6 +117,8 @@ def migrate(config, target_sha, origin, ingress_directory, images, secret_file, 
             b.require(not os.path.lexists(spent), "migration-approval-already-used")
         else:
             b.require(t.read_file(spent, private=True) == reservation, "migration-reservation-changed")
+        if authorization_check is not None:
+            authorization_check()
 
     with p._prepared_window(config, target_sha, origin, ingress_directory, images,
             allow_stop=True, allow_upload=True, selection=selection, image_store_factory=image_store_factory,
@@ -186,4 +198,4 @@ def migrate(config, target_sha, origin, ingress_directory, images, secret_file, 
         guard()
         result = {"version": 1, "preparation": stage["proof"], "migration": proof,
                   "approval_sha256": approved["approval_sha256"], "traffic_authorized": False}
-    return copy.deepcopy(result)
+        yield {**stage, "result": copy.deepcopy(result), "assert_migrated": guard}
