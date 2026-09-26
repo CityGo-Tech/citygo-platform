@@ -37,13 +37,41 @@ class BackupError(Exception):
     """Deliberately contains only a fixed, non-sensitive failure code."""
 
 
+class _ConfigBinding:
+    def __init__(self, path, raw, values):
+        self.path = path
+        self.raw_hash = hashlib.sha256(raw).digest()
+        self.values_hash = hashlib.sha256(json.dumps(values, sort_keys=True).encode()).digest()
+        self.failed = False
+
+
+class _LoadedConfig(dict):
+    """Same v1 values; in-process source binding is not serialized or a grant."""
+    def __init__(self, values, binding):
+        super().__init__(values)
+        self._binding = binding
+
+    def copy(self):
+        return _LoadedConfig(self, self._binding)
+
+    def __copy__(self):
+        return self.copy()
+
+    def __deepcopy__(self, memo):
+        # Validated config values are only immutable strings/bools/integers.
+        # All copies share observed revocation; restoring bytes cannot revive it.
+        result = self.copy()
+        memo[id(self)] = result
+        return result
+
+
 def require(condition, code="configuration"):
     if not condition:
         raise BackupError(code)
 
 
 def validate(config):
-    require(type(config) is dict and set(config) == FIELDS)
+    require(type(config) in (dict, _LoadedConfig) and set(config) == FIELDS)
     require(type(config["version"]) is int and config["version"] == 1)
     require(type(config["upload_enabled"]) is bool)
     for key in FIELDS - {"version", "upload_enabled"}:
@@ -82,9 +110,50 @@ def read_json(path):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _config_bytes(path):
+    path = protected(path)
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        require(stat.S_ISREG(info.st_mode) and info.st_uid == os.geteuid()
+                and not info.st_mode & 0o077 and info.st_nlink == 1, "configuration-file")
+        raw = stream.read(65537)
+        current = protected(path).stat()
+        require((current.st_dev, current.st_ino) == (info.st_dev, info.st_ino), "configuration-superseded")
+    require(0 < len(raw) <= 65536, "configuration-file")
+    return raw
+
+
+def assert_current_config(config):
+    # Plain dicts are trusted in-process fixtures/config construction. All
+    # operator entrypoints must retain the object returned by load_config().
+    if type(config) is not _LoadedConfig:
+        return
+    binding = config._binding
+    require(not binding.failed, "configuration-invalidated")
+    try:
+        require(hashlib.sha256(_config_bytes(binding.path)).digest() == binding.raw_hash
+                and hashlib.sha256(json.dumps(config, sort_keys=True).encode()).digest() == binding.values_hash,
+                "configuration-superseded")
+    except BaseException:
+        binding.failed = True
+        raise
+
+
 def load_config(path):
     require(sys.platform.startswith("linux"), "linux-required")
-    return validate(read_json(protected(path)))
+    path = Path(path)
+    raw = _config_bytes(path)
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            require(key not in result, "configuration-json")
+            result[key] = value
+        return result
+    values = validate(json.loads(raw.decode("utf-8"), object_pairs_hook=pairs))
+    config = _LoadedConfig(values, _ConfigBinding(path, raw, values))
+    assert_current_config(config)
+    return config
 
 
 def clean_env(home):
@@ -278,6 +347,7 @@ def atomic_json(path, data):
 
 def configuration_inputs(config):
     """Read bounded inputs once; callers may launch from these exact bytes."""
+    assert_current_config(config)
     inputs = {}
     for key in ("compose_file", "compose_env"):
         path = protected(config[key], private=key != "compose_file")
@@ -289,15 +359,19 @@ def configuration_inputs(config):
             data = stream.read(65537)
         require(0 < len(data) <= 65536, "configuration")
         inputs[key] = data
+    assert_current_config(config)
     return inputs
 
 
 def configuration_fingerprint(config, *, inputs=None):
     # A receipt for another release/DB volume/recipient/storage must not look fresh.
+    assert_current_config(config)
     if inputs is None:
         inputs = configuration_inputs(config)
     files = {key: hashlib.sha256(data).hexdigest() for key, data in inputs.items()}
-    return hashlib.sha256(json.dumps({"config": config, "files": files}, sort_keys=True).encode()).hexdigest()
+    fingerprint = hashlib.sha256(json.dumps({"config": config, "files": files}, sort_keys=True).encode()).hexdigest()
+    assert_current_config(config)
+    return fingerprint
 
 
 def _snapshot_config(config, directory, inputs):
@@ -335,11 +409,13 @@ def _backup_in_operation(config, operation, *, storage_factory=S3, encryptor=enc
             storage = storage_factory(config, directory)
             archive, downloaded = directory / "database.dump.age", directory / "readback.age"
             stage = "dump-encrypt"
+            assert_current_config(config)
             encryptor(runtime, archive, clean_env(directory))
             size, sha, _ = digest(archive)
             backup_id = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(started)) + "-" + uuid.uuid4().hex
             key = config["prefix"] + "/" + backup_id + ".dump.age"
             stage = "upload"
+            assert_current_config(config)
             storage.put(key, archive)
             stage = "readback"
             storage.get(key, downloaded)
@@ -376,10 +452,12 @@ def _backup_in_operation(config, operation, *, storage_factory=S3, encryptor=enc
 def perform_backup(config, *, storage_factory=S3, encryptor=encrypt, min_free=MIN_FREE):
     """Dependency arguments are for isolated tests, never CLI/config overrides."""
     require(config["upload_enabled"], "upload-disabled")
+    assert_current_config(config)
     state = protected(config["state_dir"], directory=True)
     protected(config["compose_file"], private=False)
     protected(config["compose_env"])
     with lock(state):
+        assert_current_config(config)
         assert_operation_idle(state)
         try:
             fingerprint = configuration_fingerprint(config)

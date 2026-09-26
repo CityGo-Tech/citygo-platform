@@ -63,9 +63,11 @@ def release_window(config, target_sha):
     config = copy.deepcopy(b.validate(config))
     b.require(type(target_sha) is str and re.fullmatch(r"[0-9a-f]{40}", target_sha), "release-target")
     b.require(config["upload_enabled"], "upload-disabled")
+    b.assert_current_config(config)
     state = b.protected(config["state_dir"], directory=True)
     with b.lock(state):
         with b.lock(state, "worker-admission.lock"):
+            b.assert_current_config(config)
             b.assert_operation_idle(state)
             b.require(not os.path.lexists(state / "worker-admission.json"), "worker-not-paused")
             operation = b.begin_operation(state, "release", b.configuration_fingerprint(config),
