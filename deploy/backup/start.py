@@ -325,5 +325,9 @@ def start(config, target_sha, origin, ingress_directory, images, secret_file, ap
             b.require(verified_apps(final=True) == started, "start-process-changed")
             host.probe()
             b.require(verified_apps(final=True) == started, "start-process-changed")
+        # Engine/HTTP reads and cleanup must not outlive an independently
+        # revoked/expired approval. This last authorization read does no I/O
+        # to Docker or the application.
+        b.require(startup_authorization.verify(selected, migration_auth, config, target_sha, origin, images, api_secret_file) == approved, "start-approval-changed")
         b.atomic_json(state / ("start-" + operation + ".success.json"), proof)
     return copy.deepcopy(result)

@@ -295,6 +295,17 @@ class Startup(unittest.TestCase):
         with patch.object(b, "atomic_json", write): self.start()
         self.assertEqual(observed, [True])
 
+    def test_revocation_during_final_runtime_inspection_has_no_success_receipt(self):
+        original = self.host.detail
+        def revoke(ident):
+            result = original(ident)
+            if self.start_events.count("probe") == 2 and self.start_approval.path.exists():
+                self.start_approval.path.unlink()
+            return result
+        self.host.detail = revoke
+        with self.assertRaises(OSError): self.start()
+        self.assertFalse(list(self.state.glob("start-*.success.json")))
+
     def test_process_restart_during_health_is_not_success(self):
         self.on_probe = lambda: self.host.values[2]["State"].update(StartedAt="2026-09-26T00:00:01Z")
         with self.assertRaisesRegex(b.BackupError, "start-process-changed"): self.start()
