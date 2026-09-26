@@ -320,7 +320,54 @@ export async function pilotSmoke({
     console.log(
       "Pilot fixture: restricted-role journey and age-encrypted backup/restore passed (local S3 transport fixture)",
     );
-    await ingressSmoke({ docker, compose, directory, project });
+    const persisted = async () => {
+      const response = await request("/api/v1/dashboard", {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      assert.equal(
+        response.status,
+        200,
+        "Original session must survive release/restart",
+      );
+      const { user, profile, xp, quests, thread, provider } =
+        await response.json();
+      assert.equal(provider, "unconfigured", "Restart must not enable AI");
+      return { user, profile, xp, quests, thread };
+    };
+    const beforeRestart = await persisted();
+    assert.equal(beforeRestart.xp, 60);
+    assert.ok(
+      beforeRestart.thread.messages.some(
+        (m) => m.content === "Synthetic fixture only",
+      ),
+    );
+    assert.ok(
+      beforeRestart.quests.some(
+        (q) => q.id !== questId && q.state === "available",
+      ),
+    );
+    await ingressSmoke({
+      docker,
+      compose,
+      directory,
+      project,
+      verifyPersisted: async () => {
+        assert.deepEqual(await persisted(), beforeRestart);
+        const duplicate = await post(`/api/v1/quests/${questId}/complete`, {
+          confirmed: true,
+        });
+        assert.equal(duplicate.status, 200);
+        assert.equal(
+          (await duplicate.json()).awarded,
+          0,
+          "Restart must not award XP twice",
+        );
+        assert.deepEqual(await persisted(), beforeRestart);
+        console.log(
+          "Closed restart persistence passed: original session/profile/quest/history/+60 XP/next quest, no duplicate reward, AI still disabled",
+        );
+      },
+    });
     console.log(
       "Pilot smoke passed: mounted secrets, runtime limits, least-privilege roles, dump/restore, TLS/headers/SSE",
     );
@@ -346,7 +393,13 @@ export async function pilotSmoke({
   }
 }
 
-async function ingressSmoke({ docker, compose, directory, project }) {
+async function ingressSmoke({
+  docker,
+  compose,
+  directory,
+  project,
+  verifyPersisted,
+}) {
   const host = "pilot.example.test";
   const certificates = join(directory, "tls", host);
   mkdirSync(certificates, { recursive: true });
@@ -490,6 +543,7 @@ async function ingressSmoke({ docker, compose, directory, project }) {
       compose,
     });
     assert.equal(curl("/api/ready"), "503");
+    await verifyPersisted();
     // Reset ONLY this disposable harness for its existing SSE tests. The real
     // preparation module has no restart/reopen/unlock path.
     compose([

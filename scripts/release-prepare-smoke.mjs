@@ -113,6 +113,19 @@ export async function releasePrepareSmoke({
     assert.equal(proof.commit_recovery_verified, true);
     assert.equal(proof.new_backup_verified, true);
     assert.equal(proof.second_release_verified, true);
+    assert.equal(proof.closed_restart_verified, true);
+    assert.equal(proof.restart_backup_verified, true);
+    assert.equal(proof.stale_process_evidence_rejected, true);
+    assert.deepEqual(Object.keys(proof.restart_processes).sort(), [
+      "api",
+      "postgres",
+      "web",
+    ]);
+    for (const process of Object.values(proof.restart_processes)) {
+      assert.match(process.id, /^[a-f0-9]{64}$/);
+      assert.notEqual(process.before, process.after);
+      assert.ok(Date.parse(process.after) >= Date.parse(process.stopped));
+    }
     assert.ok(proof.retained_jobs_verified >= 4);
     assert.deepEqual(Object.keys(proof.apps).sort(), ["api", "web"]);
     assert.match(proof.migration_container, /^[a-f0-9]{64}$/);
@@ -171,6 +184,9 @@ export async function releasePrepareSmoke({
     assert.deepEqual(proof.roles, ["api", "postgres", "web", "worker"]);
     console.log(
       "Two closed releases passed: real TLS/drain/backup/migration/start/health, interrupted-commit recovery, unchanged PostgreSQL and explicitly retained historical jobs; new config pg_dump/age and Worker verified in disposable fixture only; traffic/AI remain closed, no cloud",
+    );
+    console.log(
+      "Closed graceful restart passed: same API/Web/PostgreSQL containers and volume, new processes, clean exits, unchanged historical jobs, maintenance TLS throughout, fresh backup; NOT host reboot or production restart permission",
     );
   } finally {
     // Exact container created by this random test project; never a general prune.
