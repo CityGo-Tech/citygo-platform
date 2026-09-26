@@ -26,10 +26,12 @@ INSPECT = ('{"Id":{{json .Id}},"Name":{{json .Name}},"Image":{{json .Image}},"Re
 
 
 def pause(config):
+    b.assert_current_config(config)
     state = b.protected(config["state_dir"], directory=True)
     # Independent, short admission lock: pause need not interrupt/wait for an
     # already-admitted transaction or backup. This is NOT a quiescence receipt.
     with b.lock(state, "worker-admission.lock"):
+        b.assert_current_config(config)
         path = state / ADMISSION
         if os.path.lexists(path):
             b.protected(path).unlink()
@@ -41,8 +43,10 @@ def admission(config, *, inputs=None):
 
 
 def open_admission(config):
+    b.assert_current_config(config)
     state = b.protected(config["state_dir"], directory=True)
     with b.lock(state), b.lock(state, "worker-admission.lock"):
+        b.assert_current_config(config)
         b.assert_operation_idle(state)
         b.require(not os.path.lexists(state / ADMISSION), "worker-already-open")
         b.atomic_json(state / ADMISSION, admission(config))
@@ -120,10 +124,13 @@ class Docker:
 
 
 def perform(config, *, transport_factory=Docker):
+    b.assert_current_config(config)
     state = b.protected(config["state_dir"], directory=True)
     with b.lock(state):
         b.assert_operation_idle(state)
         with b.lock(state, "worker-admission.lock"):
+            # A stale caller must not revoke a NEW release's admission marker.
+            b.assert_current_config(config)
             b.require(os.path.lexists(state / ADMISSION), "worker-paused")
             marker = b.protected(state / ADMISSION)
             try:
@@ -148,6 +155,7 @@ def perform(config, *, transport_factory=Docker):
                     stream.flush()
                     os.fsync(stream.fileno())
             docker = transport_factory(config, directory)
+            b.assert_current_config(config)
             target = docker.start(name)
             b.require(re.fullmatch(r"[0-9a-f]{64}", target), "worker-target")
             before = validate_container(docker.inspect(target), config["project"])
@@ -157,10 +165,13 @@ def perform(config, *, transport_factory=Docker):
             clean_exit(before, after, config["project"])
             # The one-shot may already be exited at first inspect. Exit 0 must
             # still belong to the exact container/process started above.
-            b.atomic_json(state / "worker-last-success.json", {
+            receipt = {
                 **operation, "container_id": target, "image": after["Image"],
                 "started_at": after["State"]["StartedAt"], "finished_at": after["State"]["FinishedAt"],
-            })
+            }
+        b.assert_current_config(config)
+        b.verify_operation(state, operation)
+        b.atomic_json(state / "worker-last-success.json", receipt)
         b.complete_operation(state, operation)
 
 

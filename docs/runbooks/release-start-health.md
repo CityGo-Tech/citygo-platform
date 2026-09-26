@@ -100,4 +100,7 @@ Approvals/registry bindings синтетические, S3 — MemoryStore; ре
 
 Далее: финальный compatibility/synthetic-user drill, независимый допуск traffic,
 атомарная фиксация active release и backup/Worker configuration, проверка восстановления.
+Потребители основного файла конфигурации теперь защищены от устаревшего snapshot
+после cutover: см. [защиту при смене конфигурации](worker-coordination.md).
+Само атомарное переключение и завершение pending ещё не реализованы.
 Этот этап не включает DNS/TLS рабочей ВМ, расписания, production AI или тестировщиков.

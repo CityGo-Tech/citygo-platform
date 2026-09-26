@@ -56,6 +56,7 @@ def initialize(config, *, now=None):
     state = b.protected(config["state_dir"], directory=True)
     value = {"approval": approval_id(config, backup_config), "attempts": 0, "last_started": 0}
     with b.lock(state):
+        b.assert_current_config(backup_config)
         fd = os.open(state / "attempts.json", os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
             json.dump(value, stream)
