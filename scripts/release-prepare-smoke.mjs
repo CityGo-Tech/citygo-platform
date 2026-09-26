@@ -112,6 +112,8 @@ export async function releasePrepareSmoke({
     assert.equal(proof.finish_verified, true);
     assert.equal(proof.commit_recovery_verified, true);
     assert.equal(proof.new_backup_verified, true);
+    assert.equal(proof.second_release_verified, true);
+    assert.ok(proof.retained_jobs_verified >= 4);
     assert.deepEqual(Object.keys(proof.apps).sort(), ["api", "web"]);
     assert.match(proof.migration_container, /^[a-f0-9]{64}$/);
     const migrated = JSON.parse(
@@ -137,9 +139,38 @@ export async function releasePrepareSmoke({
     assert.equal(finishedWorker.State.Status, "exited");
     assert.equal(finishedWorker.State.ExitCode, 0);
     docker(["rm", proof.worker_container]);
+    for (const [id, role] of [
+      [proof.second_migration_container, "migrator"],
+      [proof.historical_worker_container, "worker"],
+    ]) {
+      assert.match(id, /^[a-f0-9]{64}$/);
+      const retained = JSON.parse(
+        docker(["inspect", "--format", "{{json .}}", id]),
+      );
+      assert.equal(
+        retained.Config.Labels["com.docker.compose.project"],
+        project,
+      );
+      assert.equal(retained.Config.Labels["com.docker.compose.service"], role);
+      assert.equal(retained.State.Status, "exited");
+      assert.equal(retained.State.ExitCode, 0);
+      docker(["rm", id]);
+    }
+    assert.match(proof.historical_image, /^sha256:[a-f0-9]{64}$/);
+    assert.equal(
+      docker([
+        "image",
+        "inspect",
+        "--format",
+        '{{index .Config.Labels "citygo.disposable.project"}}',
+        proof.historical_image,
+      ]).trim(),
+      project,
+    );
+    docker(["image", "rm", proof.historical_image]);
     assert.deepEqual(proof.roles, ["api", "postgres", "web", "worker"]);
     console.log(
-      "Closed release commit passed: real TLS/drain/backup/migration/start/health, atomic active config, unchanged PostgreSQL; new config pg_dump/age and Worker verified in disposable fixture only; traffic/AI remain closed, no cloud",
+      "Two closed releases passed: real TLS/drain/backup/migration/start/health, interrupted-commit recovery, unchanged PostgreSQL and explicitly retained historical jobs; new config pg_dump/age and Worker verified in disposable fixture only; traffic/AI remain closed, no cloud",
     );
   } finally {
     // Exact container created by this random test project; never a general prune.

@@ -171,7 +171,7 @@ def _migrated_window(config, target_sha, origin, ingress_directory, images, secr
             else:
                 b.require(pinned_record is None, "migration-record-missing")
             baseline = p.validate_inventory([v for v in values if v.get("Id") != job_id],
-                                            config["project"], images, initial=False)
+                                            config["project"], images, initial=False, retained_jobs=selected["retained_jobs"])
             p.same_inventory(stage["containers"], baseline)
             network = host.database_network()
             # The new retained job can leave an endpoint briefly after exit.

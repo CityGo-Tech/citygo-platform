@@ -25,6 +25,7 @@ from test_target import encoded
 from test_start import synthetic_start_approval
 from test_finish import synthetic_finish_approval
 from test_recovery import synthetic_recovery_approval
+from repeat_smoke import repeat
 
 
 def main():
@@ -198,7 +199,8 @@ def main():
         w.perform(fresh)
         worker_result = b.read_json(state / "worker-last-success.json")
         w.pause(fresh)
-        print(json.dumps({"ok": True, "migration_authorized": False, **observed,
+        repeated = repeat(directory, fixture, config_path, selection, complete, FixtureHost, path.parent)
+        print(json.dumps({"ok": True, "migration_authorized": False, **observed, **repeated,
                           "migration_committed": True, "migration_container": migrated["container_id"],
                           "startup_verified": True, "apps": complete["startup"]["apps"],
                           "finish_verified": True, "commit_recovery_verified": True,

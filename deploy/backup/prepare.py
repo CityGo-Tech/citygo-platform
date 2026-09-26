@@ -117,8 +117,24 @@ class Host(w.Docker):
         return {"id": value.get("Id"), "peers": sorted(value.get("Containers", {}))}
 
 
-def validate_inventory(values, project, images, *, initial):
-    b.require(type(values) is list and 3 <= len(values) <= 64, "container-inventory")
+def check_retained(values, project, retained_jobs):
+    """Recheck even after API/Web change images; only inert jobs are exempt."""
+    retained = t.retained_jobs([] if retained_jobs is None else retained_jobs)
+    for ident, entry in retained.items():
+        found = [v for v in values if v.get("Id") == ident]
+        b.require(len(found) == 1, "retained-job-missing")
+        value = found[0]
+        b.require(value.get("Labels", {}).get("com.docker.compose.project") == project
+                  and value["Labels"].get("com.docker.compose.oneoff") in ("True", "true"), "retained-job-target")
+        b.require(json.dumps(evidence(value), sort_keys=True) == json.dumps(entry, sort_keys=True), "retained-job-changed")
+        stopped_cleanly(value)
+        b.require(value["State"].get("Dead", False) is False, "retained-job-changed")
+    return retained
+
+
+def validate_inventory(values, project, images, *, initial, retained_jobs=None):
+    b.require(type(values) is list and 3 <= len(values) <= 64 and all(type(v) is dict for v in values), "container-inventory")
+    retained = check_retained(values, project, retained_jobs)
     result, counts = {}, {name: 0 for name in SERVICES}
     for value in values:
         b.require(type(value) is dict, "container-evidence")
@@ -129,7 +145,8 @@ def validate_inventory(values, project, images, *, initial):
         role = labels.get("com.docker.compose.service")
         b.require(labels.get("com.docker.compose.project") == project and type(role) is str and role in SERVICES, "container-target")
         counts[role] += 1
-        b.require(value.get("Image") == images[role], "container-image")
+        if ident not in retained:
+            b.require(value.get("Image") == images[role], "container-image")
         b.require(type(value.get("RestartCount")) is int and value["RestartCount"] == 0, "container-restarted")
         for key in ("Paused", "Restarting", "OOMKilled"):
             b.require(state.get(key) is False, "container-state")
@@ -154,6 +171,7 @@ def validate_inventory(values, project, images, *, initial):
             b.require(w.timestamp(state.get("FinishedAt")) >= w.timestamp(state["StartedAt"]), "container-evidence")
         result[ident] = copy.deepcopy(value)
     b.require(all(counts[name] == 1 for name in ("api", "web", "postgres")), "container-replicas")
+    b.require(set(retained) <= set(result), "retained-job-missing")
     return result
 
 
@@ -204,7 +222,7 @@ def check_network(network, containers, original=None):
     b.require(not missing_network_peers(network, containers, original), "database-network-missing-peer")
 
 
-def network_snapshot(host, containers, project, images, original=None, *, initial):
+def network_snapshot(host, containers, project, images, original=None, *, initial, retained_jobs=None):
     """Reconcile only a disappearing Worker's clean exit, never a new peer.
 
     Docker inventory and network inspection are separate reads. Endpoint cleanup
@@ -225,7 +243,7 @@ def network_snapshot(host, containers, project, images, original=None, *, initia
             return current, network
         b.require(attempt < 5, "database-network-worker-exit-unconfirmed")
         time.sleep(0.1)
-        current = validate_inventory(host.inventory(), project, images, initial=initial)
+        current = validate_inventory(host.inventory(), project, images, initial=initial, retained_jobs=retained_jobs)
         same_inventory(containers, current)
         network = host.database_network()
 
@@ -257,6 +275,7 @@ def _prepared_window(config, target_sha, origin, ingress_directory, images, *, a
     ingress_directory = b.protected(ingress_directory, directory=True, private=False)
     b.require(type(selection) is t.Selection, "target-selection-required")
     selected = selection.verify(config, target_sha, origin, images)
+    retained = selected["retained_jobs"]
     image_store = image_store_factory(b.protected(config["state_dir"], directory=True))
     local_images = g.verify(image_store, selected, images)
     def check_selection():
@@ -276,8 +295,8 @@ def _prepared_window(config, target_sha, origin, ingress_directory, images, *, a
             host = host_factory(config, Path(temp), ingress_directory, origin)
             check_selection()
             host.close_ingress()
-            before = validate_inventory(host.inventory(), config["project"], images, initial=True)
-            before, network = network_snapshot(host, before, config["project"], images, initial=True)
+            before = validate_inventory(host.inventory(), config["project"], images, initial=True, retained_jobs=retained)
+            before, network = network_snapshot(host, before, config["project"], images, initial=True, retained_jobs=retained)
             if expected_network_id is not None:
                 b.require(network["id"] == expected_network_id, "approved-network-changed")
             # Stop only fully validated API/Worker IDs, never names/wildcards.
@@ -285,9 +304,9 @@ def _prepared_window(config, target_sha, origin, ingress_directory, images, *, a
                 role = identity(value)["role"]
                 if role not in GRACE or not value["State"]["Running"]:
                     continue
-                current_set = validate_inventory(host.inventory(), config["project"], images, initial=None)
+                current_set = validate_inventory(host.inventory(), config["project"], images, initial=None, retained_jobs=retained)
                 same_inventory(before, current_set)
-                current_set, _ = network_snapshot(host, current_set, config["project"], images, network, initial=None)
+                current_set, _ = network_snapshot(host, current_set, config["project"], images, network, initial=None, retained_jobs=retained)
                 current = current_set[ident]
                 if current["State"]["Running"]:
                     check_selection()
@@ -295,15 +314,15 @@ def _prepared_window(config, target_sha, origin, ingress_directory, images, *, a
                 after = host.inspect(ident)
                 b.require(identity(after) == identity(value), "container-replaced")
                 stopped_cleanly(after)
-            stopped = validate_inventory(host.inventory(), config["project"], images, initial=False)
+            stopped = validate_inventory(host.inventory(), config["project"], images, initial=False, retained_jobs=retained)
             same_inventory(before, stopped)
-            stopped, _ = network_snapshot(host, stopped, config["project"], images, network, initial=False)
+            stopped, _ = network_snapshot(host, stopped, config["project"], images, network, initial=False, retained_jobs=retained)
             host.assert_closed()
             check_selection()
             checkpoint = window.backup(storage_factory=storage_factory, encryptor=encryptor, min_free=min_free)
-            final = validate_inventory(host.inventory(), config["project"], images, initial=False)
+            final = validate_inventory(host.inventory(), config["project"], images, initial=False, retained_jobs=retained)
             same_inventory(stopped, final)
-            final, final_network = network_snapshot(host, final, config["project"], images, network, initial=False)
+            final, final_network = network_snapshot(host, final, config["project"], images, network, initial=False, retained_jobs=retained)
             host.assert_closed()
             check_selection()
             proof = {"version": 1, "operation_id": checkpoint["operation_id"], "target_sha": target_sha,
