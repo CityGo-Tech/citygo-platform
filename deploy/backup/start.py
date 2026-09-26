@@ -227,12 +227,19 @@ def start(config, target_sha, origin, ingress_directory, images, secret_file, ap
     state = b.protected(config["state_dir"], directory=True)
     used = state / ("start-approval-" + approved["approval_sha256"] + ".used.json")
     reservation = None
+    host_factory = options.setdefault("host_factory", Host)
     def check():
         b.require(startup_authorization.verify(selected, migration_auth, config, target_sha, origin, images, api_secret_file) == approved, "start-approval-changed")
         if reservation is None: b.require(not os.path.lexists(used), "start-approval-used")
         else: b.require(t.read_file(used, private=True) == reservation, "start-reservation-changed")
+        # Read-only preflight, repeated at migration boundaries. A stale web
+        # network approval must fail BEFORE pause/drain/backup/DDL, not after it.
+        with tempfile.TemporaryDirectory(prefix=".start-preflight-", dir=state) as tmp:
+            network = host_factory(config, Path(tmp), ingress_directory, origin).web_network()
+            b.require(network.get("id") == approved["web_network_id"], "start-network-changed")
+        # The Docker read must not outlive a revoked/expired approval.
+        b.require(startup_authorization.verify(selected, migration_auth, config, target_sha, origin, images, api_secret_file) == approved, "start-approval-changed")
     check()
-    options.setdefault("host_factory", Host)
     with c._migrated_window(config, target_sha, origin, ingress_directory, images, secret_file,
                             authorization_check=check, **options) as stage:
         window, host, migration = stage["window"], stage["host"], stage["result"]["migration"]

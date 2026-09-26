@@ -171,6 +171,17 @@ class Startup(unittest.TestCase):
         with self.assertRaisesRegex(b.BackupError, "start-binding"): self.start()
         self.assertEqual(self.host.events, [])
 
+    def test_changed_web_network_refuses_before_pause_backup_or_migration(self):
+        w.open_admission(self.config)
+        self.host.web_network = lambda: {"id": "d" * 64, "peers": []}
+        with self.assertRaisesRegex(b.BackupError, "start-network-changed"): self.start()
+        self.assertTrue((self.state / w.ADMISSION).exists())
+        self.assertFalse(self.pending.exists())
+        self.assertEqual(self.host.events, [])
+        self.assertEqual(self.store.calls, [])
+        self.assertEqual(self.transport.events, [])
+        self.assertEqual(self.start_events, [])
+
     def test_revocation_during_migration_never_replaces_apps(self):
         self.transport.on_execute = lambda: self.start_approval.path.unlink()
         with self.assertRaises(OSError): self.start()
@@ -203,7 +214,8 @@ class Startup(unittest.TestCase):
         original = self.host.web_network
         def network():
             result = original()
-            self.host.values[2]["State"].update(Status="running", Running=True)
+            if list(self.state.glob("start-approval-*.used.json")):
+                self.host.values[2]["State"].update(Status="running", Running=True)
             return result
         self.host.web_network = network
         with self.assertRaisesRegex(b.BackupError, "writer-active"): self.start()
