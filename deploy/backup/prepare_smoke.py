@@ -12,12 +12,14 @@ import backup as b
 import migrate as c
 import prepare as p
 import target as t
+import start as s
 import worker as w
 from test_backup import MemoryStore
 from test_target import synthetic_selection
 from test_image_gate import selection_store
 from test_migrate import synthetic_authorization
 from test_target import encoded
+from test_start import synthetic_start_approval
 
 
 def main():
@@ -43,7 +45,7 @@ def main():
             "state_dir": str(state), "recipient": recipient, "storage_credentials_file": str(directory / "unused"),
             "endpoint": b.ENDPOINT, "bucket": "synthetic-no-upload", "prefix": "citygo/fixture"})
         observed = {"worker_exit_race_verified": False}
-        class FixtureHost(p.Host):
+        class FixtureHost(s.Host):
             def __init__(self, *args):
                 super().__init__(*args)
                 # Trust only this synthetic certificate; verification stays ON.
@@ -109,12 +111,16 @@ def main():
         network = subprocess.check_output([b.executable("docker"), "network", "inspect", "--format", "{{.Id}}",
                                           config["project"] + "_database"], env=env, text=True).strip()
         authorization = synthetic_authorization(directory, selection, config, network)
+        web_network = subprocess.check_output([b.executable("docker"), "network", "inspect", "--format", "{{.Id}}",
+                                              config["project"] + "_web_api"], env=env, text=True).strip()
+        startup = synthetic_start_approval(directory, authorization, path.parent / "api.json", web_network)
         # This approval and its images are synthetic. Real digest/blob inspection
         # is exercised separately after the disposable loopback registry push.
         image_store = selection_store(selection, fixture["images"])
         w.open_admission(config)
-        complete = c.migrate(config, "b" * 40, fixture["origin"], fixture["ingress_directory"], fixture["images"],
-            path.parent / "migrate.json", allow_migration=True, authorization=authorization,
+        complete = s.start(config, "b" * 40, fixture["origin"], fixture["ingress_directory"], fixture["images"],
+            path.parent / "migrate.json", path.parent / "api.json", allow_start=True, startup_authorization=startup,
+            allow_migration=True, authorization=authorization,
             allow_stop=True, allow_upload=True, selection=selection, image_store_factory=lambda _: image_store,
             host_factory=FixtureHost, storage_factory=lambda *_: store)
         proof = complete["preparation"]
@@ -122,6 +128,9 @@ def main():
         b.require(migrated["result"]["committed"] is True and migrated["result"]["applied"] == []
                   and complete["traffic_authorized"] is False, "fixture-migration")
         b.require(len(list(state.glob("migration-approval-*.used.json"))) == 1, "fixture-approval-use")
+        b.require(complete["startup"]["traffic_authorized"] is False
+                  and complete["startup"]["worker_authorized"] is False
+                  and len(list(state.glob("start-approval-*.used.json"))) == 1, "fixture-startup")
         b.require(proof["migration_authorized"] is False and (state / "operation-pending.json").exists(), "fixture-pending")
         b.require(not (state / w.ADMISSION).exists(), "fixture-admission")
         b.require(not (Path(fixture["ingress_directory"]) / "traffic-open").exists(), "fixture-ingress")
@@ -141,6 +150,7 @@ def main():
         b.require(observed["worker_exit_race_verified"], "fixture-race-not-reproduced")
         print(json.dumps({"ok": True, "migration_authorized": False, **observed,
                           "migration_committed": True, "migration_container": migrated["container_id"],
+                          "startup_verified": True, "apps": complete["startup"]["apps"],
                           "roles": sorted(v["role"] for v in proof["containers"])}))
 
 

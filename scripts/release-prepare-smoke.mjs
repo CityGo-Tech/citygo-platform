@@ -93,7 +93,7 @@ export async function releasePrepareSmoke({
         cwd: root,
         env: serviceEnv("test"),
         encoding: "utf8",
-        timeout: 360000,
+        timeout: 600000,
         maxBuffer: 65536,
       },
     );
@@ -108,6 +108,8 @@ export async function releasePrepareSmoke({
     assert.equal(proof.migration_authorized, false);
     assert.equal(proof.worker_exit_race_verified, true);
     assert.equal(proof.migration_committed, true);
+    assert.equal(proof.startup_verified, true);
+    assert.deepEqual(Object.keys(proof.apps).sort(), ["api", "web"]);
     assert.match(proof.migration_container, /^[a-f0-9]{64}$/);
     const migrated = JSON.parse(
       docker(["inspect", "--format", "{{json .}}", proof.migration_container]),
@@ -119,7 +121,7 @@ export async function releasePrepareSmoke({
     docker(["rm", proof.migration_container]);
     assert.deepEqual(proof.roles, ["api", "postgres", "web", "worker"]);
     console.log(
-      "Approved migration continuation passed: real closed TLS ingress, Worker exit race, API drain, pg_dump/age/readback, same-lock retained jobs container and committed no-new-DDL transaction; synthetic separate approval consumed once, pending retained; no start/reopen/cloud/AI",
+      "Approved startup continuation passed: real TLS/drain/backup/migration, replaced API/Web under same lock, unchanged PostgreSQL, read-only readiness and headered/headerless v1 checks; access and Worker remain closed, pending retained; no cloud/AI",
     );
   } finally {
     // Exact container created by this random test project; never a general prune.
