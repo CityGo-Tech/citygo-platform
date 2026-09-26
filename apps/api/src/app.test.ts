@@ -36,6 +36,198 @@ import { createAiExecution } from "./ai-execution.js";
 import { createAiPolicy } from "./ai-policy.js";
 import { ApiDrain, createShutdown } from "./shutdown.js";
 
+test("production RouterAI approval still requires user consent, monetary approval and fresh notice", async (t) => {
+  let calls = 0;
+  const provider: StreamingProvider = {
+    name: "routerai",
+    model: "test/model",
+    async *stream() {
+      calls++;
+      yield { type: "delta", text: "Синтетический ответ о квартире" };
+      yield { type: "complete", model: "test/model" };
+    },
+  };
+  const env = {
+    NODE_ENV: "production",
+    DATABASE_URL: "postgresql://localhost/not-used",
+    WEB_ORIGIN: "https://citygo.example",
+    TRUSTED_PROXY_CIDRS: "127.0.0.1/32",
+    ADMIN_USER_IDS: "1",
+    LLM_PROVIDER: "routerai",
+    ROUTERAI_MODEL: provider.model,
+    ROUTERAI_UPSTREAM: "test-upstream",
+    ROUTERAI_DATA_NOTICE: "Synthetic notice v1",
+  };
+  const policy = createAiPolicy(readConfig(env), provider)!;
+  const approved = { ...env, ROUTERAI_PRODUCTION_POLICY_ID: policy.id };
+  // Disposable fixture DB, no real PostgreSQL connection, keys or AI network.
+  const f = await fixture(provider, approved, {}, false);
+  t.after(f.close);
+  const call = (
+    method: "GET" | "POST",
+    url: string,
+    token = "",
+    payload?: object,
+    app = f.app,
+  ) =>
+    app.inject({
+      method,
+      url,
+      headers: {
+        origin: env.WEB_ORIGIN,
+        cookie: "__Host-citygo=" + token,
+        [CONTRACT_VERSION_HEADER]: "1",
+      },
+      ...(payload ? { payload } : {}),
+    });
+  const register = async () => {
+    const reply = await call("POST", "/v1/auth/register", "", {
+      email: randomUUID() + "@example.test",
+      password: "Synthetic-password-123",
+    });
+    assert.equal(reply.statusCode, 200, reply.body);
+    return reply.cookies[0]!.value;
+  };
+  const admin = await register();
+  const user = await register();
+  assert.equal((await call("GET", "/v1/admin/ai", user)).statusCode, 403);
+  assert.equal(
+    (await call("POST", "/v1/questionnaire", user, testProfile)).statusCode,
+    200,
+  );
+  const board = (await call("GET", "/v1/dashboard", user)).json<Dashboard>();
+  assert.equal(board.aiAccess.policy!.id, policy.id);
+  assert.match(board.aiAccess.policy!.data, /Synthetic notice v1/);
+  const start = await call(
+    "POST",
+    `/v1/quests/${board.quests[0]!.id}/start`,
+    user,
+    {},
+  );
+  assert.equal(start.statusCode, 200);
+  const url = `/v1/threads/${start.json().id}/messages`;
+  const message = (policyId = policy.id) => ({
+    text: "Помоги выбрать квартиру",
+    requestId: randomUUID(),
+    policyId,
+  });
+  assert.equal((await call("POST", url, user, message())).statusCode, 403);
+  assert.equal(calls, 0);
+  assert.equal(
+    (
+      await call("POST", "/v1/ai/consent", user, {
+        action: "granted",
+        policyId: policy.id,
+      })
+    ).statusCode,
+    200,
+  );
+  const noBudget = await call("POST", url, user, message());
+  assert.match(noBudget.body, /"code":"AI_BUDGET_UNAVAILABLE"/);
+  assert.equal(calls, 0);
+  const control = (
+    await call("GET", "/v1/admin/ai", admin)
+  ).json<AiControlStatus>();
+  assert.equal(control.budget!.settings.enabled, false);
+  // Tiny synthetic reservation, NOT a tariff or permission for live spending.
+  assert.equal(
+    (
+      await call("POST", "/v1/admin/ai/budget", admin, {
+        expectedRevision: control.budget!.settings.revision,
+        enabled: true,
+        currency: "RUB",
+        dailyLimitMicros: 1000000,
+        totalLimitMicros: 1000000,
+        rules: control.budget!.availableExecutions.map((item) => ({
+          key: item.key,
+          attemptCeilingMicros: 1,
+        })),
+      })
+    ).statusCode,
+    200,
+  );
+  assert.match(
+    (await call("POST", url, user, message())).body,
+    /"type":"done"/,
+  );
+  assert.equal(calls, 1);
+  const history = (await call("GET", "/v1/dashboard", user)).json<Dashboard>()
+    .thread!.messages;
+  assert.equal(history.at(-1)!.generation?.provider, "routerai");
+  // A rollout with changed public text cannot inherit either route approval or consent.
+  const nextConfig = readConfig({
+    ...approved,
+    ROUTERAI_DATA_NOTICE: "Synthetic notice v2",
+  });
+  const nextPolicy = createAiPolicy(nextConfig, provider)!;
+  const changed = await buildApp({
+    db: f.db,
+    provider,
+    testing: true,
+    config: {
+      ...nextConfig,
+      ROUTERAI_PRODUCTION_POLICY_ID: nextPolicy.id,
+    },
+  });
+  t.after(() => changed.close());
+  const beforeSelection = (
+    await call("GET", "/v1/dashboard", user, undefined, changed)
+  ).json<Dashboard>();
+  assert.equal(beforeSelection.provider, "unconfigured");
+  const current = (
+    await call("GET", "/v1/admin/ai", admin, undefined, changed)
+  ).json<AiControlStatus>();
+  assert.equal(
+    (
+      await call(
+        "POST",
+        "/v1/admin/ai",
+        admin,
+        {
+          provider: "routerai",
+          policyId: nextPolicy.id,
+          expectedRevision: current.current.revision,
+        },
+        changed,
+      )
+    ).statusCode,
+    200,
+  );
+  const after = (
+    await call("GET", "/v1/dashboard", user, undefined, changed)
+  ).json<Dashboard>();
+  assert.equal(after.aiAccess.granted, false);
+  assert.deepEqual(after.thread!.messages, history);
+  assert.equal(
+    (await call("POST", url, user, message(nextPolicy.id), changed)).statusCode,
+    403,
+  );
+  assert.equal(
+    (
+      await call(
+        "POST",
+        "/v1/ai/consent",
+        user,
+        {
+          action: "granted",
+          policyId: nextPolicy.id,
+        },
+        changed,
+      )
+    ).statusCode,
+    200,
+  );
+  const staleBudget = await call(
+    "POST",
+    url,
+    user,
+    message(nextPolicy.id),
+    changed,
+  );
+  assert.match(staleBudget.body, /"code":"AI_BUDGET_UNAVAILABLE"/);
+  assert.equal(calls, 1);
+});
+
 for (const cancelled of [false, true]) {
   test(
     `API drain blocks all new DB operations and settles chat (${cancelled ? "cancelled" : "completed"})`,

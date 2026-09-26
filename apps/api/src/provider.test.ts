@@ -359,7 +359,7 @@ test("RouterAI requires its own complete settings and never borrows OpenAI value
   );
 });
 
-test("RouterAI production activation is blocked even with valid settings", () => {
+test("RouterAI production activation is blocked without explicit recipient approval", () => {
   assert.throws(
     () =>
       createProvider(
@@ -410,7 +410,7 @@ test("inactive invalid settings do not disable OpenAI; disabled environment cons
   );
 });
 
-test("production registry cannot offer RouterAI or GigaChat even with complete settings", () => {
+test("production registry cannot offer unapproved RouterAI or GigaChat with credentials alone", () => {
   const config = readConfig({
     ...credentials,
     ...routerSettings,

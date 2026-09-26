@@ -9,6 +9,27 @@ const production = {
   TRUSTED_PROXY_CIDRS: "10.0.0.8/32, ::1/128",
 };
 
+test("RouterAI production approval is blank-safe, bounded and not a boolean switch", () => {
+  const empty = readConfig({
+    ROUTERAI_DATA_NOTICE: " ",
+    ROUTERAI_PRODUCTION_POLICY_ID: " ",
+  });
+  assert.equal(empty.ROUTERAI_DATA_NOTICE, undefined);
+  assert.equal(empty.ROUTERAI_PRODUCTION_POLICY_ID, undefined);
+  assert.equal(
+    readConfig({ ROUTERAI_DATA_NOTICE: " Notice " }).ROUTERAI_DATA_NOTICE,
+    "Notice",
+  );
+  for (const value of ["true", "1", "a".repeat(63), "G".repeat(64)])
+    assert.throws(() => readConfig({ ROUTERAI_PRODUCTION_POLICY_ID: value }));
+  assert.throws(() => readConfig({ ROUTERAI_DATA_NOTICE: "x".repeat(4001) }));
+  assert.equal(
+    readConfig({ ROUTERAI_PRODUCTION_POLICY_ID: "a".repeat(64) })
+      .ROUTERAI_PRODUCTION_POLICY_ID,
+    "a".repeat(64),
+  );
+});
+
 test("AI context byte limit is a bounded integer", () => {
   assert.equal(readConfig({}).LLM_MAX_INPUT_BYTES, 64000);
   for (const value of ["0", "1023", "262145", "1.5", "NaN", "Infinity"])

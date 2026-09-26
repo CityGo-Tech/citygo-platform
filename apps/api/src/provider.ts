@@ -6,6 +6,7 @@ import {
   GigaChatProvider,
   type StreamingProvider,
 } from "@citygo/llm";
+import { productionProviderAllowed } from "./ai-production.js";
 
 export type ProviderMap = Partial<Record<AiProviderId, StreamingProvider>>;
 
@@ -16,8 +17,7 @@ export function createProviderRegistry(config: ReturnType<typeof readConfig>) {
   if (config.LLM_PROVIDER === "disabled") return { provider, providers };
   if (provider) providers[provider.name] = provider;
   for (const id of aiProviderIds) {
-    if (providers[id] || (config.NODE_ENV === "production" && id !== "openai"))
-      continue;
+    if (providers[id]) continue;
     try {
       providers[id] = createProvider({ ...config, LLM_PROVIDER: id });
     } catch {
@@ -34,11 +34,14 @@ export function createProvider(
   const selected = config.LLM_PROVIDER;
   if (selected === "disabled") return undefined;
   if (selected === "routerai") {
-    // Stage 2 is a synthetic-data local pilot. Generic AI consent does not
-    // authorize new recipients in production; activation follows in stage 4.
-    if (config.NODE_ENV === "production")
+    if (
+      !productionProviderAllowed(config, {
+        name: "routerai",
+        model: config.ROUTERAI_MODEL ?? "",
+      })
+    )
       throw new Error(
-        "RouterAI production activation is blocked pending recipient/consent rollout",
+        "RouterAI production activation is blocked: approve the exact recipient policy and operator notice",
       );
     const {
       ROUTERAI_API_KEY: apiKey,

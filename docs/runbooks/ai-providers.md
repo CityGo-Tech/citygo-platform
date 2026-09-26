@@ -7,9 +7,10 @@ changing the direct OpenAI defaults, historical reservations or production gates
 This release adds an explicit monetary-reserve budget to 4B2a's shared model-attempt
 reservations and retry guards, 4B1's persistent provider selector and 4A's recipient
 consent / accepted-chat caps. This is allocation accounting, not provider billing.
-All three independent adapters remain available. RouterAI and GigaChat production
-activation stays blocked: the technical disclosure is not an operator-approved
-privacy notice. Automatic failover is **not** enabled. Stage 4 remains split into
+All three independent adapters remain available. RouterAI production is blocked
+by default and requires an [exact operator-approved disclosure](routerai-production.md).
+GigaChat production stays blocked. The legacy technical disclosure is not an
+operator-approved privacy notice. Automatic failover is **not** enabled. Stage 4 remains split into
 reviewable steps; the financial/privacy launch requirements are not completed by
 these reservations. No live model is chosen or upgraded by this PR.
 

@@ -6,6 +6,7 @@ import {
 import type { readConfig } from "@citygo/config";
 import { createAiPolicy } from "./ai-policy.js";
 import type { ProviderMap } from "./provider.js";
+import { productionProviderAllowed } from "./ai-production.js";
 
 export function createAiControl(
   config: ReturnType<typeof readConfig>,
@@ -18,7 +19,12 @@ export function createAiControl(
       throw new Error("Invalid provider registry");
     const unavailableReason = environmentDisabled
       ? "server_disabled"
-      : config.NODE_ENV === "production" && provider !== "openai"
+      : !productionProviderAllowed(config, {
+            name: provider,
+            model:
+              instance?.model ??
+              (provider === "routerai" ? (config.ROUTERAI_MODEL ?? "") : ""),
+          })
         ? "production_blocked"
         : !instance
           ? "not_configured"
