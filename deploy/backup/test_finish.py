@@ -207,12 +207,33 @@ class Cutover(unittest.TestCase):
 
     def test_both_locks_are_held_at_commit(self):
         original = b.complete_operation
-        def verify(state, operation):
+        def verify(state, operation, **kwargs):
             for name in ("maintenance.lock", "worker-admission.lock"):
                 with self.assertRaisesRegex(b.BackupError, "already-running"):
                     with b.lock(state, name): pass
-            original(state, operation)
+            original(state, operation, **kwargs)
         with patch.object(b, "complete_operation", side_effect=verify): self.finish()
+
+    def test_revocation_during_last_active_receipt_read_keeps_barrier(self):
+        original = t.read_file
+        def revoke(path, **kwargs):
+            raw = original(path, **kwargs)
+            if Path(path) == self.state / f.ACTIVE: self.finish_approval.path.unlink()
+            return raw
+        with patch.object(t, "read_file", side_effect=revoke), self.assertRaises(OSError): self.finish()
+        self.assertTrue(self.pending.exists()); self.assertTrue((self.state / f.ACTIVE).exists())
+
+    def test_expiry_during_last_pending_read_keeps_barrier(self):
+        original = b.verify_operation
+        expired = t.strict_json(self.finish_approval.path.read_bytes())["expires_at"] + 1
+        def expire(state, record):
+            result = original(state, record)
+            if (state / f.ACTIVE).exists():
+                clock = patch.object(f.time, "time", return_value=expired)
+                clock.start(); self.addCleanup(clock.stop)
+            return result
+        with patch.object(b, "verify_operation", side_effect=expire), self.assertRaises(b.BackupError): self.finish()
+        self.assertTrue(self.pending.exists()); self.assertTrue((self.state / f.ACTIVE).exists())
 
     def test_stored_startup_success_does_not_resume_or_authorize_finish(self):
         startup_fixture.Startup.start(self)

@@ -198,7 +198,8 @@ def finish(config, target_sha, origin, ingress_directory, images, secret_file, a
         # No long I/O may outlive any stage's approval deadline.
         for path, parser, raw in pins:
             b.require(t.read_file(path, private=True) == raw, "finish-authorization-changed")
-            parser(raw, time.time())
+        now = time.time()
+        for _path, parser, raw in pins: parser(raw, now)
 
     check()  # Missing finish authority must fail BEFORE downtime/backup/DDL.
     with s._started_window(config, target_sha, origin, ingress_directory, images, secret_file, api_secret_file,
@@ -235,7 +236,7 @@ def finish(config, target_sha, origin, ingress_directory, images, secret_file, a
             # Final transaction barrier. No fallible work or side effects after
             # this unlink beyond lock release. Crash/fsync ambiguity => inspect,
             # never rerun approvals or roll back migrations automatically.
-            b.complete_operation(state, operation)
+            b.complete_operation(state, operation, before_clear=lambda: check(cutover=True))
     return result
 
 
