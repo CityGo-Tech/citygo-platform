@@ -51,8 +51,10 @@ the recipient; the questionnaire checkbox does not authorize chat. Configure
 on every replica (defaults 20/200 per UTC day; zero blocks new chat). These shared
 admission caps are not financial budgets or a replacement for provider-side caps.
 Do not revert to pre-consent application code with chat enabled. The technical
-disclosure is not an approved legal notice; RouterAI/GigaChat production remain
-blocked. See [AI provider rollout](ai-providers.md) for admission/revocation
+disclosure is not an approved legal notice; RouterAI production is blocked by
+default pending [exact notice/policy approval](routerai-production.md), and
+GigaChat remains blocked. The current pilot Compose still forces AI disabled.
+See [AI provider rollout](ai-providers.md) for admission/revocation
 semantics and the remaining stage 4B launch requirements.
 
 AI control rollout additionally requires `0004_ai_routing.sql` and replacing all

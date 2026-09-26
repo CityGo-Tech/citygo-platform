@@ -98,6 +98,15 @@ export const serverConfigSchema = z.object({
   ROUTERAI_MODEL: optionalSetting,
   ROUTERAI_UPSTREAM: optionalSetting,
   ROUTERAI_COUNTRY: optionalSetting,
+  // Public operator notice, displayed to users and bound into their consent ID.
+  // Not a credential and not proof of legal approval by itself.
+  ROUTERAI_DATA_NOTICE: optionalSetting.pipe(z.string().max(4000).optional()),
+  ROUTERAI_PRODUCTION_POLICY_ID: optionalSetting.pipe(
+    z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .optional(),
+  ),
   ROUTERAI_REASONING_EFFORT: z.preprocess(
     (value) => (typeof value === "string" ? value.trim() || undefined : value),
     z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
