@@ -7,7 +7,7 @@ plan/verify do not stop containers or change release/admission records.
 import argparse
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import signal
 import sys
@@ -38,6 +38,7 @@ def request(path):
     for key in PATHS:
         b.require(type(value[key]) is str, "operator-path")
         f.path_string(value[key])
+        b.require(str(PurePosixPath(value[key])) == value[key], "operator-path")
     b.require(len({value[k] for k in PATHS}) == len(PATHS), "operator-path-alias")
     b.require(all(not path.is_relative_to(Path(value[k])) for k in ("current_bundle", "target_bundle")), "operator-self-request")
     return value, raw
@@ -73,14 +74,16 @@ def preflight(value, *, verify_finish=False, image_store_factory=g.Store):
                            auth["startup_authorization"], config._binding.path, raw, plan)
             b.require(not os.path.lexists(state / ("finish-approval-" + approved + ".used.json")), "finish-approval-used")
         b.assert_current_config(config)
-        authorities = [(auth["selection"], t.approval), (auth["authorization"], c.approval),
-                       (auth["startup_authorization"], s.approval)]
-        if verify_finish: authorities.append((auth["finish_authorization"], f.approval))
+        # Use public verified hashes, not private pin representations (finish
+        # intentionally pins raw bytes, while earlier stages pin digests).
+        authorities = [(auth["selection"].approval_file, t.approval, selected["approval_sha256"]),
+                       (auth["authorization"].path, c.approval, started["migration"]["approval_sha256"]),
+                       (auth["startup_authorization"].path, s.approval, started["approval_sha256"])]
+        if verify_finish: authorities.append((auth["finish_authorization"].path, f.approval, approved))
         pins = []
-        for obj, parser in authorities:
-            path = obj.approval_file if type(obj) is t.Selection else obj.path
+        for path, parser, digest in authorities:
             latest = t.read_file(path, private=True)
-            b.require(t.sha256(latest) == obj._pin, "operator-approval-changed")
+            b.require(t.sha256(latest) == digest, "operator-approval-changed")
             pins.append((parser, latest))
         now = s.time.time()
         for parser, latest in pins: parser(latest, now)

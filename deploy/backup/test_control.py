@@ -2,10 +2,9 @@
 from contextlib import redirect_stderr, redirect_stdout
 import io
 import json
-import os
 from pathlib import Path
+import subprocess
 import sys
-import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -53,10 +52,16 @@ class Validation(unittest.TestCase):
             ctl.main(["--help"])
         self.assertEqual(exited.exception.code, 0); apply.assert_not_called()
 
+    def test_documented_python_flags_import_local_modules(self):
+        result = subprocess.run([sys.executable, "-E", "-s", str(Path(ctl.__file__)), "--help"], capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("recover-commit", result.stdout)
+
     def test_rejects_request_hooks_and_noncanonical_paths(self):
         base = {"version": 1, "target_sha": "b" * 40, "origin": ORIGIN, **{key: "/safe/" + key for key in ctl.PATHS}}
         for change in ({"command": "ignored"}, {"image_store_factory": "danger"}, {"target_sha": "main"},
                        {"version": True}, {"config_path": "relative"}, {"config_path": "/tmp/$KEY"},
+                       {"config_path": "/tmp/./config"}, {"config_path": "/tmp//config"},
                        {"api_secret": base["worker_secret"]}):
             with self.subTest(change=change), patch.object(t, "read_file", return_value=encoded({**base, **change})), self.assertRaises(b.BackupError):
                 ctl.request("/safe/operator-request.json")
@@ -82,6 +87,27 @@ class Operator(unittest.TestCase):
         self.assertFalse(self.pending.exists()); self.assertEqual(self.host.events, [])
         self.assertEqual(self.store.calls, []); self.assertEqual(self.transport.events, [])
         self.assertFalse(self.plan["directory"].exists())
+
+    def test_verify_rechecks_finish_deadline_after_all_last_reads(self):
+        value, _raw = ctl.request(self.request)
+        now = ctl.s.time.time()
+        clock = [now]
+        armed = [False]
+        original = t.read_file
+        verify = ctl.f.Approval.verify
+        def verified(*args, **kwargs):
+            result = verify(*args, **kwargs)
+            armed[0] = True
+            return result
+        def read(path, **kwargs):
+            raw = original(path, **kwargs)
+            if armed[0] and Path(path) == self.finish_approval.path:
+                clock[0] = now + 7200
+            return raw
+        with patch.object(t, "read_file", side_effect=read), patch.object(ctl.f.Approval, "verify", verified), \
+             patch.object(ctl.s.time, "time", side_effect=lambda: clock[0]), self.assertRaises(b.BackupError):
+            ctl.preflight(value, verify_finish=True, image_store_factory=lambda _: self.image_store)
+        self.assertFalse(self.pending.exists()); self.assertEqual(self.host.events, [])
 
     def test_apply_passes_only_fixed_authorities_and_does_not_return_raw_proofs(self):
         value, _raw = ctl.request(self.request)

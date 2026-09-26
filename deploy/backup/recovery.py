@@ -122,9 +122,6 @@ def _observe(request_path, config, *, host_factory=s.Host, image_store_factory=g
     plan = f.generation(previous, config["source_sha"], request["origin"], local,
                         request["api_secret"], request["worker_secret"], request["backup_secret"])
     f.verify_generation(plan)
-    b.require(t.bundle(Path(request["current_bundle"]), pa["current_manifest_sha256"], current=True) == current
-              and t.bundle(Path(request["target_bundle"]), pa["target_manifest_sha256"], current=True) == target,
-              "recovery-manifests-changed")
     b.require(plan["config"] == config and plan["sha256"] == active["generation_sha256"]
               and plan["configuration_sha256"] == active["configuration_sha256"] == b.configuration_fingerprint(config)
               and plan["secrets"][request["api_secret"]] == sa["api_secret_sha256"], "recovery-generation")
@@ -175,6 +172,9 @@ def _observe(request_path, config, *, host_factory=s.Host, image_store_factory=g
         host.probe()
         b.require(runtime(host) == observed, "recovery-runtime-changed")
     f.verify_generation(plan)
+    b.require(t.bundle(Path(request["current_bundle"]), pa["current_manifest_sha256"], current=True) == current
+              and t.bundle(Path(request["target_bundle"]), pa["target_manifest_sha256"], current=True) == target,
+              "recovery-manifests-changed")
     b.assert_current_config(config)
     b.require(not os.path.lexists(state / w.ADMISSION), "worker-not-paused")
     b.require(t.read_file(request_path, private=True) == request_raw, "operator-request-changed")
