@@ -11,10 +11,12 @@ export function AiAccessPanel({
   access,
   busy,
   onConsent,
+  userId,
 }: {
   access: AiAccess;
   busy: boolean;
   onConsent: (input: AiConsentInput) => void;
+  userId?: string;
 }) {
   const [checked, setChecked] = useState(false);
   const policy = access.policy;
@@ -33,6 +35,49 @@ export function AiAccessPanel({
   );
   return (
     <Card className="ai-access">
+      {access.credit && (
+        <section aria-label="Бесплатный баланс AI">
+          <h2>Бесплатный баланс AI</h2>
+          {userId && <p>ID аккаунта: {userId}</p>}
+          <p>
+            {access.credit.bonusGranted
+              ? "Разовые 500 ₽ начислены. Ежедневного восстановления нет."
+              : "Разовый бонус 500 ₽ ещё не выдан. Обратитесь к владельцу пилота."}
+          </p>
+          <p>
+            Доступно: {formatMoneyMicros(access.credit.availableMicros)} ₽. В
+            резерве: {formatMoneyMicros(access.credit.heldMicros)} ₽. Учтено
+            списаний: {formatMoneyMicros(access.credit.spentMicros)} ₽.
+          </p>
+          <p>
+            Автоматическое списание за ответы и пополнение пока не подключены.
+            Этот баланс не включает ИИ и не заменяет общий бюджет сервиса.
+          </p>
+          {!!access.credit.history.length && (
+            <details>
+              <summary>Последние операции баланса (до 20)</summary>
+              <ul>
+                {access.credit.history.map((entry) => (
+                  <li key={entry.id}>
+                    {
+                      {
+                        bonus: "Разовый бонус",
+                        hold: "Резерв",
+                        settle: "Списание",
+                        release: "Освобождение резерва",
+                      }[entry.kind]
+                    }
+                    {entry.kind === "release"
+                      ? " без списания"
+                      : `: ${formatMoneyMicros(entry.amountMicros)} ₽`}{" "}
+                    · {entry.createdAt}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+        </section>
+      )}
       {access.granted ? (
         <details>
           <summary>

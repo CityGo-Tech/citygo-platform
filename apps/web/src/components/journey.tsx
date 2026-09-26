@@ -363,6 +363,7 @@ export function Journey(props: JourneyProps) {
               </p>
             )}
             <AiAccessPanel
+              userId={board.user.id}
               key={`${board.aiAccess?.policy?.id}:${board.aiAccess?.granted}`}
               access={
                 board.aiAccess ?? {

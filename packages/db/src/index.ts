@@ -1,6 +1,7 @@
 import { PGlite } from "@electric-sql/pglite";
 import pg from "pg";
 export { Repository, DomainError } from "./repository.js";
+export { AiCreditLedger } from "./ai-credit.js";
 import { createHash } from "node:crypto";
 import { readdir, readFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";

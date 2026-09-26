@@ -1,6 +1,7 @@
 import {
   adminOverviewResponseSchema,
   aiBudgetSettingsSchema,
+  aiCreditResponseSchema,
   aiControlResponseSchema,
   aiRoutingResponseSchema,
   apiErrorResponseSchema,
@@ -17,6 +18,7 @@ import {
   type AiConsentInput,
   type AiRoutingInput,
   type AiBudgetInput,
+  type AiCreditGrant,
   type Questionnaire,
   type StreamEvent,
 } from "@citygo/contracts";
@@ -171,6 +173,9 @@ export function createClient(
     aiConsent: (input: AiConsentInput) =>
       request("/v1/ai/consent", okResponseSchema, input),
     aiControl: () => request("/v1/admin/ai", aiControlResponseSchema),
+    aiCredit: () => request("/v1/ai/credit", aiCreditResponseSchema),
+    grantWelcomeCredit: (input: AiCreditGrant) =>
+      request("/v1/admin/ai/credit/welcome", aiCreditResponseSchema, input),
     setAiRouting: (input: AiRoutingInput) =>
       request("/v1/admin/ai", aiRoutingResponseSchema, input),
     setAiBudget: (input: AiBudgetInput) =>

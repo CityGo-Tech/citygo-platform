@@ -132,7 +132,7 @@ try {
   compose(["up", "-d", "--wait", "--wait-timeout", "90", "postgres"]);
   compose(["run", "--rm", "--no-deps", "migrator"]);
   const migrations = psql("select count(*) from citygo_migrations");
-  assert.equal(migrations, "7");
+  assert.equal(migrations, "8");
   compose(["run", "--rm", "--no-deps", "migrator"]);
   assert.equal(psql("select count(*) from citygo_migrations"), migrations);
   compose([
@@ -198,6 +198,44 @@ try {
   });
   assert.equal(board.status, 200);
   assert.equal(board.headers.get("x-citygo-contract-version"), "1");
+  const credit = await request("/api/v1/ai/credit", {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  assert.equal(credit.status, 200);
+  assert.equal((await credit.json()).availableMicros, 0);
+  const syntheticUserId = (await board.json()).user.id;
+  assert.equal(syntheticUserId, "1");
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const grant = await request("/api/v1/admin/ai/credit/welcome", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        userId: syntheticUserId,
+        confirmOneTime500Rub: true,
+      }),
+    });
+    assert.equal(grant.status, 200);
+    assert.equal((await grant.json()).availableMicros, 500000000);
+  }
+  assert.equal(
+    psql("select count(*) from ai_credit_entries where kind='bonus'"),
+    "1",
+  );
+  assert.equal(
+    psql(
+      "select has_table_privilege('citygo_api','ai_credit_entries','INSERT') and has_table_privilege('citygo_api','ai_credit_accounts','UPDATE')",
+    ),
+    "t",
+  );
+  assert.equal(
+    psql(
+      "select has_table_privilege('citygo_api','ai_credit_entries','UPDATE') or has_table_privilege('citygo_api','ai_credit_entries','DELETE') or has_table_privilege('citygo_worker','ai_credit_entries','SELECT')",
+    ),
+    "f",
+  );
   const forbidden = await request("/api/v1/auth/logout", {
     method: "POST",
     headers: {

@@ -8,6 +8,7 @@ import {
 import { Button, Card } from "@citygo/ui-web";
 import { AiControls } from "./ai-control.js";
 import { AiBudgetControls } from "./ai-budget.js";
+import { AiCreditControls } from "./ai-credit.js";
 export function AdminOverview() {
   const [session] = useState(createSessionGuard);
   const api = useMemo(
@@ -196,6 +197,36 @@ export function AdminOverview() {
           busy={busy}
           onSave={(input) => {
             void saveBudget(input);
+          }}
+        />
+      )}
+      {control && (
+        <AiCreditControls
+          key={`credit-${refreshVersion}`}
+          busy={busy}
+          onGrant={(input) => {
+            const ticket = session.capture();
+            setBusy(true);
+            setError("");
+            setNotice("");
+            void (async () => {
+              try {
+                await api.grantWelcomeCredit(input);
+                ticket.check();
+                setNotice(
+                  `Разовый бонус 500 ₽ подтверждён для аккаунта ${input.userId}. Повторного начисления нет.`,
+                );
+              } catch (error) {
+                if (ticket.active())
+                  setError(
+                    error instanceof Error
+                      ? error.message
+                      : "Не удалось подтвердить бонус",
+                  );
+              } finally {
+                if (ticket.active()) setBusy(false);
+              }
+            })();
           }}
         />
       )}
