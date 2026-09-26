@@ -261,8 +261,16 @@ def start(config, target_sha, origin, ingress_directory, images, secret_file, ap
         network_ids = {"web_api": approved["web_network_id"], "database": stage["network"]["id"]}
         target_images = stage["proof"]["local_images"]["target"]
         spec = compose_spec(config["project"], origin, target_images, api_secret_file)
-        def guard():
-            window._check(); stage["check_selection"](); host.assert_closed()
+        def guard(*, final=False):
+            if final:
+                # Read-only receipt gate after context cleanup, NOT a resumed
+                # release window or permission to mutate services/the database.
+                b.verify_operation(state, window._operation)
+                b.require(not os.path.lexists(state / w.ADMISSION), "worker-not-paused")
+                b.require(b.configuration_fingerprint(config) == window._operation["configuration_sha256"], "configuration-changed")
+            else:
+                window._check()
+            stage["check_selection"](); host.assert_closed()
             values = host.inventory()
             retained = {v["Id"]: v for v in values if v.get("Id") in baseline}
             b.require(set(retained) == set(baseline), "start-retained-missing")
@@ -292,9 +300,9 @@ def start(config, target_sha, origin, ingress_directory, images, secret_file, ap
             # it. The post-start inventory guard intentionally allows new writers.
             stage["assert_migrated"]()
             host.replace(Path(tmp), spec)
-            def verified_apps():
+            def verified_apps(*, final=False):
                 result = {}
-                for value in guard():
+                for value in guard(final=final):
                     role = value["Labels"]["com.docker.compose.service"]
                     b.require(value["Id"] != old_apps[role], "start-not-replaced")
                     detail = host.detail(value["Id"])
@@ -311,6 +319,11 @@ def start(config, target_sha, origin, ingress_directory, images, secret_file, ap
         result = {**stage["result"], "startup": proof}
     # The enclosing preparation context performs final authorization/file
     # checks on exit. Never leave success evidence if that finalization fails.
-    check()
-    b.atomic_json(state / ("start-" + operation + ".success.json"), proof)
+    with b.lock(state):
+        with tempfile.TemporaryDirectory(prefix=".start-receipt-", dir=state) as tmp:
+            host = host_factory(config, Path(tmp), ingress_directory, origin)
+            b.require(verified_apps(final=True) == started, "start-process-changed")
+            host.probe()
+            b.require(verified_apps(final=True) == started, "start-process-changed")
+        b.atomic_json(state / ("start-" + operation + ".success.json"), proof)
     return copy.deepcopy(result)

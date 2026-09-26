@@ -153,7 +153,7 @@ class Startup(unittest.TestCase):
         original = copy.deepcopy(self.host.values[0])
         result = self.start()
         self.assertEqual(self.host.values[0], original)
-        self.assertEqual(self.start_events, ["replace", "probe"])
+        self.assertEqual(self.start_events, ["replace", "probe", "probe"])
         self.assertFalse(result["startup"]["traffic_authorized"])
         self.assertFalse(result["startup"]["worker_authorized"])
         self.assertTrue(self.pending.exists()); self.assertTrue(self.host.closed)
@@ -249,6 +249,51 @@ class Startup(unittest.TestCase):
         with self.assertRaisesRegex(b.BackupError, "fixture-health-failed"): self.start()
         self.assertTrue(self.host.closed); self.assertTrue(self.pending.exists())
         self.assertFalse(list(self.state.glob("start-*.success.json")))
+
+    def test_service_stopping_during_window_finalization_has_no_success_receipt(self):
+        original = s.c._migrated_window
+        @contextmanager
+        def stop_on_exit(*args, **kwargs):
+            with original(*args, **kwargs) as stage:
+                yield stage
+            self.host.values[2]["State"].update(Status="exited", Running=False)
+        with patch.object(s.c, "_migrated_window", stop_on_exit), self.assertRaisesRegex(b.BackupError, "start-unhealthy"):
+            self.start()
+        self.assertTrue(self.pending.exists()); self.assertTrue(self.host.closed)
+        self.assertFalse(list(self.state.glob("start-*.success.json")))
+
+    def test_service_restarted_during_window_finalization_has_no_success_receipt(self):
+        original = s.c._migrated_window
+        @contextmanager
+        def restart_on_exit(*args, **kwargs):
+            with original(*args, **kwargs) as stage:
+                yield stage
+            self.host.values[2]["State"]["StartedAt"] = "2026-09-26T00:00:02Z"
+        with patch.object(s.c, "_migrated_window", restart_on_exit), self.assertRaisesRegex(b.BackupError, "start-process-changed"):
+            self.start()
+        self.assertTrue(self.pending.exists()); self.assertTrue(self.host.closed)
+        self.assertFalse(list(self.state.glob("start-*.success.json")))
+
+    def test_final_health_failure_cannot_write_success_receipt(self):
+        def fail_second_probe():
+            if self.start_events.count("probe") == 2:
+                raise b.BackupError("fixture-final-health-failed")
+        self.on_probe = fail_second_probe
+        with self.assertRaisesRegex(b.BackupError, "fixture-final-health-failed"): self.start()
+        self.assertFalse(list(self.state.glob("start-*.success.json")))
+
+    def test_final_receipt_has_maintenance_lock_and_no_worker_admission(self):
+        original = b.atomic_json
+        observed = []
+        def write(path, value):
+            if path.name.startswith("start-") and path.name.endswith(".success.json"):
+                with self.assertRaisesRegex(b.BackupError, "already-running"):
+                    with b.lock(self.state): pass
+                self.assertFalse((self.state / w.ADMISSION).exists())
+                observed.append(True)
+            return original(path, value)
+        with patch.object(b, "atomic_json", write): self.start()
+        self.assertEqual(observed, [True])
 
     def test_process_restart_during_health_is_not_success(self):
         self.on_probe = lambda: self.host.values[2]["State"].update(StartedAt="2026-09-26T00:00:01Z")
