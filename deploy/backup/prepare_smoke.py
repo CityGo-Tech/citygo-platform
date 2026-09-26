@@ -7,6 +7,7 @@ import ssl
 import subprocess
 import sys
 import tempfile
+from unittest.mock import patch
 
 import backup as b
 import migrate as c
@@ -14,6 +15,7 @@ import prepare as p
 import target as t
 import start as s
 import finish as f
+import recovery as recovery
 import worker as w
 from test_backup import MemoryStore
 from test_target import synthetic_selection
@@ -22,6 +24,7 @@ from test_migrate import synthetic_authorization
 from test_target import encoded
 from test_start import synthetic_start_approval
 from test_finish import synthetic_finish_approval
+from test_recovery import synthetic_recovery_approval
 
 
 def main():
@@ -127,12 +130,38 @@ def main():
                             path.parent / "api.json", path.parent / "worker.json", path.parent / "db_backup_password")
         finish_auth = synthetic_finish_approval(directory, config, startup, plan)
         w.open_admission(config)
-        complete = f.finish(config, "b" * 40, fixture["origin"], fixture["ingress_directory"], fixture["images"],
-            path.parent / "migrate.json", path.parent / "api.json", path.parent / "worker.json", path.parent / "db_backup_password",
-            allow_finish=True, finish_authorization=finish_auth, allow_start=True, startup_authorization=startup,
-            allow_migration=True, authorization=authorization,
-            allow_stop=True, allow_upload=True, selection=selection, image_store_factory=lambda _: image_store,
-            host_factory=FixtureHost, storage_factory=lambda *_: store)
+        # CI-only fault after durable cutover/active evidence, before barrier
+        # removal. Recovery must not rerun this real migration or replace apps.
+        class InterruptedCommit(Exception): pass
+        with patch.object(b, "complete_operation", side_effect=InterruptedCommit):
+            try:
+                f.finish(config, "b" * 40, fixture["origin"], fixture["ingress_directory"], fixture["images"],
+                    path.parent / "migrate.json", path.parent / "api.json", path.parent / "worker.json", path.parent / "db_backup_password",
+                    allow_finish=True, finish_authorization=finish_auth, allow_start=True, startup_authorization=startup,
+                    allow_migration=True, authorization=authorization,
+                    allow_stop=True, allow_upload=True, selection=selection, image_store_factory=lambda _: image_store,
+                    host_factory=FixtureHost, storage_factory=lambda *_: store)
+            except InterruptedCommit: pass
+            else: raise b.BackupError("fixture-crash-not-reproduced")
+        operation = b.read_json(state / "operation-pending.json")
+        complete = {"preparation": b.read_json(state / "release-prepared.json"),
+                    "migration": b.read_json(state / ("migration-" + operation["id"] + ".success.json")),
+                    "startup": b.read_json(state / ("start-" + operation["id"] + ".success.json")),
+                    "finish": b.read_json(state / f.ACTIVE), "traffic_authorized": False}
+        request_path = directory / "operator-request.json"
+        b.atomic_json(request_path, {"version": 1, "config_path": str(config_path), "target_sha": "b" * 40,
+            "origin": fixture["origin"], "ingress_directory": fixture["ingress_directory"],
+            "current_bundle": str(selection.current_directory), "target_bundle": str(selection.target_directory),
+            "preparation_approval": str(selection.approval_file), "migration_approval": str(authorization.path),
+            "startup_approval": str(startup.path), "finish_approval": str(finish_auth.path),
+            "migration_secret": str(path.parent / "migrate.json"), "api_secret": str(path.parent / "api.json"),
+            "worker_secret": str(path.parent / "worker.json"), "backup_secret": str(path.parent / "db_backup_password")})
+        recovery_options = {"host_factory": FixtureHost, "image_store_factory": lambda _: image_store}
+        report = recovery.inspect(request_path, **recovery_options)
+        b.require((state / "operation-pending.json").exists(), "fixture-recovery-readonly")
+        recovery_auth = synthetic_recovery_approval(directory, report)
+        recovered = recovery.settle(request_path, recovery_auth, allow_settle=True, **recovery_options)
+        b.require(recovered["status"] == "closed-commit-recovered", "fixture-recovery")
         proof = complete["preparation"]
         migrated = complete["migration"]
         b.require(migrated["result"]["committed"] is True and migrated["result"]["applied"] == []
@@ -172,7 +201,8 @@ def main():
         print(json.dumps({"ok": True, "migration_authorized": False, **observed,
                           "migration_committed": True, "migration_container": migrated["container_id"],
                           "startup_verified": True, "apps": complete["startup"]["apps"],
-                          "finish_verified": True, "new_backup_verified": True, "worker_container": worker_result["container_id"],
+                          "finish_verified": True, "commit_recovery_verified": True,
+                          "new_backup_verified": True, "worker_container": worker_result["container_id"],
                           "roles": sorted(v["role"] for v in proof["containers"])}))
 
 

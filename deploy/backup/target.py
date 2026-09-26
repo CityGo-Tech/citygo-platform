@@ -31,6 +31,7 @@ FILES = frozenset({
     "deploy/nginx/pilot.conf.template", "deploy/postgres/postgresql.conf",
     "deploy/postgres/init.sql", "deploy/postgres/grants.sql", "deploy/postgres/dump.sh",
     "deploy/backup/backup.py", "deploy/backup/worker.py", "deploy/backup/release.py",
+    "deploy/backup/control.py", "deploy/backup/recovery.py", "docs/runbooks/release-operator.md",
     "deploy/backup/prepare.py", "deploy/backup/target.py", "deploy/backup/image_gate.py", "deploy/backup/migration_job.py", "deploy/backup/migrate.py", "deploy/backup/start.py", "deploy/backup/finish.py", "deploy/backup/config.example.json",
     "deploy/backup/notify.py", "deploy/backup/schedule.py", "deploy/backup/mail.example.json",
     "deploy/backup/schedule.example.json", "deploy/backup/systemd/citygo-backup.service.template",
