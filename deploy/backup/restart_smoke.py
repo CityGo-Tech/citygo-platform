@@ -1,5 +1,6 @@
 """CI-only graceful stop/start drill; NEVER a server operator or reboot command."""
 import copy
+import json
 import os
 from pathlib import Path
 import tempfile
@@ -14,6 +15,19 @@ import worker as w
 from test_backup import MemoryStore
 
 GRACE = {"api": 330, "web": 30, "postgres": 60}
+
+
+def mount_identity(values):
+    # Mount identity is keyed by destination, not its presentation order.
+    # Preserve EVERY field and reject ambiguous/missing destinations; only the
+    # presentation order may differ after stop/start.
+    b.require(type(values) is list and 1 <= len(values) <= 32, "restart-fixture-mounts")
+    result = {}
+    for value in values:
+        b.require(type(value) is dict and type(value.get("Destination")) is str
+                  and value["Destination"].startswith("/") and value["Destination"] not in result, "restart-fixture-mounts")
+        result[value["Destination"]] = json.dumps(value, sort_keys=True)
+    return result
 
 
 def fixture_scope(config, origin):
@@ -99,6 +113,7 @@ def rehearse(directory, fixture, config, plan, images, host_factory, api_file):
         networks = {"database": host.database_network()["id"], "web_api": host.web_network()["id"]}
         pg = next(v for v in before if v["Labels"]["com.docker.compose.service"] == "postgres")
         mounts = host.detail(pg["Id"])["Mounts"]
+        mounted = mount_identity(mounts)
         data = [v for v in mounts if v["Destination"] == "/var/lib/postgresql/data"]
         b.require(len(data) == 1 and data[0]["Type"] == "volume" and data[0]["Name"] == config["project"] + "_database"
                   and data[0]["RW"] is True, "restart-fixture-volume")
@@ -120,7 +135,7 @@ def rehearse(directory, fixture, config, plan, images, host_factory, api_file):
                 s.runtime(host.detail(v["Id"]), role, images["target"][role], config["project"], fixture["origin"], api_file, networks)
         exits, starts = cycle(host, initial, check)
         final = p.validate_inventory(host.inventory(), config["project"], fixture["images"], initial=True, retained_jobs=jobs)
-        b.require(host.detail(pg["Id"])["Mounts"] == mounts, "restart-fixture-volume")
+        b.require(mount_identity(host.detail(pg["Id"])["Mounts"]) == mounted, "restart-fixture-volume")
         p.check_network(host.database_network(), final, {"id": networks["database"]})
         web = host.web_network()
         b.require(web["id"] == networks["web_api"] and set(web["peers"]) == {starts[r]["Id"] for r in ("api", "web")}, "restart-fixture-network")

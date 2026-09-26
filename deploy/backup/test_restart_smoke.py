@@ -31,6 +31,20 @@ class Host:
 
 
 class Evidence(unittest.TestCase):
+    def test_mount_order_can_change_but_no_mount_field_can_change(self):
+        mounts = [{"Type": "volume", "Name": "synthetic_database", "Source": "/synthetic/volume",
+                   "Destination": "/var/lib/postgresql/data", "RW": True, "Mode": "rw", "Driver": "local"},
+                  {"Type": "bind", "Source": "/synthetic/secret", "Destination": "/run/secrets/test", "RW": False}]
+        expected = r.mount_identity(mounts)
+        self.assertEqual(r.mount_identity(list(reversed(mounts))), expected)
+        for key, value in (("Type", "bind"), ("Name", "other"), ("Source", "/other"), ("Destination", "/other"),
+                           ("RW", False), ("RW", 1), ("Mode", "ro"), ("Driver", "other")):
+            changed = copy.deepcopy(mounts); changed[0][key] = value
+            with self.subTest(key=key, value=value): self.assertNotEqual(r.mount_identity(changed), expected)
+        self.assertNotEqual(r.mount_identity(mounts[:1]), expected)
+        for invalid in (None, [], [{}], mounts + [mounts[0]], [{"Destination": None}]):
+            with self.assertRaises(b.BackupError): r.mount_identity(invalid)
+
     def test_only_random_disposable_project_synthetic_source_and_origin(self):
         config = {"project": "citygo-pilot-test-0123456789ab", "source_sha": "c" * 40}
         r.fixture_scope(config, "https://pilot.example.test")
