@@ -135,6 +135,7 @@ def _observe(request_path, config, *, host_factory=s.Host, image_store_factory=g
     def runtime(host):
         host.assert_closed()
         values = host.inventory()
+        p.check_retained(values, config["project"], pa.get("retained_jobs", []))
         by_id = {v["Id"]: v for v in values}
         app_ids = {v["id"] for v in startup["apps"].values()}
         b.require(len(by_id) == len(values) and set(by_id) == set(baseline) | app_ids | {migrated["container_id"]}, "recovery-container-set")

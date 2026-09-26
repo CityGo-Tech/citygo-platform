@@ -5,6 +5,7 @@ both bundles. A candidate's own JSON/labels cannot approve itself. This is not a
 attestation verifier, a migration compatibility proof or a deployment permission.
 """
 import copy
+from datetime import datetime
 import hashlib
 import json
 import os
@@ -177,14 +178,50 @@ def bundle(directory, expected_hash, *, current=False):
     return value
 
 
+def retained_jobs(value):
+    """Exact inert process evidence, not permission to run an older image.
+
+    Supplied only in an independent v2 preparation approval, never auto-discovered
+    from receipts. Failed, running, restarted, duplicate or application/DB entries
+    are never eligible. No environment, secrets, commands or wildcard selectors.
+    """
+    b.require(type(value) is list and len(value) <= 61, "retained-jobs")
+    found = {}
+    for entry in value:
+        keys(entry, {"id", "image", "name", "role", "started_at", "restart_count", "init", "grace",
+                     "restart_policy", "status", "exit_code", "finished_at"}, "retained-job")
+        b.require(matches(entry["id"], HASH) and entry["id"] not in found and matches(entry["image"], DIGEST)
+                  and matches(entry["name"], r"/[a-zA-Z0-9][a-zA-Z0-9_.-]{0,200}")
+                  and entry["role"] in ("worker", "migrator", "backup"), "retained-job")
+        b.require(entry["status"] == "exited" and type(entry["exit_code"]) is int and entry["exit_code"] == 0
+                  and type(entry["restart_count"]) is int and entry["restart_count"] == 0
+                  and entry["restart_policy"] == "no", "retained-job-state")
+        b.require((entry["init"] is None or type(entry["init"]) is bool)
+                  and (entry["grace"] is None or type(entry["grace"]) is int and 0 <= entry["grace"] <= 3600), "retained-job-runtime")
+        if entry["role"] == "worker":
+            b.require(entry["init"] is True and entry["grace"] == 90, "retained-job-runtime")
+        times = []
+        for key in ("started_at", "finished_at"):
+            b.require(type(entry[key]) is str and entry[key].endswith("Z"), "retained-job-time")
+            try: parsed = datetime.fromisoformat(entry[key][:-1] + "+00:00")
+            except ValueError: raise b.BackupError("retained-job-time") from None
+            b.require(parsed.year > 1970, "retained-job-time")
+            times.append(parsed)
+        b.require(times[1] >= times[0], "retained-job-time")
+        found[entry["id"]] = copy.deepcopy(entry)
+    return found
+
+
 def approval(data, now):
     value = strict_json(data)
-    keys(value, {"version", "purpose", "repository_id", "organization_id", "artifact_id",
+    b.require(type(value) is dict and type(value.get("version")) is int and value["version"] in (1, 2), "target-approval")
+    fields = {"version", "purpose", "repository_id", "organization_id", "artifact_id",
                  "current_manifest_sha256", "target_manifest_sha256", "target_release_id", "target_sha",
                  "project", "origin", "configuration_sha256", "current_images", "approved_at", "expires_at",
-                 "allow_preparation", "allow_migration"}, "target-approval")
-    b.require(type(value["version"]) is int and value["version"] == 1
-              and value["purpose"] == "citygo-release-preparation"
+                 "allow_preparation", "allow_migration"}
+    keys(value, fields | ({"retained_jobs"} if value["version"] == 2 else set()), "target-approval")
+    if value["version"] == 2: retained_jobs(value["retained_jobs"])
+    b.require(value["purpose"] == "citygo-release-preparation"
               and type(value["repository_id"]) is int and value["repository_id"] == REPOSITORY_ID
               and type(value["organization_id"]) is int and value["organization_id"] == ORGANIZATION_ID
               and matches(value["artifact_id"], r"[1-9][0-9]{0,19}"), "target-approval")
@@ -256,6 +293,7 @@ class Selection:
                 "image_ids": target["imageIds"], "new_migrations": target["migrations"][len(old):],
                 "current": {"source_sha": current["sourceSha"], "images": current["images"],
                             "image_ids": current["imageIds"], "postgres": current["bases"]["postgres"]},
+                "retained_jobs": approved.get("retained_jobs", []),
                 "expires_at": approved["expires_at"], "migration_authorized": False})
         except Exception:
             self._failed = True

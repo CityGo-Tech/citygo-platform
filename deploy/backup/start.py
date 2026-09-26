@@ -252,7 +252,8 @@ def _started_window(config, target_sha, origin, ingress_directory, images, secre
             probe_host = host_factory(config, Path(tmp), ingress_directory, origin)
             values = probe_host.inventory()
             if initial:
-                p.validate_inventory(values, config["project"], images, initial=True)
+                p.validate_inventory(values, config["project"], images, initial=True,
+                                     retained_jobs=approved["migration"]["selected"]["retained_jobs"])
             apps = [v for v in values if v.get("Labels", {}).get("com.docker.compose.service") in ("api", "web")]
             b.require(len(apps) == 2 and {v["Labels"]["com.docker.compose.service"] for v in apps} == {"api", "web"}
                       and all(v["Labels"].get("com.docker.compose.project") == config["project"]
@@ -288,6 +289,7 @@ def _started_window(config, target_sha, origin, ingress_directory, images, secre
             if not cutover: stage["check_selection"]()
             host.assert_closed()
             values = host.inventory()
+            p.check_retained(values, config["project"], approved["migration"]["selected"]["retained_jobs"])
             retained = {v["Id"]: v for v in values if v.get("Id") in baseline}
             b.require(set(retained) == set(baseline), "start-retained-missing")
             p.same_inventory(baseline, retained)
