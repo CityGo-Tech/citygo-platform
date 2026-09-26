@@ -16,6 +16,7 @@ from test_image_gate import selection_store
 from test_migrate import synthetic_authorization
 from test_start import synthetic_start_approval
 from test_finish import synthetic_finish_approval
+from restart_smoke import rehearse
 
 
 def repeat(directory, fixture, config_path, first_selection, first_complete, host_factory, secret_directory):
@@ -102,6 +103,8 @@ def repeat(directory, fixture, config_path, first_selection, first_complete, hos
               and len(list(state.glob("finish-approval-*.used.json"))) == 2, "fixture-second-evidence")
     backup = b.perform_backup(fresh, storage_factory=lambda *_: MemoryStore())
     b.require(backup["source_sha"] == "c" * 40, "fixture-second-backup")
-    return {"second_release_verified": True, "retained_jobs_verified": len(entries),
+    restarted = rehearse(directory, fixture, fresh, plan, f.g.verify(image_store, selected, fixture["images"]),
+                         host_factory, secret_directory / "api.json")
+    return {**restarted, "second_release_verified": True, "retained_jobs_verified": len(entries),
             "second_migration_container": complete["migration"]["container_id"],
             "historical_worker_container": historical["Id"], "historical_image": historical_image}

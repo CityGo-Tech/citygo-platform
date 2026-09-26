@@ -199,3 +199,9 @@ API/Web получают новые IDs, создаётся новая копи�
 локальный historical image в CI создаётся из завершённого тестового latch Worker
 и удаляется после проверки; производственный контроллер не содержит image commit,
 удаления исторических jobs, генератора approval или внешней публикации.
+
+После второго выпуска тот же CI выполняет [закрытый graceful stop/start](closed-restart-rehearsal.md)
+API/Web/PostgreSQL: проверяет чистый выход до старта, новые процессы при тех же
+ID/образах/volume, неизменные jobs, закрытый TLS/Worker, сохранённую сессию/данные/XP
+и новую резервную копию. Это не host reboot, не production restart approval и не
+ослабление same-process проверок commit recovery.
