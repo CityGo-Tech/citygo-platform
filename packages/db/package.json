@@ -24,7 +24,8 @@
     "pg": "^8.16.3",
     "@electric-sql/pglite": "^0.3.14",
     "@citygo/contracts": "workspace:*",
-    "@citygo/domain": "workspace:*"
+    "@citygo/domain": "workspace:*",
+    "zod": "^4.1.1"
   },
   "devDependencies": {
     "tsup": "^8.5.0",
