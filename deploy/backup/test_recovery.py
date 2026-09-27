@@ -47,7 +47,7 @@ class Validation(unittest.TestCase):
 @unittest.skipUnless(sys.platform.startswith("linux"), "Linux real barrier recovery")
 class Recovery(unittest.TestCase):
     def setUp(self):
-        fixture.Cutover.setUp(self)
+        (fixture.RouterAiCutover if getattr(self, "routerai_profile", False) else fixture.Cutover).setUp(self)
         self.request = synthetic_request(self)
         # Interrupt only the FINAL barrier removal, after real in-process startup
         # gates and configuration/active writes. No production monkeypatch exists.
@@ -181,6 +181,11 @@ class Recovery(unittest.TestCase):
         self.request.write_bytes(self.request.read_bytes() + b"\n")
         with self.assertRaisesRegex(b.BackupError, "recovery-approval-binding"): self.settle()
         self.assertTrue(self.pending.exists())
+
+
+@unittest.skipUnless(sys.platform.startswith("linux"), "Linux real barrier recovery")
+class RouterAiRecovery(Recovery):
+    routerai_profile = True
 
 
 if __name__ == "__main__": unittest.main()

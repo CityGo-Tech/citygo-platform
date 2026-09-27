@@ -28,6 +28,62 @@ const secretKeys = {
   worker: ["DATABASE_URL"],
 };
 
+// A separate, explicitly selected mounted profile. No ambient key, endpoint,
+// fallback, customer bonus or operator monetary allowance can activate it.
+const routerAiFixed = {
+  AI_CREDIT_MODE: "routerai_at_cost",
+  ROUTERAI_MODEL: "deepseek/deepseek-v4-pro-0813",
+  ROUTERAI_UPSTREAM: "deepseek",
+  ROUTERAI_COUNTRY: "us",
+  ROUTERAI_REASONING_EFFORT: "high",
+  ROUTERAI_MAX_OUTPUT_TOKENS: "32768",
+  ROUTERAI_REQUEST_TIMEOUT_MS: "240000",
+  LLM_MAX_INPUT_BYTES: "64000",
+};
+const routerAiLimits = {
+  LLM_USER_DAILY_REQUEST_LIMIT: 10000,
+  LLM_GLOBAL_DAILY_REQUEST_LIMIT: 1000000,
+  LLM_USER_DAILY_ATTEMPT_LIMIT: 10000,
+  LLM_GLOBAL_DAILY_ATTEMPT_LIMIT: 1000000,
+};
+const routerAiKeys = [
+  "DATABASE_URL",
+  "ADMIN_USER_IDS",
+  "ROUTERAI_API_KEY",
+  "ROUTERAI_DATA_NOTICE",
+  "ROUTERAI_PRODUCTION_POLICY_ID",
+  ...Object.keys(routerAiFixed),
+  ...Object.keys(routerAiLimits),
+];
+
+function validateRouterAi(value) {
+  if (
+    Object.keys(value).length !== routerAiKeys.length ||
+    routerAiKeys.some(
+      (key) =>
+        typeof value[key] !== "string" ||
+        !value[key] ||
+        value[key] !== value[key].trim() ||
+        [...value[key]].some((char) => char.charCodeAt(0) < 32),
+    ) ||
+    Object.entries(routerAiFixed).some(
+      ([key, setting]) => value[key] !== setting,
+    ) ||
+    Object.entries(routerAiLimits).some(
+      ([key, maximum]) =>
+        !/^(0|[1-9][0-9]{0,6})$/.test(value[key]) ||
+        Number(value[key]) > maximum,
+    ) ||
+    !/^[1-9][0-9]{0,17}(,[1-9][0-9]{0,17}){0,19}$/.test(value.ADMIN_USER_IDS) ||
+    new Set(value.ADMIN_USER_IDS.split(",")).size !==
+      value.ADMIN_USER_IDS.split(",").length ||
+    !/^[a-f0-9]{64}$/.test(value.ROUTERAI_PRODUCTION_POLICY_ID) ||
+    value.ROUTERAI_DATA_NOTICE.length > 4000 ||
+    value.ROUTERAI_API_KEY.length > 8192
+  )
+    throw new Error();
+}
+
 export function containerSpec(
   mode,
   inherited = process.env,
@@ -37,6 +93,20 @@ export function containerSpec(
   if (!Object.hasOwn(modes, mode)) throw new Error("Unknown container mode");
   const { scope, args } = modes[mode];
   let secrets = {};
+  const profile = inherited.CITYGO_AI_PROFILE;
+  if (
+    profile !== undefined &&
+    (profile !== "routerai-credit-v1" ||
+      mode !== "api" ||
+      inherited.CITYGO_MOUNTED_CONFIG !== "1" ||
+      inherited.LLM_PROVIDER !== "routerai" ||
+      Object.keys(inherited).some(
+        (key) =>
+          key !== "LLM_PROVIDER" &&
+          /^(OPENAI_|GIGACHAT_|ROUTERAI_|LLM_|AI_CREDIT_MODE$)/.test(key),
+      ))
+  )
+    throw new Error("Invalid container AI profile (contents hidden)");
   if (inherited.CITYGO_MOUNTED_CONFIG !== undefined) {
     try {
       if (
@@ -48,7 +118,10 @@ export function containerSpec(
         secretDirectory,
         `${mode === "migrate-release" ? "migrate" : mode}.json`,
       );
-      if (!statSync(file).isFile() || statSync(file).size > 65536)
+      if (
+        !statSync(file).isFile() ||
+        statSync(file).size > (profile ? 16384 : 65536)
+      )
         throw new Error();
       secrets = JSON.parse(readFileSync(file, "utf8"));
       if (
@@ -58,13 +131,14 @@ export function containerSpec(
         typeof secrets.DATABASE_URL !== "string" ||
         Object.entries(secrets).some(
           ([key, value]) =>
-            !secretKeys[mode].includes(key) ||
+            !(profile ? routerAiKeys : secretKeys[mode]).includes(key) ||
             typeof value !== "string" ||
             !value.trim() ||
             /[\r\n\0]/.test(value),
         )
       )
         throw new Error();
+      if (profile) validateRouterAi(secrets);
       // Avoid an accidental second source silently selecting the wrong database/key.
       if (Object.keys(secrets).some((key) => inherited[key] !== undefined))
         throw new Error();

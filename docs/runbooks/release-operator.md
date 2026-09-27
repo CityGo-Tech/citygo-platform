@@ -7,8 +7,11 @@
 `deploy/backup/control.py` связывает уже существующие selection → preparation →
 migration → start/health → finish в одном процессе. Отдельные approval-файлы
 остаются обязательными: CLI не создаёт их за оператора и не считает проверки CI
-разрешением мигрировать живую БД. Профиль всегда закрытый: AI disabled,
-ingress 503, Worker paused, restart=no. Никаких hooks, произвольных команд, URL
+разрешением мигрировать живую БД. Выпуск всегда закрытый: ingress 503, Worker
+paused, restart=no. По умолчанию AI disabled; отдельно согласованный
+[RouterAI-профиль](routerai-deployment-profile.md) требует startup approval v2
+и не включает денежный бюджет, бонусы или публичный доступ.
+Никаких hooks, произвольных команд, URL
 скачивания или подменяемых transport-классов в JSON-запросе нет.
 
 ## Предварительные условия

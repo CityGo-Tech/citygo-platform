@@ -13,7 +13,7 @@
 и migration approvals. Он защищён теми же правилами путей/владельца/прав, не создаётся
 кодом выпуска и не берётся из кандидата. Это ручной корень доверия, не attestation.
 
-Точные поля:
+Точные поля базового AI-disabled разрешения:
 
 - `version: 1`, `purpose: citygo-release-start`.
 - `profile: citygo-api-web-disabled-v1` — фиксированный доверенный runtime.
@@ -25,6 +25,12 @@
 - `web_network_id` — точный ID существующей сети web_api.
 - `approved_at`, `expires_at` — целые Unix seconds, максимум 24 часа.
 - `allow_start: true`, `allow_traffic: false`.
+
+Для отдельно согласованного RouterAI существует startup approval v2 с профилем
+`citygo-api-web-routerai-credit-v1`: [схема и ограничения](routerai-deployment-profile.md).
+Остальные поля и цепочка независимых approvals сохраняются. Разрешение v1
+не позволяет включить этот профиль; ключ и все его настройки входят в hash
+отдельного API JSON.
 
 Отзыв/изменение/expiry проверяются повторно, в том числе во время подготовки и
 миграции. ID существующей web_api сети сверяется read-only **до pause/downtime**
@@ -44,8 +50,9 @@ hash точной runtime-конфигурации и ID миграции. Се�
 Одна maintenance lock охватывает подготовку, копию, миграцию, запуск и проверки.
 Контроллер генерирует фиксированный Compose JSON только для API/Web. Compose
 из bundle, hooks, env_file, shell и произвольные override не исполняются.
-Поддерживается только AI-disabled профиль; изменения runtime кандидата требуют
-отдельного пересмотра профиля, а не автоматического исполнения его Compose.
+По умолчанию используется AI-disabled профиль. RouterAI требует отдельного
+startup approval v2. Иные изменения runtime кандидата требуют пересмотра
+доверенного профиля, а не автоматического исполнения его Compose.
 
 Используются проверенные immutable local image ID, non-root/read-only/init,
 no-new-privileges, drop ALL, память 768 MiB без swap на сервис, 128 процессов.

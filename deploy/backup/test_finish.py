@@ -241,4 +241,28 @@ class Cutover(unittest.TestCase):
         self.assertTrue(self.pending.exists()); self.assertEqual(self.config_path.read_bytes(), self.original_raw)
 
 
+@unittest.skipUnless(sys.platform.startswith("linux"), "Linux protected atomic cutover")
+class RouterAiCutover(Cutover):
+    # Run the entire existing failure/drift/atomic-cutover suite for the new
+    # profile too. All keys, images, network and approvals remain synthetic.
+    def setUp(self):
+        Cutover.setUp(self)
+        startup_fixture.enable_routerai_fixture(self)
+        verified = self.selection.verify(self.config, "b" * 40, ORIGIN, IMAGES)
+        local = f.g.verify(self.image_store, verified, IMAGES)
+        self.plan = f.generation(self.config, "b" * 40, ORIGIN, local, self.api, self.worker, self.password, s.ROUTERAI_PROFILE)
+        self.finish_approval = synthetic_finish_approval(self.directory, self.config, self.start_approval, self.plan)
+
+    def test_routerai_generation_contains_only_the_profile_marker_not_key_or_notice(self):
+        result = self.finish()
+        spec = json.loads(self.plan["files"]["compose.json"])
+        self.assertEqual(spec["services"]["api"]["environment"]["CITYGO_AI_PROFILE"], "routerai-credit-v1")
+        self.assertEqual(spec["services"]["api"]["environment"]["LLM_PROVIDER"], "routerai")
+        for role in ("web", "worker", "backup"):
+            self.assertNotIn("CITYGO_AI_PROFILE", spec["services"][role].get("environment", {}))
+        for text in (json.dumps(result), self.plan["files"]["compose.json"].decode()):
+            self.assertNotIn("synthetic-not-live", text)
+            self.assertNotIn("Synthetic offline fixture", text)
+
+
 if __name__ == "__main__": unittest.main()

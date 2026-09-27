@@ -70,7 +70,8 @@ class Validation(unittest.TestCase):
 @unittest.skipUnless(sys.platform.startswith("linux"), "Linux protected operator requests")
 class Operator(unittest.TestCase):
     def setUp(self):
-        fixture.Cutover.setUp(self)
+        setup = fixture.RouterAiCutover if getattr(self, "routerai_profile", False) else fixture.Cutover
+        setup.setUp(self)
         self.request = synthetic_request(self)
 
     def test_plan_without_finish_file_is_not_an_approval_and_verify_is_readonly(self):
@@ -80,6 +81,7 @@ class Operator(unittest.TestCase):
         result = ctl.preflight(value, image_store_factory=lambda _: self.image_store)
         self.assertEqual(result["status"], "planned-not-approved")
         self.assertEqual(result["generation_sha256"], self.plan["sha256"])
+        self.assertEqual(result["profile"], ctl.s.ROUTERAI_PROFILE if getattr(self, "routerai_profile", False) else ctl.s.PROFILE)
         self.assertFalse(result["runtime_checked"])
         with self.assertRaises(OSError): ctl.preflight(value, verify_finish=True, image_store_factory=lambda _: self.image_store)
         self.finish_approval.path.write_bytes(saved); self.finish_approval.path.chmod(0o600)
@@ -126,6 +128,11 @@ class Operator(unittest.TestCase):
              patch.object(ctl, "request", side_effect=OSError("synthetic-private-key")):
             self.assertEqual(ctl.main(["verify", "--request", str(self.request)]), 1)
         self.assertNotIn("synthetic-private-key", error.getvalue())
+
+
+@unittest.skipUnless(sys.platform.startswith("linux"), "Linux protected operator requests")
+class RouterAiOperator(Operator):
+    routerai_profile = True
 
 
 if __name__ == "__main__": unittest.main()

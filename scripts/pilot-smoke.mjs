@@ -11,6 +11,7 @@ import { ingressMaintenanceSmoke } from "./ingress-maintenance-smoke.mjs";
 import { workerCoordinationSmoke } from "./worker-coordination-smoke.mjs";
 import { releasePrepareSmoke } from "./release-prepare-smoke.mjs";
 import { releaseMigrationSmoke } from "./release-migration-smoke.mjs";
+import { routerAiProfileSmoke } from "./routerai-profile-smoke.mjs";
 
 export async function pilotSmoke({
   apiImage,
@@ -132,6 +133,7 @@ export async function pilotSmoke({
       'export PGPASSWORD="$(cat /run/secrets/db_migrate_password)"; exec psql -U citygo_migrator -d citygo_pilot -v ON_ERROR_STOP=1 -f /opt/citygo/grants.sql',
     ]);
     await releaseMigrationSmoke({ project, directory, compose, docker, psql });
+    await routerAiProfileSmoke({ project, directory, apiImage, docker, psql });
     compose(["up", "-d", "--wait", "--wait-timeout", "120", "api", "web"]);
     console.log("Pilot fixture: mounted-secret startup and migrations ready");
     const url = "http://127.0.0.1:3000";

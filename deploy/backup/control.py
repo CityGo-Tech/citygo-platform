@@ -65,7 +65,7 @@ def preflight(value, *, verify_finish=False, image_store_factory=g.Store):
                          value["target_sha"], value["origin"], images, value["api_secret"])
         m.secret_bytes(Path(value["migration_secret"]))
         plan = f.generation(config, value["target_sha"], value["origin"], local,
-                            value["api_secret"], value["worker_secret"], value["backup_secret"])
+                            value["api_secret"], value["worker_secret"], value["backup_secret"], started["profile"])
         b.require(not Path(config._binding.path).is_relative_to(state), "finish-config-location")
         b.require(not os.path.lexists(plan["directory"]), "finish-generation-exists")
         raw = b._config_bytes(config._binding.path)
@@ -92,7 +92,7 @@ def preflight(value, *, verify_finish=False, image_store_factory=g.Store):
         return {"status": "verified-not-deployed" if verify_finish else "planned-not-approved",
                 "target_sha": value["target_sha"], "config_path": value["config_path"],
                 "config_file_sha256": t.sha256(raw), "generation_sha256": plan["sha256"],
-                "startup_approval_sha256": started["approval_sha256"], "runtime_checked": False}
+                "startup_approval_sha256": started["approval_sha256"], "profile": started["profile"], "runtime_checked": False}
 
 
 def apply(value):

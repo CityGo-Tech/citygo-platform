@@ -20,9 +20,9 @@ from test_target import encoded
 WEB_NETWORK = "f" * 64
 
 
-def synthetic_start_approval(directory, migration, secret, network=WEB_NETWORK):
+def synthetic_start_approval(directory, migration, secret, network=WEB_NETWORK, profile=s.PROFILE):
     now = int(time.time())
-    value = {"version": 1, "purpose": "citygo-release-start", "profile": s.PROFILE,
+    value = {"version": 2 if profile == s.ROUTERAI_PROFILE else 1, "purpose": "citygo-release-start", "profile": profile,
              "migration_approval_sha256": t.sha256(migration.path.read_bytes()),
              "api_secret_sha256": t.sha256(secret.read_bytes()), "web_network_id": network,
              "approved_at": now - 1, "expires_at": now + 3600, "allow_start": True, "allow_traffic": False}
@@ -31,8 +31,8 @@ def synthetic_start_approval(directory, migration, secret, network=WEB_NETWORK):
     return s.Approval(path)
 
 
-def detail(value, role, image, secret):
-    spec = s.compose_spec("citygo-fixture", ORIGIN, {role: image, ("web" if role == "api" else "api"): image}, secret)
+def detail(value, role, image, secret, profile=s.PROFILE):
+    spec = s.compose_spec("citygo-fixture", ORIGIN, {role: image, ("web" if role == "api" else "api"): image}, secret, profile)
     service = spec["services"][role]
     return {**copy.deepcopy(value), "Config": {"Image": image["local_id"], "User": "1000:1000",
                 "WorkingDir": "/app", "Entrypoint": service["entrypoint"], "Cmd": [role],
@@ -57,6 +57,10 @@ class Validation(unittest.TestCase):
                  "web_network_id": WEB_NETWORK, "approved_at": now - 1, "expires_at": now + 100,
                  "allow_start": True, "allow_traffic": False}
         self.assertEqual(s.approval(encoded(value), now), value)
+        routerai = {**value, "version": 2, "profile": s.ROUTERAI_PROFILE}
+        self.assertEqual(s.approval(encoded(routerai), now), routerai)
+        for bad in ({**value, "profile": s.ROUTERAI_PROFILE}, {**routerai, "profile": s.PROFILE}):
+            with self.assertRaises(b.BackupError): s.approval(encoded(bad), now)
         for change in ({"version": True}, {"allow_start": 1}, {"allow_traffic": True}, {"profile": "any"},
                        {"expires_at": now}, {"approved_at": now + 1}, {"expires_at": now + 86400},
                        {"migration_approval_sha256": "main"}, {"extra": "ignored"}):
@@ -109,6 +113,45 @@ class Validation(unittest.TestCase):
             with self.subTest(key=key), self.assertRaises(b.BackupError):
                 s.runtime(bad, "api", image, "citygo-fixture", ORIGIN, "/tmp/api.json", {"web_api": WEB_NETWORK, "database": "e" * 64})
 
+    def test_routerai_exact_secret_and_legacy_numeric_admin_ids(self):
+        value = routerai_fixture()
+        def validate(data, profile=s.ROUTERAI_PROFILE):
+            with patch.object(t, "read_file", return_value=encoded(data)): return s.api_secret("/unused", profile)
+        validate(value)
+        validate({"DATABASE_URL": value["DATABASE_URL"], "ADMIN_USER_IDS": "1,2"}, s.PROFILE)
+        with self.assertRaises(b.BackupError): validate(value, s.PROFILE)
+        for key in value:
+            bad = dict(value); del bad[key]
+            with self.subTest(missing=key), self.assertRaises(b.BackupError): validate(bad)
+        for change in ({"OPENAI_API_KEY": "synthetic-hidden"}, {"ROUTERAI_BASE_URL": "https://untrusted.test"},
+                       {"AI_CREDIT_MODE": "disabled"}, {"ROUTERAI_UPSTREAM": "other"}, {"ROUTERAI_COUNTRY": "ru"},
+                       {"ROUTERAI_MODEL": "other/model"}, {"ROUTERAI_REQUEST_TIMEOUT_MS": "240001"},
+                       {"ROUTERAI_DATA_NOTICE": " "}, {"ROUTERAI_API_KEY": "line\nbreak"}, {"ADMIN_USER_IDS": "1,1"},
+                       {"ADMIN_USER_IDS": "0001"}, {"ADMIN_USER_IDS": "a" * 36}, {"LLM_USER_DAILY_REQUEST_LIMIT": "10001"},
+                       {"ROUTERAI_PRODUCTION_POLICY_ID": "true"}, {"ROUTERAI_REASONING_EFFORT": "low"}):
+            with self.subTest(keys=list(change)), self.assertRaises(b.BackupError): validate({**value, **change})
+
+    def test_routerai_runtime_does_not_accept_disabled_profile_or_expose_key(self):
+        image = {"local_id": "sha256:" + "c" * 64, "config_id": "sha256:" + "c" * 64}
+        value = preparation_fixture.container("api"); value["Image"] = image["local_id"]; value["State"]["Dead"] = False
+        base = detail(value, "api", image, "/tmp/api.json", s.ROUTERAI_PROFILE)
+        args = ("api", image, "citygo-fixture", ORIGIN, "/tmp/api.json", {"web_api": WEB_NETWORK, "database": "e" * 64})
+        s.runtime(base, *args, s.ROUTERAI_PROFILE)
+        with self.assertRaises(b.BackupError): s.runtime(base, *args)
+        for bad_env in ([e for e in base["Config"]["Env"] if not e.startswith("CITYGO_AI_PROFILE=")],
+                        [*base["Config"]["Env"], "ROUTERAI_API_KEY=synthetic-hidden"]):
+            bad = copy.deepcopy(base); bad["Config"]["Env"] = bad_env
+            with self.assertRaises(b.BackupError): s.runtime(bad, *args, s.ROUTERAI_PROFILE)
+
+
+def routerai_fixture():
+    return json.loads((Path(__file__).resolve().parent.parent / "fixtures/routerai-profile.fixture.json").read_bytes())
+
+
+def enable_routerai_fixture(test):
+    test.api.write_bytes(encoded(routerai_fixture()))
+    test.start_approval = synthetic_start_approval(test.directory, test.authorization, test.api, profile=s.ROUTERAI_PROFILE)
+
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "Linux live operation and protected inputs")
 class Startup(unittest.TestCase):
@@ -124,6 +167,7 @@ class Startup(unittest.TestCase):
         self.host.web_network = lambda: {"id": WEB_NETWORK, "peers": sorted(v["Id"] for v in self.host.values
             if v["Labels"]["com.docker.compose.service"] in ("api", "web") and v["State"]["Running"])}
         def replace(directory, spec):
+            self.runtime_profile = (s.ROUTERAI_PROFILE if "CITYGO_AI_PROFILE" in spec["services"]["api"]["environment"] else s.PROFILE)
             self.start_events.append("replace")
             self.assertTrue(self.pending.exists()); self.assertTrue(self.host.closed)
             with self.assertRaisesRegex(b.BackupError, "already-running"):
@@ -137,7 +181,7 @@ class Startup(unittest.TestCase):
         def inspection(ident):
             value = next(v for v in self.host.values if v["Id"] == ident)
             role = value["Labels"]["com.docker.compose.service"]
-            return detail(value, role, {"local_id": value["Image"], "config_id": value["Image"]}, self.api)
+            return detail(value, role, {"local_id": value["Image"], "config_id": value["Image"]}, self.api, getattr(self, "runtime_profile", s.PROFILE))
         self.host.detail = inspection
         def probe(): self.start_events.append("probe"); self.on_probe()
         self.host.probe = probe
@@ -161,6 +205,21 @@ class Startup(unittest.TestCase):
         self.assertEqual(len(list(self.state.glob("start-*.success.json"))), 1)
         self.assertNotIn("DATABASE_URL", json.dumps(result))
         with self.assertRaisesRegex(b.BackupError, "start-approval-used"): self.start()
+
+    def test_routerai_approval_starts_only_pinned_profile_without_opening_traffic(self):
+        enable_routerai_fixture(self)
+        result = self.start()
+        self.assertEqual(self.runtime_profile, s.ROUTERAI_PROFILE)
+        self.assertTrue(self.pending.exists()); self.assertTrue(self.host.closed)
+        self.assertFalse(result["startup"]["traffic_authorized"])
+        self.assertNotIn("synthetic-not-live", json.dumps(result))
+
+    def test_routerai_profile_drift_refuses_before_any_stop(self):
+        enable_routerai_fixture(self)
+        value = routerai_fixture(); value["ROUTERAI_DATA_NOTICE"] += " changed"
+        self.api.write_bytes(encoded(value))
+        with self.assertRaisesRegex(b.BackupError, "start-binding"): self.start()
+        self.assertEqual(self.host.events, []); self.assertFalse(self.pending.exists())
 
     def test_migration_approval_cannot_authorize_start(self):
         self.start_approval.path.write_bytes(self.authorization.path.read_bytes())

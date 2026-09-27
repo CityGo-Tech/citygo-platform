@@ -43,6 +43,7 @@ FILES = frozenset({
     "docs/runbooks/backup-operations.md", "docs/runbooks/worker-coordination.md",
     "docs/runbooks/release-backup-window.md", "docs/runbooks/release-preparation.md",
     "docs/runbooks/release-target.md", "docs/runbooks/release-images.md", "docs/runbooks/release-migration.md", "docs/runbooks/release-migration-job.md", "docs/runbooks/release-approved-migration.md", "docs/runbooks/release-start-health.md", "docs/runbooks/release-finish.md", "docs/runbooks/release-candidate.md",
+    "docs/runbooks/routerai-deployment-profile.md",
 })
 # The first delivered candidate predates Worker/drain/prepare helpers. Current
 # manifests may contain this baseline plus known additions, never arbitrary paths.
