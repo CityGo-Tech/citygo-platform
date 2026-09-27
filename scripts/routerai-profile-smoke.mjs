@@ -38,25 +38,29 @@ export async function routerAiProfileSmoke({
       "ROUTERAI_DATA_NOTICE",
     ].map((k) => [k, profile[k]]),
   );
-  const policy = docker([
-    "run",
-    "--rm",
-    "--pull",
-    "never",
-    "--network",
-    "none",
-    "--read-only",
-    "--cap-drop",
-    "ALL",
-    "--security-opt",
-    "no-new-privileges:true",
-    "--entrypoint",
-    "node",
-    apiImage,
-    "--input-type=module",
-    "-e",
-    `import {readConfig} from '@citygo/config'; import {createAiPolicy} from './dist/ai-policy.js'; const cfg=readConfig(${JSON.stringify(publicSettings)}); console.log(createAiPolicy(cfg,{name:'routerai',model:cfg.ROUTERAI_MODEL}).id);`,
-  ]).trim();
+  const policy = JSON.parse(
+    docker([
+      "run",
+      "--rm",
+      "--pull",
+      "never",
+      "--network",
+      "none",
+      "--read-only",
+      "--cap-drop",
+      "ALL",
+      "--security-opt",
+      "no-new-privileges:true",
+      "--entrypoint",
+      "node",
+      ...Object.entries(publicSettings).flatMap(([key, value]) => [
+        "-e",
+        `${key}=${value}`,
+      ]),
+      apiImage,
+      "dist/preview-policy.js",
+    ]),
+  ).id;
   assert.match(policy, /^[a-f0-9]{64}$/);
   profile.ROUTERAI_PRODUCTION_POLICY_ID = policy;
   const secret = join(directory, "routerai-api.json");
