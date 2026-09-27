@@ -71,6 +71,7 @@ export const runtimeFiles = [
   "docs/runbooks/release-finish.md",
   "docs/runbooks/release-operator.md",
   "docs/runbooks/release-candidate.md",
+  "docs/runbooks/routerai-deployment-profile.md",
 ];
 // Only messages created here are safe to expose. Never serialize upstream errors,
 // assertion diffs, subprocess output or request headers (including error causes).

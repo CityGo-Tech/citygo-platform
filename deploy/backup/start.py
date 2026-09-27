@@ -1,4 +1,4 @@
-"""Internal AI-disabled API/Web replacement + read-only health, not full deploy.
+"""Independently approved API/Web profile + read-only health, not full deploy.
 
 Requires independent startup approval AND the live migration continuation.
 start() retains pending. Only the internal live continuation can feed the separately
@@ -22,6 +22,20 @@ import target as t
 import worker as w
 
 PROFILE = "citygo-api-web-disabled-v1"
+ROUTERAI_PROFILE = "citygo-api-web-routerai-credit-v1"
+# Public configuration is pinned together with the private key by startup approval.
+# No live budget, user bonus, consent or payment authorization is encoded here.
+ROUTERAI_FIXED = {
+    "AI_CREDIT_MODE": "routerai_at_cost",
+    "ROUTERAI_MODEL": "deepseek/deepseek-v4-pro-0813",
+    "ROUTERAI_UPSTREAM": "deepseek", "ROUTERAI_COUNTRY": "us",
+    "ROUTERAI_REASONING_EFFORT": "high", "ROUTERAI_MAX_OUTPUT_TOKENS": "32768",
+    "ROUTERAI_REQUEST_TIMEOUT_MS": "240000", "LLM_MAX_INPUT_BYTES": "64000",
+}
+ROUTERAI_LIMITS = {
+    "LLM_USER_DAILY_REQUEST_LIMIT": 10000, "LLM_GLOBAL_DAILY_REQUEST_LIMIT": 1000000,
+    "LLM_USER_DAILY_ATTEMPT_LIMIT": 10000, "LLM_GLOBAL_DAILY_ATTEMPT_LIMIT": 1000000,
+}
 MEMORY = 768 * 1024 * 1024
 INSPECT = ('{"Id":{{json .Id}},"Name":{{json .Name}},"Image":{{json .Image}},'
            '"RestartCount":{{json .RestartCount}},"State":{{json .State}},'
@@ -29,11 +43,24 @@ INSPECT = ('{"Id":{{json .Id}},"Name":{{json .Name}},"Image":{{json .Image}},'
            '"Mounts":{{json .Mounts}},"NetworkSettings":{{json .NetworkSettings}}}')
 
 
-def api_secret(path):
+def api_secret(path, profile=PROFILE):
     data = t.read_file(path)
     b.require(len(data) <= 16384, "start-secret")
     value = t.strict_json(data)
-    b.require(type(value) is dict and {"DATABASE_URL"} <= set(value) <= {"DATABASE_URL", "ADMIN_USER_IDS"}, "start-secret")
+    b.require(profile in (PROFILE, ROUTERAI_PROFILE) and type(value) is dict, "start-secret")
+    if profile == PROFILE:
+        b.require({"DATABASE_URL"} <= set(value) <= {"DATABASE_URL", "ADMIN_USER_IDS"}, "start-secret")
+    else:
+        t.keys(value, {"DATABASE_URL", "ADMIN_USER_IDS", "ROUTERAI_API_KEY", "ROUTERAI_DATA_NOTICE",
+                       "ROUTERAI_PRODUCTION_POLICY_ID"} | set(ROUTERAI_FIXED) | set(ROUTERAI_LIMITS), "start-secret")
+        b.require(all(type(v) is str and v.strip() == v and v and not any(ord(c) < 32 for c in v)
+                      for v in value.values()), "start-secret")
+        b.require(all(value[k] == v for k, v in ROUTERAI_FIXED.items()), "start-secret")
+        b.require(all(t.matches(value[k], r"0|[1-9][0-9]{0,6}") and int(value[k]) <= maximum
+                      for k, maximum in ROUTERAI_LIMITS.items()), "start-secret")
+        b.require(t.matches(value["ROUTERAI_PRODUCTION_POLICY_ID"], t.HASH)
+                  and len(value["ROUTERAI_DATA_NOTICE"].encode("utf-16-le")) <= 8000
+                  and len(value["ROUTERAI_API_KEY"]) <= 8192, "start-secret")
     url = value["DATABASE_URL"]
     b.require(type(url) is str and not any(ord(ch) <= 32 for ch in url), "start-secret")
     try:
@@ -45,7 +72,9 @@ def api_secret(path):
         valid = False
     b.require(valid, "start-secret")
     if "ADMIN_USER_IDS" in value:
-        b.require(t.matches(value["ADMIN_USER_IDS"], r"[0-9a-f-]{36}(?:,[0-9a-f-]{36})*"), "start-secret")
+        # CityGo users.id is bigint, not UUID. Approval still pins the exact list.
+        b.require(t.matches(value["ADMIN_USER_IDS"], r"[1-9][0-9]{0,17}(?:,[1-9][0-9]{0,17}){0,19}")
+                  and len(set(value["ADMIN_USER_IDS"].split(","))) == len(value["ADMIN_USER_IDS"].split(",")), "start-secret")
     return data
 
 
@@ -53,8 +82,9 @@ def approval(data, now):
     value = t.strict_json(data)
     t.keys(value, {"version", "purpose", "profile", "migration_approval_sha256", "api_secret_sha256",
                    "web_network_id", "approved_at", "expires_at", "allow_start", "allow_traffic"}, "start-approval")
-    b.require(type(value["version"]) is int and value["version"] == 1
-              and value["purpose"] == "citygo-release-start" and value["profile"] == PROFILE
+    b.require(type(value["version"]) is int
+              and (value["version"], value["profile"]) in ((1, PROFILE), (2, ROUTERAI_PROFILE))
+              and value["purpose"] == "citygo-release-start"
               and value["allow_start"] is True and value["allow_traffic"] is False, "start-approval")
     for key in ("migration_approval_sha256", "api_secret_sha256", "web_network_id"):
         b.require(t.matches(value[key], t.HASH), "start-approval")
@@ -81,18 +111,24 @@ class Approval:
             b.require(self._pin is None or self._pin == t.sha256(raw), "start-approval-changed")
             migration = migration_authorization.verify(selection, config, target_sha, origin, images)
             b.require(approved["migration_approval_sha256"] == migration["approval_sha256"]
-                      and approved["api_secret_sha256"] == t.sha256(api_secret(secret_file)), "start-binding")
+                      and approved["api_secret_sha256"] == t.sha256(api_secret(secret_file, approved["profile"])), "start-binding")
             b.require(t.read_file(self.path, private=True) == raw, "start-approval-changed")
             approval(raw, time.time())
             self._pin = t.sha256(raw)
-            return {"approval_sha256": self._pin, "migration": migration,
+            return {"approval_sha256": self._pin, "migration": migration, "profile": approved["profile"],
                     "web_network_id": approved["web_network_id"], "api_secret_sha256": approved["api_secret_sha256"]}
         except Exception:
             self._failed = True
             raise
 
 
-def compose_spec(project, origin, images, secret_file):
+def profile_environment(profile):
+    b.require(profile in (PROFILE, ROUTERAI_PROFILE), "start-profile")
+    return ({"LLM_PROVIDER": "disabled"} if profile == PROFILE else
+            {"LLM_PROVIDER": "routerai", "CITYGO_AI_PROFILE": "routerai-credit-v1"})
+
+
+def compose_spec(project, origin, images, secret_file, profile=PROFILE):
     # Fixed trusted profile, never execute candidate Compose, lifecycle hooks,
     # env_file, shell or inherited variables. Only two services, external nets.
     p.hostname(origin)
@@ -106,7 +142,7 @@ def compose_spec(project, origin, images, secret_file):
               "logging": {"driver": "json-file", "options": {"max-size": "10m", "max-file": "3"}}}
     api = {**copy.deepcopy(shared), "image": images["api"]["local_id"], "command": ["api"], "stop_grace_period": "330s",
            "environment": {"CITYGO_MOUNTED_CONFIG": "1", "API_HOST": "0.0.0.0", "API_PORT": "4000",
-                           "WEB_ORIGIN": origin, "TRUSTED_PROXY_CIDRS": "172.30.92.10/32", "LLM_PROVIDER": "disabled"},
+                           "WEB_ORIGIN": origin, "TRUSTED_PROXY_CIDRS": "172.30.92.10/32", **profile_environment(profile)},
            "secrets": [{"source": "api_config", "target": "api.json"}],
            "networks": {"web_api": {"ipv4_address": "172.30.92.11"}, "database": {}}}
     web = {**copy.deepcopy(shared), "image": images["web"]["local_id"], "command": ["web"], "stop_grace_period": "30s",
@@ -172,7 +208,7 @@ class Host(p.Host):
             finally: connection.close()
 
 
-def runtime(value, role, image, project, origin, secret_file, networks):
+def runtime(value, role, image, project, origin, secret_file, networks, profile=PROFILE):
     cfg, host, state = value.get("Config", {}), value.get("HostConfig", {}), value.get("State", {})
     b.require(t.matches(value.get("Id"), t.HASH) and value.get("Image") in (image["local_id"], image["config_id"])
               and cfg.get("Image") == image["local_id"] and cfg.get("User") == "1000:1000"
@@ -205,12 +241,14 @@ def runtime(value, role, image, project, origin, secret_file, networks):
     allowed_env = {"PATH", "NODE_VERSION", "YARN_VERSION", "NODE_ENV", "NEXT_TELEMETRY_DISABLED"}
     allowed_env |= ({"CITYGO_MOUNTED_CONFIG", "API_HOST", "API_PORT", "WEB_ORIGIN", "TRUSTED_PROXY_CIDRS", "LLM_PROVIDER"}
                     if role == "api" else {"PORT"})
+    expected_ai = profile_environment(profile)
+    if role == "api": allowed_env |= set(expected_ai)
     b.require(len(values) == len(env) and values.get("NODE_ENV") == "production"
               and set(values) <= allowed_env
               and not any(k in values for k in ("DATABASE_URL", "OPENAI_API_KEY", "ROUTERAI_API_KEY", "GIGACHAT_CREDENTIALS")), "start-environment")
     if role == "api":
         b.require(all(values.get(k) == v for k, v in {"CITYGO_MOUNTED_CONFIG": "1", "API_HOST": "0.0.0.0",
-            "API_PORT": "4000", "WEB_ORIGIN": origin, "LLM_PROVIDER": "disabled", "TRUSTED_PROXY_CIDRS": "172.30.92.10/32"}.items()), "start-environment")
+            "API_PORT": "4000", "WEB_ORIGIN": origin, **expected_ai, "TRUSTED_PROXY_CIDRS": "172.30.92.10/32"}.items()), "start-environment")
     attached = value.get("NetworkSettings", {}).get("Networks", {})
     expected = {project + "_web_api": networks["web_api"]}
     if role == "api": expected[project + "_database"] = networks["database"]
@@ -275,7 +313,7 @@ def _started_window(config, target_sha, origin, ingress_directory, images, secre
         old_apps = {v["Labels"]["com.docker.compose.service"]: v["Id"] for v in before if v["Labels"]["com.docker.compose.service"] in ("api", "web")}
         network_ids = {"web_api": approved["web_network_id"], "database": stage["network"]["id"]}
         target_images = stage["proof"]["local_images"]["target"]
-        spec = compose_spec(config["project"], origin, target_images, api_secret_file)
+        spec = compose_spec(config["project"], origin, target_images, api_secret_file, approved["profile"])
         def guard(*, final=False, cutover=False):
             if final:
                 # Read-only receipt gate after context cleanup, NOT a resumed
@@ -325,7 +363,7 @@ def _started_window(config, target_sha, origin, ingress_directory, images, secre
                     b.require(value["Id"] != old_apps[role], "start-not-replaced")
                     detail = host.detail(value["Id"])
                     b.require(detail.get("Id") == value["Id"], "start-container-replaced")
-                    result[role] = runtime(detail, role, target_images[role], config["project"], origin, api_secret_file, network_ids)
+                    result[role] = runtime(detail, role, target_images[role], config["project"], origin, api_secret_file, network_ids, approved["profile"])
                 return result
             started = verified_apps()
             host.probe()

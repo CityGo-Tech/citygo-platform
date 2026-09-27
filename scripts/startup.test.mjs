@@ -2,9 +2,56 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { readFileSync } from "node:fs";
 import { serviceEnv } from "./env.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
+
+test("built policy preview is packaged and uses only public fields, without DB/provider startup", () => {
+  const fixture = JSON.parse(
+    readFileSync(
+      new URL(
+        "../deploy/fixtures/routerai-profile.fixture.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  );
+  const run = (overrides = {}) =>
+    spawnSync(process.execPath, ["apps/api/dist/preview-policy.js"], {
+      cwd: root,
+      env: {
+        ...serviceEnv("test"),
+        ...fixture,
+        NODE_ENV: "production",
+        DATABASE_URL: "postgresql://127.0.0.1:1/unreachable",
+        OPENAI_API_KEY: "synthetic-ignored-key",
+        ...overrides,
+      },
+      encoding: "utf8",
+      timeout: 10000,
+      windowsHide: true,
+    });
+  const result = run();
+  assert.equal(result.status, 0, result.stderr);
+  const policy = JSON.parse(result.stdout);
+  assert.match(policy.id, /^[a-f0-9]{64}$/);
+  assert.equal(policy.model, fixture.ROUTERAI_MODEL);
+  assert.ok(policy.data.includes(fixture.ROUTERAI_DATA_NOTICE));
+  assert.equal(result.stderr, "");
+  assert.doesNotMatch(
+    result.stdout,
+    /synthetic-not-live|synthetic-ignored-key|postgresql|Server listening/,
+  );
+  const missing = run({ ROUTERAI_DATA_NOTICE: "" });
+  assert.equal(missing.status, 1);
+  assert.equal(missing.stdout, "");
+  assert.doesNotMatch(
+    missing.stderr,
+    /synthetic-not-live|synthetic-ignored-key|postgresql|ECONNREFUSED/,
+  );
+});
+
 function start(envOverrides) {
   const env = {
     ...serviceEnv("test"),

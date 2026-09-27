@@ -120,7 +120,7 @@ def _observe(request_path, config, *, host_factory=s.Host, image_store_factory=g
               and migrated["image"] == local["target"]["jobs"], "recovery-migration-binding")
     m.result(m.wire(migrated["result"]), migration_plan, migration_request)
     plan = f.generation(previous, config["source_sha"], request["origin"], local,
-                        request["api_secret"], request["worker_secret"], request["backup_secret"])
+                        request["api_secret"], request["worker_secret"], request["backup_secret"], sa["profile"])
     f.verify_generation(plan)
     b.require(plan["config"] == config and plan["sha256"] == active["generation_sha256"]
               and plan["configuration_sha256"] == active["configuration_sha256"] == b.configuration_fingerprint(config)
@@ -159,7 +159,7 @@ def _observe(request_path, config, *, host_factory=s.Host, image_store_factory=g
             cid = startup["apps"][role]["id"]
             detail = host.detail(cid)
             b.require(detail.get("Id") == cid, "recovery-app-replaced")
-            apps[role] = s.runtime(detail, role, local["target"][role], config["project"], request["origin"], request["api_secret"], networks)
+            apps[role] = s.runtime(detail, role, local["target"][role], config["project"], request["origin"], request["api_secret"], networks, sa["profile"])
         b.require(apps == startup["apps"], "recovery-app-process")
         for name, net in (("database", host.database_network()), ("web_api", host.web_network())):
             allowed = set(by_id) - {apps["web"]["id"]} if name == "database" else app_ids

@@ -7,7 +7,7 @@
   ],
   "type": "module",
   "scripts": {
-    "build": "tsup ./src/server.ts --format esm --sourcemap --clean",
+    "build": "tsup ./src/server.ts ./src/preview-policy.ts --format esm --sourcemap --clean",
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
     "dev": "node ../../scripts/with-env.mjs api pnpm exec tsx watch src/dev.ts",
     "lint": "eslint src",

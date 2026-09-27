@@ -45,7 +45,7 @@ def worker_secret(path):
     return raw
 
 
-def generation(config, target_sha, origin, local_images, api_file, worker_file, backup_file):
+def generation(config, target_sha, origin, local_images, api_file, worker_file, backup_file, profile=s.PROFILE):
     """Pure construction from verified local image IDs; no candidate Compose.
 
     Explicit paths/hashes are reviewed before any writer is stopped. Secrets are
@@ -54,13 +54,13 @@ def generation(config, target_sha, origin, local_images, api_file, worker_file, 
     b.require(t.matches(target_sha, t.SHA), "finish-target")
     directory = Path(config["state_dir"]) / ("release-" + target_sha)
     for path in (directory, api_file, worker_file, backup_file): path_string(path)
-    secret_hashes = {str(api_file): t.sha256(s.api_secret(api_file)),
+    secret_hashes = {str(api_file): t.sha256(s.api_secret(api_file, profile)),
                      str(worker_file): t.sha256(worker_secret(worker_file))}
     password = t.read_file(backup_file)
     b.require(0 < len(password) <= 4096 and b"\0" not in password, "finish-backup-secret")
     secret_hashes[str(backup_file)] = t.sha256(password)
     b.require(len(secret_hashes) == 3, "finish-secret-paths")
-    spec = s.compose_spec(config["project"], origin, local_images["target"], api_file)
+    spec = s.compose_spec(config["project"], origin, local_images["target"], api_file, profile)
     shared = {"init": True, "read_only": True, "restart": "no", "profiles": ["ops"],
               "cap_drop": ["ALL"], "security_opt": ["no-new-privileges:true"], "pids_limit": 128,
               "mem_limit": 256 * 1024 * 1024, "memswap_limit": 256 * 1024 * 1024,
@@ -166,7 +166,8 @@ def finish(config, target_sha, origin, ingress_directory, images, secret_file, a
     b.require(not config_path.is_relative_to(state), "finish-config-location")
     store_factory = options.get("image_store_factory", g.Store)
     local_images = g.verify(store_factory(state), verified, images)
-    plan = generation(config, target_sha, origin, local_images, api_secret_file, worker_secret_file, backup_secret_file)
+    started = startup.verify(selected, migration, config, target_sha, origin, images, api_secret_file)
+    plan = generation(config, target_sha, origin, local_images, api_secret_file, worker_secret_file, backup_secret_file, started["profile"])
     b.require(not os.path.lexists(plan["directory"]), "finish-generation-exists")
     approved = finish_authorization.verify(selected, migration, startup, config_path, config_raw, plan)
     used = state / ("finish-approval-" + approved + ".used.json")
