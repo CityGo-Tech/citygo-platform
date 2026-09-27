@@ -1,5 +1,9 @@
 # Production handoff — not deployed
 
+Latest schema addition: [one-time credit foundation](ai-credit.md) requires migration
+`0008_ai_credit.sql` and updated API grants. It does not activate chat billing,
+automatic bonuses or payments. Keep AI disabled until pricing/admission is connected.
+
 No cloud resource, paid service, domain or store project is provisioned by this
 change. Select a hosting environment and data region before deployment.
 

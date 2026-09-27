@@ -1,6 +1,74 @@
 import { test, expect } from "@playwright/test";
 import type { AiControlStatus } from "@citygo/contracts";
 
+test("admin confirms one-time credit for the displayed account and never replays a stale response", async ({
+  page,
+}) => {
+  await page.route("**/api/v1/admin/overview", (route) =>
+    route.fulfill({
+      json: { counts: { users: 2, completed: 0, xp: 0 }, pendingHuman: [] },
+    }),
+  );
+  await page.route("**/api/v1/admin/ai", (route) =>
+    route.fulfill({ json: fixture() }),
+  );
+  let writes = 0;
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/api/v1/admin/ai/credit/welcome", async (route) => {
+    writes++;
+    expect(route.request().postDataJSON()).toEqual({
+      userId: "2",
+      confirmOneTime500Rub: true,
+    });
+    await gate;
+    await route.fulfill({
+      json: {
+        currency: "RUB",
+        bonusGranted: true,
+        grantedMicros: 500000000,
+        availableMicros: 500000000,
+        heldMicros: 0,
+        spentMicros: 0,
+        chargingStatus: "not_connected",
+        topUpAvailable: false,
+        history: [],
+      },
+    });
+  });
+  await page.goto("/admin");
+  await page.getByRole("button", { name: "Обновить сводку" }).click();
+  const grant = page.getByRole("button", { name: "Подтвердить разовый бонус" });
+  await expect(grant).toBeDisabled();
+  await page.getByLabel("ID аккаунта участника").fill("2");
+  const confirm = page.getByRole("checkbox", {
+    name: "Подтверждаю выдачу разовых 500 ₽ аккаунту 2",
+  });
+  await confirm.check();
+  await page.getByLabel("ID аккаунта участника").fill("3");
+  await expect(grant).toBeDisabled();
+  await page.getByLabel("ID аккаунта участника").fill("2");
+  await confirm.check();
+  await grant.click();
+  await expect.poll(() => writes).toBe(1);
+  await page.evaluate(() =>
+    window.dispatchEvent(
+      new StorageEvent("storage", {
+        key: "citygo-session-changed",
+        newValue: "credit-test-session",
+      }),
+    ),
+  );
+  release();
+  await expect(grant).toHaveCount(0);
+  await expect(
+    page.getByText("Разовый бонус 500 ₽ подтверждён", { exact: false }),
+  ).toHaveCount(0);
+  expect(writes).toBe(1);
+});
+
 function fixture(): AiControlStatus {
   return {
     current: { provider: "openai", policyId: "a".repeat(64), revision: 1 },

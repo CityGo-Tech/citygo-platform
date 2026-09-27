@@ -46,6 +46,8 @@ services:
       WEB_ORIGIN: https://pilot.example.test
       TRUSTED_PROXY_CIDRS: 172.29.91.10/32
       LLM_PROVIDER: disabled
+      # First account in this disposable database only, for authorization smoke.
+      ADMIN_USER_IDS: "1"
     networks:
       smoke:
         ipv4_address: 172.29.91.11

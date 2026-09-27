@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { AiCredit } from "./ai-credit.js";
 import { aiProviderIdSchema, type AiProviderId } from "./llm.js";
 import type {
   AiBudgetStatus,
@@ -27,6 +28,7 @@ export type AiAccess = {
   granted: boolean;
   dailyLimit: number;
   budget?: AiUserBudgetStatus;
+  credit?: AiCredit;
 };
 
 const routingRevisionSchema = z.number().int().min(1).max(2147483647);

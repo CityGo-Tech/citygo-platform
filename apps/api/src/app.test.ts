@@ -2821,6 +2821,7 @@ test("revocation does not wait on model I/O and blocks admissions after the in-f
 for (const migration of [
   "0006_ai_budget.sql",
   "0007_ai_user_daily_budget.sql",
+  "0008_ai_credit.sql",
 ]) {
   test(`readiness requires ${migration}`, async (t) => {
     const f = await fixture(false);

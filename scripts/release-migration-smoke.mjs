@@ -24,11 +24,11 @@ export async function releaseMigrationSmoke({
     }));
   assert.equal(
     migrations.length,
-    7,
+    8,
     "Update the disposable upgrade fixture when migrations change",
   );
   const last = migrations.at(-1);
-  assert.equal(last.name, "0007_ai_user_daily_budget.sql");
+  assert.equal(last.name, "0008_ai_credit.sql");
   const plan = {
     version: 1,
     kind: "citygo-release-migration",
@@ -69,10 +69,10 @@ export async function releaseMigrationSmoke({
     return result;
   };
   const assertOld = () => {
-    assert.equal(psql("select count(*) from citygo_migrations"), "6");
+    assert.equal(psql("select count(*) from citygo_migrations"), "7");
     assert.equal(
       psql(
-        "select count(*) from information_schema.columns where table_schema='public' and table_name='ai_budget' and column_name='user_daily_limit_micros'",
+        "select count(*) from information_schema.tables where table_schema='public' and table_name='ai_credit_accounts'",
       ),
       "0",
     );
@@ -83,7 +83,7 @@ export async function releaseMigrationSmoke({
   };
   // Rewind ONLY the newly created synthetic fixture, not production rollback code.
   psql(
-    "begin; drop index ai_model_attempts_user_money_day_idx; alter table ai_budget drop column user_daily_limit_micros; delete from citygo_migrations where name='0007_ai_user_daily_budget.sql'; commit",
+    "begin; drop table ai_credit_entries; drop table ai_credit_accounts; delete from citygo_migrations where name='0008_ai_credit.sql'; commit",
   );
   assertOld();
   run({ ...plan, grantsSha256: "f".repeat(64) }, { fail: true });
@@ -138,7 +138,7 @@ export async function releaseMigrationSmoke({
   ]).trim();
   assert.match(
     migrationPath,
-    /^\/app\/node_modules\/[a-zA-Z0-9_@./+-]+\/migrations\/0007_ai_user_daily_budget\.sql$/,
+    /^\/app\/node_modules\/[a-zA-Z0-9_@./+-]+\/migrations\/0008_ai_credit\.sql$/,
   );
   const sqlFile = join(directory, "synthetic-failing-migration.sql");
   // Sequence increments survive rollback: prove the executor reached the SQL,
@@ -177,8 +177,8 @@ export async function releaseMigrationSmoke({
   );
   assertOld();
   for (const body of [
-    "begin; alter table ai_budget add column user_daily_limit_micros bigint; select pg_catalog.nextval('public.release_execution_probe'); select * from synthetic_missing_table; commit;\n",
-    "begin; alter table ai_budget add column user_daily_limit_micros bigint; commit; begin; select * from synthetic_missing_table; commit;\n",
+    "begin; create table ai_credit_accounts(user_id bigint primary key); select pg_catalog.nextval('public.release_execution_probe'); select * from synthetic_missing_table; commit;\n",
+    "begin; create table ai_credit_accounts(user_id bigint primary key); commit; begin; select * from synthetic_missing_table; commit;\n",
   ]) {
     writeFileSync(sqlFile, body, { mode: 0o644 });
     run(
@@ -199,7 +199,7 @@ export async function releaseMigrationSmoke({
   // Hold each real PostgreSQL lock until the attempted release has failed.
   for (const query of [
     "select id from citygo_migration_lock where id=1 for update",
-    "select id from ai_budget where id=1 for update",
+    "lock table users in access exclusive mode",
   ]) {
     const name = `${project}-migration-lock`;
     const script = `import {readFileSync} from 'node:fs'; import {connectDatabase} from '@citygo/db'; const db=await connectDatabase(JSON.parse(readFileSync('/run/secrets/migrate.json','utf8')).DATABASE_URL); let release; const stopped=new Promise(resolve=>release=resolve);process.once('SIGTERM',()=>release());const deadline=setTimeout(()=>release(),60000);try{await db.transaction(async tx=>{await tx.exec("set local idle_in_transaction_session_timeout='90s'");await tx.query(${JSON.stringify(query)});console.log('synthetic-lock-held');await stopped;});}finally{clearTimeout(deadline);await db.close();}`;
@@ -296,10 +296,22 @@ export async function releaseMigrationSmoke({
     );
     docker(["rm", ident]); // Exact disposable fixtures ONLY; runtime retains them.
   }
-  assert.equal(psql("select count(*) from citygo_migrations"), "7");
+  assert.equal(psql("select count(*) from citygo_migrations"), "8");
   assert.equal(
     psql(
-      "select count(*) from information_schema.columns where table_schema='public' and table_name='ai_budget' and column_name='user_daily_limit_micros'",
+      "select has_table_privilege('citygo_api','ai_credit_entries','UPDATE') or has_table_privilege('citygo_api','ai_credit_entries','DELETE') or has_table_privilege('citygo_worker','ai_credit_accounts','SELECT')",
+    ),
+    "f",
+  );
+  assert.equal(
+    psql(
+      "select has_table_privilege('citygo_api','ai_credit_entries','INSERT') and has_table_privilege('citygo_api','ai_credit_accounts','UPDATE') and has_table_privilege('citygo_backup','ai_credit_entries','SELECT')",
+    ),
+    "t",
+  );
+  assert.equal(
+    psql(
+      "select count(*) from information_schema.tables where table_schema='public' and table_name='ai_credit_accounts'",
     ),
     "1",
   );

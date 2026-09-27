@@ -12,6 +12,7 @@ import {
   aiConsentSchema,
   aiRoutingInputSchema,
   aiBudgetInputSchema,
+  aiCreditGrantSchema,
   CONTRACT_VERSION,
   CONTRACT_VERSION_HEADER,
   REQUEST_ID_HEADER,
@@ -22,7 +23,12 @@ import {
   type ModelGeneration,
   type AiPolicy,
 } from "@citygo/contracts";
-import { Repository, DomainError, type Database } from "@citygo/db";
+import {
+  Repository,
+  DomainError,
+  AiCreditLedger,
+  type Database,
+} from "@citygo/db";
 import { readConfig, effectiveLlmLimits } from "@citygo/config";
 import { instructions, profileContext, routeAgent } from "@citygo/agents";
 import { redactPaths } from "@citygo/observability";
@@ -44,6 +50,7 @@ export async function buildApp(options: {
   const drain = options.drain ?? new ApiDrain();
   const config = options.config ?? readConfig();
   const repo = new Repository(options.db);
+  const credit = new AiCreditLedger(options.db);
   const providers: ProviderMap = { ...options.providers };
   if (options.provider) providers[options.provider.name] = options.provider;
   const control = createAiControl(config, providers);
@@ -190,9 +197,9 @@ export async function buildApp(options: {
   app.get("/ready", async () => {
     try {
       const result = await options.db.query(
-        "select name from citygo_migrations where name in ('0006_ai_budget.sql','0007_ai_user_daily_budget.sql')",
+        "select name from citygo_migrations where name in ('0006_ai_budget.sql','0007_ai_user_daily_budget.sql','0008_ai_credit.sql')",
       );
-      if (result.rows.length !== 2) throw new Error("Pending migration");
+      if (result.rows.length !== 3) throw new Error("Pending migration");
     } catch {
       throw new DomainError(503, "База данных не готова: примените миграции");
     }
@@ -542,6 +549,15 @@ export async function buildApp(options: {
         config.LLM_GLOBAL_DAILY_ATTEMPT_LIMIT,
       ),
     };
+  });
+  app.get("/v1/ai/credit", async (request) => {
+    const user = await authenticate(request);
+    return credit.status(user.id);
+  });
+  app.post("/v1/admin/ai/credit/welcome", async (request) => {
+    const actor = await authenticateAdmin(request);
+    const input = aiCreditGrantSchema.parse(request.body);
+    return credit.grantWelcome(input.userId, actor.id);
   });
   app.post("/v1/admin/ai", async (request) => {
     const user = await authenticateAdmin(request);

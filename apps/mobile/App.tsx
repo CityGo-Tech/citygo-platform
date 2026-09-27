@@ -20,7 +20,11 @@ import {
   createSessionLogout,
   type SessionTicket,
 } from "@citygo/api-client";
-import { questionnaireSchema, type Dashboard } from "@citygo/contracts";
+import {
+  questionnaireSchema,
+  formatMoneyMicros,
+  type Dashboard,
+} from "@citygo/contracts";
 import { tokens } from "@citygo/design-tokens";
 import { Button, Card, Field } from "@citygo/ui-native";
 import { questChecklist } from "@citygo/content";
@@ -489,6 +493,33 @@ export default function App() {
                     <Text>AI пока не подключён на сервере.</Text>
                   )}
                   <Text style={styles.title}>Передача данных AI</Text>
+                  {board.aiAccess?.credit && (
+                    <View>
+                      <Text style={styles.title}>
+                        Бесплатный баланс AI · аккаунт {board.user.id}
+                      </Text>
+                      <Text>
+                        {board.aiAccess.credit.bonusGranted
+                          ? "Разовые 500 ₽ начислены. Ежедневного восстановления нет."
+                          : "Разовый бонус 500 ₽ ещё не выдан. Обратитесь к владельцу пилота."}
+                      </Text>
+                      <Text>
+                        Доступно:{" "}
+                        {formatMoneyMicros(
+                          board.aiAccess.credit.availableMicros,
+                        )}{" "}
+                        ₽. В резерве:{" "}
+                        {formatMoneyMicros(board.aiAccess.credit.heldMicros)} ₽.
+                        Учтено списаний:{" "}
+                        {formatMoneyMicros(board.aiAccess.credit.spentMicros)}{" "}
+                        ₽.
+                      </Text>
+                      <Text>
+                        Автоматическое списание за ответы и пополнение пока не
+                        подключены. Баланс не включает ИИ.
+                      </Text>
+                    </View>
+                  )}
                   {board.aiAccess?.policy ? (
                     <>
                       <Text>

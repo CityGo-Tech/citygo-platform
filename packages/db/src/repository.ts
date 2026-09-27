@@ -19,6 +19,7 @@ import type {
 import { randomUUID } from "node:crypto";
 import { canTransitionQuest } from "@citygo/domain";
 import { DomainError } from "./errors.js";
+import { AiCreditLedger } from "./ai-credit.js";
 import {
   aiBudget,
   aiUserBudget,
@@ -415,6 +416,7 @@ export class Repository {
           : null,
         provider,
         aiAccess: {
+          credit: await new AiCreditLedger(this.db).status(user.id, tx),
           budget: await aiUserBudget(tx, user.id),
           policy,
           granted: policy

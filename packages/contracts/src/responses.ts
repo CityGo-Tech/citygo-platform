@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { aiCreditResponseSchema } from "./ai-credit.js";
 import { errorMetadataSchema } from "./protocol.js";
 export { apiErrorResponseSchema } from "./protocol.js";
 import {
@@ -232,6 +233,7 @@ export const dashboardResponseSchema = z.object({
     granted: z.boolean(),
     dailyLimit: count,
     budget: userBudget.optional(),
+    credit: aiCreditResponseSchema.optional(),
   }),
 }) satisfies z.ZodType<Dashboard>;
 
