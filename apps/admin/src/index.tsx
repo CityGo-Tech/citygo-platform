@@ -204,6 +204,30 @@ export function AdminOverview() {
         <AiCreditControls
           key={`credit-${refreshVersion}`}
           busy={busy}
+          onReconcile={(input) => {
+            const ticket = session.capture();
+            setBusy(true);
+            setError("");
+            setNotice("");
+            void (async () => {
+              try {
+                await api.reconcileCredit(input);
+                ticket.check();
+                setNotice(
+                  "Стоимость сверена. Повторного вызова модели и повторного списания нет.",
+                );
+              } catch (error) {
+                if (ticket.active())
+                  setError(
+                    error instanceof Error
+                      ? error.message
+                      : "Не удалось сверить стоимость",
+                  );
+              } finally {
+                if (ticket.active()) setBusy(false);
+              }
+            })();
+          }}
           onGrant={(input) => {
             const ticket = session.capture();
             setBusy(true);

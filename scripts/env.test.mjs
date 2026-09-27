@@ -23,6 +23,7 @@ const canaries = {
   ROUTERAI_API_KEY: "synthetic-routerai",
   ROUTERAI_DATA_NOTICE: "Synthetic public operator notice",
   ROUTERAI_PRODUCTION_POLICY_ID: "a".repeat(64),
+  AI_CREDIT_MODE: "routerai_at_cost",
   GIGACHAT_CREDENTIALS: "synthetic-gigachat",
   GIGACHAT_ACCESS_TOKEN: "synthetic-token",
   FUTURE_PROVIDER_KEY: "synthetic-future",
@@ -68,6 +69,7 @@ test("API gets only known API settings; worker/migrator get no LLM or API settin
   assert.equal(api.OPENAI_API_KEY, canaries.OPENAI_API_KEY);
   assert.equal(api.ROUTERAI_API_KEY, canaries.ROUTERAI_API_KEY);
   assert.equal(api.ROUTERAI_DATA_NOTICE, canaries.ROUTERAI_DATA_NOTICE);
+  assert.equal(api.AI_CREDIT_MODE, canaries.AI_CREDIT_MODE);
   assert.equal(
     api.ROUTERAI_PRODUCTION_POLICY_ID,
     canaries.ROUTERAI_PRODUCTION_POLICY_ID,

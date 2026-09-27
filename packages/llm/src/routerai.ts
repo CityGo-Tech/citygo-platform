@@ -2,8 +2,15 @@ import type {
   ModelMessage,
   ModelStreamEvent,
   StreamingProvider,
+  ModelRetryGuard,
 } from "./provider.js";
 import { readChatCompletion } from "./chat-completion.js";
+import {
+  creditGenerationIdSchema,
+  routerAiChargeSchema,
+  routerAiCostMicros,
+  type RouterAiCharge,
+} from "@citygo/contracts";
 
 type RouterAIOptions = {
   upstream: string;
@@ -44,6 +51,7 @@ export class RouterAIProvider implements StreamingProvider {
     instructions: string,
     messages: ModelMessage[],
     signal: AbortSignal,
+    guard?: ModelRetryGuard,
   ): AsyncIterable<ModelStreamEvent> {
     const deadline = AbortSignal.any([
       signal,
@@ -51,6 +59,16 @@ export class RouterAIProvider implements StreamingProvider {
     ]);
     try {
       deadline.throwIfAborted();
+      let generationId: string | undefined;
+      const recordGeneration = async (value: unknown) => {
+        const id = creditGenerationIdSchema.parse(value);
+        if (generationId && generationId !== id)
+          throw new Error("Generation identity changed");
+        if (!generationId) {
+          await guard?.billing?.onGeneration(id);
+          generationId = id;
+        }
+      };
       // One attempt, one fixed HTTPS recipient, no redirects or ambient base URL.
       const response = await (this.options.fetch ?? fetch)(
         "https://routerai.ru/api/v1/chat/completions",
@@ -68,6 +86,7 @@ export class RouterAIProvider implements StreamingProvider {
             messages: [{ role: "system", content: instructions }, ...messages],
             stream: true,
             stream_options: { include_usage: true },
+            ...(guard?.billing ? { session_id: guard.billing.reference } : {}),
             // Astra uses the native Chat Completions total-output cap, including
             // reasoning. Keep the historical payload for other configured models.
             ...(this.model === "openai/gpt-6-astra"
@@ -88,6 +107,16 @@ export class RouterAIProvider implements StreamingProvider {
           }),
         },
       );
+      // Save identity before consuming the stream so a disconnect is auditable.
+      const headerId = response.headers.get("x-generation-id");
+      if (guard?.billing && headerId) {
+        try {
+          await recordGeneration(headerId);
+        } catch (error) {
+          await response.body?.cancel().catch(() => {});
+          throw error;
+        }
+      }
       if (
         !response.ok ||
         !response.body ||
@@ -105,12 +134,104 @@ export class RouterAIProvider implements StreamingProvider {
         deadline,
         this.model === "openai/gpt-6-astra" ||
           this.model === "deepseek/deepseek-v4-pro-0813"
-          ? { maxOutputCharacters: 128000, maxStreamBytes: 16 * 1024 * 1024 }
-          : undefined,
+          ? {
+              maxOutputCharacters: 128000,
+              maxStreamBytes: 16 * 1024 * 1024,
+              ...(guard?.billing ? { onGeneration: recordGeneration } : {}),
+            }
+          : guard?.billing
+            ? { onGeneration: recordGeneration }
+            : undefined,
       );
     } catch {
       // Do not leak provider error bodies, credentials, prompts or network URLs.
       throw new Error("RouterAI generation failed or was interrupted");
+    }
+  }
+
+  async readCharge(
+    generationId: string,
+    reference: string,
+    signal: AbortSignal,
+  ): Promise<RouterAiCharge> {
+    try {
+      creditGenerationIdSchema.parse(generationId);
+      const deadline = AbortSignal.any([signal, AbortSignal.timeout(5000)]);
+      deadline.throwIfAborted();
+      const response = await (this.options.fetch ?? fetch)(
+        `https://routerai.ru/api/v1/generation?id=${encodeURIComponent(generationId)}`,
+        {
+          method: "GET",
+          redirect: "error",
+          signal: deadline,
+          headers: {
+            Authorization: `Bearer ${this.apiKey}`,
+            Accept: "application/json",
+          },
+        },
+      );
+      if (
+        !response.ok ||
+        !response.body ||
+        response.headers.get("content-type")?.split(";")[0]?.trim() !==
+          "application/json"
+      ) {
+        await response.body?.cancel();
+        throw new Error("Invalid cost response");
+      }
+      const reader = response.body.getReader();
+      const cancel = () => {
+        void reader.cancel().catch(() => {});
+      };
+      deadline.addEventListener("abort", cancel, { once: true });
+      const chunks: Uint8Array[] = [];
+      let size = 0;
+      try {
+        while (true) {
+          deadline.throwIfAborted();
+          const part = await reader.read();
+          deadline.throwIfAborted();
+          if (part.done) break;
+          size += part.value.byteLength;
+          if (size > 65536) throw new Error("Cost response too large");
+          chunks.push(part.value);
+        }
+      } finally {
+        deadline.removeEventListener("abort", cancel);
+        await reader.cancel().catch(() => {});
+        reader.releaseLock();
+      }
+      // Node >=22.13 exposes the exact JSON number lexeme, before binary rounding.
+      const data = JSON.parse(
+        Buffer.concat(chunks).toString("utf8"),
+        (key: string, value: unknown, context?: { source?: string }) => {
+          if (key !== "total_cost") return value;
+          if (typeof value !== "number" || !context?.source)
+            throw new Error("Invalid cost");
+          return context.source;
+        },
+      );
+      if (
+        data.id !== generationId ||
+        data.session_id !== reference ||
+        data.model !== this.model ||
+        data.provider !== this.options.upstream ||
+        data.api !== "chat/completions" ||
+        data.source !== "api" ||
+        data.has_web_search !== false
+      )
+        throw new Error("Cost identity mismatch");
+      return routerAiChargeSchema.parse({
+        generationId,
+        reference,
+        model: data.model,
+        upstream: data.provider,
+        currency: "RUB",
+        costRub: data.total_cost,
+        amountMicros: routerAiCostMicros(data.total_cost),
+      });
+    } catch {
+      throw new Error("RouterAI cost could not be confirmed");
     }
   }
 }

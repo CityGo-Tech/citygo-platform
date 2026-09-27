@@ -20,6 +20,7 @@ import { randomUUID } from "node:crypto";
 import { canTransitionQuest } from "@citygo/domain";
 import { DomainError } from "./errors.js";
 import { AiCreditLedger } from "./ai-credit.js";
+import { AiCreditCharges } from "./ai-credit-charges.js";
 import {
   aiBudget,
   aiUserBudget,
@@ -39,7 +40,10 @@ const fail = (
 type User = { id: string; email: string; password_hash: string };
 type Thread = { id: string; agent_key: AgentKey; busy_until: string | null };
 export class Repository {
-  constructor(public db: Database) {}
+  constructor(
+    public db: Database,
+    private creditCharging = false,
+  ) {}
   aiBudget(executions: AiExecution[]) {
     return aiBudget(this.db, executions);
   }
@@ -63,7 +67,19 @@ export class Repository {
     userDailyLimit: number;
     globalDailyLimit: number;
     execution: AiExecution;
+    upstream?: string;
   }) {
+    if (
+      this.creditCharging &&
+      (input.provider !== "routerai" ||
+        input.attemptNumber !== 1 ||
+        !input.upstream)
+    )
+      fail(
+        503,
+        "Для этого провайдера списание с баланса не подключено.",
+        "AI_CREDIT_UNAVAILABLE",
+      );
     if (
       !Number.isInteger(input.attemptNumber) ||
       input.attemptNumber < 1 ||
@@ -76,7 +92,7 @@ export class Repository {
       );
     if (input.userDailyLimit === 0 || input.globalDailyLimit === 0)
       fail(503, "Обращения к AI временно отключены администратором.");
-    await this.db.transaction(async (tx) => {
+    return this.db.transaction(async (tx) => {
       // Same user -> thread -> daily-counter order as chat admission. Do not
       // lock current routing: an admitted answer keeps its pinned recipient.
       await tx.query("select id from users where id=$1 for update", [
@@ -174,6 +190,12 @@ export class Repository {
         [input.userId, day],
       );
       const money = await reserveAiMoney(tx, input.execution, input.userId);
+      if (this.creditCharging && money.currency !== "RUB")
+        fail(
+          503,
+          "Для баланса AI нужен бюджет оператора в RUB.",
+          "AI_CREDIT_UNAVAILABLE",
+        );
       await tx.query(
         "insert into ai_model_attempts(thread_id,request_id,attempt_number,user_id,provider,model,policy_id,routing_revision,money_currency,money_reserved_micros,money_budget_revision,money_rule_key,reserved_at) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)",
         [
@@ -192,6 +214,19 @@ export class Repository {
           money.reservedAt,
         ],
       );
+      return this.creditCharging
+        ? new AiCreditCharges(this.db).reserve(
+            tx,
+            {
+              userId: input.userId,
+              threadId: input.threadId,
+              requestId: input.requestId,
+              model: input.model,
+              upstream: input.upstream!,
+            },
+            money.amountMicros,
+          )
+        : null;
     });
   }
   async aiAttemptOverview(
@@ -416,7 +451,10 @@ export class Repository {
           : null,
         provider,
         aiAccess: {
-          credit: await new AiCreditLedger(this.db).status(user.id, tx),
+          credit: await new AiCreditLedger(
+            this.db,
+            this.creditCharging ? "routerai_at_cost" : "not_connected",
+          ).status(user.id, tx),
           budget: await aiUserBudget(tx, user.id),
           policy,
           granted: policy
@@ -762,6 +800,7 @@ export class Repository {
     complete: boolean,
     modelResponse = complete,
     generation?: ModelGeneration,
+    creditHoldId?: string,
   ) {
     return this.db.transaction(async (tx) => {
       const owner = (
@@ -790,6 +829,13 @@ export class Repository {
         "update chat_requests set status=$3 where thread_id=$1 and request_id=$2",
         [threadId, requestId, complete ? "complete" : "interrupted"],
       );
+      if (creditHoldId && complete && modelResponse) {
+        const charge = await tx.query(
+          "update ai_credit_charges set response_complete=true where hold_id=$1 and thread_id=$2 and request_id=$3 and dispatched returning hold_id",
+          [creditHoldId, threadId, requestId],
+        );
+        if (!charge.rows.length) fail(409, "Резерв не соответствует ответу");
+      }
       await tx.query(
         "update agent_threads set busy_until=null,lease_token=null,updated_at=now() where id=$1",
         [threadId],

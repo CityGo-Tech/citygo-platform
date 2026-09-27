@@ -68,7 +68,7 @@ test("questionnaire → plan → chat → +60 XP → next quest survives reload"
   const credit = page.getByRole("region", { name: "Бесплатный баланс AI" });
   await expect(credit).toContainText("Разовый бонус 500 ₽ ещё не выдан");
   await expect(credit).toContainText("Доступно: 0 ₽");
-  await expect(credit).toContainText("пополнение пока не подключены");
+  await expect(credit).toContainText("Пополнение пока недоступно");
   await expect(
     page.getByRole("button", { name: "Отправить", exact: true }),
   ).toBeDisabled();

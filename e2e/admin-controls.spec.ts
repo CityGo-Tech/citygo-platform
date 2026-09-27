@@ -69,6 +69,84 @@ test("admin confirms one-time credit for the displayed account and never replays
   expect(writes).toBe(1);
 });
 
+test("admin confirms a specific reserve reconciliation and ignores a stale session response", async ({
+  page,
+}) => {
+  await page.route("**/api/v1/admin/overview", (route) =>
+    route.fulfill({
+      json: { counts: { users: 2, completed: 0, xp: 0 }, pendingHuman: [] },
+    }),
+  );
+  await page.route("**/api/v1/admin/ai", (route) =>
+    route.fulfill({ json: fixture() }),
+  );
+  const holdId = "1d5120ad-ff1d-45d7-9eab-da42823c52a5";
+  let writes = 0;
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/api/v1/admin/ai/credit/reconcile", async (route) => {
+    writes++;
+    expect(route.request().postDataJSON()).toEqual({
+      userId: "2",
+      holdId,
+      confirmReconcile: true,
+    });
+    await gate;
+    await route.fulfill({
+      json: {
+        currency: "RUB",
+        bonusGranted: true,
+        grantedMicros: 500000000,
+        availableMicros: 499000000,
+        heldMicros: 0,
+        spentMicros: 1000000,
+        chargingStatus: "routerai_at_cost",
+        topUpAvailable: false,
+        history: [],
+      },
+    });
+  });
+  await page.goto("/admin");
+  await page.getByRole("button", { name: "Обновить сводку" }).click();
+  const reconcile = page.getByRole("button", {
+    name: "Сверить стоимость ответа",
+  });
+  await expect(reconcile).toBeDisabled();
+  await page.getByLabel("ID аккаунта участника").fill("2");
+  await page.getByLabel("ID резерва для сверки").fill(holdId);
+  const confirm = page.getByRole("checkbox", {
+    name: "Подтверждаю сверку стоимости для аккаунта 2",
+  });
+  await confirm.check();
+  await page.getByLabel("ID резерва для сверки").fill("bad-id");
+  await expect(reconcile).toBeDisabled();
+  await page.getByLabel("ID резерва для сверки").fill(holdId);
+  await confirm.check();
+  await page.getByLabel("ID аккаунта участника").fill("3");
+  await expect(reconcile).toBeDisabled();
+  await page.getByLabel("ID аккаунта участника").fill("2");
+  await confirm.check();
+  await reconcile.click();
+  await expect.poll(() => writes).toBe(1);
+  await expect(reconcile).toBeDisabled();
+  await page.evaluate(() =>
+    window.dispatchEvent(
+      new StorageEvent("storage", {
+        key: "citygo-session-changed",
+        newValue: "reconcile-test-session",
+      }),
+    ),
+  );
+  release();
+  await expect(reconcile).toHaveCount(0);
+  await expect(
+    page.getByText("Стоимость сверена.", { exact: false }),
+  ).toHaveCount(0);
+  expect(writes).toBe(1);
+});
+
 function fixture(): AiControlStatus {
   return {
     current: { provider: "openai", policyId: "a".repeat(64), revision: 1 },

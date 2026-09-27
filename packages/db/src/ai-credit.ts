@@ -20,7 +20,10 @@ type Entry = {
 // Trusted server ledger primitive. Not a payment endpoint or provider billing API.
 // Every operation locks users -> credit account. No network while locks are held.
 export class AiCreditLedger {
-  constructor(private db: Database) {}
+  constructor(
+    private db: Database,
+    private chargingStatus: AiCredit["chargingStatus"] = "not_connected",
+  ) {}
 
   private async lock(tx: Sql, userId: string, actorId?: string) {
     creditUserIdSchema.parse(userId);
@@ -63,12 +66,18 @@ export class AiCreditLedger {
         held: string;
         spent: string;
         history: AiCredit["history"];
+        pending: NonNullable<AiCredit["pending"]>;
       }>(
         `select coalesce(a.granted_micros,0)::text as granted,
       coalesce(a.held_micros,0)::text as held,coalesce(a.spent_micros,0)::text as spent,
       coalesce((select jsonb_agg(jsonb_build_object('id',e.id::text,'kind',e.kind,
         'amountMicros',e.amount_micros,'createdAt',to_char(e.created_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')) order by e.id desc)
-        from (select id,kind,amount_micros,created_at from ai_credit_entries where user_id=$1 order by id desc limit 20) e),'[]'::jsonb) as history
+        from (select id,kind,amount_micros,created_at from ai_credit_entries where user_id=$1 order by id desc limit 20) e),'[]'::jsonb) as history,
+      coalesce((select jsonb_agg(jsonb_build_object('holdId',p.hold_id,'amountMicros',p.amount_micros,'responseComplete',p.response_complete))
+        from (select c.hold_id,e.amount_micros,c.response_complete from ai_credit_charges c
+          join ai_credit_entries e on e.operation_id=c.hold_id where c.user_id=$1
+          and not exists(select 1 from ai_credit_entries r where r.hold_id=c.hold_id)
+          order by c.created_at desc limit 20) p),'[]'::jsonb) as pending
       from users u left join ai_credit_accounts a on a.user_id=u.id where u.id=$1`,
         [userId],
       )
@@ -85,7 +94,8 @@ export class AiCreditLedger {
       spentMicros: spent,
       availableMicros: granted - held - spent,
       history: row.history,
-      chargingStatus: "not_connected",
+      chargingStatus: this.chargingStatus,
+      pending: row.pending,
       topUpAvailable: false,
     };
   }
@@ -122,11 +132,16 @@ export class AiCreditLedger {
     return this.status(userId);
   }
 
-  // Foundation for future chat integration; never called by the chat route yet.
-  async hold(userId: string, operationId: string, amountMicros: number) {
+  // Supplied transaction joins the attempt + operator-budget reservation atomically.
+  async hold(
+    userId: string,
+    operationId: string,
+    amountMicros: number,
+    transaction?: Sql,
+  ) {
     operationSchema.parse(operationId);
     amountSchema.positive().parse(amountMicros);
-    await this.db.transaction(async (tx) => {
+    const work = async (tx: Sql) => {
       await this.lock(tx, userId);
       const previous = await this.entry(tx, operationId);
       if (previous) {
@@ -146,12 +161,18 @@ export class AiCreditLedger {
         [userId, amountMicros],
       );
       if (!result.rows.length)
-        throw new DomainError(409, "Недостаточно доступного баланса");
+        throw new DomainError(
+          409,
+          "Недостаточно доступного баланса AI. Бонус выдаётся один раз; пополнение пока недоступно.",
+          "AI_CREDIT_EXHAUSTED",
+        );
       await tx.query(
         "insert into ai_credit_entries(user_id,operation_id,kind,amount_micros) values ($1,$2,'hold',$3)",
         [userId, operationId, amountMicros],
       );
-    });
+    };
+    if (transaction) await work(transaction);
+    else await this.db.transaction(work);
   }
 
   // Only trusted confirmed charge or proven no-dispatch can resolve a hold.
@@ -163,6 +184,7 @@ export class AiCreditLedger {
     resolution:
       | { kind: "settle"; amountMicros: number }
       | { kind: "release"; amountMicros: 0 },
+    transaction?: Sql,
   ) {
     operationSchema.parse(operationId);
     operationSchema.parse(holdId);
@@ -172,7 +194,7 @@ export class AiCreditLedger {
       (resolution.kind === "release" && resolution.amountMicros !== 0)
     )
       throw new DomainError(400, "Некорректное завершение резерва");
-    await this.db.transaction(async (tx) => {
+    const work = async (tx: Sql) => {
       await this.lock(tx, userId);
       const previous = await this.entry(tx, operationId);
       if (previous) {
@@ -207,6 +229,8 @@ export class AiCreditLedger {
         "update ai_credit_accounts set held_micros=held_micros-$2,spent_micros=spent_micros+$3 where user_id=$1",
         [userId, Number(held.amount_micros), resolution.amountMicros],
       );
-    });
+    };
+    if (transaction) await work(transaction);
+    else await this.db.transaction(work);
   }
 }

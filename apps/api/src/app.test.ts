@@ -41,6 +41,9 @@ test("production RouterAI approval still requires user consent, monetary approva
   const provider: StreamingProvider = {
     name: "routerai",
     model: "test/model",
+    async readCharge() {
+      throw new Error("Synthetic receipt unavailable");
+    },
     async *stream() {
       calls++;
       yield { type: "delta", text: "Синтетический ответ о квартире" };
@@ -54,6 +57,7 @@ test("production RouterAI approval still requires user consent, monetary approva
     TRUSTED_PROXY_CIDRS: "127.0.0.1/32",
     ADMIN_USER_IDS: "1",
     LLM_PROVIDER: "routerai",
+    AI_CREDIT_MODE: "routerai_at_cost",
     ROUTERAI_MODEL: provider.model,
     ROUTERAI_UPSTREAM: "test-upstream",
     ROUTERAI_DATA_NOTICE: "Synthetic notice v1",
@@ -105,6 +109,15 @@ test("production RouterAI approval still requires user consent, monetary approva
     {},
   );
   assert.equal(start.statusCode, 200);
+  assert.equal(
+    (
+      await call("POST", "/v1/admin/ai/credit/welcome", admin, {
+        userId: board.user.id,
+        confirmOneTime500Rub: true,
+      })
+    ).statusCode,
+    200,
+  );
   const url = `/v1/threads/${start.json().id}/messages`;
   const message = (policyId = policy.id) => ({
     text: "Помоги выбрать квартиру",
@@ -2822,6 +2835,7 @@ for (const migration of [
   "0006_ai_budget.sql",
   "0007_ai_user_daily_budget.sql",
   "0008_ai_credit.sql",
+  "0009_ai_credit_charges.sql",
 ]) {
   test(`readiness requires ${migration}`, async (t) => {
     const f = await fixture(false);

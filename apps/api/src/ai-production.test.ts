@@ -13,6 +13,7 @@ const env = {
   WEB_ORIGIN: "https://citygo.example",
   TRUSTED_PROXY_CIDRS: "127.0.0.1/32",
   LLM_PROVIDER: "routerai",
+  AI_CREDIT_MODE: "routerai_at_cost",
   ROUTERAI_API_KEY: "synthetic-router-key",
   ROUTERAI_MODEL: "test/model",
   ROUTERAI_UPSTREAM: "test-upstream",
@@ -48,6 +49,7 @@ test("production RouterAI requires exact independently supplied approval, withou
 
 test("changing recipient, model, country or notice invalidates production approval", () => {
   for (const change of [
+    { AI_CREDIT_MODE: "disabled" },
     { ROUTERAI_MODEL: "test/other" },
     { ROUTERAI_UPSTREAM: "other" },
     { ROUTERAI_COUNTRY: "ru" },
