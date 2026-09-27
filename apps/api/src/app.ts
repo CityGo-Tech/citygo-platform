@@ -13,6 +13,7 @@ import {
   aiRoutingInputSchema,
   aiBudgetInputSchema,
   aiCreditGrantSchema,
+  aiCreditReconcileSchema,
   CONTRACT_VERSION,
   CONTRACT_VERSION_HEADER,
   REQUEST_ID_HEADER,
@@ -27,6 +28,7 @@ import {
   Repository,
   DomainError,
   AiCreditLedger,
+  AiCreditCharges,
   type Database,
 } from "@citygo/db";
 import { readConfig, effectiveLlmLimits } from "@citygo/config";
@@ -49,10 +51,41 @@ export async function buildApp(options: {
 }) {
   const drain = options.drain ?? new ApiDrain();
   const config = options.config ?? readConfig();
-  const repo = new Repository(options.db);
-  const credit = new AiCreditLedger(options.db);
+  const creditCharging = config.AI_CREDIT_MODE === "routerai_at_cost";
+  const repo = new Repository(options.db, creditCharging);
+  const credit = new AiCreditLedger(
+    options.db,
+    creditCharging ? "routerai_at_cost" : "not_connected",
+  );
+  const charges = new AiCreditCharges(options.db);
   const providers: ProviderMap = { ...options.providers };
   if (options.provider) providers[options.provider.name] = options.provider;
+  async function reconcileCharge(userId: string, holdId: string) {
+    const charge = await charges.get(userId, holdId);
+    if (charge.receipt) return credit.status(userId);
+    const adapter = providers.routerai;
+    if (!charge.response_complete || !charge.generation_id)
+      throw new DomainError(
+        409,
+        "Ответ не подтверждён как завершённый. Нужна ручная сверка с RouterAI; автоматическое освобождение запрещено.",
+      );
+    if (
+      !adapter?.readCharge ||
+      adapter.model !== charge.model ||
+      config.ROUTERAI_UPSTREAM !== charge.upstream
+    )
+      throw new DomainError(
+        409,
+        "Для сверки требуется исходная конфигурация RouterAI.",
+      );
+    const receipt = await adapter.readCharge(
+      charge.generation_id,
+      holdId,
+      AbortSignal.timeout(5000),
+    );
+    await charges.settle(userId, holdId, receipt);
+    return credit.status(userId);
+  }
   const control = createAiControl(config, providers);
   const executions = control.options.flatMap((option) =>
     option.policy ? [createAiExecution(config, option.policy)] : [],
@@ -197,9 +230,9 @@ export async function buildApp(options: {
   app.get("/ready", async () => {
     try {
       const result = await options.db.query(
-        "select name from citygo_migrations where name in ('0006_ai_budget.sql','0007_ai_user_daily_budget.sql','0008_ai_credit.sql')",
+        "select name from citygo_migrations where name in ('0006_ai_budget.sql','0007_ai_user_daily_budget.sql','0008_ai_credit.sql','0009_ai_credit_charges.sql')",
       );
-      if (result.rows.length !== 3) throw new Error("Pending migration");
+      if (result.rows.length !== 4) throw new Error("Pending migration");
     } catch {
       throw new DomainError(503, "База данных не готова: примените миграции");
     }
@@ -331,6 +364,17 @@ export async function buildApp(options: {
           "AI-получатель изменился или не подтверждён. Обновите страницу и проверьте условия.",
           "AI_POLICY_CHANGED",
         );
+      if (
+        creditCharging &&
+        (provider.name !== "routerai" ||
+          !provider.readCharge ||
+          !config.ROUTERAI_UPSTREAM)
+      )
+        throw new DomainError(
+          503,
+          "Для этого провайдера списание с баланса не подключено.",
+          "AI_CREDIT_UNAVAILABLE",
+        );
       const limits = effectiveLlmLimits(config, provider.name, provider.model);
       const reservation = await repo.reserveChat(
         user.id,
@@ -375,12 +419,14 @@ export async function buildApp(options: {
       let generation: ModelGeneration | undefined;
       let attemptNumber = 0;
       let attemptError: DomainError | undefined;
+      let creditHoldId: string | null = null;
+      let adapterEntered = false;
       const reserveAttempt = async () => {
         signal.throwIfAborted();
         try {
           if (attemptNumber > 0 && content.length > 0)
             throw new DomainError(409, "Повтор после начала ответа запрещён.");
-          await repo.reserveAiAttempt({
+          creditHoldId = await repo.reserveAiAttempt({
             userId: user.id,
             threadId,
             requestId: input.requestId,
@@ -393,6 +439,7 @@ export async function buildApp(options: {
             userDailyLimit: config.LLM_USER_DAILY_ATTEMPT_LIMIT,
             globalDailyLimit: config.LLM_GLOBAL_DAILY_ATTEMPT_LIMIT,
             execution: createAiExecution(config, aiPolicy),
+            upstream: config.ROUTERAI_UPSTREAM,
           });
         } catch (error) {
           if (error instanceof DomainError) attemptError = error;
@@ -455,11 +502,25 @@ export async function buildApp(options: {
             requestedModel: provider.model,
           };
           let completed = false;
+          if (creditHoldId) await charges.dispatch(user.id, creditHoldId);
+          signal.throwIfAborted();
+          adapterEntered = true;
           for await (const event of provider.stream(
             modelInstructions,
             modelMessages,
             signal,
-            { beforeRetry: reserveAttempt },
+            {
+              beforeRetry: reserveAttempt,
+              ...(creditHoldId
+                ? {
+                    billing: {
+                      reference: creditHoldId,
+                      onGeneration: (id: string) =>
+                        charges.identify(user.id, creditHoldId!, id),
+                    },
+                  }
+                : {}),
+            },
           )) {
             signal.throwIfAborted();
             if (completed)
@@ -493,10 +554,20 @@ export async function buildApp(options: {
           true,
           !routing.human,
           generation,
+          creditHoldId ?? undefined,
         );
         saved = true;
+        if (creditHoldId) {
+          // Read-only cost lookup, not a second model attempt. A lost/invalid
+          // receipt leaves a durable hold for reconciliation, never a guessed fee.
+          await reconcileCharge(user.id, creditHoldId).catch(() => {});
+        }
         send({ type: "done", messageId });
       } catch {
+        if (creditHoldId && !adapterEntered)
+          await charges
+            .releaseBeforeTransport(user.id, creditHoldId)
+            .catch(() => {});
         let persistenceFailed = false;
         if (!saved)
           await repo
@@ -525,7 +596,9 @@ export async function buildApp(options: {
           message: persistenceFailed
             ? "Ответ прерван. Не удалось подтвердить сохранение истории. Обновите историю и обратитесь к администратору перед повторной отправкой."
             : (attemptError?.message ??
-              "Ответ прерван. История сохранена; попробуйте отправить сообщение снова."),
+              (creditHoldId
+                ? "Ответ прерван. История сохранена. Стоимость уточняется; резерв удерживается до сверки. Не повторяйте запрос вслепую."
+                : "Ответ прерван. История сохранена; попробуйте отправить сообщение снова.")),
         });
       } finally {
         clearInterval(heartbeat);
@@ -553,6 +626,11 @@ export async function buildApp(options: {
   app.get("/v1/ai/credit", async (request) => {
     const user = await authenticate(request);
     return credit.status(user.id);
+  });
+  app.post("/v1/admin/ai/credit/reconcile", async (request) => {
+    await authenticateAdmin(request);
+    const input = aiCreditReconcileSchema.parse(request.body);
+    return reconcileCharge(input.userId, input.holdId);
   });
   app.post("/v1/admin/ai/credit/welcome", async (request) => {
     const actor = await authenticateAdmin(request);

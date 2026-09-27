@@ -6,5 +6,6 @@ grant select on citygo_migrations to citygo_api;
 -- Match the production credit ledger's append-only boundary.
 revoke update, delete on ai_credit_entries from citygo_api;
 revoke delete on ai_credit_accounts from citygo_api;
+revoke delete on ai_credit_charges from citygo_api;
 grant select, delete on sessions, analytics_events to citygo_worker;
 grant select, update on agent_threads, chat_requests to citygo_worker;

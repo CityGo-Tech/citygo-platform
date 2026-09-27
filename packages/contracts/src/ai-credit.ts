@@ -1,6 +1,51 @@
 import { z } from "zod";
 
 export const AI_WELCOME_CREDIT_MICROS = 500_000_000;
+export const creditGenerationIdSchema = z
+  .string()
+  .regex(/^[a-zA-Z0-9_-]{1,200}$/);
+// Exact decimal conversion; sub-microrouble fractions stay with the customer.
+// No multiplication of a floating-point provider price and no FX conversion.
+export function routerAiCostMicros(value: string): number {
+  const match = /^(\d{1,13})(?:\.(\d{1,30}))?(?:[eE]([+-]?\d{1,2}))?$/.exec(
+    value,
+  );
+  if (!match) throw new Error("Invalid RouterAI cost");
+  const fraction = match[2] ?? "";
+  const exponent = Number(match[3] ?? 0) + 6 - fraction.length;
+  if (Math.abs(exponent) > 60) throw new Error("Invalid RouterAI cost");
+  const digits = BigInt(match[1]! + fraction);
+  const micros =
+    exponent >= 0
+      ? digits * 10n ** BigInt(exponent)
+      : digits / 10n ** BigInt(-exponent);
+  if (micros > 1_000_000_000_000n) throw new Error("Invalid RouterAI cost");
+  return Number(micros);
+}
+export const routerAiChargeSchema = z
+  .strictObject({
+    generationId: creditGenerationIdSchema,
+    reference: z.uuid(),
+    model: z.string().min(1).max(200),
+    upstream: z.string().regex(/^[a-z0-9][a-z0-9_-]{0,79}$/),
+    currency: z.literal("RUB"),
+    costRub: z.string().max(80),
+    amountMicros: z.number().int().min(0).max(1_000_000_000_000),
+  })
+  .refine((v) => {
+    try {
+      return routerAiCostMicros(v.costRub) === v.amountMicros;
+    } catch {
+      return false;
+    }
+  });
+export type RouterAiCharge = z.infer<typeof routerAiChargeSchema>;
+export const aiCreditReconcileSchema = z.strictObject({
+  userId: z.string().regex(/^[1-9][0-9]{0,17}$/),
+  holdId: z.uuid(),
+  confirmReconcile: z.literal(true),
+});
+export type AiCreditReconcile = z.infer<typeof aiCreditReconcileSchema>;
 const amount = z.number().int().min(0).max(AI_WELCOME_CREDIT_MICROS);
 export const creditUserIdSchema = z.string().regex(/^[1-9][0-9]{0,17}$/);
 export const aiCreditGrantSchema = z.strictObject({
@@ -17,8 +62,18 @@ export const aiCreditResponseSchema = z
     spentMicros: amount,
     availableMicros: amount,
     // Until trusted pricing/settlement is connected, do not market a payable wallet.
-    chargingStatus: z.literal("not_connected"),
+    chargingStatus: z.enum(["not_connected", "routerai_at_cost"]),
     topUpAvailable: z.literal(false),
+    pending: z
+      .array(
+        z.object({
+          holdId: z.uuid(),
+          amountMicros: amount,
+          responseComplete: z.boolean(),
+        }),
+      )
+      .max(20)
+      .optional(),
     history: z
       .array(
         z.object({

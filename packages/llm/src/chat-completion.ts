@@ -27,7 +27,11 @@ function readUsage(value: unknown): ModelUsage {
 export async function* readChatCompletion(
   body: ReadableStream<Uint8Array>,
   signal: AbortSignal,
-  limits: { maxOutputCharacters?: number; maxStreamBytes?: number } = {},
+  limits: {
+    maxOutputCharacters?: number;
+    maxStreamBytes?: number;
+    onGeneration?: (id: unknown) => Promise<void>;
+  } = {},
 ): AsyncIterable<ModelStreamEvent> {
   const maxOutputCharacters = limits.maxOutputCharacters ?? 24000;
   if (
@@ -50,6 +54,7 @@ export async function* readChatCompletion(
       return;
     }
     const chunk = record(JSON.parse(data) as unknown);
+    if (chunk.id != null) await limits.onGeneration?.(chunk.id);
     if (chunk.error != null) throw new Error("Chat Completions stream error");
     if (chunk.model != null) {
       if (

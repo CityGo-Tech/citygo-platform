@@ -19,6 +19,7 @@ import {
   type AiRoutingInput,
   type AiBudgetInput,
   type AiCreditGrant,
+  type AiCreditReconcile,
   type Questionnaire,
   type StreamEvent,
 } from "@citygo/contracts";
@@ -176,6 +177,8 @@ export function createClient(
     aiCredit: () => request("/v1/ai/credit", aiCreditResponseSchema),
     grantWelcomeCredit: (input: AiCreditGrant) =>
       request("/v1/admin/ai/credit/welcome", aiCreditResponseSchema, input),
+    reconcileCredit: (input: AiCreditReconcile) =>
+      request("/v1/admin/ai/credit/reconcile", aiCreditResponseSchema, input),
     setAiRouting: (input: AiRoutingInput) =>
       request("/v1/admin/ai", aiRoutingResponseSchema, input),
     setAiBudget: (input: AiBudgetInput) =>

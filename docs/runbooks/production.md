@@ -1,8 +1,9 @@
 # Production handoff — not deployed
 
-Latest schema addition: [one-time credit foundation](ai-credit.md) requires migration
-`0008_ai_credit.sql` and updated API grants. It does not activate chat billing,
-automatic bonuses or payments. Keep AI disabled until pricing/admission is connected.
+Latest schema addition: [RouterAI charging](ai-credit-charging.md) requires migration
+`0009_ai_credit_charges.sql` and updated API grants. Production RouterAI requires
+`AI_CREDIT_MODE=routerai_at_cost`; the default is disabled. No automatic deployment,
+bonuses or payments. Keep AI disabled until the release/budget/live check is approved.
 
 No cloud resource, paid service, domain or store project is provisioned by this
 change. Select a hosting environment and data region before deployment.

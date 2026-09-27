@@ -50,9 +50,27 @@ export function AiAccessPanel({
             списаний: {formatMoneyMicros(access.credit.spentMicros)} ₽.
           </p>
           <p>
-            Автоматическое списание за ответы и пополнение пока не подключены.
-            Этот баланс не включает ИИ и не заменяет общий бюджет сервиса.
+            {access.credit.chargingStatus === "routerai_at_cost"
+              ? "Ответы RouterAI — по подтверждённой стоимости без наценки. Перед запросом сумма резервируется; при неизвестной стоимости резерв остаётся на сверке. Доли микрорубля округляются вниз."
+              : "Автоматическое списание за ответы пока не подключено."}{" "}
+            Пополнение пока недоступно. Бонус не включает ИИ и не заменяет общий
+            бюджет сервиса.
           </p>
+          {!!access.credit.pending?.length && (
+            <div role="status">
+              <p>Резервы на сверке. При обращении к владельцу укажите ID:</p>
+              <ul>
+                {access.credit.pending.map((item) => (
+                  <li key={item.holdId}>
+                    {item.holdId}: {formatMoneyMicros(item.amountMicros)} ₽ —{" "}
+                    {item.responseComplete
+                      ? "ответ сохранён, уточняется стоимость"
+                      : "результат запроса не подтверждён"}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           {!!access.credit.history.length && (
             <details>
               <summary>Последние операции баланса (до 20)</summary>

@@ -515,9 +515,18 @@ export default function App() {
                         ₽.
                       </Text>
                       <Text>
-                        Автоматическое списание за ответы и пополнение пока не
-                        подключены. Баланс не включает ИИ.
+                        {board.aiAccess.credit.chargingStatus ===
+                        "routerai_at_cost"
+                          ? "Ответы RouterAI — по подтверждённой стоимости без наценки. Неизвестная стоимость остаётся в резерве до сверки. Доли микрорубля округляются вниз."
+                          : "Автоматическое списание за ответы пока не подключено."}{" "}
+                        Пополнение пока недоступно. Баланс не включает ИИ.
                       </Text>
+                      {board.aiAccess.credit.pending?.map((item) => (
+                        <Text key={item.holdId}>
+                          Резерв на сверке {item.holdId}:{" "}
+                          {formatMoneyMicros(item.amountMicros)} ₽.
+                        </Text>
+                      ))}
                     </View>
                   )}
                   {board.aiAccess?.policy ? (

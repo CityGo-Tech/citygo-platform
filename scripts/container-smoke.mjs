@@ -132,7 +132,7 @@ try {
   compose(["up", "-d", "--wait", "--wait-timeout", "90", "postgres"]);
   compose(["run", "--rm", "--no-deps", "migrator"]);
   const migrations = psql("select count(*) from citygo_migrations");
-  assert.equal(migrations, "8");
+  assert.equal(migrations, "9");
   compose(["run", "--rm", "--no-deps", "migrator"]);
   assert.equal(psql("select count(*) from citygo_migrations"), migrations);
   compose([
@@ -226,13 +226,13 @@ try {
   );
   assert.equal(
     psql(
-      "select has_table_privilege('citygo_api','ai_credit_entries','INSERT') and has_table_privilege('citygo_api','ai_credit_accounts','UPDATE')",
+      "select has_table_privilege('citygo_api','ai_credit_entries','INSERT') and has_table_privilege('citygo_api','ai_credit_accounts','UPDATE') and has_table_privilege('citygo_api','ai_credit_charges','INSERT') and has_table_privilege('citygo_api','ai_credit_charges','UPDATE')",
     ),
     "t",
   );
   assert.equal(
     psql(
-      "select has_table_privilege('citygo_api','ai_credit_entries','UPDATE') or has_table_privilege('citygo_api','ai_credit_entries','DELETE') or has_table_privilege('citygo_worker','ai_credit_entries','SELECT')",
+      "select has_table_privilege('citygo_api','ai_credit_entries','UPDATE') or has_table_privilege('citygo_api','ai_credit_entries','DELETE') or has_table_privilege('citygo_api','ai_credit_charges','DELETE') or has_table_privilege('citygo_worker','ai_credit_entries','SELECT') or has_table_privilege('citygo_worker','ai_credit_charges','SELECT')",
     ),
     "f",
   );

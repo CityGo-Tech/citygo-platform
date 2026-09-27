@@ -118,6 +118,7 @@ export const serverConfigSchema = z.object({
   GIGACHAT_SCOPE: optionalSetting,
   GIGACHAT_CA_BUNDLE_FILE: optionalSetting,
   ADMIN_USER_IDS: z.string().default(""),
+  AI_CREDIT_MODE: z.enum(["disabled", "routerai_at_cost"]).default("disabled"),
   TRUSTED_PROXY_CIDRS: trustedProxySchema,
 });
 export function readConfig(env: NodeJS.ProcessEnv = process.env) {
