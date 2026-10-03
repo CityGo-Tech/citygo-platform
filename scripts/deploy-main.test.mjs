@@ -76,6 +76,15 @@ test("request contains identity plus temporary read token, never commands or ser
     context({ ...env, GITHUB_REPOSITORY: "attacker/citygo-platform" }),
   );
 });
+test("opaque Bearer tokens match the shared server grammar without header injection", () => {
+  const tokens = JSON.parse(
+    readFileSync(new URL("./fixtures/deploy-bearer-tokens.json", import.meta.url), "utf8"),
+  );
+  for (const token of [...tokens.accepted, "x".repeat(4096)])
+    assert.equal(deploymentRequest({ ...env, GH_TOKEN: token }).github_token, token);
+  for (const token of [...tokens.rejected, "x".repeat(4097)])
+    assert.throws(() => deploymentRequest({ ...env, GH_TOKEN: token }));
+});
 test("SSH requires host pin and does not accept options or shell destinations", () => {
   const settings = {
     CITYGO_DEPLOY_HOST: "203.0.113.1",

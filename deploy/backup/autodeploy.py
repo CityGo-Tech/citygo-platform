@@ -50,7 +50,12 @@ def request(raw):
     b.require(type(value["version"]) is int and value["version"] == 1 and t.matches(value["sha"], t.SHA), "autodeploy-request")
     for key in ("run_id", "run_attempt", "artifact_id"):
         b.require(t.matches(value[key], r"[1-9][0-9]{0,19}"), "autodeploy-identity")
-    b.require(t.matches(value["github_token"], r"[A-Za-z0-9_]{1,4096}"), "autodeploy-token")
+    # GITHUB_TOKEN is opaque, not a fixed GitHub PAT prefix/alphabet. Accept the
+    # Bearer credential grammar (RFC 6750 section 2.1), including base64url/JWT
+    # punctuation and optional trailing padding, without accepting header data.
+    token = value["github_token"]
+    b.require(type(token) is str and 1 <= len(token) <= 4096
+              and t.matches(token, r"[A-Za-z0-9._~+/-]+=*"), "autodeploy-token")
     return value
 
 
@@ -324,7 +329,9 @@ def apply(req, *, policy_path=POLICY_PATH):
     state = root_state / "autodeploy"
     state.mkdir(mode=0o700, exist_ok=True)
     b.protected(state, directory=True)
-    with b.lock(state, "deploy.lock"):
+    # The shared helper permits only its fixed lock names. This lock lives in
+    # the autodeploy subdirectory, separate from the DB maintenance lock.
+    with b.lock(state):
         b.require(not os.path.lexists(state / "pending.json"), "autodeploy-pending-inspect-required")
         b.assert_operation_idle(root_state)
         check_pins(value)
