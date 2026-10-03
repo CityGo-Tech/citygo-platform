@@ -89,6 +89,9 @@ export function deploymentRequest(env) {
     typeof env.GH_TOKEN === "string" &&
       env.GH_TOKEN.length > 0 &&
       env.GH_TOKEN.length <= 4096 &&
+      // Same opaque Bearer grammar as the installed server controller. Keep
+      // the whitespace check: JS `$` can also match before a final newline.
+      /^[A-Za-z0-9._~+/-]+=*$/.test(env.GH_TOKEN) &&
       !/[\s\0]/.test(env.GH_TOKEN),
   );
   return {

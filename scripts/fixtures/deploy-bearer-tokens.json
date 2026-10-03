@@ -1,0 +1,32 @@
+{
+  "accepted": [
+    "synthetic_secret",
+    "synthetic-never-a-real-token",
+    "synthetic.header_with-dash.payload",
+    "synthetic~value+with/slash==",
+    "x="
+  ],
+  "rejected": [
+    "",
+    "=",
+    "synthetic=value",
+    "synthetic value",
+    "synthetic\n",
+    "synthetic\r\nX-Header: bad",
+    "synthetic\tvalue",
+    "synthetic\u0000value",
+    "synthetic\u007fvalue",
+    "synthetic\u0085value",
+    "synthetic\u00a0value",
+    "тест",
+    "Bearer synthetic",
+    "synthetic;command",
+    "synthetic:value",
+    "synthetic\\value",
+    null,
+    123,
+    true,
+    [],
+    {}
+  ]
+}

@@ -1,6 +1,10 @@
 """Synthetic GitHub/SSH policy and real Linux controller filesystem integration."""
 import copy
+from contextlib import ExitStack
 import io
+import json
+from pathlib import Path
+from types import SimpleNamespace
 import sys
 import unittest
 from unittest.mock import patch
@@ -17,7 +21,7 @@ from test_target import encoded, manifest_fixture
 
 
 def request():
-    return {"version": 1, "sha": "b" * 40, "run_id": "123", "run_attempt": "1", "artifact_id": "456", "github_token": "synthetic_secret"}
+    return {"version": 1, "sha": "b" * 40, "run_id": "123", "run_attempt": "1", "artifact_id": "456", "github_token": "synthetic.token-with_punctuation=="}
 
 
 def archive():
@@ -53,6 +57,16 @@ def responses():
 
 
 class Validation(unittest.TestCase):
+    def test_opaque_bearer_tokens_match_client_without_header_injection(self):
+        path = Path(__file__).resolve().parents[2] / "scripts/fixtures/deploy-bearer-tokens.json"
+        tokens = json.loads(path.read_text(encoding="utf-8"))
+        for token in [*tokens["accepted"], "x" * 4096]:
+            with self.subTest(kind="accepted"):
+                self.assertEqual(a.request(encoded({**request(), "github_token": token}))["github_token"], token)
+        for token in [*tokens["rejected"], "x" * 4097]:
+            with self.subTest(kind="rejected"), self.assertRaisesRegex(b.BackupError, "autodeploy-token"):
+                a.request(encoded({**request(), "github_token": token}))
+
     def test_request_is_bounded_and_not_a_command_transport(self):
         self.assertEqual(a.request(encoded(request())), request())
         for change in ({"sha": "main"}, {"run_id": "123;whoami"}, {"artifact_id": "../secret"},
@@ -128,6 +142,79 @@ class Capabilities(unittest.TestCase):
     def capabilities(self):
         return a.stage_capabilities(self.policy, request(), self.config, self.current, self.selection.target_directory,
                                     self.auto_directory, self.host, self.image_store)
+
+    def entrypoint_fixture(self):
+        """Real entrypoint/locks/files/controllers; only network/containers are fake."""
+        nginx = self.directory / "nginx.conf"; nginx.write_bytes(b"synthetic"); nginx.chmod(0o600)
+        registry = self.directory / "registry"; registry.mkdir(mode=0o700)
+        bundles = self.directory / "bundles"; bundles.mkdir(mode=0o700)
+        policy = {**self.policy, "version": 1, "purpose": "citygo-main-standing-authorization", "enabled": True,
+            "repository": t.REPOSITORY, "bundles_directory": str(bundles), "initial_bundle": str(self.current[0]),
+            "initial_manifest_sha256": self.current[1], "registry_config": str(registry),
+            "nginx_config": str(nginx), "nginx_sha256": t.sha256(nginx.read_bytes()),
+            "secret_sha256": {role: t.sha256(Path(path).read_bytes()) for role, path in self.policy["secret_files"].items()}}
+        policy_path = self.directory / "autodeploy.json"
+        policy_path.write_bytes(encoded(policy)); policy_path.chmod(0o600)
+        output = io.BytesIO()
+        with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive_file:
+            for path in self.selection.target_directory.rglob("*"):
+                if path.is_file(): archive_file.writestr(path.relative_to(self.selection.target_directory).as_posix(), path.read_bytes())
+        raw = output.getvalue()
+        values = responses()
+        values[f"/repos/{t.REPOSITORY}/actions/artifacts/456"].update(size_in_bytes=len(raw), digest="sha256:" + t.sha256(raw))
+        client = SimpleNamespace(api=values.__getitem__, archive=lambda _id: raw)
+        marker = self.ingress / "traffic-open"; marker.write_bytes(b"initial"); marker.chmod(0o444)
+        original_close, original_finish, original_preflight = self.host.close_ingress, f.finish, ctl.preflight
+        def close():
+            original_close()
+            marker.unlink(missing_ok=True)
+        def finish(*args, **kwargs):
+            return original_finish(*args, **kwargs, image_store_factory=lambda _: self.image_store,
+                host_factory=lambda *_: self.host, storage_factory=lambda *_: self.store, encryptor=self.encrypt,
+                min_free=0, transport_factory=lambda *_: self.transport)
+        stack = ExitStack(); self.addCleanup(stack.close)
+        stack.enter_context(patch.object(a, "GitHub", return_value=client))
+        stack.enter_context(patch.object(a.s, "Host", return_value=self.host))
+        stack.enter_context(patch.object(a.g, "Store", return_value=self.image_store))
+        stack.enter_context(patch.object(a.b, "run"))
+        stack.enter_context(patch.object(a.b, "executable", return_value="/synthetic/docker"))
+        stack.enter_context(patch.object(a.shutil, "disk_usage", return_value=SimpleNamespace(free=8 * 1024**3)))
+        stack.enter_context(patch.object(self.host, "close_ingress", side_effect=close))
+        stack.enter_context(patch.object(self.host, "capture", create=True))
+        stack.enter_context(patch.object(ctl, "preflight", side_effect=lambda *args, **kw: original_preflight(*args, **kw, image_store_factory=lambda _: self.image_store)))
+        stack.enter_context(patch.object(f, "finish", side_effect=finish))
+        tls = stack.enter_context(patch.object(a.p, "_LoopbackTLS"))
+        response = tls.return_value.getresponse.return_value
+        response.status = 200; response.getheaders.return_value = [("content-type", "application/json")]
+        response.read.return_value = b'{"status":"ok"}'
+        return policy_path
+
+    def test_real_entrypoint_reaches_backup_commit_and_reopens(self):
+        policy_path = self.entrypoint_fixture()
+        a.apply(request(), policy_path=policy_path)
+        auto = self.state / "autodeploy"
+        self.assertEqual(b.read_json(auto / "current.json")["source_sha"], "b" * 40)
+        self.assertEqual(b.load_config(self.config_path)["source_sha"], "b" * 40)
+        self.assertEqual(b.read_json(next(auto.glob("*/audit.json")))["status"], "deployed")
+        self.assertFalse((auto / "pending.json").exists())
+        self.assertTrue((self.ingress / "traffic-open").exists())
+
+    def test_real_entrypoint_serializes_with_supported_lock(self):
+        policy_path = self.entrypoint_fixture()
+        auto = self.state / "autodeploy"; auto.mkdir(mode=0o700)
+        with b.lock(auto), self.assertRaisesRegex(b.BackupError, "already-running"):
+            a.apply(request(), policy_path=policy_path)
+        self.assertEqual(self.host.events, [])
+        self.assertTrue((self.ingress / "traffic-open").exists())
+
+    def test_real_entrypoint_failure_keeps_pending_and_blocks_replay(self):
+        policy_path = self.entrypoint_fixture()
+        with patch.object(ctl, "apply", side_effect=b.BackupError("synthetic-apply-failure")), self.assertRaisesRegex(b.BackupError, "synthetic-apply-failure"):
+            a.apply(request(), policy_path=policy_path)
+        self.assertTrue((self.state / "autodeploy/pending.json").exists())
+        self.assertFalse((self.ingress / "traffic-open").exists())
+        with self.assertRaisesRegex(b.BackupError, "autodeploy-pending-inspect-required"):
+            a.apply(request(), policy_path=policy_path)
 
     def test_automated_capabilities_pass_existing_independent_binding_checks(self):
         command = self.capabilities()
