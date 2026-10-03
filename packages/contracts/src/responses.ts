@@ -5,6 +5,7 @@ export { apiErrorResponseSchema } from "./protocol.js";
 import {
   agentKeySchema,
   profileSchema,
+  questPlanReferenceSchema,
   type Dashboard,
   type StreamEvent,
 } from "./platform.js";
@@ -196,6 +197,7 @@ export const dashboardResponseSchema = z.object({
         title: text,
         state: z.enum(["locked", "available", "in_progress", "completed"]),
         xpReward: count,
+        plan: questPlanReferenceSchema.optional(),
       }),
     )
     .max(1000),

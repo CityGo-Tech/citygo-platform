@@ -42,13 +42,29 @@ export const chatInputSchema = z.object({
   // Missing IDs from old clients fail closed at admission, without sending data.
   policyId: aiPolicyIdSchema.optional(),
 });
-export const completionSchema = z.object({ confirmed: z.literal(true) });
+// Concrete persisted plan version; this is NOT an R1 resource revision.
+export const questPlanReferenceSchema = z.object({
+  id: z
+    .string()
+    .regex(/^[1-9]\d*$/)
+    .max(19),
+  version: z.number().int().min(1).max(2147483647),
+});
+export type QuestPlanReference = z.infer<typeof questPlanReferenceSchema>;
+export const questStartSchema = z.object({
+  plan: questPlanReferenceSchema.optional(),
+});
+export const completionSchema = questStartSchema.extend({
+  confirmed: z.literal(true),
+});
 export type Quest = {
   id: string;
   slug: string;
   title: string;
   state: "locked" | "available" | "in_progress" | "completed";
   xpReward: number;
+  // Optional for old-server responses; the new server always supplies it.
+  plan?: QuestPlanReference;
 };
 export type Message = {
   id: string;

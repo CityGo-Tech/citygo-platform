@@ -31,6 +31,39 @@ test("stored past move dates and legacy dashboards without optional money fields
   );
 });
 
+test("quest plan metadata is additive for old servers but validated when present", () => {
+  const quest = {
+    id: "1",
+    slug: "housing-brief",
+    title: "Synthetic",
+    state: "available",
+    xpReward: 60,
+  };
+  assert.equal(
+    dashboardResponseSchema.safeParse({ ...board, quests: [quest] }).success,
+    true,
+  );
+  const plan = { id: "2", version: 3 };
+  assert.deepEqual(
+    dashboardResponseSchema.parse({ ...board, quests: [{ ...quest, plan }] })
+      .quests[0]!.plan,
+    plan,
+  );
+  for (const invalid of [
+    null,
+    {},
+    { id: "2", version: 0 },
+    { id: "2", version: "3" },
+  ])
+    assert.equal(
+      dashboardResponseSchema.safeParse({
+        ...board,
+        quests: [{ ...quest, plan: invalid }],
+      }).success,
+      false,
+    );
+});
+
 test("pre-cap budget audit snapshots stay readable without weakening current settings", () => {
   const legacy = {
     revision: 1,

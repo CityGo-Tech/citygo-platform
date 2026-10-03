@@ -24,17 +24,17 @@ export async function releaseMigrationSmoke({
     }));
   assert.equal(
     migrations.length,
-    9,
+    11,
     "Update the disposable upgrade fixture when migrations change",
   );
   const last = migrations.at(-1);
-  assert.equal(last.name, "0009_ai_credit_charges.sql");
+  assert.equal(last.name, "0011_quest_plan_validate.sql");
   const plan = {
     version: 1,
     kind: "citygo-release-migration",
     operationId: randomUUID(),
     targetSha: "a".repeat(40),
-    currentMigrations: migrations.slice(0, -1),
+    currentMigrations: migrations.slice(0, 9),
     targetMigrations: migrations,
     grantsSha256: digest(
       readFileSync(join(root, "deploy/postgres/grants.sql")),
@@ -69,10 +69,10 @@ export async function releaseMigrationSmoke({
     return result;
   };
   const assertOld = () => {
-    assert.equal(psql("select count(*) from citygo_migrations"), "8");
+    assert.equal(psql("select count(*) from citygo_migrations"), "9");
     assert.equal(
       psql(
-        "select count(*) from information_schema.tables where table_schema='public' and table_name='ai_credit_charges'",
+        "select count(*) from information_schema.columns where table_schema='public' and table_name='user_quests' and column_name='plan_id'",
       ),
       "0",
     );
@@ -82,9 +82,48 @@ export async function releaseMigrationSmoke({
     );
   };
   // Rewind ONLY the newly created synthetic fixture, not production rollback code.
-  psql(
-    "begin; drop table ai_credit_charges; delete from citygo_migrations where name='0009_ai_credit_charges.sql'; commit",
+  assert.equal(
+    psql("select count(*) from users"),
+    "0",
+    "Never rewind a populated deployment",
   );
+  psql(
+    `begin;
+     drop trigger user_quests_keep_identity on user_quests;
+     drop function citygo_keep_quest_identity();
+     drop index relocation_plans_one_active;
+     drop view citygo_quest_plan_preflight;
+     alter table user_quests add constraint user_quests_user_id_quest_id_key unique(user_id,quest_id);
+     alter table user_quests drop column plan_id, drop column plan_version;
+     alter table relocation_plans drop constraint relocation_plans_owner_version_key;
+     delete from citygo_migrations where name in ('0010_quest_plan_expand.sql','0011_quest_plan_validate.sql');
+     commit`,
+  );
+  // A populated OLD-schema fixture, not just empty-table DDL. Explicit user ID
+  // leaves the later pilot registration sequence alone; clean it up at the end.
+  psql(`begin;
+    insert into users(id,auth_subject) overriding system value values (900009,'cg009-release-fixture');
+    insert into relocation_plans(user_id,status,plan,created_at,updated_at)
+      values (900009,'active','{"stages":["housing-brief","housing-viewing"]}','2026-01-01','2026-01-01');
+    insert into user_quests(user_id,quest_id,state,started_at,completed_at,created_at,updated_at)
+      select 900009,id,case when slug='housing-brief' then 'completed' else 'locked' end,
+        case when slug='housing-brief' then '2026-01-02'::timestamptz end,
+        case when slug='housing-brief' then '2026-01-03'::timestamptz end,'2026-01-01','2026-01-03' from quests;
+    insert into xp_events(user_id,user_quest_id,event_key,points,created_at)
+      select 900009,uq.id,'quest-complete:'||uq.id::text,60,'2026-01-03' from user_quests uq where uq.user_id=900009 and state='completed';
+    insert into ai_consents(user_id,policy_id,granted) values (900009,repeat('a',64),true);
+    insert into ai_credit_accounts(user_id,granted_micros) values (900009,500000000);
+    insert into ai_credit_entries(user_id,operation_id,kind,amount_micros,actor_user_id)
+      values (900009,'00000000-0000-4000-8000-000000900009','bonus',500000000,900009);
+    commit`);
+  const legacySnapshot = () =>
+    psql(`select jsonb_build_object(
+    'quests',(select jsonb_agg(to_jsonb(q)-'plan_id'-'plan_version' order by q.id) from user_quests q where user_id=900009),
+    'xp',(select jsonb_agg(to_jsonb(x) order by x.id) from xp_events x where user_id=900009),
+    'consent',(select to_jsonb(c) from ai_consents c where user_id=900009),
+    'credit',(select to_jsonb(c) from ai_credit_accounts c where user_id=900009),
+    'ledger',(select jsonb_agg(to_jsonb(e) order by e.id) from ai_credit_entries e where user_id=900009))::text`);
+  const before = legacySnapshot();
   assertOld();
   run({ ...plan, grantsSha256: "f".repeat(64) }, { fail: true });
   run(
@@ -138,7 +177,7 @@ export async function releaseMigrationSmoke({
   ]).trim();
   assert.match(
     migrationPath,
-    /^\/app\/node_modules\/[a-zA-Z0-9_@./+-]+\/migrations\/0009_ai_credit_charges\.sql$/,
+    /^\/app\/node_modules\/[a-zA-Z0-9_@./+-]+\/migrations\/0011_quest_plan_validate\.sql$/,
   );
   const sqlFile = join(directory, "synthetic-failing-migration.sql");
   // Sequence increments survive rollback: prove the executor reached the SQL,
@@ -177,8 +216,8 @@ export async function releaseMigrationSmoke({
   );
   assertOld();
   for (const body of [
-    "begin; create table ai_credit_charges(user_id bigint primary key); select pg_catalog.nextval('public.release_execution_probe'); select * from synthetic_missing_table; commit;\n",
-    "begin; create table ai_credit_charges(user_id bigint primary key); commit; begin; select * from synthetic_missing_table; commit;\n",
+    "begin; create table cg009_sql_probe(user_id bigint primary key); select pg_catalog.nextval('public.release_execution_probe'); select * from synthetic_missing_table; commit;\n",
+    "begin; create table cg009_sql_probe(user_id bigint primary key); commit; begin; select * from synthetic_missing_table; commit;\n",
   ]) {
     writeFileSync(sqlFile, body, { mode: 0o644 });
     run(
@@ -193,13 +232,19 @@ export async function releaseMigrationSmoke({
     );
     assert.equal(psql("select last_value from release_execution_probe"), "2");
     assertOld();
+    assert.equal(
+      psql(
+        "select count(*) from information_schema.tables where table_schema='public' and table_name='cg009_sql_probe'",
+      ),
+      "0",
+    );
   }
   psql("drop sequence release_execution_probe");
   // A concurrent old migrator fails NOWAIT; a schema lock fails lock_timeout.
   // Hold each real PostgreSQL lock until the attempted release has failed.
   for (const query of [
     "select id from citygo_migration_lock where id=1 for update",
-    "lock table ai_credit_accounts in access exclusive mode",
+    "lock table user_quests in access exclusive mode",
   ]) {
     const name = `${project}-migration-lock`;
     const script = `import {readFileSync} from 'node:fs'; import {connectDatabase} from '@citygo/db'; const db=await connectDatabase(JSON.parse(readFileSync('/run/secrets/migrate.json','utf8')).DATABASE_URL); let release; const stopped=new Promise(resolve=>release=resolve);process.once('SIGTERM',()=>release());const deadline=setTimeout(()=>release(),60000);try{await db.transaction(async tx=>{await tx.exec("set local idle_in_transaction_session_timeout='90s'");await tx.query(${JSON.stringify(query)});console.log('synthetic-lock-held');await stopped;});}finally{clearTimeout(deadline);await db.close();}`;
@@ -296,7 +341,24 @@ export async function releaseMigrationSmoke({
     );
     docker(["rm", ident]); // Exact disposable fixtures ONLY; runtime retains them.
   }
-  assert.equal(psql("select count(*) from citygo_migrations"), "9");
+  assert.equal(psql("select count(*) from citygo_migrations"), "11");
+  assert.equal(
+    legacySnapshot(),
+    before,
+    "CG-009 must preserve legacy progress, XP and AI money/consent",
+  );
+  assert.equal(
+    psql(
+      "select count(*) from user_quests uq join relocation_plans p on (p.id,p.user_id,p.version)=(uq.plan_id,uq.user_id,uq.plan_version) where uq.user_id=900009",
+    ),
+    "2",
+  );
+  assert.equal(
+    psql(
+      "select count(*) from citygo_quest_plan_preflight where issue is not null",
+    ),
+    "0",
+  );
   assert.equal(
     psql(
       "select has_table_privilege('citygo_api','ai_credit_entries','UPDATE') or has_table_privilege('citygo_api','ai_credit_entries','DELETE') or has_table_privilege('citygo_api','ai_credit_charges','DELETE') or has_table_privilege('citygo_worker','ai_credit_accounts','SELECT') or has_table_privilege('citygo_worker','ai_credit_charges','SELECT')",
@@ -326,4 +388,10 @@ export async function releaseMigrationSmoke({
   console.log(
     "Guarded release migrations: real restricted-role upgrade, drift/lock/SQL/ACL failures, transactional rollback, no automatic retry or traffic opening",
   );
+  // Remove ONLY the synthetic records created above, leaving subsequent pilot
+  // tests and their first registration unchanged. No production cleanup helper.
+  psql(
+    "begin; delete from ai_credit_entries where user_id=900009; delete from ai_credit_accounts where user_id=900009; delete from users where id=900009 and auth_subject='cg009-release-fixture'; commit",
+  );
+  assert.equal(psql("select count(*) from users"), "0");
 }
