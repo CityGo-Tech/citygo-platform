@@ -1,0 +1,11 @@
+[Unit]
+Description=CityGo hourly backups (persistent across reboot)
+
+[Timer]
+OnCalendar=*-*-* *:05:00 UTC
+RandomizedDelaySec=30s
+Persistent=true
+Unit=citygo-backup-routine.service
+
+[Install]
+WantedBy=timers.target
