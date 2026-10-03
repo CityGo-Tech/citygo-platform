@@ -2836,6 +2836,8 @@ for (const migration of [
   "0007_ai_user_daily_budget.sql",
   "0008_ai_credit.sql",
   "0009_ai_credit_charges.sql",
+  "0010_quest_plan_expand.sql",
+  "0011_quest_plan_validate.sql",
 ]) {
   test(`readiness requires ${migration}`, async (t) => {
     const f = await fixture(false);
@@ -2963,6 +2965,215 @@ test("production sessions use secure host-only cookies for signup, login and log
     );
   }
 });
+
+test("CG-009 legacy and version-aware HTTP clients reject stale/foreign plans without side effects", async (t) => {
+  const f = await fixture(false);
+  t.after(f.close);
+  const owner = await f.register(),
+    other = await f.register();
+  await f.call("POST", "/v1/questionnaire", owner.token, testProfile);
+  await f.call("POST", "/v1/questionnaire", other.token, testProfile);
+  const board = (
+    await f.call("GET", "/v1/dashboard", owner.token)
+  ).json<Dashboard>();
+  assert.ok(dashboardResponseSchema.safeParse(board).success);
+  const first = board.quests[0]!,
+    ref = first.plan!;
+  assert.equal(ref.version, 1);
+  const foreign = (
+    await f.call("GET", "/v1/dashboard", other.token)
+  ).json<Dashboard>().quests[0]!.plan!;
+  const snapshot = async () => {
+    const result: unknown[] = [];
+    for (const table of [
+      "user_quests",
+      "relocation_plans",
+      "xp_events",
+      "agent_threads",
+      "analytics_events",
+      "ai_consents",
+      "consent_events",
+      "ai_credit_accounts",
+      "ai_model_attempts",
+    ])
+      result.push(
+        (
+          await f.db.query(
+            `select to_jsonb(t) as row from ${table} t order by to_jsonb(t)::text`,
+          )
+        ).rows,
+      );
+    return result;
+  };
+  const before = await snapshot();
+  for (const action of ["start", "complete"]) {
+    for (const [plan, status, code] of [
+      [{ ...ref, version: 99 }, 409, "PLAN_STALE"],
+      [foreign, 404, "NOT_FOUND"],
+      [{ id: ref.id, version: 0 }, 400, "VALIDATION_ERROR"],
+    ] as const) {
+      const response = await f.call(
+        "POST",
+        `/v1/quests/${first.id}/${action}`,
+        owner.token,
+        { confirmed: true, plan },
+      );
+      assert.equal(response.statusCode, status, response.body);
+      assert.equal(response.json().code, code);
+      assert.ok(apiErrorResponseSchema.safeParse(response.json()).success);
+    }
+  }
+  assert.deepEqual(await snapshot(), before);
+  // Headerless legacy body remains valid; new fields are additive.
+  assert.equal(
+    (await f.call("POST", `/v1/quests/${first.id}/start`, owner.token, {}))
+      .statusCode,
+    200,
+  );
+  assert.equal(
+    (
+      await f.call("POST", `/v1/quests/${first.id}/start`, owner.token, {
+        plan: ref,
+      })
+    ).statusCode,
+    200,
+  );
+  await f.db.transaction(async (tx) => {
+    await tx.query("select id from users where id=$1 for update", [
+      board.user.id,
+    ]);
+    await tx.query(
+      "update relocation_plans set status='archived' where id=$1",
+      [ref.id],
+    );
+    await tx.query(
+      "insert into relocation_plans(user_id,version,status,plan) values ($1,2,'active',$2)",
+      [
+        board.user.id,
+        JSON.stringify({ stages: ["housing-brief", "housing-viewing"] }),
+      ],
+    );
+  });
+  const staleBefore = await snapshot();
+  for (const action of ["start", "complete"]) {
+    // Even old clients without plan metadata cannot operate on archived IDs.
+    const response = await f.call(
+      "POST",
+      `/v1/quests/${first.id}/${action}`,
+      owner.token,
+      { confirmed: true },
+    );
+    assert.equal(response.statusCode, 409);
+    assert.equal(response.json().code, "PLAN_STALE");
+    assert.equal(response.json().currentVersion, 2);
+  }
+  assert.deepEqual(await snapshot(), staleBefore);
+  assert.deepEqual(
+    (await f.call("GET", "/v1/dashboard", owner.token)).json<Dashboard>()
+      .quests,
+    [],
+  );
+});
+
+test(
+  "CG-009 PostgreSQL replacement serializes before a queued completion",
+  { skip: !process.env.TEST_DATABASE_URL },
+  async (t) => {
+    const f = await fixture(false);
+    t.after(f.close);
+    const owner = await f.register();
+    await f.call("POST", "/v1/questionnaire", owner.token, testProfile);
+    const board = (
+      await f.call("GET", "/v1/dashboard", owner.token)
+    ).json<Dashboard>();
+    const quest = board.quests[0]!;
+    await f.call("POST", `/v1/quests/${quest.id}/start`, owner.token, {});
+    const thread = (
+      await f.call("GET", "/v1/dashboard", owner.token)
+    ).json<Dashboard>().thread!.id;
+    await f.db.query(
+      "insert into messages(thread_id,role,content,metadata) values ($1,'assistant','Synthetic advice',$2)",
+      [
+        thread,
+        JSON.stringify({
+          agentKey: "housing",
+          status: "complete",
+          source: "model",
+        }),
+      ],
+    );
+    let locked!: () => void, release!: () => void;
+    const lockAcquired = new Promise<void>((resolve) => {
+      locked = resolve;
+    });
+    const continueReplacement = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let holderPid = 0;
+    const replacement = f.db.transaction(async (tx) => {
+      await tx.query("select id from users where id=$1 for update", [
+        board.user.id,
+      ]);
+      holderPid = (
+        await tx.query<{ pid: number }>("select pg_backend_pid() as pid")
+      ).rows[0]!.pid;
+      locked();
+      await continueReplacement;
+      await tx.query(
+        "update relocation_plans set status='archived' where id=$1",
+        [quest.plan!.id],
+      );
+      await tx.query(
+        "insert into relocation_plans(user_id,version,status) values ($1,2,'active')",
+        [board.user.id],
+      );
+    });
+    await Promise.race([lockAcquired, replacement]);
+    const completion = f.call(
+      "POST",
+      `/v1/quests/${quest.id}/complete`,
+      owner.token,
+      { confirmed: true },
+    );
+    try {
+      let blocked = false;
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline) {
+        blocked =
+          (
+            await f.db.query(
+              "select 1 from pg_stat_activity where $1::integer = any(pg_blocking_pids(pid))",
+              [holderPid],
+            )
+          ).rows.length > 0;
+        if (blocked) break;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      assert.equal(
+        blocked,
+        true,
+        "completion must really wait behind replacement's user lock",
+      );
+    } finally {
+      release();
+      await replacement;
+      await completion;
+    }
+    const response = await completion;
+    assert.equal(response.statusCode, 409);
+    assert.equal(response.json().code, "PLAN_STALE");
+    assert.equal((await f.db.query("select 1 from xp_events")).rows.length, 0);
+    assert.equal(
+      (
+        await f.db.query<{ state: string }>(
+          "select state from user_quests where id=$1",
+          [quest.id],
+        )
+      ).rows[0]!.state,
+      "in_progress",
+    );
+  },
+);
 
 async function verticalSlice(
   t: TestContext,

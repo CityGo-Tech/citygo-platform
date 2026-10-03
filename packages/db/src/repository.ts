@@ -15,10 +15,12 @@ import type {
   AiExecution,
   AiBudgetInput,
   ApiErrorCode,
+  QuestPlanReference,
 } from "@citygo/contracts";
 import { randomUUID } from "node:crypto";
 import { canTransitionQuest } from "@citygo/domain";
 import { DomainError } from "./errors.js";
+import { currentQuestPlan, lockQuestPlan } from "./quest-plans.js";
 import { AiCreditLedger } from "./ai-credit.js";
 import { AiCreditCharges } from "./ai-credit-charges.js";
 import {
@@ -415,6 +417,9 @@ export class Repository {
     dailyLimit: number,
   ): Promise<Dashboard> {
     return this.db.transaction(async (tx) => {
+      // Stable plan/quest snapshot relative to start, completion and replacement.
+      await tx.query("select id from users where id=$1 for share", [user.id]);
+      const plan = await currentQuestPlan(tx, user.id);
       const profile =
         (
           await tx.query<{ preferences: Questionnaire }>(
@@ -430,8 +435,11 @@ export class Repository {
       ).rows[0]!.xp;
       const quests = (
         await tx.query<Quest>(
-          'select uq.id::text,q.slug,q.title,uq.state,q.xp_reward as "xpReward" from user_quests uq join quests q on q.id=uq.quest_id where uq.user_id=$1 order by q.id',
-          [user.id],
+          `select uq.id::text,q.slug,q.title,uq.state,q.xp_reward as "xpReward",
+           jsonb_build_object('id',uq.plan_id::text,'version',uq.plan_version) as plan
+           from user_quests uq join quests q on q.id=uq.quest_id
+           where uq.user_id=$1 and uq.plan_id=$2 and uq.plan_version=$3 order by q.id`,
+          [user.id, plan?.id ?? null, plan?.version ?? null],
         )
       ).rows;
       const thread = (
@@ -546,19 +554,21 @@ export class Repository {
         "insert into consent_events(user_id,consent_key,action,policy_version) values ($1,'profile-processing','granted','2026-09-local-profile-v1')",
         [userId],
       );
+      const plan = (
+        await tx.query<QuestPlanReference>(
+          "insert into relocation_plans(user_id,status,plan) values ($1,'active',$2) returning id::text,version",
+          [
+            userId,
+            JSON.stringify({
+              targetCity: profile.targetCity,
+              stages: ["housing-brief", "housing-viewing"],
+            }),
+          ],
+        )
+      ).rows[0]!;
       await tx.query(
-        "insert into relocation_plans(user_id,status,plan) values ($1,'active',$2)",
-        [
-          userId,
-          JSON.stringify({
-            targetCity: profile.targetCity,
-            stages: ["housing-brief", "housing-viewing"],
-          }),
-        ],
-      );
-      await tx.query(
-        `insert into user_quests(user_id,quest_id,state) select $1,id,case when slug='housing-brief' then 'available' else 'locked' end from quests where slug in ('housing-brief','housing-viewing')`,
-        [userId],
+        `insert into user_quests(user_id,quest_id,state,plan_id,plan_version) select $1,id,case when slug='housing-brief' then 'available' else 'locked' end,$2,$3 from quests where slug in ('housing-brief','housing-viewing')`,
+        [userId, plan.id, plan.version],
       );
       await tx.query(
         "insert into analytics_events(user_id,name) values ($1,'questionnaire_completed')",
@@ -566,15 +576,9 @@ export class Repository {
       );
     });
   }
-  async start(userId: string, questId: string) {
+  async start(userId: string, questId: string, plan?: QuestPlanReference) {
     return this.db.transaction(async (tx) => {
-      const quest =
-        (
-          await tx.query<{ state: Quest["state"] }>(
-            "select state from user_quests where id=$1 and user_id=$2 for update",
-            [questId, userId],
-          )
-        ).rows[0] ?? fail(404, "Квест не найден");
+      const quest = await lockQuestPlan(tx, userId, questId, plan, false);
       if (
         quest.state !== "in_progress" &&
         !canTransitionQuest(quest.state, "in_progress")
@@ -593,20 +597,9 @@ export class Repository {
       return thread;
     });
   }
-  async complete(userId: string, questId: string) {
+  async complete(userId: string, questId: string, plan?: QuestPlanReference) {
     return this.db.transaction(async (tx) => {
-      const q =
-        (
-          await tx.query<{
-            id: string;
-            state: Quest["state"];
-            slug: string;
-            xp_reward: number;
-          }>(
-            "select uq.id::text,uq.state,q.slug,q.xp_reward from user_quests uq join quests q on q.id=uq.quest_id where uq.id=$1 and uq.user_id=$2 for update of uq",
-            [questId, userId],
-          )
-        ).rows[0] ?? fail(404, "Квест не найден");
+      const q = await lockQuestPlan(tx, userId, questId, plan, true);
       if (q.state === "completed") return { awarded: 0 };
       if (!canTransitionQuest(q.state, "completed"))
         fail(409, "Сначала начните квест");
@@ -629,13 +622,15 @@ export class Repository {
       );
       if (q.slug === "housing-brief")
         await tx.query(
-          "update user_quests set state='available',updated_at=now() where user_id=$1 and state='locked' and quest_id=(select id from quests where slug='housing-viewing')",
-          [userId],
+          "update user_quests set state='available',updated_at=now() where user_id=$1 and plan_id=$2 and plan_version=$3 and state='locked' and quest_id=(select id from quests where slug='housing-viewing')",
+          [userId, q.plan_id, q.plan_version],
         );
       if (q.slug === "housing-viewing")
         await tx.query(
-          "update relocation_plans set status='completed',updated_at=now() where user_id=$1 and status='active'",
-          [userId],
+          `update relocation_plans set status='completed',updated_at=now()
+           where id=$2 and user_id=$1 and version=$3 and status='active'
+           and not exists (select 1 from user_quests where plan_id=$2 and state<>'completed')`,
+          [userId, q.plan_id, q.plan_version],
         );
       await tx.query(
         "insert into analytics_events(user_id,name) values ($1,'quest_completed')",

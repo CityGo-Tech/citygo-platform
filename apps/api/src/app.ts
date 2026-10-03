@@ -7,6 +7,7 @@ import { z } from "zod";
 import {
   chatInputSchema,
   completionSchema,
+  questStartSchema,
   credentialsSchema,
   questionnaireSchema,
   aiConsentSchema,
@@ -230,9 +231,9 @@ export async function buildApp(options: {
   app.get("/ready", async () => {
     try {
       const result = await options.db.query(
-        "select name from citygo_migrations where name in ('0006_ai_budget.sql','0007_ai_user_daily_budget.sql','0008_ai_credit.sql','0009_ai_credit_charges.sql')",
+        "select name from citygo_migrations where name in ('0006_ai_budget.sql','0007_ai_user_daily_budget.sql','0008_ai_credit.sql','0009_ai_credit_charges.sql','0010_quest_plan_expand.sql','0011_quest_plan_validate.sql')",
       );
-      if (result.rows.length !== 4) throw new Error("Pending migration");
+      if (result.rows.length !== 6) throw new Error("Pending migration");
     } catch {
       throw new DomainError(503, "База данных не готова: примените миграции");
     }
@@ -328,12 +329,21 @@ export async function buildApp(options: {
   const questParams = z.object({ id: z.string().regex(/^[1-9]\d*$/) });
   app.post("/v1/quests/:id/start", async (request) => {
     const user = await authenticate(request);
-    return repo.start(user.id, questParams.parse(request.params).id);
+    const input = questStartSchema.parse(request.body ?? {});
+    return repo.start(
+      user.id,
+      questParams.parse(request.params).id,
+      input.plan,
+    );
   });
   app.post("/v1/quests/:id/complete", async (request) => {
     const user = await authenticate(request);
-    completionSchema.parse(request.body);
-    return repo.complete(user.id, questParams.parse(request.params).id);
+    const input = completionSchema.parse(request.body);
+    return repo.complete(
+      user.id,
+      questParams.parse(request.params).id,
+      input.plan,
+    );
   });
   app.post(
     "/v1/threads/:id/messages",
