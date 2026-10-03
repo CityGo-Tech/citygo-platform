@@ -1,0 +1,26 @@
+[Unit]
+Description=CityGo hourly encrypted backup and 24h/7d/4w retention
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+ExecStart=/usr/bin/python3 -E -s -B CONTROLLER_PATH/routine.py run --config /etc/citygo/backup-routine.json --allow-upload --allow-delete --allow-send
+TimeoutStartSec=30min
+TimeoutStopSec=30s
+KillMode=control-group
+LimitCORE=0
+MemoryMax=512M
+CPUQuota=50%
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/citygo-backup /var/lib/citygo-backup-routine /var/lib/citygo-backup-email
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=LANG=C.UTF-8
