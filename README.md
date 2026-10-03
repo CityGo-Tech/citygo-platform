@@ -1,5 +1,9 @@
 # CityGo Platform
 
+Обновление Cloud.ru после push/merge в `main`:
+[настройка и эксплуатация CI/CD](docs/runbooks/automatic-main-deployment.md).
+Автоматический режим требует однократной настройки сервера и GitHub Secrets/Variables.
+
 Приватный monorepo платформы переезда. Рабочий Web-сценарий:
 аккаунт → анкета → план → жилищный квест → AI-чат → завершение → +60 XP → следующий квест.
 

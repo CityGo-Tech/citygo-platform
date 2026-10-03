@@ -1,4 +1,4 @@
-// Operator-triggered GHCR candidate only. No SSH, live DB, deploy or AI access.
+// Verified GHCR candidate only. Deployment is a separate, restricted job.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
@@ -123,10 +123,16 @@ export function validateEvidence(evidence, sha) {
   return evidence;
 }
 export function validateContext(env) {
+  const automatic = env.RELEASE_MODE === "automatic-main";
   requireValue(
     env.GITHUB_ACTIONS === "true" &&
-      env.GITHUB_EVENT_NAME === "workflow_dispatch",
-    "manual Actions only",
+      (automatic
+        ? ["push", "workflow_dispatch"].includes(env.GITHUB_EVENT_NAME) &&
+          env.AUTODEPLOY_ENABLED === "true" &&
+          env.GITHUB_WORKFLOW_REF ===
+            `${repository}/.github/workflows/deploy-main.yml@refs/heads/main`
+        : env.GITHUB_EVENT_NAME === "workflow_dispatch"),
+    "authorized Actions context only",
   );
   requireValue(
     env.GITHUB_REPOSITORY === repository &&
@@ -139,7 +145,7 @@ export function validateContext(env) {
   );
   requireValue(
     env.RELEASE_ENABLED === "true" &&
-      env.PUBLISH_CONFIRM === "PUBLISH_PRIVATE_IMAGES",
+      (automatic || env.PUBLISH_CONFIRM === "PUBLISH_PRIVATE_IMAGES"),
     "publication approval",
   );
   requireValue(
@@ -296,16 +302,29 @@ export async function gate(
   }
   return checks;
 }
-export function prepareBases() {
+export function prepareBases(env = process.env) {
   const bases = {};
   for (const [name, tag] of [
     ["node", "node:24-bookworm-slim"],
     ["postgres", "postgres:17-alpine"],
   ]) {
-    command("docker", ["pull", "--platform", "linux/amd64", tag], {
+    // Automatic app releases must never upgrade the running database image.
+    const ref =
+      name === "postgres" && env.RELEASE_MODE === "automatic-main"
+        ? env.CITYGO_POSTGRES_IMAGE
+        : tag;
+    if (name === "postgres" && env.RELEASE_MODE === "automatic-main") {
+      requireValue(
+        typeof ref === "string" &&
+          ref.startsWith(`${tag}@`) &&
+          digestPattern.test(ref.slice(tag.length + 1)),
+        "pinned server PostgreSQL required",
+      );
+    }
+    command("docker", ["pull", "--platform", "linux/amd64", ref], {
       timeout: 5 * 60 * 1000,
     });
-    const [info] = JSON.parse(command("docker", ["image", "inspect", tag]));
+    const [info] = JSON.parse(command("docker", ["image", "inspect", ref]));
     requireValue(
       info.Os === "linux" && info.Architecture === "amd64",
       "base platform",

@@ -1,0 +1,104 @@
+# Автоматическое обновление сервера из main
+
+Новый режим: владелец один раз разрешает выпуск проверенного `main`. Это меняет
+прежнюю модель «отдельное разрешение каждого выпуска». Машинные stage-capabilities
+в аудите **не выдаются за независимые подтверждения человека**. Ручной
+`release-candidate.yml` и `control.py` остаются для ручной работы/восстановления.
+
+## Обычное обновление
+
+1. Push или merge в `main` запускает `CI`, `Container smoke` и `Deploy main`.
+2. `Deploy main` ждёт обе зелёные проверки **этого SHA**. Более новый красный
+   результат нельзя заменить старым зелёным; устаревший SHA не выпускается.
+3. GitHub проверяет образы на временной БД, публикует три приватных образа в GHCR,
+   читает их обратно по digest и сохраняет bundle с контрольными суммами.
+4. Отдельный job получает ограниченный SSH-ключ. Сервер сам сверяет репозиторий,
+   `main`, workflow, завершённый publisher, обе проверки, artifact ID и SHA256
+   архива через GitHub API. Временный `GITHUB_TOKEN` приходит по stdin, не
+   сохраняется и не пересылается на адрес скачивания архива.
+5. Сервер скачивает образы по digest, проверяет место и историю миграций.
+   PostgreSQL не заменяется и не перезапускается.
+6. Maintenance закрывает сайт; API завершает запросы, Worker ставится на паузу.
+   Создаётся зашифрованная копия в существующем S3, с проверкой чтением.
+7. Отдельная роль мигратора применяет миграции; API/Web проходят readiness,
+   проверку авторизации и изоляции. Фиксируется версия и открывается HTTPS.
+   `unless-stopped` возвращается проверенным процессам API/Web. Worker
+   возвращается только если был разрешён до выпуска.
+
+Обновления последовательные; новый push не отменяет выполняющуюся миграцию.
+Есть короткое окно недоступности — это не zero-downtime deployment.
+Ни `down -v`, ни удаления пользовательских данных/старых образов здесь нет.
+
+## Однократная настройка оператором
+
+1. Проверить процессы, TLS/maintenance, секреты, GHCR read-only credential,
+   свободный диск, внешние копии и возможность восстановления.
+2. Создать отдельную Ed25519-пару CI/CD. Приватную часть сохранить только в
+   repository secret `CITYGO_DEPLOY_SSH_KEY`; личный ключ владельца не использовать.
+   На сервер передаётся только `.pub`.
+3. Передать проверенный исходный код на сервер и запустить:
+
+   ```sh
+   sudo python3 -I -B /path/to/reviewed-source/deploy/install-autodeploy.py \
+     --source /path/to/reviewed-source \
+     --public-key /path/to/citygo_main_deploy.pub \
+     --origin https://pilot.xn--c1ajazlh.xn--p1ai \
+     --allow-main-migrations
+   ```
+
+   Это первичное подключение исходного стенда, не повторный установщик. Он не
+   перезаписывает созданные account/policy/controller. При неполной установке
+   сначала проверить результат, не удалять всё вслепую.
+   Контроллер устанавливается в root-owned `/opt/citygo`. Пользователь
+   `citygo-deploy` не входит в `docker`; sudo разрешает **одну точную команду**.
+   `authorized_keys` использует `restrict,command=...`: нет консоли, PTY, forwarding.
+   Домашний каталог и ключи остаются root-owned.
+
+4. Проверить private/link/access всех трёх пакетов `citygo-platform-{api,web,jobs}`:
+   связь с CityGo-Tech/citygo-platform и доступ Actions этого репозитория.
+   После реальной проверки настроить repository variables:
+
+   | Variable                         | Значение                                                   |
+   | -------------------------------- | ---------------------------------------------------------- |
+   | `CITYGO_RELEASE_PUBLISH_ENABLED` | `true`                                                     |
+   | `CITYGO_PACKAGE_SOURCES_CHECKED` | `true`, после проверки пакетов                             |
+   | `CITYGO_POSTGRES_IMAGE`          | точный `postgres:17-alpine@sha256:...` текущей БД          |
+   | `CITYGO_DEPLOY_HOST`             | проверенный публичный IP ВМ                                |
+   | `CITYGO_DEPLOY_USER`             | `citygo-deploy`                                            |
+   | `CITYGO_DEPLOY_KNOWN_HOSTS`      | заранее проверенный host key, не слепой `ssh-keyscan` в CI |
+   | `CITYGO_AUTODEPLOY_ENABLED`      | `true` — включить последней                                |
+
+5. После проверки PR и ограниченного SSH включить pipeline. Слияние PR запускает
+   первый выпуск. Успех: job `deploy` зелёный, SHA совпал с серверным аудитом,
+   HTTPS readiness зелёный, основные страницы открываются. Publisher ≠ deployment.
+
+Установщик разрешает upload для **предрелизной** копии в существующее хранилище;
+таймеров не создаёт. AI-ключи/провайдеры/лимиты, Nginx/DNS и роль приложения в БД
+не меняет. Байты секретов пинятся: их смена требует обновления серверной политики.
+AI и серверные пароли в CI не передаются.
+
+## Отказы и остановка
+
+- До maintenance ошибка оставляет старый сайт работающим. После начала операции
+  остаются закрытый сайт и durable pending. Следующий push не повторяет сомнительную
+  миграцию и не откатывает схему автоматически.
+- Проверить Actions, `state_dir/autodeploy/<releaseId>/audit.json`, `pending.json`
+  и существующие migration/backup receipts. Ключей в этих файлах нет.
+- После ошибки **до** начала операции возможен **Re-run all jobs** для текущего
+  main. Повтор только deploy job с artifact от другого attempt отвергается.
+  При pending требуется [ручная диагностика/восстановление](release-operator.md);
+  pending нельзя просто стирать.
+- Остановка новых запусков: `CITYGO_AUTODEPLOY_ENABLED=false`. Отзыв серверного
+  допуска: `enabled:false` в `/etc/citygo/autodeploy.json` и при необходимости
+  удаление публичного CI-ключа. Выполняющуюся миграцию не прерывать.
+- Контроллер **не обновляет себя** из bundle. Изменение инфраструктурного контракта,
+  PostgreSQL или схемы политики требует оператора.
+- При нехватке места (<4 GiB до pull) выпуск останавливается. Retention образов/S3,
+  квоты Actions/GHCR и продление read-only GHCR-токена — эксплуатационные задачи.
+- Право менять `main` фактически даёт право выпускать приложение и миграции.
+  Ограничить круг таких людей; защита main зависит от тарифа GitHub. Pipeline
+  не заменяет code review и проверку расходов GitHub.
+
+Источники: GitHub о [событиях запуска](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows),
+[последовательном выполнении](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency),
+[artifact ID и digest](https://docs.github.com/en/rest/actions/artifacts?apiVersion=2022-11-28).
