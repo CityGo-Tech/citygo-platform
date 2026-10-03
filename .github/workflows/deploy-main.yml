@@ -1,0 +1,93 @@
+name: Deploy main
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions: {}
+# Never cancel a running database migration. Only the latest pending run matters.
+concurrency:
+  group: citygo-pilot-deploy
+  cancel-in-progress: false
+jobs:
+  publish-candidate:
+    if: >-
+      github.repository == 'CityGo-Tech/citygo-platform' &&
+      github.ref == 'refs/heads/main' &&
+      vars.CITYGO_AUTODEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    permissions:
+      contents: read
+      actions: read
+      packages: write
+    outputs:
+      artifact_id: ${{ steps.bundle.outputs.artifact-id }}
+    env:
+      EXPECTED_SHA: ${{ github.sha }}
+      RELEASE_MODE: automatic-main
+      AUTODEPLOY_ENABLED: ${{ vars.CITYGO_AUTODEPLOY_ENABLED }}
+      RELEASE_ENABLED: ${{ vars.CITYGO_RELEASE_PUBLISH_ENABLED }}
+      PACKAGE_SOURCES_CHECKED: ${{ vars.CITYGO_PACKAGE_SOURCES_CHECKED }}
+      CITYGO_POSTGRES_IMAGE: ${{ vars.CITYGO_POSTGRES_IMAGE }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+      - name: Wait for CI and Container smoke on this exact main commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/deploy-main.mjs wait
+      - name: Recheck source, checks and private packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/release-candidate.mjs gate
+      - run: node --test scripts/release-candidate.test.mjs scripts/deploy-main.test.mjs
+      - name: Install encryption tool on disposable runner
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install --no-install-recommends -y age
+      - run: node scripts/release-candidate.mjs prepare
+      - run: node scripts/container-smoke.mjs --disposable --release-candidate
+      - run: node scripts/registry-smoke.mjs --disposable
+      - name: Publish and verify immutable private images
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/release-candidate.mjs publish
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        id: bundle
+        with:
+          name: citygo-candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .local/release-candidate/bundle/
+          if-no-files-found: error
+          retention-days: 7
+          include-hidden-files: false
+  deploy:
+    needs: publish-candidate
+    if: >-
+      github.repository == 'CityGo-Tech/citygo-platform' &&
+      github.ref == 'refs/heads/main' &&
+      vars.CITYGO_AUTODEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+      - name: Deploy through the restricted server controller
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CITYGO_ARTIFACT_ID: ${{ needs.publish-candidate.outputs.artifact_id }}
+          CITYGO_DEPLOY_HOST: ${{ vars.CITYGO_DEPLOY_HOST }}
+          CITYGO_DEPLOY_USER: ${{ vars.CITYGO_DEPLOY_USER }}
+          CITYGO_DEPLOY_KNOWN_HOSTS: ${{ vars.CITYGO_DEPLOY_KNOWN_HOSTS }}
+          CITYGO_DEPLOY_SSH_KEY: ${{ secrets.CITYGO_DEPLOY_SSH_KEY }}
+        run: node scripts/deploy-main.mjs deploy
