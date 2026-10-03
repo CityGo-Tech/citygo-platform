@@ -16,8 +16,11 @@ LABELS = ("org.opencontainers.image.source", "org.opencontainers.image.revision"
 INSPECT = ('{"Id":{{json .Id}},"RepoDigests":{{json .RepoDigests}},'
            '"Os":{{json .Os}},"Architecture":{{json .Architecture}},'
            '"Descriptor":{{json (index . "Descriptor")}},"RootFS":{{json .RootFS}},'
-           '"Source":{{if .Config.Labels}}{{json (index .Config.Labels "org.opencontainers.image.source")}}{{else}}null{{end}},'
-           '"Revision":{{if .Config.Labels}}{{json (index .Config.Labels "org.opencontainers.image.revision")}}{{else}}null{{end}}}')
+           '"Source":{{with index .Config "Labels"}}{{json (index . "org.opencontainers.image.source")}}{{else}}null{{end}},'
+           '"Revision":{{with index .Config "Labels"}}{{json (index . "org.opencontainers.image.revision")}}{{else}}null{{end}}}')
+# Official PostgreSQL images may omit Config.Labels entirely. Docker templates
+# reject .Config.Labels in that case; index treats the optional map key as absent.
+# App labels remain mandatory in verify_image; PostgreSQL is bound by digest/ID.
 MANIFEST_TYPES = {"application/vnd.oci.image.manifest.v1+json",
                   "application/vnd.docker.distribution.manifest.v2+json"}
 CONFIG_TYPES = {"application/vnd.oci.image.config.v1+json",
