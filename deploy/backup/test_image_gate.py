@@ -153,6 +153,25 @@ class Images(unittest.TestCase):
             store, ref, ident = containerd_fixture(manifest_change=change)
             with self.assertRaises(b.BackupError): g.verify_image(store, ref, ident, "b" * 40)
 
+    def test_unlabelled_postgres_still_requires_pinned_reference_id_and_platform(self):
+        selected = selected_fixture(); images = {role: "sha256:" + "c" * 64 for role in t.SERVICES}
+        store = store_fixture(selected, images)
+        ref = "postgres@" + selected["current"]["postgres"].split("@")[1]
+        info = store.values[ref]
+        info.update(Source=None, Revision=None, Descriptor={
+            "mediaType": "application/vnd.oci.image.index.v1+json", "digest": ref.split("@")[1], "size": 10301})
+        self.assertEqual(g.verify(store, selected, images)["postgres"], {"reference": ref, "local_id": images["postgres"]})
+        for change in ({"Id": "sha256:" + "0" * 64}, {"RepoDigests": []}, {"Os": "windows"}, {"Architecture": "arm64"}):
+            with self.subTest(change=change), patch.dict(info, change), self.assertRaisesRegex(b.BackupError, "image-postgres-binding"):
+                g.verify(store, selected, images)
+
+    def test_missing_app_labels_remain_rejected(self):
+        for labels in ({"Source": None}, {"Revision": None}, {"Source": None, "Revision": None}):
+            store, ref, ident = containerd_fixture()
+            store.values[ref].update(labels)
+            with self.subTest(labels=labels), self.assertRaisesRegex(b.BackupError, "image-source"):
+                g.verify_image(store, ref, ident, "b" * 40)
+
     def test_no_floating_foreign_or_command_references(self):
         store = FakeStore()
         for ref in ("latest", "--help", "ghcr.io/other/api@sha256:" + "a" * 64,

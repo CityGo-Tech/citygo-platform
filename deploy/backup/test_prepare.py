@@ -91,6 +91,32 @@ class Evidence(unittest.TestCase):
         changed = copy.deepcopy(after); changed["3" * 64]["State"]["StartedAt"] = "2026-09-24T00:00:00.1Z"
         with self.assertRaisesRegex(b.BackupError, "container-replaced"): p.same_inventory(before, changed)
 
+    def test_only_pinned_bootstrap_api_can_keep_old_stop_default(self):
+        images = {**IMAGES, "api": p.BOOTSTRAP_API_IMAGE}
+        before = inventory()
+        before[2].update(Image=p.BOOTSTRAP_API_IMAGE, StopTimeout=30)
+        snapshot = p.validate_inventory(before, "citygo-fixture", images, initial=True)
+        after = copy.deepcopy(before)
+        for index, role in ((2, "api"), (3, "worker")):
+            after[index]["State"] = container(role, exited=True)["State"]
+        stopped = p.validate_inventory(after, "citygo-fixture", images, initial=False)
+        p.same_inventory(snapshot, stopped)
+        host = object.__new__(p.Host)
+        with patch.object(host, "capture") as capture:
+            host.stop_writer(before[2])
+            self.assertEqual(capture.call_args.args[0], ["stop", "--signal", "SIGTERM", "--timeout", "330", "3" * 64])
+        for change in ({"Init": False}, {"StopTimeout": 1}, {"StopTimeout": 30.0}, {"StopTimeout": None}):
+            bad = copy.deepcopy(before); bad[2].update(change)
+            with self.subTest(change=change), self.assertRaisesRegex(b.BackupError, "container-runtime"):
+                p.validate_inventory(bad, "citygo-fixture", images, initial=True)
+        for ident in (IMAGES["api"], "sha256:" + "f" * 64):
+            bad = copy.deepcopy(before); bad[2]["Image"] = ident
+            with self.subTest(image=ident), self.assertRaisesRegex(b.BackupError, "container-runtime"):
+                p.validate_inventory(bad, "citygo-fixture", {**images, "api": ident}, initial=True)
+        after[2]["State"]["ExitCode"] = 137
+        with self.assertRaisesRegex(b.BackupError, "unclean-exit"):
+            p.validate_inventory(after, "citygo-fixture", images, initial=False)
+
     def test_only_exact_maintenance_response_passes(self):
         headers = {"cache-control": "no-store", "x-citygo-contract-version": "1", "content-type": "application/json; charset=utf-8", "x-request-id": "a" * 32}
         body = json.dumps({"code": "SERVICE_UNAVAILABLE", "contractVersion": "1", "retryable": False, "requestId": "a" * 32}).encode()

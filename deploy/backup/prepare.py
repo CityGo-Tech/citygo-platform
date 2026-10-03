@@ -23,6 +23,11 @@ import worker as w
 
 SERVICES = {"api", "web", "postgres", "worker", "migrator", "backup"}
 GRACE = {"api": 330, "worker": 90}
+# Bootstrap release 2e7409d (the original production container) had a 30s
+# Docker default. Only this verified immutable image may retain that default:
+# stop_writer always overrides it with 330s and still requires a clean exit.
+# New API containers must satisfy start.runtime's exact 330s contract.
+BOOTSTRAP_API_IMAGE = "sha256:09c513c39a2d4bc8ee1390c57ce628704c99a370ed4ed2cf66a7a5c256299c57"
 
 
 def hostname(origin):
@@ -159,7 +164,9 @@ def validate_inventory(values, project, images, *, initial, retained_jobs=None):
         else:
             b.require(oneoff in ("True", "true") and value.get("RestartPolicy") == "no", "container-runtime")
         if role in GRACE:
-            b.require(value.get("Init") is True and value.get("StopTimeout") == GRACE[role], "container-runtime")
+            bootstrap_api = (role == "api" and value.get("Image") == BOOTSTRAP_API_IMAGE
+                             and type(value.get("StopTimeout")) is int and value["StopTimeout"] == 30)
+            b.require(value.get("Init") is True and (value.get("StopTimeout") == GRACE[role] or bootstrap_api), "container-runtime")
         if role in ("web", "postgres") or (initial and role == "api"):
             b.require(state["Status"] == "running", "container-not-ready")
             if role == "postgres" or initial is True:

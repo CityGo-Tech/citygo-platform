@@ -153,7 +153,23 @@ try {
   const fixture = join(config, "image-fixture.json");
   writeFileSync(
     fixture,
-    JSON.stringify({ address, sha, images, ids: evidence.images, content }),
+    JSON.stringify({
+      address,
+      sha,
+      images,
+      ids: evidence.images,
+      content,
+      postgres: {
+        reference: evidence.bases.postgres,
+        id: docker([
+          "image",
+          "inspect",
+          "--format",
+          "{{.Id}}",
+          evidence.bases.postgres,
+        ]),
+      },
+    }),
     { mode: 0o600, flag: "wx" },
   );
   const imageProof = JSON.parse(
@@ -170,6 +186,7 @@ try {
   assert.deepEqual(imageProof.roles, [...roles].sort());
   assert.equal(imageProof.missing_and_wrong_rejected, true);
   assert.equal(imageProof.real_content_simulated_containerd, true);
+  assert.equal(imageProof.real_postgres_binding, true);
   assert.equal(imageProof.migration_authorized, false);
   console.log(
     "Local release image gate passed: real Docker digest inspection; missing/wrong images rejected; containerd contract tested with real manifest/config bytes and simulated backend, not a real containerd daemon; no deploy/pull/AI by verifier.",

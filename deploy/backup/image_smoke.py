@@ -20,6 +20,8 @@ def main():
     class Loopback(g.Store):
         def inspect(self, ref):
             g.reference(ref)
+            if ref.startswith("postgres@"):
+                return super().inspect(ref)
             b.require(re.fullmatch(r"ghcr\.io/citygo-tech/citygo-platform-(api|web|jobs)@" + t.DIGEST, ref), "fixture-reference")
             mapped = ref.replace("ghcr.io/citygo-tech/", address + "/fixture/")
             # Only substitute the registry namespace; all actual image metadata
@@ -80,8 +82,22 @@ def main():
             b.require(str(error) == "image-content-hash", "fixture-content-reason")
         else:
             raise b.BackupError("fixture-corrupt-content-accepted")
+    # Inspect the real pinned PostgreSQL base too, not just labelled app images.
+    # No container is started and no application/database operation is performed.
+    postgres = fixture["postgres"]
+    b.require(t.matches(postgres["reference"], r"postgres:17-alpine@" + t.DIGEST)
+              and t.matches(postgres["id"], t.DIGEST), "fixture-postgres")
+    selected = {"current": {"images": fixture["images"], "image_ids": fixture["ids"],
+                           "source_sha": fixture["sha"], "postgres": postgres["reference"]},
+                "images": fixture["images"], "image_ids": fixture["ids"], "target_sha": fixture["sha"]}
+    images = {"api": fixture["ids"]["api"], "web": fixture["ids"]["web"],
+              "worker": fixture["ids"]["jobs"], "migrator": fixture["ids"]["jobs"],
+              "postgres": postgres["id"], "backup": postgres["id"]}
+    proof = g.verify(store, selected, images)
+    b.require(proof["postgres"]["local_id"] == postgres["id"], "fixture-postgres")
     print(json.dumps({"ok": True, "roles": roles, "missing_and_wrong_rejected": True,
-                      "real_content_simulated_containerd": True, "migration_authorized": False}))
+                      "real_content_simulated_containerd": True, "real_postgres_binding": True,
+                      "migration_authorized": False}))
 
 
 if __name__ == "__main__": main()
