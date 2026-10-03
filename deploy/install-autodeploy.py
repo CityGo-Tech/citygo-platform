@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 import pwd
 import re
-import shutil
+import stat
 import subprocess
 import sys
 
@@ -33,9 +33,15 @@ def command(args):
 
 
 def write_once(path, data, mode):
+    if os.path.lexists(path):
+        info = path.lstat()
+        require(stat.S_ISREG(info.st_mode) and info.st_uid == 0 and info.st_nlink == 1
+                and stat.S_IMODE(info.st_mode) in (mode, mode & ~0o077) and path.read_bytes() == data, "staged-file-changed")
+        path.chmod(mode)
+        return
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
     with os.fdopen(fd, "wb") as stream:
-        stream.write(data); stream.flush(); os.fsync(stream.fileno())
+        stream.write(data); stream.flush(); os.fchmod(stream.fileno(), mode); os.fsync(stream.fileno())
 
 
 def main():
@@ -62,8 +68,8 @@ def main():
     files["deploy/postgres/dump.sh"] = (source / "deploy/postgres/dump.sh").read_bytes()
     digest = hashlib.sha256(json.dumps({k: hashlib.sha256(v).hexdigest() for k, v in files.items()}, sort_keys=True).encode()).hexdigest()
     dest = INSTALL_ROOT / ("autodeploy-controller-" + digest[:16])
-    require(not dest.exists(), "controller-already-exists")
-    dest.mkdir(mode=0o755)
+    dest.mkdir(mode=0o755, exist_ok=True)
+    require(not dest.is_symlink() and dest.stat().st_uid == 0 and not dest.stat().st_mode & 0o022, "controller-permissions")
     for name, raw in files.items():
         target = dest / name
         target.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
@@ -79,7 +85,20 @@ def main():
     # A running newer generation must be inspected/enrolled explicitly instead.
     current = Path(config["compose_file"]).parent.parent
     raw = t.read_file(current / "release.json")
-    manifest = t.bundle(current, t.sha256(raw), current=True)
+    manifest = t.manifest(raw, current=True)
+    # The original boot legitimately left delivery-status.json / __pycache__
+    # alongside the bundle. Preserve those files and its live Compose; create
+    # a separate exact, hash-verified baseline for the strict selection gate.
+    baseline = dest / "initial-bundle"
+    baseline.mkdir(mode=0o700, exist_ok=True)
+    for item in manifest["runtimeFiles"]:
+        data = t.read_file(current / item["path"])
+        require(t.sha256(data) == item["sha256"], "initial-runtime-hash")
+        target = baseline / item["path"]
+        target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        write_once(target, data, 0o600)
+    write_once(baseline / "release.json", raw, 0o600)
+    t.bundle(baseline, t.sha256(raw), current=True)
     require(manifest["sourceSha"] == config["source_sha"], "initial-release-mismatch")
     secrets = {"api": "/etc/citygo/secrets/api.json", "migration": "/etc/citygo/secrets/migrate.json",
                "worker": "/etc/citygo/secrets/worker.json", "backup": "/etc/citygo/secrets/db_backup_password"}
@@ -95,7 +114,7 @@ def main():
     bundles.mkdir(mode=0o700, exist_ok=True); b.protected(bundles, directory=True)
     policy = {"version": 1, "purpose": "citygo-main-standing-authorization", "enabled": True, "repository": t.REPOSITORY,
         "origin": args.origin, "profile": profile, "config_path": str(CONFIG), "ingress_directory": "/var/lib/citygo/ingress",
-        "bundles_directory": str(bundles), "initial_bundle": str(current), "initial_manifest_sha256": t.sha256(raw),
+        "bundles_directory": str(bundles), "initial_bundle": str(baseline), "initial_manifest_sha256": t.sha256(raw),
         "registry_config": "/etc/citygo/registry-read-only", "postgres_image": manifest["bases"]["postgres"],
         "secret_files": secrets, "secret_sha256": {k: t.sha256(t.read_file(v)) for k, v in secrets.items()},
         "allow_new_migrations": args.allow_main_migrations, "nginx_config": nginx, "nginx_sha256": t.sha256(t.read_file(nginx))}
@@ -114,6 +133,7 @@ def main():
              "--no-create-home", "--shell", "/bin/sh", USER])
     home = Path("/var/lib/citygo-deploy"); home.mkdir(mode=0o755)
     ssh = home / ".ssh"; ssh.mkdir(mode=0o755)
+    home.chmod(0o755); ssh.chmod(0o755)
     # Home and authorized_keys stay ROOT-owned, not writable by deploy account.
     line = f'restrict,command="/usr/bin/sudo -n /usr/bin/python3 -I -B {entry}" {public_key}\n'
     write_once(ssh / "authorized_keys", line.encode(), 0o644)
@@ -132,6 +152,8 @@ def main():
 
 if __name__ == "__main__":
     try: main()
-    except Exception:
-        print("Installation stopped; inspect root-owned enrollment files before retrying. Details hidden.", file=sys.stderr)
+    except Exception as error:
+        code = str(error) if type(error).__name__ in ("RuntimeError", "BackupError") else "details-hidden"
+        if not re.fullmatch(r"[a-z0-9-]{1,80}", code): code = "details-hidden"
+        print("Installation stopped: " + code + "; inspect enrollment files before retrying.", file=sys.stderr)
         sys.exit(1)
