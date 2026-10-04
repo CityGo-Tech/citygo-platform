@@ -1,28 +1,139 @@
-# Runtime architecture
+# Архитектура CityGo
 
-Web and Expo consume @citygo/api-client and @citygo/contracts. Only the Fastify API
-accesses user data and OpenAI. Admin is an executable workspace React package
-mounted by Web at /admin; the API enforces its allowlist.
+Состояние кода: **main после PR #75, 4 октября 2026**.
+Это модульный monorepo: Web, API, mobile и worker имеют разные точки запуска,
+но используют общие контракты и правила. База данных принадлежит API.
+Ни браузер, ни телефон не получают ключи провайдеров или прямой доступ к БД.
 
-The API-owned Repository executes parameterized SQL through either a pg Pool
-(server PostgreSQL) or PGlite (single-process local development). Migrations are
-append-only, checksum-checked, serialized and transactional. Domain quest state
-rules are shared; rewards are never decided by the model or a client.
+## Основные связи
 
-Questionnaire creates one versioned plan and two user quests. Starting a quest
-opens the user's conversation. Chat reserves a lease and stores the user message
-before streaming. A short final transaction stores the assistant result. The
-router can switch specialization without losing conversation history.
+```text
+Web (Next.js, /admin) ── /api/* ─┐
+                                ├─ Fastify API ── Repository ── PostgreSQL
+Expo ── общий API-клиент ────────┘       │                         (PGlite локально)
+                                        ├─ маршрутизация роли ── LLM-адаптер
+                                        │                        RouterAI / OpenAI / GigaChat
+                                        └─ согласия / лимиты / бюджет / история
 
-Completion requires an in-progress quest, explicit user confirmation, and a
-complete Housing Navigator reply since that quest started. The quest update,
-exactly-once XP event, next-quest unlock and analytics event commit together.
+Worker ── PostgreSQL: обслуживание истёкших сессий и chat leases
+```
 
-The model receives a bounded recent history and consented profile fields. It has
-no external search, mutation or third-party messaging tools. Role instructions
-cover housing, job search, resume, digital adaptation and support. Handoff is
-rules-based routing plus a persisted audit record, not a multi-model swarm.
+В Web префикс `/api/*` проксируется к API; API-маршруты начинаются с `/v1/*`.
+Поэтому, например, dashboard доступен как `/api/v1/dashboard` через Web и
+`/v1/dashboard` напрямую через API. `/health` и `/ready` — отдельные API-маршруты.
+В production origin-порты закрыты, вход идёт через согласованный HTTPS-ingress.
 
-Worker is a separate one-shot server-PostgreSQL maintenance process. Readiness
-checks applied migrations. Logs use request IDs and redact credentials. Production
-deployment and external monitoring targets are intentionally not provisioned.
+## Карта кода
+
+| Путь                                                                                                                  | Ответственность                                                         |
+| --------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| [apps/web](../apps/web)                                                                                               | Next.js, вход, анкета, план, чат, XP, страницы дизайна и admin          |
+| [apps/api/src/app.ts](../apps/api/src/app.ts)                                                                         | Fastify-маршруты, сессии, допуск, оркестрация команд и SSE              |
+| [apps/admin](../apps/admin)                                                                                           | React-пакет, встроенный в Web по `/admin`; не отдельный админ-сервер    |
+| [apps/mobile](../apps/mobile)                                                                                         | Expo-клиент и безопасное хранение native-сессии                         |
+| [apps/worker](../apps/worker)                                                                                         | Однократные PostgreSQL maintenance-задачи; не доставка уведомлений      |
+| [packages/contracts](../packages/contracts)                                                                           | Zod-схемы обмена и типы; кандидатные R1-схемы отделены от активного API |
+| [packages/domain](../packages/domain)                                                                                 | Правила состояний квестов                                               |
+| [packages/db/src/repository.ts](../packages/db/src/repository.ts)                                                     | Доступ к пользовательским данным, транзакции и учёт                     |
+| [packages/db](../packages/db)                                                                                         | PostgreSQL/PGlite, миграции, ограничения, интеграционные тесты          |
+| [packages/api-client](../packages/api-client)                                                                         | Проверка JSON/SSE, ошибки протокола, отмена; общий для Web и Expo       |
+| [packages/agents](../packages/agents)                                                                                 | Инструкции пяти ролей, детерминированная маршрутизация, контекст        |
+| [packages/llm](../packages/llm)                                                                                       | Адаптеры провайдеров, поток, bounded retry, модели и политики           |
+| [packages/config](../packages/config)                                                                                 | Проверяемые настройки сервиса                                           |
+| [packages/observability](../packages/observability)                                                                   | Безопасное логирование и корреляция запросов                            |
+| [packages/content](../packages/content)                                                                               | Контент текущих квестов                                                 |
+| [packages/design-tokens](../packages/design-tokens), [ui-web](../packages/ui-web), [ui-native](../packages/ui-native) | Общие токены и UI-примитивы                                             |
+| [packages/assets](../packages/assets)                                                                                 | Персонажи, оптимизированные изображения и манифест источников           |
+| [packages/testkit](../packages/testkit), [e2e](../e2e), [scripts](../scripts)                                         | Фикстуры, browser-тесты, запуск, проверки контейнеров и релиза          |
+| [deploy](../deploy), [.github/workflows](../.github/workflows)                                                        | Серверный контур и автоматизация поставки                               |
+
+## Данные и нынешний квест
+
+1. Сессия определяет пользователя на сервере. ID из тела запроса не заменяет
+   проверку владельца.
+2. Анкета в транзакции сохраняет профиль/ответы/согласие обработки профиля,
+   создаёт активный план и два пользовательских квеста. Повторное создание
+   профиля отклоняется; автоматического replanning сейчас нет.
+3. Старт проверяет владельца и актуальный план, переводит доступный квест в
+   работу и открывает пользовательский поток сообщений.
+4. Завершение проверяет актуальный план, состояние квеста и полный ответ
+   Housing Navigator после его старта. Затем completion, запись XP, unlock
+   следующего квеста и событие аналитики фиксируются вместе.
+5. Уникальная запись награды и повторное чтение завершённого квеста защищают
+   от повторного начисления **этому user quest**.
+
+CG-009 добавил защищённую привязку плана/версии и миграции `0010`/`0011`.
+На этом срезе в каталоге 11 миграций. Они append-only и проверяются по checksum;
+применение сериализовано. Новая миграция требует проверки существующей БД,
+а не только пустой. Не редактировать уже применённый SQL для исправления истории.
+
+### Будущий результат R1 — отдельный слой
+
+CG-010 описывает черновик, подготовленное содержимое, происхождение ответа,
+предложение системы, ревизии и подтверждение конкретного снимка. Сейчас это
+**контрактный модуль**, не новые таблицы, endpoints или включённый completion.
+
+В CG-012/014 предстоит добавить неизменяемые ревизии, проверенное сервером
+происхождение, журнал подтверждений и атомарные команды. Защита награды должна
+стать общей для `(user, awardScope, questSlug)`, независимо от пересоздания
+плана. Тип Prepared, хеш и флаг клиента не доказывают полезность или прочтение.
+Источник требований — [CG-010](implementation/cg-010-housing-criteria.md).
+
+## От отправки сообщения до ответа
+
+- API проверяет сессию, владельца потока, выбранную политику, согласие и допуск.
+  Короткая транзакция резервирует chat lease и сохраняет сообщение пользователя.
+- Маршрутизатор выбирает роль или human-handoff. Handoff сохраняется без
+  модельного вызова, но пока зависит от общих правил допуска чата.
+- Для модели резервируются попытка и денежный лимит; в режиме личного баланса
+  RouterAI — также hold пользователя. Только затем вызывается адаптер.
+- Контекст включает нужные поля профиля и последние 20 полных сообщений,
+  не всю БД и не email. Сеть не держит открытую SQL-транзакцию.
+- Ответ передаётся событиями SSE. Полное завершение и сохранённый ответ
+  отличаются от прерывания, ошибки и отмены. EOF сам по себе не является успехом.
+- Для RouterAI стоимость сверяется по идентификаторам запроса/генерации.
+  Ответ модели, полезный результат и подтверждённое списание — разные факты.
+
+Остановка процесса может потерять несохранённый хвост ответа. Dashboard
+возвращает последние 100 сообщений; это лимит выдачи, не обещание полной
+пагинации и не правило удаления истории.
+
+## Провайдер, роль и деньги
+
+**Роль** задаёт задачу помощника; **провайдер** исполняет модельный запрос.
+Их переключение — разные операции. Автоматического cross-provider fallback нет.
+
+`LLM_PROVIDER` задаёт первоначальный выбор для новой БД. Затем выбор хранится
+в БД и меняется через allowlisted admin с проверкой ревизии. Настройки модели
+и ключи остаются серверными. `LLM_PROVIDER=disabled` — жёсткое отключение.
+Изменение политики не переносит старое согласие автоматически.
+
+RouterAI в production требует точного допуска политики и режима личного
+баланса. GigaChat production заблокирован. При `routerai_at_cost` прямые
+OpenAI/GigaChat не выполняют модельный вызов — нет поддержки их списания.
+Сами адаптеры сохранены. [Точные условия](runbooks/routerai-production.md).
+
+Есть независимые ограничения: допуск чата, число модельных попыток, общий
+денежный резерв и личный баланс. Общий резерв — консервативное выделение суммы,
+а не счёт провайдера. Пользовательский RouterAI charge сверяется отдельно.
+Не строить второй ledger в новых агентных задачах.
+[Учёт стоимости](runbooks/ai-credit-charging.md).
+
+## Запуск и поставка
+
+- Локально `pnpm dev` собирает общие пакеты, применяет миграции и поднимает
+  Web/API. PGlite обслуживает один API-процесс; worker требует PostgreSQL-сервер.
+- Сервисные env разделены. Web/build не получают DB/LLM-секреты;
+  мигратор/worker получают свои DB-настройки; тесты игнорируют runtime dotenv.
+- Production использует отдельные runtime/migration-роли БД и HTTPS-ingress.
+  Нельзя выставлять dev-сервер наружу вместо настройки production.
+- GitHub CI проверяет код, PostgreSQL, E2E и Expo export; отдельный workflow —
+  контейнерный smoke. Поставка в Cloud.ru использует проверки точного SHA,
+  digest образов, maintenance/drain, backup, миграцию и health.
+- Merge в `main` может запустить deploy при включённых настройках. Серверный
+  root-controller не обновляется автоматически вместе с приложением.
+
+Подробнее: [окружения](runbooks/service-environments.md),
+[совместимость](architecture/api-compatibility.md),
+[CI/CD](runbooks/automatic-main-deployment.md),
+[границы безопасности](security/implementation-boundaries.md).

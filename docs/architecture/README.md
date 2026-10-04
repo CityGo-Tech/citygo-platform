@@ -1,12 +1,15 @@
-# Architecture
+# Архитектура
 
-The platform begins as a modular monolith with separately deployable web, API,
-and worker surfaces. Domain packages do not depend on applications. External
-providers are hidden behind typed adapters.
+Основной документ — [архитектура CityGo](../architecture.md):
+приложения, пакеты, поток данных, текущий квест, AI и поставка.
 
-The first vertical slice is:
+Дополнительно:
 
-```text
-questionnaire -> saved plan -> quest map -> Housing Navigator
-              -> quest completion -> idempotent +60 XP -> next quest
-```
+- [Совместимость Web/Expo и API](api-compatibility.md).
+- [Границы безопасности](../security/implementation-boundaries.md).
+- [Действующая реализация AI-ролей](../agents/README.md).
+- [Критерии будущих жилищных результатов](../implementation/cg-010-housing-criteria.md).
+- [Почему monorepo](../adr/0001-monorepo-first.md).
+
+Схемы будущих ресурсов не означают, что они уже сохраняются или доступны через
+API. Проверяйте [статус](../project-status.md) и код нужного коммита.

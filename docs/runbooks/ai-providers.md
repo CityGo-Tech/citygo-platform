@@ -1,10 +1,19 @@
-# AI provider rollout — stage 4B2b of 5
+# AI-провайдеры: настройка и история rollout
 
-For the optional quality-first local GPT-6 Astra configuration, see
-[RouterAI Astra profile](routerai-astra.md). It adds RouterAI-only overrides without
-changing the direct OpenAI defaults, historical reservations or production gates.
+Актуализация: 4 октября 2026, main после PR #75. Основной профиль владельца —
+[RouterAI / DeepSeek Pro](routerai-deepseek.md). Прямые OpenAI и GigaChat сохранены;
+автоматического fallback нет. Для RouterAI существует отдельный
+[production-допуск](routerai-production.md), для GigaChat production закрыт.
+В режиме личного баланса `routerai_at_cost` OpenAI/GigaChat блокируются до вызова:
+учёт их списаний ещё не реализован. [Текущий учёт стоимости](ai-credit-charging.md).
 
-This release adds an explicit monetary-reserve budget to 4B2a's shared model-attempt
+Разделы stage 4B2b ниже описывают введённый ранее **общий резерв оператора**,
+не весь сегодняшний AI-баланс. Упоминания «this release» и миграции `0006`
+относятся к тому этапу. При установке текущего main применяются все его миграции
+(на этом срезе — до `0011`), а не остановка на `0006`.
+Исторический [профиль Astra](routerai-astra.md) не является основным.
+
+Stage 4B2b added an explicit monetary-reserve budget to 4B2a's shared model-attempt
 reservations and retry guards, 4B1's persistent provider selector and 4A's recipient
 consent / accepted-chat caps. This is allocation accounting, not provider billing.
 All three independent adapters remain available. RouterAI production is blocked
@@ -23,8 +32,10 @@ explicitly enables a budget.** It does not delete any provider, key or history.
 The local human-handoff response needs no model/money reserve; it still follows
 the existing chat admission and consent rules and does not contact a real person.
 
-1. Drain/stop all pre-4B2b API instances, apply migrations through `0006`, and replace
-   every instance. `/ready` requires `0006`. Older code ignores monetary budgets:
+1. Drain/stop older API instances and apply the full migration sequence for the
+   approved release (through `0011` at this documentation snapshot), then replace
+   every instance. Stage 4B2b introduced the `0006` readiness requirement; current
+   readiness also requires later migrations. Older code ignores monetary budgets:
    mixed-version serving and rollback to older code with AI enabled are unsafe.
 2. An operator must independently approve recipient/privacy conditions, actual
    model/account/upstream pricing, provider-side caps and a pilot allowance. No
@@ -37,7 +48,8 @@ the existing chat admission and consent rules and does not contact a real person
    save. Provider selection and recipient-specific user consent remain separate.
 4. Verify the displayed revision, currency, rules and journal before any authorized
    live pilot. No admin rights, secrets, positive budgets or tariff approvals are
-   provisioned by this release. RouterAI/GigaChat production gates remain closed.
+   provisioned by this release. RouterAI additionally requires the exact production
+   approval described above; GigaChat production remains blocked.
 
 Amounts are integer millionths (1 currency unit = 1,000,000 micros), bounded to
 1,000,000 currency units. Decimal input allows up to six fractional digits, with
@@ -99,7 +111,8 @@ budgets on isolated databases; production code has no testing-budget bypass.
 
 ## Model-attempt reservations (stage 4B2a)
 
-Attempt accounting was introduced in `0005_ai_attempts.sql`; this version additionally requires `0006`.
+Attempt accounting was introduced in `0005_ai_attempts.sql`; stage 4B2b added
+`0006`. Current releases require their complete migration sequence, not only these two.
 The journal starts empty without guessing older requests' attempt counts. Drain
 and replace all older API instances; otherwise their unmetered calls bypass this
 control. Do not roll back to older code with AI enabled or delete accounting rows.
@@ -116,8 +129,8 @@ before GigaChat OAuth. An OpenAI SDK retry or GigaChat chat resubmission must re
 another slot **before** sending model data. OAuth refresh requests are not model
 attempts and retain their existing bounded/single-flight behavior. A denied first
 reserve never enters an adapter; a denied retry sends no second model request.
-The retry guard also rejects any retry after visible output. RouterAI and GigaChat
-retain their production blocks, and no cross-provider failover is enabled.
+The retry guard also rejects any retry after visible output. Provider-specific
+production gates still apply; no cross-provider failover is enabled.
 
 A reservation is deliberately conservative: it is **not proof of HTTP dispatch,
 provider acceptance, success, or a billable charge**. OAuth failure, process crash,
@@ -171,20 +184,20 @@ rejects redirects instead of following an unaccounted transport/recipient hop. O
 
 ## Server configuration
 
-| Setting                          | Behavior                                                                                                                                           |
-| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `LLM_PROVIDER` unset/blank       | Preserve legacy OpenAI selection when both OpenAI settings exist. Both absent means AI is unconfigured. A partial pair is an error.                |
-| `LLM_PROVIDER=openai`            | Require both `OPENAI_API_KEY` and `OPENAI_MODEL`.                                                                                                  |
-| `LLM_PROVIDER=disabled`          | Disable AI explicitly, even if keys remain configured.                                                                                             |
-| `LLM_PROVIDER=routerai`          | Local/test only; require separate key, model and upstream below. Production startup fails before database connection, even with valid credentials. |
-| `LLM_PROVIDER=gigachat`          | Local/test only; require a separate authorization key, model and account scope below. Production startup fails before database connection.         |
-| `LLM_REQUEST_TIMEOUT_MS`         | Integer 1000–60000, default 60000. Shared API deadline includes the provider's retry.                                                              |
-| `LLM_MAX_OUTPUT_TOKENS`          | Integer 1–8000, default 1400. Existing 24000-character response cap also applies.                                                                  |
-| `ROUTERAI_MAX_OUTPUT_TOKENS`     | Optional RouterAI-only integer 1–32768; blank inherits the shared output limit. Changes the execution approval key.                                |
-| `ROUTERAI_REQUEST_TIMEOUT_MS`    | Optional RouterAI-only integer 1000–240000; blank inherits the shared deadline. The chat lease includes a 30-second margin.                        |
-| `ROUTERAI_REASONING_EFFORT`      | Optional explicit Astra effort: low, medium, high, xhigh or max. Does not change direct OpenAI.                                                    |
-| `LLM_USER_DAILY_REQUEST_LIMIT`   | Integer 0–10000, default 20. Per-user accepted chats per UTC day. Zero blocks admission.                                                           |
-| `LLM_GLOBAL_DAILY_REQUEST_LIMIT` | Integer 0–1000000, default 200. Shared accepted chats per UTC day. Zero blocks admission.                                                          |
+| Setting                          | Behavior                                                                                                                                                       |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `LLM_PROVIDER` unset/blank       | Preserve legacy OpenAI selection when both OpenAI settings exist. Both absent means AI is unconfigured. A partial pair is an error.                            |
+| `LLM_PROVIDER=openai`            | Require both `OPENAI_API_KEY` and `OPENAI_MODEL`.                                                                                                              |
+| `LLM_PROVIDER=disabled`          | Disable AI explicitly, even if keys remain configured.                                                                                                         |
+| `LLM_PROVIDER=routerai`          | Require separate key, model and upstream below; production additionally requires the exact approved policy and credit mode in the RouterAI production runbook. |
+| `LLM_PROVIDER=gigachat`          | Local/test only; require a separate authorization key, model and account scope below. Production startup fails before database connection.                     |
+| `LLM_REQUEST_TIMEOUT_MS`         | Integer 1000–60000, default 60000. Shared API deadline includes the provider's retry.                                                                          |
+| `LLM_MAX_OUTPUT_TOKENS`          | Integer 1–8000, default 1400. Existing 24000-character response cap also applies.                                                                              |
+| `ROUTERAI_MAX_OUTPUT_TOKENS`     | Optional RouterAI-only integer 1–32768; blank inherits the shared output limit. Changes the execution approval key.                                            |
+| `ROUTERAI_REQUEST_TIMEOUT_MS`    | Optional RouterAI-only integer 1000–240000; blank inherits the shared deadline. The chat lease includes a 30-second margin.                                    |
+| `ROUTERAI_REASONING_EFFORT`      | Optional explicit Astra effort: low, medium, high, xhigh or max. Does not change direct OpenAI.                                                                |
+| `LLM_USER_DAILY_REQUEST_LIMIT`   | Integer 0–10000, default 20. Per-user accepted chats per UTC day. Zero blocks admission.                                                                       |
+| `LLM_GLOBAL_DAILY_REQUEST_LIMIT` | Integer 0–1000000, default 200. Shared accepted chats per UTC day. Zero blocks admission.                                                                      |
 
 Configure secrets only in the API environment or ignored root `.env`, never in
 `NEXT_PUBLIC_*`, the mobile bundle, issue/PR bodies or chat. The launch scripts
@@ -217,8 +230,9 @@ scope does not silently redirect already-consented traffic.
 
 The runtime constructs independently configured adapters at startup, with no live
 AI call. Inactive incomplete/invalid settings are marked unavailable and do not
-break a valid bootstrap provider. Production never prepares RouterAI/GigaChat,
-even if their credentials are complete; the API control layer enforces this again.
+break a valid bootstrap provider. Production prepares RouterAI only with its exact
+approved policy; it never prepares GigaChat. The API control layer also enforces
+provider and credit-mode restrictions.
 Hard-disabled servers prepare no adapters. No raw constructor errors, credentials,
 certificate paths, configurable endpoints or API keys appear in the control API.
 
@@ -292,8 +306,9 @@ calling AI. The clients refresh after errors but never auto-consent or replay a
 message. History stays readable. After a provider switch, granting permission
 also permits the disclosed history (including prior providers' answers) to be sent.
 
-Migration `0003_ai_access.sql` creates consent state and daily counters; `/ready`
-now requires the migration sequence through `0006_ai_budget.sql`. Admission locks the user, owned thread and UTC global-counter row in
+Migration `0003_ai_access.sql` creates consent state and daily counters. Stage
+4B2b required migrations through `0006_ai_budget.sql`; current readiness requires
+the full release sequence. Admission locks the user, owned thread and UTC global-counter row in
 a consistent order. Consent, duplicate/busy checks, quota increments, lease and
 request/message insert commit atomically. The model runs **outside** this short
 transaction. A revocation committed before admission blocks the request; an
@@ -314,11 +329,11 @@ replicas must use identical settings; do not serve mixed configs behind a balanc
 
 ### Switching/rollback checklist for this release
 
-1. Keep the current credentials; never paste keys into chat or PRs. For RouterAI or
-   GigaChat use only an authorized synthetic-data local pilot until the production
-   gate is explicitly addressed in a reviewed later change.
-2. Drain and stop pre-4B2b API instances. Apply all migrations through `0006` before
-   starting this version. Deploy the updated Web admin; Web/Expo clients from #17
+1. Keep the current credentials; never paste keys into chat or PRs. GigaChat stays
+   limited to an authorized synthetic-data local pilot. For RouterAI production,
+   follow the exact approval and credit-mode runbooks linked above.
+2. Drain and stop older API instances. Apply all migrations of the approved release
+   before starting it. Deploy the matching Web admin; Web/Expo clients from #17
    keep their consent/chat contract. Clients predating 4A still fail closed.
 3. Configure the desired adapters and their own required settings, review caps,
    and start all replicas consistently. In `/admin` explicitly choose the intended
@@ -391,10 +406,11 @@ Before a separately authorized live pilot:
 4. Agree a test budget before sending messages. Verify the response, actual model,
    usage when present, interruption behavior and an explicit return to OpenAI in the admin.
 
-Live RouterAI compatibility, credentials and billing have **not** been verified by
-mock HTTP tests. `pnpm start` intentionally refuses RouterAI at this stage. There
-is no override switch to bypass this production gate. A production pilot requires
-the later consent/recipient and operational-controls stage first.
+Live RouterAI compatibility, credentials and billing are **not** verified by
+mock HTTP tests. Production is blocked by default, with a separate exact-policy
+approval path in [routerai-production.md](routerai-production.md). Do not bypass
+it by serving real users in development mode. A configured model alone does not
+approve a production pilot or its spending.
 
 ## GigaChat local pilot (synthetic data only)
 
@@ -470,7 +486,9 @@ recipient.
 ## Contract and persistence
 
 `AiProviderId` is independent of `AgentKey`. A Housing Navigator can use any
-implemented provider. The current production factory constructs only OpenAI.
+implemented provider in an allowed mode. Production can construct OpenAI or an
+explicitly approved RouterAI; GigaChat is blocked. The `routerai_at_cost` credit
+mode rejects OpenAI/GigaChat before model I/O even if their adapters exist.
 
 `StreamingProvider` returns normalized `delta` events and exactly one final
 `complete` event reporting the actual model and optional token usage. EOF alone,

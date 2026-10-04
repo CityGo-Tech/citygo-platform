@@ -1,32 +1,46 @@
-# MVP scope
+# Границы продукта и первого релиза
 
-## Current release boundary
+CityGo сопровождает человека от идеи о переезде до освоения нового города:
+решение, деньги, работа, жильё, дорога и вещи, первые недели, городские сервисы
+и новое окружение. Это направление развития, не перечень уже работающих услуг.
 
-The next release target is **R1: a closed Web housing pilot for 20 people moving
-from any city in Russia to Moscow**, with the CityGo owner handling human support.
-Its agreed path is questionnaire → housing brief → viewing checklist → confirmed
-completion → XP, plus an independent human-help path. Payments and native app
-publication are outside R1. This is approved scope, not a launch-readiness claim.
+## Следующий релиз — R1
 
-The authoritative decision register, remaining approvals and release gates are
-in [R1 pilot](r1-pilot.md) (CG-007, owner decisions of 22 September 2026).
-The broader multi-agent/native product remains a later release target; existing
-Expo code is preserved. No runtime admission restriction is implemented by this
-documentation change.
+Закрытый Web-пилот для **20 человек, переезжающих из любого города России в
+Москву**. Основной результат — подготовка поиска и просмотра жилья. На
+обращения отвечает владелец CityGo. Платежи и публикация нативного приложения
+не входят в R1.
 
-## Original prototype checklist (historical)
+Принцип: **небольшой объём контекста → полезный сохранённый результат →
+следующий добровольный шаг**. Неизвестные бюджет, срок и тип жилья допустимы.
+Полная анкета не является условием первой помощи, а степень готовности
+подробного брифа не равна праву завершить квест.
 
-The original vertical targeted these capabilities; this list alone is not an
-R1 acceptance checklist and does not certify current readiness:
+Приняты два результата: стартовый план поиска с выбранным человеком следующим
+шагом и подготовленный чеклист просмотра. За каждый — 60 XP один раз на
+пользователя в рамках R1 после серверных проверок. Это не доказательство
+просмотра квартиры или безопасности сделки.
+[Точные правила CG-010](../implementation/cg-010-housing-criteria.md).
 
-1. register and complete the questionnaire;
-2. receive a saved personal plan;
-3. open the quest map;
-4. start the housing quest;
-5. talk specifically to Housing Navigator using quick replies;
-6. complete the quest and receive XP exactly once;
-7. see the next quest unlock;
-8. continue from the same state on mobile.
+Независимая помощь человека должна быть доступна до анкеты и при выключенном
+AI. Это целевое требование, не уже готовый операторский процесс.
 
-Out of scope for that first vertical: payments, referrals, full legal advice,
-public API, multi-region infrastructure, and a separate content platform.
+## Что есть в прототипе
+
+Аккаунт → полная анкета → сохранённый план → жилищный квест → AI-чат →
+завершение и XP → второй квест. Есть Web и Expo-клиент.
+Содержательное подтверждение результата ещё не заменило проверку полного
+ответа Housing Navigator; новый постепенный UI пока не включён.
+
+Наличие пяти AI-ролей не означает готовность всех предметных сервисов.
+Наличие Expo-кода не означает наличие подписанного APK или публикации в магазине.
+
+## Что читать дальше
+
+- [Как работает приложение](../how-it-works.md) — нынешний и будущий пути.
+- [Реестр решений R1](r1-pilot.md) — подтверждённые границы и открытые вопросы.
+- [Статус](../project-status.md) — поставленное и ещё не реализованное.
+- [План](../roadmap.md) — зависимости и следующие этапы.
+
+Согласованный scope не заменяет разрешения на реальных участников, обработку
+их данных, расходы и production-поставку.

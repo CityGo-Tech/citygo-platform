@@ -1,54 +1,85 @@
-# MVP security boundaries
+# Реализованные границы безопасности
 
-- Scrypt password hashes with independent salts; opaque random seven-day sessions.
-  Only SHA-256 session hashes are stored. Browser cookies are HttpOnly, SameSite=Lax,
-  and Secure with the __Host- prefix in production.
-- Native sessions use explicit bearer tokens stored in the OS secure store.
-  Passwords and provider keys must never be stored on the device.
-- Auth and chat are rate limited. Current limiter is per process/IP; a shared,
-  account-aware limiter is required before horizontally scaled production.
-  Only configured TRUSTED_PROXY_CIDRS may supply forwarded client addresses.
-  The HTTPS ingress must replace client-supplied forwarding headers and prevent
-  direct public access to Web/API origins; see the production ingress contract.
-- Built API and root pnpm start force production mode. Insecure database/origin
-  settings or missing proxy trust abort startup; local HTTP/PGlite uses pnpm dev.
-- Every user-facing data query is scoped to the authenticated user. The DB is
-  API-owned, never accessible from browser/mobile. Use a restricted runtime DB role
-  distinct from the migration owner before production.
-- State completion + ledger insert + next-quest unlock share a short transaction.
-  Replays return zero newly awarded points. A unique index additionally guards the ledger.
-- Chat reserves a bounded lease, then releases the SQL transaction before calling
-  OpenAI. Network waits never hold a DB connection/row lock. Partial/interrupted
-  replies are not evidence for completion. Server process crashes may lose the
-  unsaved tail of an in-flight response.
-- Questionnaire city/budget/date/household may go to OpenAI only after explicit
-  consent. Email is excluded from model context. Responses API uses store:false;
-  that is not a promise of zero provider-side retention.
-- Stage 3 supports RouterAI and GigaChat for explicit local synthetic-data pilots
-  only. Production selection fails before database connection pending recipient/
-  consent rules. RouterAI uses separate credentials, a fixed HTTPS
-  endpoint, one named upstream and allow_fallbacks:false; redirects and client
-  retries are disabled. Never use development mode to bypass production gates.
-  See the [AI provider rollout](../runbooks/ai-providers.md).
-- GigaChat keeps OAuth tokens only in process memory, with bounded single-flight
-  refresh and independent cancellation for waiting requests. A pre-stream HTTP
-  401 allows one token refresh/retry; partial responses and other errors never
-  trigger generation retry. TLS and hostname verification are mandatory. Optional
-  extra CA trust is scoped to GigaChat, not installed globally or sent to clients.
-- The orchestrator is deterministic topic routing, not autonomous tool execution.
-  Specialists cannot mutate XP, contact third parties or invent housing listings.
-- Web assistant replies use the same restricted Markdown renderer for streaming,
-  saved and interrupted content. Raw HTML is ignored; model images become text
-  placeholders without network requests. Only absolute HTTPS links without embedded
-  credentials are clickable, with a visible destination host, a new tab and no
-  opener/referrer. Links are not verified recommendations. User messages remain
-  literal text. Replies over 32,000 characters bypass Markdown parsing without
-  truncation. This display policy does not grant agents tools or navigation authority.
-- Human handoffs are stored for review, not dispatched to a real realtor.
-- Logs redact credentials/cookies. Analytics contain event names/internal IDs,
-  not message text or raw questionnaires.
+Срез: 4 октября 2026, main после PR #75. Это описание защит в коде и известных
+пробелов, **не результат полного security-аудита и не разрешение публичного запуска**.
+[Архитектура](../architecture.md) · [условия R1](../product/r1-pilot.md).
 
-Not launch-ready until: email verification and password reset, retention/deletion
-workflow and consent withdrawal, privacy/terms approval, domain/TLS, backup/restore
-drill, spending caps, provider evaluation, abuse tests, shared rate limiting and
-operator workflow. Existing SQL migrations are append-only and checksum-checked.
+## Сессии, права и окружение
+
+- Пароли хешируются scrypt с отдельными солями. Сессии — случайные непрозрачные
+  токены на семь дней; в БД сохраняются SHA-256-хеши токенов.
+- Web-cookie: HttpOnly, SameSite=Lax; в production — Secure и префикс
+  `__Host-`. Native bearer хранится в защищённом хранилище ОС, не в обычном
+  локальном состоянии. Ключи моделей не попадают на клиент.
+- Пользовательские операции проверяют владельца данных. Admin ограничен
+  серверным `ADMIN_USER_IDS`; регистрация не выдаёт эти права.
+- Авторизация и чат ограничены по частоте. Текущий IP-limiter локален процессу;
+  общий account/IP limiter нужен до горизонтального масштабирования.
+- Forwarded-адреса принимаются только от `TRUSTED_PROXY_CIDRS`. Ingress должен
+  заменять присланные клиентом заголовки, а origin-порты — быть закрыты снаружи.
+- Production-запуск требует PostgreSQL, HTTPS-origin и доверенный прокси.
+  HTTP/PGlite — только dev. Runtime и migration-роли БД разделены в серверном
+  контуре; секреты Web/API/worker/build разделяются launcher-ом.
+
+## План, XP и работа с БД
+
+- CG-009 связывает пользовательский квест с владельцем, планом и версией,
+  защищает идентичность в БД и отклоняет устаревшие команды.
+- Нынешние completion, XP и unlock выполняются одной короткой транзакцией.
+  Уникальная запись защищает от повторной награды **одному user quest**.
+- Общая защита награды на пользователя/квест в scope R1, проверка содержимого,
+  происхождения и подтверждения точной ревизии — ещё CG-012/014.
+  Схемы CG-010 и TypeScript-brand не являются такой защитой.
+- Применённые миграции append-only, checksum-проверяемые. Сеть провайдера
+  не держит SQL-транзакцию или блокировку строки.
+
+## AI и расходы
+
+- Перед модельным запросом проверяются получатель/политика, согласие и лимиты.
+  AI-согласие не равно согласию на обработку профиля.
+- В контекст входят ограниченная история и нужные поля профиля; email исключён.
+  OpenAI Responses использует `store:false`, что не обещает нулевое хранение
+  на стороне провайдера.
+- RouterAI использует отдельный ключ, фиксированный HTTPS endpoint, явный upstream
+  и `allow_fallbacks:false`. В production нужен
+  [точный допуск политики](../runbooks/routerai-production.md) и режим личного баланса.
+  GigaChat production заблокирован; dev нельзя использовать как обход.
+- GigaChat хранит OAuth-токен в памяти, ограничивает обновление и допускает
+  один refresh/retry при pre-stream 401. TLS/hostname verification обязательны;
+  дополнительный CA ограничен этим адаптером, не устанавливается глобально.
+- Попытки и общий денежный резерв учитываются до модельной сети; retry тоже
+  расходует допуск. Заниженный потолок резерва не гарантирует ограничение
+  реального счёта провайдера.
+- Личный RouterAI-баланс сверяется с подтверждённой стоимостью. Неизвестная
+  стоимость/прерванный ответ не означают бесплатный вызов; удержания нельзя
+  сбрасывать ради повторного теста. В режиме `routerai_at_cost` OpenAI/GigaChat
+  блокируются до вызова, пока их billing не реализован.
+
+## Ответы и внешние действия
+
+- Оркестратор — детерминированный выбор темы, не автономные внешние инструменты.
+  Модель не меняет XP, не подтверждает пользовательское действие и не связывается
+  с третьими лицами.
+- Web применяет ограниченный Markdown к потоку, сохранённому и прерванному
+  ответу. Raw HTML игнорируется, модельные изображения заменяются текстом без
+  загрузки. Кликабельны только абсолютные HTTPS-ссылки без встроенных credentials,
+  с видимым хостом и без opener/referrer. Это фильтр отображения, не проверка
+  достоверности ссылки. Сообщения пользователя остаются обычным текстом.
+- Частичный/прерванный ответ не считается завершённым. Сбой процесса может
+  потерять несохранённый хвост потока.
+- Human-handoff сохраняется для рассмотрения, но не отправляется реальному
+  риелтору и пока не является независимым от AI-допуска процессом.
+- Логи редактируют секреты/cookies. Аналитика использует события и внутренние
+  ID, не сырые анкеты и тексты сообщений.
+
+## Что ещё нужно до R1
+
+Подтверждение email/recovery, независимая помощь человека и права оператора,
+admission пилота, lifecycle экспорта/удаления, согласованные privacy-тексты,
+содержательные guardrails/evals, свежий restore и внешние alerts,
+нагрузочные/abuse-проверки включённых функций.
+
+HTTPS, бюджетные механизмы, backup и deploy уже имеют реализацию; это не
+причина создавать их заново. Но наличие кода не подтверждает правильность
+сегодняшней конфигурации сервера. Проверки выполняются отдельно по
+[плану R1](../roadmap.md#4-эксплуатация-и-критерии-допуска-r1).
