@@ -1,12 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import {
-  createR1HousingAnswers,
-  r1HousingAnswerCommandSchema,
-  r1HousingBriefCreateCommandSchema,
-  r1HousingBriefDraftSchema,
-  r1HousingIdSchema,
-  r1HousingRevisionSchema,
+  createR1HousingAnswersV1,
+  r1HousingAnswerCommandV1Schema,
+  r1HousingBriefCreateCommandV1Schema,
+  r1HousingBriefDraftV1Schema,
+  r1HousingIdV1Schema as r1HousingIdSchema,
+  r1HousingRevisionV1Schema as r1HousingRevisionSchema,
   type QuestPlanReference,
 } from "@citygo/contracts";
 import { z } from "zod";
@@ -15,6 +15,7 @@ import { DomainError } from "./errors.js";
 import { currentQuestPlan } from "./quest-plans.js";
 import {
   readStoredHousingBrief,
+  HousingStoredDataError,
   type StoredHousingBriefContent,
 } from "./housing-history.js";
 
@@ -25,8 +26,8 @@ export type HousingBriefSnapshot = {
   plan: QuestPlanReference;
   content: Content;
 };
-type Command = z.infer<typeof r1HousingAnswerCommandSchema>;
-type Create = z.infer<typeof r1HousingBriefCreateCommandSchema>;
+type Command = z.infer<typeof r1HousingAnswerCommandV1Schema>;
+type Create = z.infer<typeof r1HousingBriefCreateCommandV1Schema>;
 type Stored = {
   id: string;
   revision: number;
@@ -81,6 +82,14 @@ function snapshot(row: Stored): HousingBriefSnapshot {
     plan: { id: row.plan_id, version: row.plan_version },
     content: readStoredHousingBrief(row.content),
   };
+}
+// This repository implements the v1 command/writer protocol, not whichever
+// schema the public facade currently exposes. New versions require an explicit
+// writer/command dispatch; never upgrade a stored v1 brief through a new alias.
+function writeV1Content(content: unknown): Content {
+  const result = r1HousingBriefDraftV1Schema.safeParse(content);
+  if (!result.success) throw new HousingStoredDataError("invalid_content");
+  return result.data;
 }
 async function ownedPlan(tx: Sql, owner: string, plan: QuestPlanReference) {
   if (
@@ -288,7 +297,7 @@ export class HousingAnswers {
 
   async create(owner: string, input: unknown): Promise<HousingBriefSnapshot> {
     parse(r1HousingIdSchema, owner);
-    const request = parse(r1HousingBriefCreateCommandSchema, input);
+    const request = parse(r1HousingBriefCreateCommandV1Schema, input);
     return this.db.transaction(async (tx) => {
       await this.lockOwner(tx, owner);
       const replay = await this.replay(tx, owner, request, "create_brief");
@@ -300,12 +309,12 @@ export class HousingAnswers {
           [owner, request.plan.id, request.plan.version],
         )
       ).rows[0]!;
-      const content = r1HousingBriefDraftSchema.parse({
+      const content = writeV1Content({
         schemaVersion: 1,
         kind: "housing_brief",
         purpose: "rental_search_preparation",
         destination: { countryCode: "RU", cityCode: "RU-MOW" },
-        answers: createR1HousingAnswers(),
+        answers: createR1HousingAnswersV1(),
         suggestions: [],
         starterPlan: null,
       });
@@ -325,12 +334,15 @@ export class HousingAnswers {
     input: unknown,
   ): Promise<HousingBriefSnapshot> {
     parse(r1HousingIdSchema, owner);
-    const request = parse(r1HousingAnswerCommandSchema, input);
+    const request = parse(r1HousingAnswerCommandV1Schema, input);
     return this.db.transaction(async (tx) => {
       await this.lockOwner(tx, owner);
       const replay = await this.replay(tx, owner, request, "state_answer");
       if (replay) return replay;
       const current = await read(tx, owner, request.brief.id);
+      // Fail closed if a future reader gains v2 before this writer does.
+      if (current.content.schemaVersion !== 1)
+        throw new HousingStoredDataError("unsupported_version");
       if (!isDeepStrictEqual(current.plan, request.plan)) throw missing();
       await this.lockPlan(tx, owner, request.plan);
       const { field, answer, expectedFieldRevision } = request.change;
@@ -358,7 +370,7 @@ export class HousingAnswers {
           409,
           "Этот бриф требует команды обновления результата",
         );
-      const content = r1HousingBriefDraftSchema.parse({
+      const content = writeV1Content({
         ...current.content,
         answers: { ...current.content.answers, [field]: after },
       });
