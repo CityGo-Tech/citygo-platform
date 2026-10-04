@@ -9,6 +9,7 @@ export * from "./protocol.js";
 export * from "./r1.js";
 // Candidate DTOs only: Prepared/brands do not authorize confirmation or XP.
 export * from "./housing.js";
+export * from "./housing-api.js";
 
 export const relocationStages = [
   "profile",

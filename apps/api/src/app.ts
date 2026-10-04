@@ -24,6 +24,7 @@ import {
   type StreamEvent,
   type ModelGeneration,
   type AiPolicy,
+  type HousingStorageLimits,
 } from "@citygo/contracts";
 import {
   Repository,
@@ -31,6 +32,8 @@ import {
   AiCreditLedger,
   AiCreditCharges,
   type Database,
+  HousingStoredDataError,
+  verifyHousingReadiness,
 } from "@citygo/db";
 import { readConfig, effectiveLlmLimits } from "@citygo/config";
 import { instructions, profileContext, routeAgent } from "@citygo/agents";
@@ -41,6 +44,7 @@ import { createAiControl } from "./ai-control.js";
 import type { ProviderMap } from "./provider.js";
 import { createAiExecution } from "./ai-execution.js";
 import { ApiDrain, registerDrain } from "./shutdown.js";
+import { registerSyntheticHousingApi } from "./housing.js";
 
 export async function buildApp(options: {
   db: Database;
@@ -49,9 +53,18 @@ export async function buildApp(options: {
   config?: ReturnType<typeof readConfig>;
   testing?: boolean;
   drain?: ApiDrain;
+  housingLimits?: Partial<HousingStorageLimits>;
 }) {
   const drain = options.drain ?? new ApiDrain();
   const config = options.config ?? readConfig();
+  // Also guard explicitly supplied config objects, not just readConfig callers.
+  if (
+    config.NODE_ENV === "production" &&
+    config.R1_HOUSING_API_MODE !== "disabled"
+  )
+    throw new Error(
+      "R1 housing API is synthetic-only; production activation is not implemented",
+    );
   const creditCharging = config.AI_CREDIT_MODE === "routerai_at_cost";
   const repo = new Repository(options.db, creditCharging);
   const credit = new AiCreditLedger(
@@ -184,6 +197,21 @@ export async function buildApp(options: {
     }
   });
   app.setErrorHandler((error, request, reply) => {
+    if (error instanceof HousingStoredDataError) {
+      request.log.error(
+        {
+          code: "HOUSING_DATA_ERROR",
+          reason: error.reason,
+          ...error.context,
+          requestId: request.id,
+        },
+        "Housing data failed",
+      );
+      return reply.code(500).send({
+        ...errorMetadata("INTERNAL_ERROR", request.id),
+        error: "Не удалось выполнить запрос",
+      });
+    }
     if (error instanceof z.ZodError)
       return reply.code(400).send({
         ...errorMetadata("VALIDATION_ERROR", request.id),
@@ -234,11 +262,19 @@ export async function buildApp(options: {
         "select name from citygo_migrations where name in ('0006_ai_budget.sql','0007_ai_user_daily_budget.sql','0008_ai_credit.sql','0009_ai_credit_charges.sql','0010_quest_plan_expand.sql','0011_quest_plan_validate.sql')",
       );
       if (result.rows.length !== 6) throw new Error("Pending migration");
+      if (config.R1_HOUSING_API_MODE === "synthetic")
+        await verifyHousingReadiness(options.db);
     } catch {
       throw new DomainError(503, "База данных не готова: примените миграции");
     }
     return { status: "ok" };
   });
+  if (config.R1_HOUSING_API_MODE === "synthetic")
+    registerSyntheticHousingApi(app, {
+      db: options.db,
+      authenticate,
+      limits: options.housingLimits,
+    });
   for (const action of ["register", "login"] as const) {
     app.post(
       "/v1/auth/" + action,

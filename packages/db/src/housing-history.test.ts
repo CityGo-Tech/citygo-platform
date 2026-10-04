@@ -57,6 +57,38 @@ test("missing, malformed and unsupported stored versions fail as safe server dat
   }
 });
 
+test("server data diagnostics allow only bounded resource IDs and explicit operation, never row text", () => {
+  const good = new HousingStoredDataError("write_failed", {
+    operation: "write",
+    briefId: "2",
+    revision: 3,
+  });
+  assert.deepEqual(good.context, {
+    operation: "write",
+    briefId: "2",
+    revision: 3,
+  });
+  const bad = new HousingStoredDataError("invalid_content", {
+    operation: "get",
+    briefId: "PRIVATE_CANARY",
+    revision: NaN,
+    // A future caller must not accidentally spread stored content into a log.
+    ...{ content: "PRIVATE_CANARY", cause: "PRIVATE_CANARY" },
+  });
+  assert.deepEqual(bad.context, { operation: "get" });
+  assert.ok(!JSON.stringify(bad).includes("PRIVATE_CANARY"));
+  assert.equal(bad.cause, undefined);
+  assert.equal(
+    new HousingStoredDataError("invalid_content", {
+      ...good.context!,
+      // @ts-expect-error Do not trust a future caller's unchecked context.
+      operation: "PRIVATE_CANARY",
+    }).context,
+    undefined,
+  );
+  assert.ok(Object.isFrozen(good.context));
+});
+
 test("v1 reader does not silently normalize or accept invalid nested historical content", () => {
   const original = readStoredHousingBrief(fixtures[2]);
   for (const mutate of [
