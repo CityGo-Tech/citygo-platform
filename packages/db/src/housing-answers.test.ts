@@ -557,7 +557,7 @@ test("SQL prevents changing permanent identity, content or provenance event", as
   );
 });
 
-test("upgrade 0011 → 0012 preserves populated records, is replay-safe and grants no R1 runtime access", async (t) => {
+test("upgrade 0011 → 0012 preserves populated records and is replay-safe", async (t) => {
   const db = await fixture(t, true);
   const { user, plan } = await owner(db);
   await db.query(
@@ -609,16 +609,123 @@ test("upgrade 0011 → 0012 preserves populated records, is replay-safe and gran
     (await store.create(user, { commandId: randomUUID(), plan })).revision,
     1,
   );
-  // Match production bootstrap default privileges before running grants.sql.
-  await db.exec(
-    "create role cg012_api nologin; grant usage on schema public to cg012_api",
-  );
-  assert.equal(
-    (
-      await db.query<{ allowed: boolean }>(
-        "select has_table_privilege('cg012_api','r1_housing_brief_revisions','INSERT') as allowed",
+});
+
+test("real grants.sql revokes R1 runtime access and permits backup reads only", async (t) => {
+  const { db, brief } = await setup(t);
+  // Roles are cluster-global, unlike the per-test database. Change only their
+  // identifiers so this test cannot collide with CG-009 or another test run.
+  const suffix = randomUUID().replaceAll("-", "");
+  const roles = {
+    citygo_api: `cg012_api_${suffix}`,
+    citygo_worker: `cg012_worker_${suffix}`,
+    citygo_backup: `cg012_backup_${suffix}`,
+  };
+  const tables = [
+    "r1_housing_briefs",
+    "r1_housing_commands",
+    "r1_housing_brief_revisions",
+  ];
+  const created: string[] = [];
+  try {
+    for (const role of Object.values(roles)) {
+      assert.match(role, /^cg012_(api|worker|backup)_[a-f0-9]{32}$/);
+      await db.exec(`create role ${role} nologin`);
+      created.push(role);
+      await db.exec(`grant usage on schema public to ${role}`);
+    }
+    // Prove the real script removes overbroad runtime grants, rather than
+    // merely asserting PostgreSQL's default-deny behavior for an empty role.
+    await db.exec(
+      `grant select, insert, update, delete on ${tables.join(",")} to ${roles.citygo_api}, ${roles.citygo_worker}`,
+    );
+    const grants = (
+      await readFile(
+        new URL("../../../deploy/postgres/grants.sql", import.meta.url),
+        "utf8",
       )
-    ).rows[0]!.allowed,
-    false,
-  );
+    )
+      .replace(/^\\set[^\r\n]*(?:\r?\n|$)/gm, "")
+      .replace(
+        /\bcitygo_(api|worker|backup)\b/g,
+        (name) => roles[name as keyof typeof roles],
+      );
+    await db.exec(grants);
+
+    for (const [original, role] of Object.entries(roles)) {
+      for (const table of tables) {
+        const updateColumn =
+          table === "r1_housing_briefs" ? "plan_version" : "brief_id";
+        for (const privilege of ["SELECT", "INSERT", "UPDATE", "DELETE"]) {
+          const allowed =
+            original === "citygo_backup" && privilege === "SELECT";
+          assert.equal(
+            (
+              await db.query<{ allowed: boolean }>(
+                "select has_table_privilege($1,$2,$3) as allowed",
+                [role, table, privilege],
+              )
+            ).rows[0]!.allowed,
+            allowed,
+            `${original}: ${privilege} on ${table}`,
+          );
+          // SET LOCAL ROLE is scoped to a pinned transaction, never a pooled
+          // session. A denial rolls back without leaking a role to other tests.
+          const sql =
+            privilege === "SELECT"
+              ? `select count(*)::int as n from ${table}`
+              : privilege === "INSERT"
+                ? `insert into ${table} default values`
+                : privilege === "UPDATE"
+                  ? `update ${table} set ${updateColumn}=${updateColumn} where false`
+                  : `delete from ${table} where false`;
+          const operation = () =>
+            db.transaction(async (tx) => {
+              await tx.query(`set local role ${role}`);
+              return tx.query(sql);
+            });
+          if (allowed) {
+            assert.ok(Number((await operation()).rows[0]!.n) > 0);
+          } else {
+            await assert.rejects(operation, { code: "42501" });
+          }
+        }
+      }
+    }
+    // Positive controls: the script actually grants normal API access and
+    // retains its existing broad sequence USAGE (not R1 table access).
+    for (const privilege of ["SELECT", "INSERT"]) {
+      assert.equal(
+        (
+          await db.query<{ allowed: boolean }>(
+            "select has_table_privilege($1,'users',$2) as allowed",
+            [roles.citygo_api, privilege],
+          )
+        ).rows[0]!.allowed,
+        true,
+      );
+    }
+    assert.equal(
+      (
+        await db.query<{ allowed: boolean }>(
+          "select has_sequence_privilege($1,pg_get_serial_sequence('r1_housing_briefs','id'),'USAGE') as allowed",
+          [roles.citygo_api],
+        )
+      ).rows[0]!.allowed,
+      true,
+    );
+    const backup = await db.transaction(async (tx) => {
+      await tx.query(`set local role ${roles.citygo_backup}`);
+      return tx.query<{ content: unknown }>(
+        "select content from r1_housing_brief_revisions where brief_id=$1 and revision=1",
+        [brief.id],
+      );
+    });
+    assert.deepEqual(backup.rows[0]!.content, brief.content);
+  } finally {
+    // Only generated test roles in this isolated fixture; no production roles.
+    for (const role of created.reverse()) {
+      await db.exec(`drop owned by ${role}; drop role ${role}`);
+    }
+  }
 });
