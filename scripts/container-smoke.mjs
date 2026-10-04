@@ -132,7 +132,7 @@ try {
   compose(["up", "-d", "--wait", "--wait-timeout", "90", "postgres"]);
   compose(["run", "--rm", "--no-deps", "migrator"]);
   const migrations = psql("select count(*) from citygo_migrations");
-  assert.equal(migrations, "11");
+  assert.equal(migrations, "12");
   compose(["run", "--rm", "--no-deps", "migrator"]);
   assert.equal(psql("select count(*) from citygo_migrations"), migrations);
   compose([
