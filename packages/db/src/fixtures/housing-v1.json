@@ -1,0 +1,146 @@
+[
+  {
+    "schemaVersion": 1,
+    "kind": "housing_brief",
+    "purpose": "rental_search_preparation",
+    "destination": { "countryCode": "RU", "cityCode": "RU-MOW" },
+    "answers": {
+      "stage": { "status": "unasked", "revision": 1 },
+      "priority": { "status": "unasked", "revision": 1 },
+      "monthlyRentRub": { "status": "unasked", "revision": 1 },
+      "upfrontBudgetRub": { "status": "unasked", "revision": 1 },
+      "moveTiming": { "status": "unasked", "revision": 1 },
+      "household": { "status": "unasked", "revision": 1 },
+      "housingType": { "status": "unasked", "revision": 1 },
+      "preferredAreas": { "status": "unasked", "revision": 1 },
+      "commuteDestination": { "status": "unasked", "revision": 1 },
+      "commuteMaxMinutes": { "status": "unasked", "revision": 1 },
+      "mustHave": { "status": "unasked", "revision": 1 },
+      "niceToHave": { "status": "unasked", "revision": 1 }
+    },
+    "suggestions": [],
+    "starterPlan": null
+  },
+  {
+    "schemaVersion": 1,
+    "kind": "housing_brief",
+    "purpose": "rental_search_preparation",
+    "destination": { "countryCode": "RU", "cityCode": "RU-MOW" },
+    "answers": {
+      "stage": { "status": "unasked", "revision": 1 },
+      "priority": { "status": "unasked", "revision": 1 },
+      "monthlyRentRub": {
+        "status": "known",
+        "revision": 2,
+        "value": { "max": 60000 },
+        "provenance": {
+          "kind": "user_stated",
+          "eventId": "22222222-2222-4222-8222-222222222222"
+        }
+      },
+      "upfrontBudgetRub": { "status": "unasked", "revision": 1 },
+      "moveTiming": { "status": "unasked", "revision": 1 },
+      "household": { "status": "unasked", "revision": 1 },
+      "housingType": { "status": "unasked", "revision": 1 },
+      "preferredAreas": { "status": "unasked", "revision": 1 },
+      "commuteDestination": { "status": "unasked", "revision": 1 },
+      "commuteMaxMinutes": { "status": "unasked", "revision": 1 },
+      "mustHave": { "status": "unasked", "revision": 1 },
+      "niceToHave": { "status": "unasked", "revision": 1 }
+    },
+    "suggestions": [],
+    "starterPlan": null
+  },
+  {
+    "schemaVersion": 1,
+    "kind": "housing_brief",
+    "purpose": "rental_search_preparation",
+    "destination": { "countryCode": "RU", "cityCode": "RU-MOW" },
+    "answers": {
+      "stage": {
+        "status": "known",
+        "revision": 2,
+        "value": "exploring",
+        "provenance": {
+          "kind": "profile_import",
+          "eventId": "33333333-3333-4333-8333-333333333333",
+          "profile": { "id": "15", "revision": 2 },
+          "userConfirmed": true
+        }
+      },
+      "priority": {
+        "status": "declined",
+        "revision": 3,
+        "note": "Сейчас пропущу — Москва 🏙️",
+        "provenance": {
+          "kind": "user_stated",
+          "eventId": "44444444-4444-4444-8444-444444444444"
+        }
+      },
+      "monthlyRentRub": { "status": "unasked", "revision": 1 },
+      "upfrontBudgetRub": { "status": "unasked", "revision": 1 },
+      "moveTiming": {
+        "status": "undecided",
+        "revision": 2,
+        "provenance": {
+          "kind": "user_stated",
+          "eventId": "55555555-5555-4555-8555-555555555555"
+        }
+      },
+      "household": { "status": "unasked", "revision": 1 },
+      "housingType": { "status": "unasked", "revision": 1 },
+      "preferredAreas": {
+        "status": "known",
+        "revision": 4,
+        "value": { "items": ["Зеленоград"], "completeness": "open" },
+        "provenance": {
+          "kind": "accepted_suggestion",
+          "eventId": "66666666-6666-4666-8666-666666666666",
+          "suggestionId": "77777777-7777-4777-8777-777777777777",
+          "suggestionRevision": 2
+        }
+      },
+      "commuteDestination": { "status": "unasked", "revision": 1 },
+      "commuteMaxMinutes": {
+        "status": "not_applicable",
+        "revision": 2,
+        "provenance": {
+          "kind": "user_stated",
+          "eventId": "88888888-8888-4888-8888-888888888888"
+        }
+      },
+      "mustHave": { "status": "unasked", "revision": 1 },
+      "niceToHave": { "status": "unasked", "revision": 1 }
+    },
+    "suggestions": [
+      {
+        "id": "77777777-7777-4777-8777-777777777777",
+        "revision": 2,
+        "status": "accepted",
+        "proposal": {
+          "field": "preferredAreas",
+          "value": { "items": ["Зеленоград"], "completeness": "open" }
+        },
+        "explanation": "Вариант для сравнения, не готовый подбор."
+      },
+      {
+        "id": "99999999-9999-4999-8999-999999999999",
+        "revision": 1,
+        "status": "pending",
+        "proposal": { "field": "housingType", "value": "flexible" },
+        "explanation": "Можно сравнить разные форматы жилья."
+      }
+    ],
+    "starterPlan": {
+      "summary": "Вы изучаете переезд; бюджет и срок пока неизвестны.",
+      "basedOn": [{ "field": "stage", "revision": 2 }],
+      "nextSteps": [
+        {
+          "key": "compare_formats",
+          "title": "Сравнить форматы жилья",
+          "explanation": "Сначала изучить различия, затем уточнить ограничения."
+        }
+      ]
+    }
+  }
+]

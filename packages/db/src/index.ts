@@ -6,7 +6,12 @@ export { AiCreditCharges } from "./ai-credit-charges.js";
 export {
   HousingAnswers,
   type HousingBriefSnapshot,
+  type HousingBriefSummary,
+  type HousingBriefRecovery,
+  type HousingBriefPage,
+  type HousingBriefHistoryPage,
 } from "./housing-answers.js";
+export { HousingStoredDataError } from "./housing-history.js";
 import { createHash } from "node:crypto";
 import { readdir, readFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
