@@ -1,18 +1,28 @@
-# Production handoff — not deployed
+# Production handoff — initial environment checklist
 
-Latest schema addition: [RouterAI charging](ai-credit-charging.md) requires migration
-`0009_ai_credit_charges.sql` and updated API grants. Production RouterAI requires
-`AI_CREDIT_MODE=routerai_at_cost`; the default is disabled. No automatic deployment,
-bonuses or payments. Keep AI disabled until the release/budget/live check is approved.
+This is a general **first-install checklist**, not the procedure for updating the
+existing Cloud.ru server. For the live pilot, start with the
+[server handbook](../operations/server-handbook.md),
+[automatic main deployment](automatic-main-deployment.md) and the dated
+[runtime inspection](../operations/runtime-2026-10-04.md).
+Do not run these bootstrap steps against an existing database or release.
 
-No cloud resource, paid service, domain or store project is provisioned by this
-change. Select a hosting environment and data region before deployment.
+The schema currently includes `0010_quest_plan_expand.sql` and
+`0011_quest_plan_validate.sql` after [RouterAI charging](ai-credit-charging.md)
+(`0009`). Production RouterAI requires `AI_CREDIT_MODE=routerai_at_cost`;
+the default is disabled. A one-time welcome grant is an explicit admin operation;
+payment top-ups are not implemented. Keep AI disabled until the policy, budget
+and live check are approved. Deployment alone does not enable it.
+
+For a new environment, agree its provider, region and costs before provisioning.
+The checklist itself does not provision resources.
 
 1. Provision PostgreSQL 17 with encrypted storage and backups. Create distinct
    migration-owner and restricted runtime roles. Test restore into a separate DB.
 2. Configure NODE_ENV=production, DATABASE_URL, WEB_ORIGIN=https://your-domain,
-   OPENAI_API_KEY, OPENAI_MODEL, ADMIN_USER_IDS and TRUSTED_PROXY_CIDRS in the
-   platform's server environment/secret store. TRUSTED_PROXY_CIDRS is an explicit
+   ADMIN_USER_IDS and TRUSTED_PROXY_CIDRS in the platform's API-only secret store.
+   Start with AI disabled; add only the approved provider's settings using the
+   [provider runbook](ai-providers.md). TRUSTED_PROXY_CIDRS is an explicit
    comma-separated list of trusted Web proxy IPs/CIDRs (not hostnames or hop counts).
    Prefer exact /32 IPv4 or /128 IPv6 addresses; never trust client address ranges.
    Missing proxy configuration, HTTP or PGlite makes production startup fail closed.
@@ -22,14 +32,15 @@ change. Select a hosting environment and data region before deployment.
    from the Web service and designated native-client ingress.
 5. Build Web with API_INTERNAL_URL pointing to the internal API address. Next
    rewrites are resolved at build time. Serve Web behind HTTPS; disable SSE proxy
-   buffering and allow at least 60 seconds for a response.
+   buffering. The pilot ingress uses 300-second stream timeouts; align these with
+   the chosen model profile and API drain rather than imposing a shorter timeout.
 6. Run pnpm start for colocated Web/API, or pnpm --filter @citygo/api start and
    pnpm --filter @citygo/web start for separate services. Both root start and the
    built API entry point force NODE_ENV=production even if the inherited environment
    says development/test. The direct node apps/api/dist/server.js path does too.
    Set API_HOST=0.0.0.0 only behind the deployment network boundary.
 7. Monitor /health (process) and /ready (DB/migrations), 5xx/error rates, latency,
-   interrupted model responses and OpenAI spending. No PII in metrics/logs.
+   interrupted model responses and the approved provider's spending. No PII in metrics/logs.
 8. Schedule the idempotent worker: pnpm worker:once. It is not a notification queue.
 9. Set spending caps and run prompt-injection, tenancy, replay, timeout and load
    evaluations. Add a shared per-account rate limiter for multiple replicas.
@@ -42,12 +53,21 @@ URL. Build/test jobs must never be provisioned production credentials. Use the
 [scoped launchers](service-environments.md); do not inject API keys into a shared
 Web container or use raw framework CLIs as the security boundary. This repository
 provides [container images](container-foundation.md) and a
-[pilot runtime configuration](cloudru-runtime.md), but has not provisioned them
-on a cloud host. Test credentials must never be used for a real deployment.
+[pilot runtime configuration](cloudru-runtime.md). Actual deployment state is
+documented separately in the [runtime inspection](../operations/runtime-2026-10-04.md).
+Test credentials must never be used for a real deployment.
 
 Rollback is a prior application build only when compatible with applied schema.
 Never edit an applied migration to roll back. Add a forward repair migration.
 Exact hosting commands and monitoring configuration depend on the chosen provider.
+
+## Historical rollout requirements
+
+The following stages explain why older application versions cannot safely be
+reintroduced. For a fresh database apply all checked-in migrations; do not stop
+at an older stage or replay individual steps against the live pilot. Current
+personal billing is described in [RouterAI charging](ai-credit-charging.md),
+separately from the conservative monetary reservation described below.
 
 AI consent rollout: apply `0003_ai_access.sql`, update Web/Expo and drain old API
 instances before serving the new version. Existing users must explicitly confirm
@@ -58,7 +78,8 @@ admission caps are not financial budgets or a replacement for provider-side caps
 Do not revert to pre-consent application code with chat enabled. The technical
 disclosure is not an approved legal notice; RouterAI production is blocked by
 default pending [exact notice/policy approval](routerai-production.md), and
-GigaChat remains blocked. The current pilot Compose still forces AI disabled.
+GigaChat remains blocked. The base Compose template forces AI disabled; an
+approved [RouterAI deployment profile](routerai-deployment-profile.md) is separate.
 See [AI provider rollout](ai-providers.md) for admission/revocation
 semantics and the remaining stage 4B launch requirements.
 
