@@ -7,8 +7,11 @@ import {
   migrate,
   HousingAnswers,
   DomainError,
+  HousingStoredDataError,
   type Database,
+  type Sql,
   type HousingBriefSnapshot,
+  type HousingBriefRecovery,
 } from "./index.js";
 import { r1HousingFieldSchema } from "@citygo/contracts";
 
@@ -116,6 +119,510 @@ async function counts(db: Database) {
     (select count(*)::int from xp_events) as xp`)
   ).rows[0];
 }
+
+test("recovery: no draft creates nothing; a sole partial draft restores its latest revision", async (t) => {
+  const db = await fixture(t);
+  const { user, plan } = await owner(db);
+  const store = new HousingAnswers(db);
+  const emptyCounts = await counts(db);
+  assert.deepEqual(await store.recoverForPlan(user, plan), {
+    status: "not_found",
+  });
+  assert.deepEqual(await store.listForPlan(user, plan), {
+    items: [],
+    nextBeforeId: null,
+  });
+  assert.deepEqual(await counts(db), emptyCounts);
+  const brief = await store.create(user, { commandId: randomUUID(), plan });
+  const next = await store.stateAnswer(
+    user,
+    command(brief, "moveTiming", { status: "undecided" }),
+  );
+  const before = await counts(db);
+  assert.deepEqual(await store.recoverForPlan(user, plan), {
+    status: "recovered",
+    brief: next,
+  });
+  assert.deepEqual(await store.listForPlan(user, plan), {
+    items: [{ id: brief.id, revision: 2, plan }],
+    nextBeforeId: null,
+  });
+  assert.deepEqual(await counts(db), before);
+  assert.equal(next.content.answers.monthlyRentRub.status, "unasked");
+  assert.equal(next.content.answers.housingType.status, "unasked");
+});
+
+test("multiple briefs require explicit selection; bounded keyset pages expose only owned plan metadata", async (t) => {
+  const { db, store, user, plan, brief } = await setup(t);
+  // Cross a decimal boundary: IDs must sort numerically, not as text.
+  await db.query(
+    "select setval(pg_get_serial_sequence('r1_housing_briefs','id'),9,false)",
+  );
+  const second = await store.create(user, { commandId: randomUUID(), plan });
+  const third = await store.create(user, { commandId: randomUUID(), plan });
+  const foreign = await owner(db);
+  await store.create(foreign.user, {
+    commandId: randomUUID(),
+    plan: foreign.plan,
+  });
+  const before = await counts(db);
+  assert.deepEqual(await store.recoverForPlan(user, plan), {
+    status: "selection_required",
+  });
+  const page1 = await store.listForPlan(user, plan, { limit: 2 });
+  assert.deepEqual(page1, {
+    items: [third, second].map(({ id, revision, plan }) => ({
+      id,
+      revision,
+      plan,
+    })),
+    nextBeforeId: second.id,
+  });
+  assert.equal(second.id, "9");
+  assert.equal(third.id, "10");
+  // A later insert does not shift a keyset continuation or duplicate entries.
+  await store.create(user, { commandId: randomUUID(), plan });
+  assert.deepEqual(
+    await store.listForPlan(user, plan, {
+      limit: 2,
+      beforeId: page1.nextBeforeId,
+    }),
+    {
+      items: [{ id: brief.id, revision: 1, plan }],
+      nextBeforeId: null,
+    },
+  );
+  assert.deepEqual(
+    await store.listForPlan(user, plan, { beforeId: brief.id }),
+    {
+      items: [],
+      nextBeforeId: null,
+    },
+  );
+  assert.deepEqual(await store.get(user, second.id), second);
+  assert.deepEqual(await counts(db), {
+    ...before,
+    briefs: Number(before!.briefs) + 1,
+    commands: Number(before!.commands) + 1,
+    revisions: Number(before!.revisions) + 1,
+  });
+});
+
+test("exact-limit brief/history pages end without a false continuation cursor", async (t) => {
+  const { db, store, user, plan, brief } = await setup(t);
+  assert.deepEqual(await store.listForPlan(user, plan, { limit: 1 }), {
+    items: [{ id: brief.id, revision: 1, plan }],
+    nextBeforeId: null,
+  });
+  assert.deepEqual(await store.history(user, brief.id, { limit: 1 }), {
+    items: [brief],
+    nextBeforeRevision: null,
+  });
+  const second = await store.create(user, { commandId: randomUUID(), plan });
+  const updated = await store.stateAnswer(user, command(brief));
+  const before = await counts(db);
+  assert.deepEqual(await store.listForPlan(user, plan, { limit: 2 }), {
+    items: [second, updated].map(({ id, revision, plan }) => ({
+      id,
+      revision,
+      plan,
+    })),
+    nextBeforeId: null,
+  });
+  assert.deepEqual(await store.history(user, brief.id, { limit: 2 }), {
+    items: [updated, brief],
+    nextBeforeRevision: null,
+  });
+  assert.deepEqual(await counts(db), before);
+});
+
+test("a foreign brief ID is only a numeric cursor boundary, never access to its plan or content", async (t) => {
+  const { db, store, user, plan, brief } = await setup(t);
+  const second = await store.create(user, { commandId: randomUUID(), plan });
+  const foreign = await owner(db);
+  const foreignBrief = await store.create(foreign.user, {
+    commandId: randomUUID(),
+    plan: foreign.plan,
+  });
+  await store.create(user, { commandId: randomUUID(), plan });
+  const before = await counts(db);
+  assert.deepEqual(
+    await store.listForPlan(user, plan, {
+      beforeId: foreignBrief.id,
+      limit: 2,
+    }),
+    {
+      items: [second, brief].map(({ id, revision, plan }) => ({
+        id,
+        revision,
+        plan,
+      })),
+      nextBeforeId: null,
+    },
+  );
+  await assert.rejects(store.get(user, foreignBrief.id), status(404));
+  await assert.rejects(
+    store.listForPlan(user, foreign.plan, { beforeId: foreignBrief.id }),
+    status(404),
+  );
+  assert.deepEqual(await counts(db), before);
+});
+
+test("a genuinely corrupt lookahead is not decoded; the next page fails rather than skipping it", async (t) => {
+  const { db, store, user, plan } = await setup(t);
+  for (const corrupt of [{ schemaVersion: 1 }, { schemaVersion: 2 }]) {
+    const brief = await store.create(user, { commandId: randomUUID(), plan });
+    // Synthetic append-only fixture, not a result produced by the writer.
+    // Revision 3 is readable, 2 is corrupt, 1 is the original valid draft.
+    for (const [revision, content] of [
+      [2, corrupt],
+      [3, brief.content],
+    ] as const) {
+      const eventId = randomUUID();
+      await db.transaction(async (tx) => {
+        await tx.query(
+          `insert into r1_housing_commands(user_id,command_id,event_id,action,actor,source,request,brief_id,result_revision,field,before_answer,after_answer)
+           values ($1,$2,$3,'state_answer','user','explicit_command','{}',$4,$5,'monthlyRentRub',$6,'{}')`,
+          [
+            user,
+            randomUUID(),
+            eventId,
+            brief.id,
+            revision,
+            JSON.stringify(brief.content.answers.monthlyRentRub),
+          ],
+        );
+        await tx.query(
+          "insert into r1_housing_brief_revisions(brief_id,revision,event_id,content) values ($1,$2,$3,$4)",
+          [brief.id, revision, eventId, JSON.stringify(content)],
+        );
+      });
+    }
+    const before = await counts(db);
+    assert.deepEqual(await store.history(user, brief.id, { limit: 1 }), {
+      items: [{ ...brief, revision: 3 }],
+      nextBeforeRevision: 3,
+    });
+    await assert.rejects(
+      store.history(user, brief.id, { limit: 1, beforeRevision: 3 }),
+      HousingStoredDataError,
+    );
+    await assert.rejects(
+      store.history(user, brief.id, { limit: 2 }),
+      HousingStoredDataError,
+    );
+    assert.deepEqual(
+      await store.history(user, brief.id, { beforeRevision: 2, limit: 1 }),
+      {
+        items: [brief],
+        nextBeforeRevision: null,
+      },
+    );
+    assert.deepEqual(await counts(db), before);
+  }
+});
+
+test("recovery never falls back from a sole corrupt latest snapshot to an older valid revision", async (t) => {
+  const { db, store, user, plan, brief } = await setup(t);
+  const eventId = randomUUID();
+  await db.transaction(async (tx) => {
+    await tx.query(
+      `insert into r1_housing_commands(user_id,command_id,event_id,action,actor,source,request,brief_id,result_revision,field,before_answer,after_answer)
+       values ($1,$2,$3,'state_answer','user','explicit_command','{}',$4,2,'monthlyRentRub',$5,'{}')`,
+      [
+        user,
+        randomUUID(),
+        eventId,
+        brief.id,
+        JSON.stringify(brief.content.answers.monthlyRentRub),
+      ],
+    );
+    await tx.query(
+      "insert into r1_housing_brief_revisions(brief_id,revision,event_id,content) values ($1,2,$2,$3)",
+      [brief.id, eventId, JSON.stringify({ schemaVersion: 2 })],
+    );
+  });
+  const before = await counts(db);
+  await assert.rejects(
+    store.recoverForPlan(user, plan),
+    (error: unknown) =>
+      error instanceof HousingStoredDataError &&
+      error.reason === "unsupported_version",
+  );
+  assert.deepEqual(await store.listForPlan(user, plan), {
+    items: [{ id: brief.id, revision: 2, plan }],
+    nextBeforeId: null,
+  });
+  assert.deepEqual(await store.get(user, brief.id, 1), brief);
+  assert.deepEqual(await counts(db), before);
+});
+
+test("discovery is scoped to exact owned plan; old archived plans remain readable without new writes", async (t) => {
+  const { db, store, user, plan, brief } = await setup(t);
+  await db.query("update relocation_plans set status='archived' where id=$1", [
+    plan.id,
+  ]);
+  const replacement = (
+    await db.query<{ id: string; version: number }>(
+      "insert into relocation_plans(user_id,version,status,plan) values ($1,2,'active','{}') returning id::text,version",
+      [user],
+    )
+  ).rows[0]!;
+  const next = await store.create(user, {
+    commandId: randomUUID(),
+    plan: replacement,
+  });
+  assert.deepEqual(await store.recoverForPlan(user, plan), {
+    status: "recovered",
+    brief,
+  });
+  assert.deepEqual(await store.recoverForPlan(user, replacement), {
+    status: "recovered",
+    brief: next,
+  });
+  assert.deepEqual((await store.listForPlan(user, plan)).items, [
+    { id: brief.id, revision: 1, plan },
+  ]);
+  assert.deepEqual((await store.history(user, brief.id)).items, [brief]);
+  await assert.rejects(
+    store.listForPlan(user, { ...plan, version: 2 }),
+    status(404),
+  );
+  await assert.rejects(
+    store.recoverForPlan(user, { ...plan, version: 2 }),
+    status(404),
+  );
+  await assert.rejects(
+    store.create(user, { commandId: randomUUID(), plan }),
+    status(409, "PLAN_STALE"),
+  );
+});
+
+test("history pages preserve revisions, unknowns, refusals and corrections without repeated questions", async (t) => {
+  const { store, user, brief } = await setup(t);
+  const known = await store.stateAnswer(user, command(brief));
+  const declined = await store.stateAnswer(
+    user,
+    command(known, "monthlyRentRub", { status: "declined" }),
+  );
+  const corrected = await store.stateAnswer(
+    user,
+    command(declined, "monthlyRentRub", {
+      status: "known",
+      value: { min: 40000 },
+    }),
+  );
+  const page1 = await store.history(user, brief.id, { limit: 2 });
+  assert.deepEqual(page1, {
+    items: [corrected, declined],
+    nextBeforeRevision: 3,
+  });
+  await store.stateAnswer(
+    user,
+    command(corrected, "priority", { status: "undecided" }),
+  );
+  assert.deepEqual(
+    await store.history(user, brief.id, {
+      limit: 2,
+      beforeRevision: page1.nextBeforeRevision,
+    }),
+    {
+      items: [known, brief],
+      nextBeforeRevision: null,
+    },
+  );
+  assert.deepEqual(await store.history(user, brief.id, { beforeRevision: 1 }), {
+    items: [],
+    nextBeforeRevision: null,
+  });
+  const maxPage = await store.history(user, brief.id, { limit: 50 });
+  assert.equal(maxPage.items.length, 5);
+  assert.equal(maxPage.nextBeforeRevision, null);
+  await assert.rejects(store.get(user, brief.id, 6), status(404));
+});
+
+test("discovery and history reject foreign/missing resources before disclosing versions or content", async (t) => {
+  const { db, store, user, plan, brief } = await setup(t);
+  const stranger = await owner(db);
+  const before = await counts(db);
+  for (const other of [stranger.user, "9223372036854775807"]) {
+    await assert.rejects(store.listForPlan(other, plan), status(404));
+    await assert.rejects(store.recoverForPlan(other, plan), status(404));
+    await assert.rejects(store.history(other, brief.id), status(404));
+    await assert.rejects(
+      store.history(other, brief.id, { beforeRevision: 1 }),
+      status(404),
+    );
+  }
+  const missingPlan = { id: "9223372036854775807", version: 1 };
+  await assert.rejects(store.listForPlan(user, missingPlan), status(404));
+  await assert.rejects(store.recoverForPlan(user, missingPlan), status(404));
+  await assert.rejects(store.history(user, missingPlan.id), status(404));
+  assert.deepEqual(await counts(db), before);
+});
+
+test("strict read inputs and pagination reject coercion, unknown keys and unbounded requests", async (t) => {
+  const { db, store, user, plan, brief } = await setup(t);
+  const before = await counts(db);
+  for (const options of [
+    null,
+    [],
+    { limit: 0 },
+    { limit: 51 },
+    { limit: 1.5 },
+    { limit: "2" },
+    { limit: NaN },
+    { limit: Infinity },
+    { offset: 1 },
+  ]) {
+    await assert.rejects(store.listForPlan(user, plan, options), status(400));
+    await assert.rejects(store.history(user, brief.id, options), status(400));
+  }
+  for (const cursor of [null, 1, "0", "01", "9223372036854775808"])
+    await assert.rejects(
+      store.listForPlan(user, plan, { beforeId: cursor }),
+      status(400),
+    );
+  for (const cursor of [null, "1", 0, 1.5, 2147483648])
+    await assert.rejects(
+      store.history(user, brief.id, { beforeRevision: cursor }),
+      status(400),
+    );
+  for (const input of [
+    null,
+    { id: plan.id, version: "1" },
+    { ...plan, extra: true },
+    { ...plan, version: 2147483648 },
+  ]) {
+    await assert.rejects(store.listForPlan(user, input), status(400));
+    await assert.rejects(store.recoverForPlan(user, input), status(400));
+  }
+  assert.deepEqual(await counts(db), before);
+});
+
+test("literal v1 snapshots read and replay their original result after later edits and plan replacement", async (t) => {
+  const { db, store, user, plan, brief, create } = await setup(t);
+  const legacy: HousingBriefSnapshot["content"][] = JSON.parse(
+    await readFile(
+      new URL("./fixtures/housing-v1.json", import.meta.url),
+      "utf8",
+    ),
+  );
+  assert.deepEqual(brief.content, legacy[0]);
+  const request = command(brief);
+  request.commandId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const eventId = "22222222-2222-4222-8222-222222222222";
+  await db.transaction(async (tx) => {
+    await tx.query(
+      `insert into r1_housing_commands(user_id,command_id,event_id,action,actor,source,request,brief_id,result_revision,field,before_answer,after_answer)
+       values ($1,$2,$3,'state_answer','user','explicit_command',$4,$5,2,'monthlyRentRub',$6,$7)`,
+      [
+        user,
+        request.commandId,
+        eventId,
+        JSON.stringify(request),
+        brief.id,
+        JSON.stringify(legacy[0]!.answers.monthlyRentRub),
+        JSON.stringify(legacy[1]!.answers.monthlyRentRub),
+      ],
+    );
+    await tx.query(
+      "insert into r1_housing_brief_revisions(brief_id,revision,event_id,content) values ($1,2,$2,$3)",
+      [brief.id, eventId, JSON.stringify(legacy[1])],
+    );
+  });
+  const original = { ...brief, revision: 2, content: legacy[1]! };
+  const corrected = await store.stateAnswer(
+    user,
+    command(original, "monthlyRentRub", { status: "declined" }),
+  );
+  await db.query("update relocation_plans set status='archived' where id=$1", [
+    plan.id,
+  ]);
+  const before = await counts(db);
+  assert.deepEqual(await store.get(user, brief.id, 2), original);
+  assert.deepEqual(await store.stateAnswer(user, request), original);
+  assert.deepEqual(await store.create(user, create), brief);
+  assert.deepEqual(await store.history(user, brief.id), {
+    items: [corrected, original, brief],
+    nextBeforeRevision: null,
+  });
+  assert.deepEqual(await store.recoverForPlan(user, plan), {
+    status: "recovered",
+    brief: corrected,
+  });
+  assert.deepEqual(await counts(db), before);
+});
+
+test("stored corruption and unsupported versions are server data errors; foreign owners still receive 404", async (t) => {
+  const { db, store, user, plan } = await setup(t);
+  const foreign = await owner(db);
+  for (const reason of ["invalid_content", "unsupported_version"] as const) {
+    const create = { commandId: randomUUID(), plan };
+    const brief = await store.create(user, create);
+    const eventId = randomUUID();
+    const request = command(brief);
+    const content = {
+      schemaVersion: reason === "invalid_content" ? 1 : 2,
+      privateText: "sensitive payload",
+    };
+    await db.transaction(async (tx) => {
+      await tx.query(
+        `insert into r1_housing_commands(user_id,command_id,event_id,action,actor,source,request,brief_id,result_revision,field,before_answer,after_answer)
+         values ($1,$2,$3,'state_answer','user','explicit_command',$4,$5,2,'monthlyRentRub',$6,$7)`,
+        [
+          user,
+          request.commandId,
+          eventId,
+          JSON.stringify(request),
+          brief.id,
+          JSON.stringify(brief.content.answers.monthlyRentRub),
+          JSON.stringify({
+            status: "known",
+            revision: 2,
+            value: { max: 60000 },
+            provenance: { kind: "user_stated", eventId },
+          }),
+        ],
+      );
+      await tx.query(
+        "insert into r1_housing_brief_revisions(brief_id,revision,event_id,content) values ($1,2,$2,$3)",
+        [brief.id, eventId, JSON.stringify(content)],
+      );
+    });
+    const before = await counts(db);
+    for (const operation of [
+      () => store.get(user, brief.id),
+      () => store.get(user, brief.id, 2),
+      () => store.history(user, brief.id),
+      () => store.stateAnswer(user, request),
+      () => store.stateAnswer(user, command({ ...brief, revision: 2 })),
+    ])
+      await assert.rejects(
+        operation(),
+        (error: unknown) =>
+          error instanceof HousingStoredDataError &&
+          error.reason === reason &&
+          !error.message.includes("sensitive payload"),
+      );
+    for (const operation of [
+      () => store.get(foreign.user, brief.id),
+      () => store.history(foreign.user, brief.id),
+      () => store.stateAnswer(foreign.user, request),
+    ])
+      await assert.rejects(operation(), status(404));
+    // Earlier valid results remain readable/replayable; no fallback to them for
+    // a latest read. Here the cursor excludes the corrupt revision entirely;
+    // the real corrupt-lookahead case is tested separately above.
+    assert.deepEqual(await store.get(user, brief.id, 1), brief);
+    assert.deepEqual(await store.create(user, create), brief);
+    assert.deepEqual(
+      await store.history(user, brief.id, { beforeRevision: 2 }),
+      { items: [brief], nextBeforeRevision: null },
+    );
+    assert.deepEqual(await counts(db), before);
+  }
+});
 
 test("create: empty draft without profile, questionnaire, consent, model or quest; exact replay", async (t) => {
   const { db, store, user, brief, create } = await setup(t);
@@ -439,6 +946,157 @@ test("parallel creation retries return one permanent identity and one event", as
     xp: 0,
   });
 });
+
+function signal() {
+  let open!: () => void;
+  const promise = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  return { promise, open };
+}
+async function within<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error("Timed out waiting for the test owner lock")),
+          ms,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+function taggedDatabase(
+  db: Database,
+  tag: string,
+  hold?: {
+    entered: ReturnType<typeof signal>;
+    release: ReturnType<typeof signal>;
+  },
+): Database {
+  return {
+    ...db,
+    async transaction<T>(work: (tx: Sql) => Promise<T>): Promise<T> {
+      return db.transaction(async (tx) => {
+        await tx.query("select set_config('application_name',$1,true)", [tag]);
+        return work({
+          exec: (sql) => tx.exec(sql),
+          async query<T>(sql: string, params?: unknown[]) {
+            const result = await tx.query<T>(sql, params);
+            if (hold && sql === "select id from users where id=$1 for update") {
+              hold.entered.open();
+              await hold.release.promise;
+            }
+            return result;
+          },
+        });
+      });
+    },
+  };
+}
+async function waitForOwnerLock(db: Database, tag: string) {
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline) {
+    const waiting = await db.query<{ blocked: boolean }>(
+      `select exists(select 1 from pg_stat_activity
+       where application_name=$1 and wait_event_type='Lock'
+         and cardinality(pg_blocking_pids(pid))>0
+         and query='select id from users where id=$1 for update') as blocked`,
+      [tag],
+    );
+    if (waiting.rows[0]!.blocked) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.fail(
+    "The second operation must really wait on the PostgreSQL owner lock",
+  );
+}
+
+test(
+  "PostgreSQL recovery serializes with create/stateAnswer at the owner-lock boundary in both orders",
+  {
+    skip: process.env.TEST_DATABASE_URL
+      ? false
+      : "Requires independent PostgreSQL connections; PGlite is not concurrency evidence",
+  },
+  async (t) => {
+    for (const action of ["create", "stateAnswer"] as const) {
+      for (const readFirst of [false, true]) {
+        await t.test(
+          `${action}: ${readFirst ? "recover first" : "writer first"}`,
+          async (t) => {
+            const db = await fixture(t);
+            const { user, plan } = await owner(db);
+            const store = new HousingAnswers(db);
+            const initial =
+              action === "stateAnswer"
+                ? await store.create(user, { commandId: randomUUID(), plan })
+                : undefined;
+            const entered = signal();
+            const release = signal();
+            const prefix = "cg012_lock_" + randomUUID().replaceAll("-", "");
+            const first = new HousingAnswers(
+              taggedDatabase(db, prefix + "_first", { entered, release }),
+            );
+            const second = new HousingAnswers(
+              taggedDatabase(db, prefix + "_second"),
+            );
+            const create = { commandId: randomUUID(), plan };
+            const write = (repo: HousingAnswers) =>
+              initial
+                ? repo.stateAnswer(
+                    user,
+                    command(initial, "priority", { status: "undecided" }),
+                  )
+                : repo.create(user, create);
+            let writing: Promise<HousingBriefSnapshot> | undefined;
+            let recovering: Promise<HousingBriefRecovery> | undefined;
+            try {
+              if (readFirst) recovering = first.recoverForPlan(user, plan);
+              else writing = write(first);
+              // Attach observers immediately so an early error cannot become an
+              // unhandled rejection while the other connection is being inspected.
+              void (writing ?? recovering)!.catch(() => {});
+              await within(entered.promise, 3000);
+              if (readFirst) writing = write(second);
+              else recovering = second.recoverForPlan(user, plan);
+              void (readFirst ? writing : recovering)!.catch(() => {});
+              await waitForOwnerLock(db, prefix + "_second");
+            } finally {
+              release.open();
+              await Promise.allSettled(
+                [writing, recovering].filter((p) => p !== undefined),
+              );
+            }
+            const [written, recovered] = await Promise.all([
+              writing!,
+              recovering!,
+            ]);
+            assert.deepEqual(
+              recovered,
+              readFirst
+                ? initial
+                  ? { status: "recovered", brief: initial }
+                  : { status: "not_found" }
+                : { status: "recovered", brief: written },
+            );
+            assert.deepEqual(await store.get(user, written.id), written);
+            assert.deepEqual(await counts(db), {
+              briefs: 1,
+              commands: initial ? 2 : 1,
+              revisions: initial ? 2 : 1,
+              xp: 0,
+            });
+          },
+        );
+      }
+    }
+  },
+);
 
 test("INT4 artifact/field revision exhaustion fails closed without wrapping or writing", async (t) => {
   const { db, store, user, plan } = await setup(t);
