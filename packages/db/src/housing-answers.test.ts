@@ -1269,6 +1269,277 @@ test("upgrade 0011 → 0012 preserves populated records and is replay-safe", asy
   );
 });
 
+test("synthetic caps are atomic and owner-scoped; replay/history survive zero/full quotas without pruning", async (t) => {
+  const db = await fixture(t);
+  const a = await owner(db),
+    b = await owner(db);
+  const store = new HousingAnswers(db, {
+    briefsPerOwner: 1,
+    briefsPerPlan: 1,
+    commandsPerOwner: 2,
+    revisionsPerBrief: 2,
+  });
+  const create = { commandId: randomUUID(), plan: a.plan };
+  const brief = await store.create(a.user, create);
+  const editedCommand = command(brief);
+  const edited = await store.stateAnswer(a.user, editedCommand);
+  const before = await counts(db);
+  for (const operation of [
+    () => store.create(a.user, { ...create, commandId: randomUUID() }),
+    () => store.stateAnswer(a.user, command(edited)),
+  ])
+    await assert.rejects(operation, status(409, "HOUSING_STORAGE_LIMIT"));
+  assert.deepEqual(await counts(db), before);
+  const closed = new HousingAnswers(db, {
+    briefsPerOwner: 0,
+    briefsPerPlan: 0,
+    commandsPerOwner: 0,
+    revisionsPerBrief: 0,
+  });
+  assert.deepEqual(await closed.create(a.user, create), brief);
+  assert.deepEqual(await closed.stateAnswer(a.user, editedCommand), edited);
+  assert.deepEqual((await closed.history(a.user, brief.id)).items, [
+    edited,
+    brief,
+  ]);
+  assert.deepEqual(await closed.recoverForPlan(a.user, a.plan), {
+    status: "recovered",
+    brief: edited,
+  });
+  assert.equal(
+    (await store.create(b.user, { commandId: randomUUID(), plan: b.plan }))
+      .revision,
+    1,
+  );
+});
+
+test("each brief/revision/byte cap blocks independently, with rollback and unchanged history", async (t) => {
+  const db = await fixture(t),
+    a = await owner(db);
+  const regular = new HousingAnswers(db);
+  const created = await regular.create(a.user, {
+    commandId: randomUUID(),
+    plan: a.plan,
+  });
+  const before = await counts(db);
+  for (const limits of [
+    { briefsPerOwner: 1 },
+    { briefsPerPlan: 1 },
+    { commandsPerOwner: 1 },
+    { revisionsPerBrief: 0 },
+    { commandBytes: 1 },
+    { snapshotBytes: 1 },
+  ]) {
+    const limited = new HousingAnswers(db, limits);
+    await assert.rejects(
+      limited.create(a.user, { commandId: randomUUID(), plan: a.plan }),
+      status(409, "HOUSING_STORAGE_LIMIT"),
+    );
+    assert.deepEqual(await counts(db), before);
+  }
+  for (const limits of [
+    { revisionsPerBrief: 1 },
+    { commandBytes: 1 },
+    { snapshotBytes: 1 },
+  ]) {
+    await assert.rejects(
+      new HousingAnswers(db, limits).stateAnswer(a.user, command(created)),
+      status(409, "HOUSING_STORAGE_LIMIT"),
+    );
+    assert.deepEqual(await counts(db), before);
+    assert.deepEqual(await regular.get(a.user, created.id), created);
+  }
+});
+
+test("UTF-8 limits count multibyte command and complete snapshot, not characters", async (t) => {
+  const { db, user, plan, brief } = await setup(t);
+  const input = command(brief, "commuteDestination", {
+    status: "known",
+    value: "Москва".repeat(20),
+  });
+  const normalized = JSON.stringify(input);
+  assert.ok(Buffer.byteLength(normalized, "utf8") > normalized.length);
+  const store = new HousingAnswers(db, { commandBytes: normalized.length });
+  const before = await counts(db);
+  await assert.rejects(
+    store.stateAnswer(user, input),
+    status(409, "HOUSING_STORAGE_LIMIT"),
+  );
+  assert.deepEqual(await counts(db), before);
+  assert.deepEqual(await store.recoverForPlan(user, plan), {
+    status: "recovered",
+    brief,
+  });
+});
+
+test("selection labels add only server dates and revision; legacy list stays compatible", async (t) => {
+  const { db, store, user, plan, brief } = await setup(t);
+  const edited = await store.stateAnswer(user, command(brief));
+  const before = await counts(db);
+  const selection = await store.listSelectionForPlan(user, plan);
+  assert.equal(selection.items.length, 1);
+  assert.deepEqual(Object.keys(selection.items[0]!).sort(), [
+    "createdAt",
+    "id",
+    "plan",
+    "revision",
+    "updatedAt",
+  ]);
+  assert.equal(selection.items[0]!.revision, edited.revision);
+  assert.ok(
+    Date.parse(selection.items[0]!.updatedAt) >=
+      Date.parse(selection.items[0]!.createdAt),
+  );
+  assert.deepEqual((await store.listForPlan(user, plan)).items, [
+    { id: brief.id, revision: edited.revision, plan },
+  ]);
+  assert.deepEqual(await counts(db), before);
+});
+
+test(
+  "PostgreSQL last quota slot serializes distinct commands, without overshoot",
+  {
+    skip: process.env.TEST_DATABASE_URL
+      ? false
+      : "Requires independent PostgreSQL connections",
+  },
+  async (t) => {
+    for (const action of ["brief", "command"] as const)
+      await t.test(action, async (t) => {
+        const db = await fixture(t),
+          a = await owner(db);
+        const base = new HousingAnswers(db);
+        const initial =
+          action === "command"
+            ? await Promise.all([
+                base.create(a.user, { commandId: randomUUID(), plan: a.plan }),
+                base.create(a.user, { commandId: randomUUID(), plan: a.plan }),
+              ])
+            : [];
+        const entered = signal(),
+          release = signal();
+        const tag = "cg012_quota_" + randomUUID().replaceAll("-", "");
+        const limits =
+          action === "brief" ? { briefsPerPlan: 1 } : { commandsPerOwner: 3 };
+        const first = new HousingAnswers(
+          taggedDatabase(db, tag + "_first", { entered, release }),
+          limits,
+        );
+        const second = new HousingAnswers(
+          taggedDatabase(db, tag + "_second"),
+          limits,
+        );
+        const execute = (store: HousingAnswers, index: number) =>
+          action === "brief"
+            ? store.create(a.user, { commandId: randomUUID(), plan: a.plan })
+            : store.stateAnswer(a.user, command(initial[index]!));
+        let p1: Promise<HousingBriefSnapshot> | undefined,
+          p2: Promise<HousingBriefSnapshot> | undefined;
+        try {
+          p1 = execute(first, 0);
+          void p1.catch(() => {});
+          await within(entered.promise, 3000);
+          p2 = execute(second, 1);
+          void p2.catch(() => {});
+          await waitForOwnerLock(db, tag + "_second");
+        } finally {
+          release.open();
+          await Promise.allSettled([p1, p2].filter((p) => p !== undefined));
+        }
+        assert.ok(await p1!);
+        await assert.rejects(p2!, status(409, "HOUSING_STORAGE_LIMIT"));
+        assert.deepEqual(
+          await counts(db),
+          action === "brief"
+            ? { briefs: 1, commands: 1, revisions: 1, xp: 0 }
+            : { briefs: 2, commands: 3, revisions: 3, xp: 0 },
+        );
+      });
+  },
+);
+
+test(
+  "PostgreSQL bounded discovery/quota/history use existing indexes on synthetic multi-owner data",
+  {
+    skip: process.env.TEST_DATABASE_URL
+      ? false
+      : "Requires PostgreSQL query-plan evidence",
+  },
+  async (t) => {
+    const { db, user, plan, brief } = await setup(t);
+    const marker = "cg012_index_" + randomUUID().replaceAll("-", "") + "_";
+    await db.transaction(async (tx) => {
+      await tx.query(
+        "insert into users(auth_subject) select $1 || n::text from generate_series(1,500) n",
+        [marker],
+      );
+      await tx.query(
+        "insert into relocation_plans(user_id,status,plan) select id,'active','{}'::jsonb from users where auth_subject like $1",
+        [marker + "%"],
+      );
+      await tx.query(
+        `insert into r1_housing_briefs(user_id,plan_id,plan_version)
+      select p.user_id,p.id,p.version from relocation_plans p join users u on u.id=p.user_id
+      cross join generate_series(1,6) n where u.auth_subject like $1`,
+        [marker + "%"],
+      );
+      await tx.query(
+        `insert into r1_housing_commands(user_id,command_id,event_id,action,actor,source,request,brief_id,result_revision)
+      select b.user_id,gen_random_uuid(),gen_random_uuid(),'create_brief','user','explicit_command','{}'::jsonb,b.id,1
+      from r1_housing_briefs b join users u on u.id=b.user_id where u.auth_subject like $1`,
+        [marker + "%"],
+      );
+      await tx.query(
+        `insert into r1_housing_brief_revisions(brief_id,revision,event_id,content)
+      select c.brief_id,1,c.event_id,$2::jsonb from r1_housing_commands c join users u on u.id=c.user_id
+      where u.auth_subject like $1`,
+        [marker + "%", JSON.stringify(brief.content)],
+      );
+    });
+    await db.exec(
+      "analyze r1_housing_briefs; analyze r1_housing_commands; analyze r1_housing_brief_revisions",
+    );
+    for (const [sql, params, expected] of [
+      [
+        `select b.id,r.revision from r1_housing_briefs b
+      join lateral (select revision from r1_housing_brief_revisions where brief_id=b.id order by revision desc limit 1) r on true
+      where b.user_id=$1 and b.plan_id=$2 and b.plan_version=$3 and b.id<$4
+      order by b.id desc limit 21`,
+        [user, plan.id, plan.version, "9223372036854775807"],
+        ["r1_housing_briefs_owner_idx", "r1_housing_briefs_plan_idx"],
+      ],
+      [
+        "select count(*) from (select 1 from r1_housing_commands where user_id=$1 limit 1000) bounded",
+        [user],
+        ["r1_housing_commands_pkey"],
+      ],
+      [
+        "select revision from r1_housing_brief_revisions where brief_id=$1 and revision<250 order by revision desc limit 21",
+        [brief.id],
+        [
+          "r1_housing_brief_revisions_pkey",
+          "r1_housing_brief_revisions_brief_id_revision_event_id_key",
+        ],
+      ],
+    ] as const) {
+      const output = await db.query(
+        "explain (analyze,buffers,format json) " + sql,
+        [...params],
+      );
+      const encoded = JSON.stringify(output.rows);
+      assert.ok(
+        expected.some((name) =>
+          encoded.includes('"Index Name":"' + name + '"'),
+        ),
+        expected.join(" or ") + ": " + encoded,
+      );
+    }
+    t.diagnostic(
+      "Existing owner/plan, command-owner PK and brief/revision indexes used on 3001 synthetic briefs; no forced planner settings",
+    );
+  },
+);
+
 test("real grants.sql revokes R1 runtime access and permits backup reads only", async (t) => {
   const { db, brief } = await setup(t);
   // Roles are cluster-global, unlike the per-test database. Change only their

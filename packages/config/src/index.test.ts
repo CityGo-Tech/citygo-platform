@@ -9,6 +9,26 @@ const production = {
   TRUSTED_PROXY_CIDRS: "10.0.0.8/32, ::1/128",
 };
 
+test("housing API defaults closed; synthetic opt-in can never approve production", () => {
+  assert.equal(readConfig({}).R1_HOUSING_API_MODE, "disabled");
+  assert.equal(
+    readConfig({ NODE_ENV: "test", R1_HOUSING_API_MODE: "synthetic" })
+      .R1_HOUSING_API_MODE,
+    "synthetic",
+  );
+  assert.equal(
+    readConfig({ ...production, R1_HOUSING_API_MODE: "disabled" })
+      .R1_HOUSING_API_MODE,
+    "disabled",
+  );
+  for (const mode of ["true", "enabled", "production", "1", ""])
+    assert.throws(() => readConfig({ R1_HOUSING_API_MODE: mode }));
+  assert.throws(
+    () => readConfig({ ...production, R1_HOUSING_API_MODE: "synthetic" }),
+    /synthetic-only/,
+  );
+});
+
 test("RouterAI production approval is blank-safe, bounded and not a boolean switch", () => {
   const empty = readConfig({
     ROUTERAI_DATA_NOTICE: " ",

@@ -46,6 +46,7 @@ export const apiErrorCodes = [
   "PLAN_STALE",
   "EVIDENCE_REQUIRED",
   "SOURCE_UNAVAILABLE",
+  "HOUSING_STORAGE_LIMIT",
   "STREAM_INTERRUPTED",
 ] as const;
 export const apiErrorCodeSchema = z.enum(apiErrorCodes);

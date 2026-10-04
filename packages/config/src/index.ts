@@ -119,10 +119,19 @@ export const serverConfigSchema = z.object({
   GIGACHAT_CA_BUNDLE_FILE: optionalSetting,
   ADMIN_USER_IDS: z.string().default(""),
   AI_CREDIT_MODE: z.enum(["disabled", "routerai_at_cost"]).default("disabled"),
+  // Development rehearsal only. This flag is not a production approval.
+  R1_HOUSING_API_MODE: z.enum(["disabled", "synthetic"]).default("disabled"),
   TRUSTED_PROXY_CIDRS: trustedProxySchema,
 });
 export function readConfig(env: NodeJS.ProcessEnv = process.env) {
   const config = serverConfigSchema.parse(env);
+  if (
+    config.NODE_ENV === "production" &&
+    config.R1_HOUSING_API_MODE !== "disabled"
+  )
+    throw new Error(
+      "R1 housing API is synthetic-only; production activation is not implemented",
+    );
   if (
     config.NODE_ENV === "production" &&
     (!/^postgres(?:ql)?:\/\//.test(config.DATABASE_URL) ||

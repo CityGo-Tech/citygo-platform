@@ -1,6 +1,16 @@
 import { isDeepStrictEqual } from "node:util";
 import { r1HousingBriefDraftV1Schema } from "@citygo/contracts";
 import type { z } from "zod";
+import {
+  r1HousingIdV1Schema,
+  r1HousingRevisionV1Schema,
+} from "@citygo/contracts";
+
+export type HousingDataContext = {
+  operation: "get" | "history" | "recover" | "replay" | "write" | "selection";
+  briefId?: string;
+  revision?: number;
+};
 
 export type StoredHousingBriefContent = z.infer<
   typeof r1HousingBriefDraftV1Schema
@@ -10,11 +20,33 @@ export type StoredHousingBriefContent = z.infer<
 // Zod issues or free text in the message/cause returned to a caller or logger.
 export class HousingStoredDataError extends Error {
   constructor(
-    public readonly reason: "invalid_content" | "unsupported_version",
+    public readonly reason:
+      | "invalid_content"
+      | "unsupported_version"
+      | "write_failed"
+      | "invalid_metadata",
+    context?: HousingDataContext,
   ) {
-    super("Сохранённый бриф не удалось прочитать");
+    super("Не удалось обработать данные брифа");
     this.name = "HousingStoredDataError";
+    // Explicit allowlist, not a spread of a row, Error, payload or Zod issues.
+    this.context =
+      context &&
+      ["get", "history", "recover", "replay", "write", "selection"].includes(
+        context.operation,
+      )
+        ? Object.freeze({
+            operation: context.operation,
+            ...(r1HousingIdV1Schema.safeParse(context.briefId).success
+              ? { briefId: context.briefId }
+              : {}),
+            ...(r1HousingRevisionV1Schema.safeParse(context.revision).success
+              ? { revision: context.revision }
+              : {}),
+          })
+        : undefined;
   }
+  public readonly context: Readonly<HousingDataContext> | undefined;
 }
 
 // Dispatch by the persisted version, never by the current input contract.

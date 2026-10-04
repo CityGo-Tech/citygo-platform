@@ -7,6 +7,8 @@ import {
   r1HousingBriefDraftV1Schema,
   r1HousingIdV1Schema as r1HousingIdSchema,
   r1HousingRevisionV1Schema as r1HousingRevisionSchema,
+  housingStorageLimitsSchema,
+  type HousingStorageLimits,
   type QuestPlanReference,
 } from "@citygo/contracts";
 import { z } from "zod";
@@ -17,6 +19,7 @@ import {
   readStoredHousingBrief,
   HousingStoredDataError,
   type StoredHousingBriefContent,
+  type HousingDataContext,
 } from "./housing-history.js";
 
 type Content = StoredHousingBriefContent;
@@ -36,6 +39,14 @@ type Stored = {
   content: unknown;
 };
 export type HousingBriefSummary = Omit<HousingBriefSnapshot, "content">;
+export type HousingBriefSelection = HousingBriefSummary & {
+  createdAt: string;
+  updatedAt: string;
+};
+export type HousingBriefSelectionPage = {
+  items: HousingBriefSelection[];
+  nextBeforeId: string | null;
+};
 export type HousingBriefRecovery =
   | { status: "not_found" }
   | { status: "recovered"; brief: HousingBriefSnapshot }
@@ -68,6 +79,12 @@ const conflict = () =>
     "Результат изменился. Загрузите актуальную версию.",
     "REVISION_CONFLICT",
   );
+const storageLimit = () =>
+  new DomainError(
+    409,
+    "Лимит хранения брифов достигнут. Новые изменения не сохранены.",
+    "HOUSING_STORAGE_LIMIT",
+  );
 
 function parse<T>(schema: z.ZodType<T>, value: unknown): T {
   const result = schema.safeParse(value);
@@ -75,20 +92,42 @@ function parse<T>(schema: z.ZodType<T>, value: unknown): T {
   // JSON wire semantics: omitted optional keys and explicit undefined are equal.
   return JSON.parse(JSON.stringify(result.data)) as T;
 }
-function snapshot(row: Stored): HousingBriefSnapshot {
-  return {
-    id: row.id,
-    revision: row.revision,
-    plan: { id: row.plan_id, version: row.plan_version },
-    content: readStoredHousingBrief(row.content),
-  };
+function snapshot(
+  row: Stored,
+  operation: HousingDataContext["operation"],
+): HousingBriefSnapshot {
+  try {
+    return {
+      id: row.id,
+      revision: row.revision,
+      plan: { id: row.plan_id, version: row.plan_version },
+      content: readStoredHousingBrief(row.content),
+    };
+  } catch (error) {
+    if (error instanceof HousingStoredDataError)
+      throw new HousingStoredDataError(error.reason, {
+        operation,
+        briefId: row.id,
+        revision: row.revision,
+      });
+    throw error;
+  }
 }
 // This repository implements the v1 command/writer protocol, not whichever
 // schema the public facade currently exposes. New versions require an explicit
 // writer/command dispatch; never upgrade a stored v1 brief through a new alias.
-function writeV1Content(content: unknown): Content {
+function writeV1Content(
+  content: unknown,
+  briefId: string,
+  revision: number,
+): Content {
   const result = r1HousingBriefDraftV1Schema.safeParse(content);
-  if (!result.success) throw new HousingStoredDataError("invalid_content");
+  if (!result.success)
+    throw new HousingStoredDataError("write_failed", {
+      operation: "write",
+      briefId,
+      revision,
+    });
   return result.data;
 }
 async function ownedPlan(tx: Sql, owner: string, plan: QuestPlanReference) {
@@ -110,10 +149,15 @@ async function candidates(
   beforeId?: string,
 ) {
   return (
-    await tx.query<Omit<Stored, "content">>(
-      `select b.id::text,b.plan_id::text,b.plan_version,r.revision
+    await tx.query<
+      Omit<Stored, "content"> & {
+        created_at: Date | string;
+        updated_at: Date | string;
+      }
+    >(
+      `select b.id::text,b.plan_id::text,b.plan_version,b.created_at,r.revision,r.created_at as updated_at
        from r1_housing_briefs b
-       join lateral (select revision from r1_housing_brief_revisions
+       join lateral (select revision,created_at from r1_housing_brief_revisions
          where brief_id=b.id order by revision desc limit 1) r on true
        where b.user_id=$1 and b.plan_id=$2 and b.plan_version=$3
          and ($4::bigint is null or b.id<$4)
@@ -122,7 +166,13 @@ async function candidates(
     )
   ).rows;
 }
-async function read(tx: Sql, owner: string, id: string, revision?: number) {
+async function read(
+  tx: Sql,
+  owner: string,
+  id: string,
+  revision?: number,
+  operation: HousingDataContext["operation"] = "get",
+) {
   const row = (
     await tx.query<Stored>(
       `select b.id::text,b.plan_id::text,b.plan_version,r.revision,r.content
@@ -133,14 +183,20 @@ async function read(tx: Sql, owner: string, id: string, revision?: number) {
     )
   ).rows[0];
   if (!row) throw missing();
-  return snapshot(row);
+  return snapshot(row, operation);
 }
 
-// Internal candidate repository, NOT an HTTP endpoint or an LLM tool. owner must
+// owner must
 // come from the authenticated session; models/operators cannot call stateAnswer
-// as though they were the user. No runtime grant/route is enabled in CG-012A/B.
+// as though they were the user. Production access remains disabled.
 export class HousingAnswers {
-  constructor(private readonly db: Database) {}
+  private readonly limits: HousingStorageLimits;
+  constructor(
+    private readonly db: Database,
+    limits: Partial<HousingStorageLimits> = {},
+  ) {
+    this.limits = housingStorageLimitsSchema.parse(limits);
+  }
 
   async get(owner: string, id: string, revision?: number) {
     parse(r1HousingIdSchema, owner);
@@ -156,6 +212,54 @@ export class HousingAnswers {
     inputPlan: unknown,
     options: unknown = {},
   ): Promise<HousingBriefPage> {
+    const page = await this.selectionPage(owner, inputPlan, options);
+    return {
+      items: page.rows.map((row) => ({
+        id: row.id,
+        revision: row.revision,
+        plan: { id: row.plan_id, version: row.plan_version },
+      })),
+      nextBeforeId: page.nextBeforeId,
+    };
+  }
+
+  // Content-free labels for explicit selection. Preserve the A/B list DTO.
+  async listSelectionForPlan(
+    owner: string,
+    inputPlan: unknown,
+    options: unknown = {},
+  ): Promise<HousingBriefSelectionPage> {
+    const page = await this.selectionPage(owner, inputPlan, options);
+    return {
+      items: page.rows.map((row) => {
+        const created = new Date(row.created_at);
+        const updated = new Date(row.updated_at);
+        if (
+          !Number.isFinite(created.getTime()) ||
+          !Number.isFinite(updated.getTime())
+        )
+          throw new HousingStoredDataError("invalid_metadata", {
+            operation: "selection",
+            briefId: row.id,
+            revision: row.revision,
+          });
+        return {
+          id: row.id,
+          revision: row.revision,
+          plan: { id: row.plan_id, version: row.plan_version },
+          createdAt: created.toISOString(),
+          updatedAt: updated.toISOString(),
+        };
+      }),
+      nextBeforeId: page.nextBeforeId,
+    };
+  }
+
+  private async selectionPage(
+    owner: string,
+    inputPlan: unknown,
+    options: unknown,
+  ) {
     parse(r1HousingIdSchema, owner);
     const plan = parse(planSchema, inputPlan);
     const page = parse(briefPageSchema, options);
@@ -168,13 +272,9 @@ export class HousingAnswers {
         page.limit + 1,
         page.beforeId,
       );
-      const items = rows.slice(0, page.limit).map((row) => ({
-        id: row.id,
-        revision: row.revision,
-        plan: { id: row.plan_id, version: row.plan_version },
-      }));
+      const items = rows.slice(0, page.limit);
       return {
-        items,
+        rows: items,
         nextBeforeId: rows.length > page.limit ? items.at(-1)!.id : null,
       };
     });
@@ -195,7 +295,10 @@ export class HousingAnswers {
       const rows = await candidates(tx, owner, plan, 2);
       if (rows.length === 0) return { status: "not_found" };
       if (rows.length > 1) return { status: "selection_required" };
-      return { status: "recovered", brief: await read(tx, owner, rows[0]!.id) };
+      return {
+        status: "recovered",
+        brief: await read(tx, owner, rows[0]!.id, undefined, "recover"),
+      };
     });
   }
 
@@ -228,7 +331,9 @@ export class HousingAnswers {
         )
       ).rows;
       // The lookahead is navigation only; decode only items actually returned.
-      const items = rows.slice(0, page.limit).map(snapshot);
+      const items = rows
+        .slice(0, page.limit)
+        .map((row) => snapshot(row, "history"));
       return {
         items,
         nextBeforeRevision:
@@ -292,7 +397,36 @@ export class HousingAnswers {
         409,
         "ID команды уже использован для другого действия",
       );
-    return read(tx, owner, old.brief_id, old.result_revision);
+    return read(tx, owner, old.brief_id, old.result_revision, "replay");
+  }
+
+  // Run only after the owner lock, replay and ownership/CAS checks. Bounded
+  // prefix scans use existing owner and owner-command indexes; no pruning.
+  private async checkCommandLimit(
+    tx: Sql,
+    owner: string,
+    request: Create | Command,
+  ) {
+    if (
+      Buffer.byteLength(JSON.stringify(request), "utf8") >
+      this.limits.commandBytes
+    )
+      throw storageLimit();
+    const count = (
+      await tx.query<{ n: number }>(
+        "select count(*)::int as n from (select 1 from r1_housing_commands where user_id=$1 limit $2) bounded",
+        [owner, this.limits.commandsPerOwner],
+      )
+    ).rows[0]!.n;
+    if (count >= this.limits.commandsPerOwner) throw storageLimit();
+  }
+
+  private checkSnapshotLimit(content: Content) {
+    if (
+      Buffer.byteLength(JSON.stringify(content), "utf8") >
+      this.limits.snapshotBytes
+    )
+      throw storageLimit();
   }
 
   async create(owner: string, input: unknown): Promise<HousingBriefSnapshot> {
@@ -303,21 +437,49 @@ export class HousingAnswers {
       const replay = await this.replay(tx, owner, request, "create_brief");
       if (replay) return replay;
       await this.lockPlan(tx, owner, request.plan);
+      await this.checkCommandLimit(tx, owner, request);
+      for (const [sql, params, maximum] of [
+        [
+          "select count(*)::int as n from (select 1 from r1_housing_briefs where user_id=$1 limit $2) bounded",
+          [owner, this.limits.briefsPerOwner],
+          this.limits.briefsPerOwner,
+        ],
+        [
+          "select count(*)::int as n from (select 1 from r1_housing_briefs where user_id=$1 and plan_id=$2 and plan_version=$3 limit $4) bounded",
+          [
+            owner,
+            request.plan.id,
+            request.plan.version,
+            this.limits.briefsPerPlan,
+          ],
+          this.limits.briefsPerPlan,
+        ],
+      ] as const) {
+        const count = (await tx.query<{ n: number }>(sql, [...params])).rows[0]!
+          .n;
+        if (count >= maximum) throw storageLimit();
+      }
+      if (this.limits.revisionsPerBrief === 0) throw storageLimit();
       const row = (
         await tx.query<{ id: string }>(
           "insert into r1_housing_briefs(user_id,plan_id,plan_version) values ($1,$2,$3) returning id::text",
           [owner, request.plan.id, request.plan.version],
         )
       ).rows[0]!;
-      const content = writeV1Content({
-        schemaVersion: 1,
-        kind: "housing_brief",
-        purpose: "rental_search_preparation",
-        destination: { countryCode: "RU", cityCode: "RU-MOW" },
-        answers: createR1HousingAnswersV1(),
-        suggestions: [],
-        starterPlan: null,
-      });
+      const content = writeV1Content(
+        {
+          schemaVersion: 1,
+          kind: "housing_brief",
+          purpose: "rental_search_preparation",
+          destination: { countryCode: "RU", cityCode: "RU-MOW" },
+          answers: createR1HousingAnswersV1(),
+          suggestions: [],
+          starterPlan: null,
+        },
+        row.id,
+        1,
+      );
+      this.checkSnapshotLimit(content);
       const event = randomUUID();
       await tx.query(
         `insert into r1_housing_commands(user_id,command_id,event_id,action,actor,source,request,brief_id,result_revision)
@@ -339,10 +501,20 @@ export class HousingAnswers {
       await this.lockOwner(tx, owner);
       const replay = await this.replay(tx, owner, request, "state_answer");
       if (replay) return replay;
-      const current = await read(tx, owner, request.brief.id);
+      const current = await read(
+        tx,
+        owner,
+        request.brief.id,
+        undefined,
+        "write",
+      );
       // Fail closed if a future reader gains v2 before this writer does.
       if (current.content.schemaVersion !== 1)
-        throw new HousingStoredDataError("unsupported_version");
+        throw new HousingStoredDataError("unsupported_version", {
+          operation: "write",
+          briefId: current.id,
+          revision: current.revision,
+        });
       if (!isDeepStrictEqual(current.plan, request.plan)) throw missing();
       await this.lockPlan(tx, owner, request.plan);
       const { field, answer, expectedFieldRevision } = request.change;
@@ -354,6 +526,9 @@ export class HousingAnswers {
         throw conflict();
       if (current.revision === 2147483647 || before.revision === 2147483647)
         throw conflict();
+      await this.checkCommandLimit(tx, owner, request);
+      if (current.revision >= this.limits.revisionsPerBrief)
+        throw storageLimit();
       const event = randomUUID();
       const after = {
         ...answer,
@@ -370,10 +545,15 @@ export class HousingAnswers {
           409,
           "Этот бриф требует команды обновления результата",
         );
-      const content = writeV1Content({
-        ...current.content,
-        answers: { ...current.content.answers, [field]: after },
-      });
+      const content = writeV1Content(
+        {
+          ...current.content,
+          answers: { ...current.content.answers, [field]: after },
+        },
+        current.id,
+        current.revision + 1,
+      );
+      this.checkSnapshotLimit(content);
       const revision = current.revision + 1;
       await tx.query(
         `insert into r1_housing_commands(user_id,command_id,event_id,action,actor,source,request,brief_id,result_revision,field,before_answer,after_answer)

@@ -24,6 +24,7 @@ const canaries = {
   ROUTERAI_DATA_NOTICE: "Synthetic public operator notice",
   ROUTERAI_PRODUCTION_POLICY_ID: "a".repeat(64),
   AI_CREDIT_MODE: "routerai_at_cost",
+  R1_HOUSING_API_MODE: "synthetic",
   GIGACHAT_CREDENTIALS: "synthetic-gigachat",
   GIGACHAT_ACCESS_TOKEN: "synthetic-token",
   FUTURE_PROVIDER_KEY: "synthetic-future",
@@ -70,6 +71,7 @@ test("API gets only known API settings; worker/migrator get no LLM or API settin
   assert.equal(api.ROUTERAI_API_KEY, canaries.ROUTERAI_API_KEY);
   assert.equal(api.ROUTERAI_DATA_NOTICE, canaries.ROUTERAI_DATA_NOTICE);
   assert.equal(api.AI_CREDIT_MODE, canaries.AI_CREDIT_MODE);
+  assert.equal(api.R1_HOUSING_API_MODE, "synthetic");
   assert.equal(
     api.ROUTERAI_PRODUCTION_POLICY_ID,
     canaries.ROUTERAI_PRODUCTION_POLICY_ID,
@@ -253,7 +255,8 @@ test("API schema and environment allowlist stay in sync", () => {
     join(root, "packages/config/src/index.ts"),
     "utf8",
   );
-  const keys = [...config.matchAll(/^ {2}([A-Z][A-Z_]+): /gm)].map(
+  // Environment names can contain digits, e.g. R1_HOUSING_API_MODE.
+  const keys = [...config.matchAll(/^ {2}([A-Z][A-Z0-9_]+): /gm)].map(
     (match) => match[1],
   );
   assert.deepEqual([...apiKeys].sort(), keys.sort());

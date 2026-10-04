@@ -10,8 +10,11 @@ export {
   type HousingBriefRecovery,
   type HousingBriefPage,
   type HousingBriefHistoryPage,
+  type HousingBriefSelection,
+  type HousingBriefSelectionPage,
 } from "./housing-answers.js";
 export { HousingStoredDataError } from "./housing-history.js";
+export { verifyHousingReadiness } from "./housing-access.js";
 import { createHash } from "node:crypto";
 import { readdir, readFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
