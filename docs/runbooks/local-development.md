@@ -1,79 +1,126 @@
-# Local development
+# Локальный запуск
 
-Use Node 24 LTS and pnpm 10.15.0 (pinned in packageManager).
+Инструкция для разработки на вымышленных данных. Для внешних пользователей
+нужен production-контур, а не открытый dev-сервер.
+[Обзор проекта](../../README.md) · [архитектура](../architecture.md).
+
+## 1. Первый запуск без ключей и Docker
+
+Нужны доступ к репозиторию, Git, Node.js 24 LTS и pnpm **10.15.0**.
+Команды выполняются из корня клона. Если Corepack отсутствует, сначала
+обеспечьте доступность закреплённого pnpm, не меняя lockfile.
 
 ```sh
 corepack pnpm install --frozen-lockfile
 corepack pnpm dev
 ```
 
-No .env or Docker is required for the initial screen. The root launcher builds shared
-packages, applies migrations and starts Web :3000 / API :4000 with an embedded
-PostgreSQL engine (PGlite). Persistent data lives in ignored .local/database.
-Use only one API process with this local store; the separate worker requires a server PostgreSQL connection.
+Откройте [Web](http://localhost:3000). API:
+[health](http://localhost:4000/health) и [readiness](http://localhost:4000/ready).
+Через Web health доступен как [api/health](http://localhost:3000/api/health).
 
-The root .env.api is optional (legacy .env is still supported). Copy .env.example,
-then configure OPENAI_API_KEY and
-OPENAI_MODEL server-side for real chat. With both absent, the API returns an explicit
-503; partial configuration is a startup error. LLM_PROVIDER can be empty (legacy
-OpenAI selection), openai (both settings required), or disabled (explicitly off).
-Provider selection initializes a new database once. After migration 0004, `/admin`
-stores the shared choice for existing databases; restarts do not reset it. Use an
-account whose ID is in server-side ADMIN_USER_IDS. The bootstrap configuration is
-still validated on startup. LLM_PROVIDER=disabled always overrides the saved choice
-on that server and cannot be bypassed in the admin. Model/key changes require a
-consistent restart, then explicit acceptance of the new model snapshot in the admin.
-RouterAI and GigaChat are available as explicit local synthetic-data pilots;
-production activation is blocked pending recipient/consent rollout. GigaChat needs
-its own authorization key, explicit model/account scope, and verified CA trust.
-There is no production mock provider. Do not paste keys into issues, PRs or chat.
-See [AI provider configuration](ai-providers.md) for limits and rollout boundaries.
+Launcher собирает общие пакеты, применяет миграции и запускает Web :3000 /
+API :4000. `.env` не обязателен. Локальная PGlite хранит данные в
+`.local/database`, вне Git. **Только один API-процесс** может работать с этой
+папкой; отдельный worker требует серверный PostgreSQL.
 
-Migration `0005_ai_attempts.sql` adds durable model-attempt reservations. Set
-`LLM_USER_DAILY_ATTEMPT_LIMIT` / `LLM_GLOBAL_DAILY_ATTEMPT_LIMIT` consistently
-(defaults 20/200 per UTC day), separate from accepted-chat caps. A retry consumes
-another reservation; errors/cancellation do not refund it. The first reservation
-pins that day's two limits in the database. A different positive configuration
-blocks new attempts until the next UTC day or restoration of the pinned settings;
-zero always blocks immediately. `/admin` shows the counters and last 20 reserves.
-These are not billed-call counts or currency limits. No live budget is authorized.
+Создайте тестовый аккаунт, заполните вымышленную анкету и откройте план.
+Без настроенного AI можно проверить интерфейс и сохранение данных, но живого
+ответа не будет; сервер не подменяет его незаметной заглушкой. Автоматические
+тесты используют отдельный детерминированный провайдер.
 
-Migration `0006_ai_budget.sql` starts a separate monetary budget **disabled**. Even
-configured OpenAI calls now require an existing allowlisted admin to choose currency,
-total/daily allowances and verified ceilings in `/admin`, then explicitly enable
-new reserves. No prices, positive budget or admin rights are provisioned. Per-attempt
-ceilings bind exact recipient/model and `LLM_MAX_INPUT_BYTES` / output-token limits;
-oversized context is rejected before model I/O. See the monetary budget section of
-the [AI runbook](ai-providers.md). This is reserved allowance, never actual billing.
+## 2. Реальный AI — отдельная настройка
 
-For PostgreSQL server:
+Скопируйте пример `.env.example` в корневой `.env.api` локальными средствами
+и задайте только нужные серверные параметры. Не добавляйте файл в Git.
+Legacy `.env` поддерживается, но не должен становиться общим источником
+секретов для всех приложений.
 
-1. Start docker compose -f docker-compose.dev.yml up -d.
-2. Set DATABASE_URL=postgresql://citygo:citygo@localhost:5432/citygo in root .env.api.
-3. Run pnpm db:migrate and pnpm dev.
-   This does not automatically transfer data from the embedded local database.
+Одного ключа недостаточно:
 
-Checks: pnpm check, pnpm browser:install, pnpm test:e2e.
-Browser tests own ports 3000/4000: stop an existing dev session first. The test
-server is a separate non-production entry point using a deterministic provider.
-For server-PostgreSQL integration tests, set TEST_DATABASE_URL to a dedicated
-test database. Every fixture creates and drops its own randomly named test schema.
+1. Выберите адаптер и точную модель; проверьте все обязательные поля выбранного
+   провайдера. Неполная bootstrap-конфигурация останавливает запуск.
+2. Для новой БД `LLM_PROVIDER` определяет начальный выбор. В существующей БД
+   выбор сохранён; менять его нужно через `/admin`. Права задаёт серверный
+   allowlist `ADMIN_USER_IDS`, регистрация сама по себе их не выдаёт.
+3. После смены модели/получателя подтвердите актуальный снимок в admin.
+   Старое AI-согласие пользователя не переносится автоматически.
+4. Настройте и явно включите общий денежный бюджет с проверенным потолком
+   попытки. По умолчанию он выключен. Проверьте отдельные лимиты чата/попыток.
+5. Если используется личный баланс `routerai_at_cost`, настройте его по
+   runbook: в этом режиме поддержан RouterAI, не OpenAI/GigaChat.
+6. Только после разрешения на получателя данных и расходы отправляйте
+   синтетический живой запрос.
 
-Build: pnpm build. pnpm start is production-only and requires PostgreSQL, HTTPS
-WEB_ORIGIN and explicit TRUSTED_PROXY_CIDRS after pnpm db:migrate. For local
-HTTP/PGlite development continue to use pnpm dev; apps/api/src/dev.ts is not shipped
-in the production build. Root pnpm dev explicitly selects development mode.
-Proxy trust is disabled by default locally. Do not expose a development server to
-real users; shared deployments require the sanitizing ingress and proxy allowlist
-described in [production.md](production.md).
-Shared packages are prebuilt before the Web/API development watchers start. After
-editing a shared package, restart pnpm dev to rebuild it, or run that package's
-dev script in a separate terminal. The launcher deliberately starts only the two
-application watchers to keep memory use bounded on development laptops.
-Web typecheck runs next typegen before tsc, including from a fresh checkout.
+`LLM_PROVIDER=disabled` жёстко блокирует AI независимо от сохранённого выбора.
+Автоматического fallback нет. RouterAI имеет отдельный точный production-допуск;
+GigaChat доступен для согласованного локального пилота, production заблокирован.
+Не отключайте проверку TLS и не используйте dev-режим для обхода этих границ.
 
-Environment isolation: root commands filter inherited variables and optional
-service files before spawning children. Web/build receive no DB or LLM secrets;
-worker/migrator receive DB settings only; tests ignore all runtime .env files.
-See [service environments](service-environments.md) for allowlists, precedence,
-custom API ports, separate DB roles and direct-command limitations.
+Подробности: [провайдеры](ai-providers.md), [RouterAI production](routerai-production.md),
+[AI-баланс](ai-credit-charging.md), [окружения](service-environments.md).
+Ключи не передаются в Web, Expo, отчёты или чат.
+
+## 3. Локальный PostgreSQL вместо PGlite
+
+Используйте выделенную БД разработки, не production. Пример compose содержит
+только локальные учебные реквизиты:
+
+```sh
+docker compose -f docker-compose.dev.yml up -d
+```
+
+Задайте в локальном `.env.api`:
+
+```dotenv
+DATABASE_URL=postgresql://citygo:citygo@localhost:5432/citygo
+```
+
+Затем выполните:
+
+```sh
+pnpm db:migrate
+pnpm dev
+```
+
+Это **не переносит** данные из PGlite автоматически. Перед сменой БД остановите
+прежний dev-процесс. Не удаляйте папки/volumes с данными для решения ошибки
+запуска, не проверив их назначение и необходимость сохранения.
+
+## 4. Проверки и обычная разработка
+
+```sh
+pnpm check
+pnpm browser:install
+pnpm test:e2e
+pnpm mobile:export
+```
+
+E2E занимает порты 3000/4000: остановите dev. Для PostgreSQL integration задаётся
+`TEST_DATABASE_URL` выделенной тестовой БД: фикстуры создают и удаляют отдельные
+случайные схемы. Никогда не указывайте там пользовательскую БД.
+
+Web typecheck сам запускает `next typegen`; предварительная Web-сборка не нужна.
+После изменения общего пакета перезапустите `pnpm dev` для пересборки либо
+запустите watcher этого пакета отдельно. По умолчанию launcher держит только
+два application-watchers для экономии памяти.
+
+`pnpm build` собирает проект. `pnpm start` принудительно включает production
+и требует PostgreSQL, HTTPS `WEB_ORIGIN` и явный `TRUSTED_PROXY_CIDRS`.
+Не используйте его как замену `dev` для HTTP/PGlite.
+
+## Частые проблемы
+
+| Симптом                                  | Проверка                                                                          |
+| ---------------------------------------- | --------------------------------------------------------------------------------- |
+| Порт занят                               | Остановить только свой прежний dev/E2E; не завершать все Node-процессы компьютера |
+| PGlite не открывается                    | Проверить, не запущен ли второй API с той же папкой                               |
+| AI выбран в env, но UI показывает другой | У существующей БД выбор хранится в admin; env не сбрасывает его при рестарте      |
+| Ключ есть, но модель не вызывается       | Проверить актуальную политику, согласие, конфигурацию, лимиты и бюджет отдельно   |
+| Правка общего пакета не видна            | Пересобрать пакет/перезапустить dev                                               |
+| Телефон не видит localhost               | На телефоне localhost — сам телефон; нужен согласованный сетевой адрес API        |
+| После обновления readiness не проходит   | Проверить миграции целевой БД; не подменять проверку успешным ответом             |
+
+Для телефона: [Expo-инструкция](../../apps/mobile/README.md).
+При сетевом доступе ограничивайте firewall нужным устройством; публичная
+доступность dev-сервера не является решением для удалённого пилота.

@@ -1,21 +1,59 @@
 # CityGo Mobile
 
-Expo SDK 57 / React Native 0.86. Shared schemas, tokens, native controls and API
-client. Includes email/password sessions in SecureStore, questionnaire, plan,
-quests, streaming chat, saved history and completion.
+Expo SDK 57 / React Native 0.86. Клиент использует общие контракты, API-клиент,
+токены и native-компоненты. Реализованы вход, сессия в SecureStore, анкета,
+план, квесты, потоковый чат, сохранённые сообщения и завершение с XP.
 
-Build shared packages first: pnpm build.
-Set EXPO_PUBLIC_API_URL to the API address reachable from the device.
-Alternatively copy root .env.mobile.example to root .env.mobile. The mobile
-launcher allows only the named public URL and development-tool settings; it
-disables Expo's automatic dotenv loading. Do not put secrets in apps/mobile/.env.
-For an Android emulator use http://10.0.2.2:4000; a physical device needs the host's
-LAN address and API_HOST=0.0.0.0. Use HTTPS outside local development.
-Never put the OpenAI key into an EXPO_PUBLIC variable.
+Это мобильный прототип текущего пути. Новый постепенный R1 ещё не подключён.
+[Статус проекта](../../docs/project-status.md) · [план Android](../../docs/roadmap.md#5-после-устойчивого-web-пилота).
 
-pnpm mobile:dev starts Metro. pnpm mobile:export verifies Android/iOS JS bundles,
-not signed native binaries. A device/emulator smoke test and EAS project/store
-accounts are required before distributing builds. No EAS project is created by
-this change. SDK 57 provides streaming fetch globally on native.
+## Локальный запуск
 
-Desktop Web remains apps/web; this Expo package is not a replacement Web target.
+Команды выполняются из **корня monorepo**, после установки зависимостей.
+Сначала соберите общие пакеты:
+
+```sh
+pnpm build
+```
+
+Задайте `EXPO_PUBLIC_API_URL` в корневом `.env.mobile`, взяв за основу
+`.env.mobile.example`. Это публичный адрес API, не ключ. Launcher разрешает
+только этот URL и настройки инструментов разработки; автоматическое чтение
+dotenv в Expo отключено. Не создавайте `apps/mobile/.env` с секретами.
+
+| Устройство                                        | Адрес API                                                                                                              |
+| ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| Android-эмулятор на компьютере с локальным API    | `http://10.0.2.2:4000`                                                                                                 |
+| Физический телефон в согласованной локальной сети | IP компьютера и порт API; серверу нужен `API_HOST=0.0.0.0`, firewall ограничивается нужным устройством                 |
+| Удалённое тестирование / установленная сборка     | Согласованный HTTPS-адрес; через Web-прокси URL включает `/api`, при прямом API-префиксе следуйте конфигурации ingress |
+
+Запустите API по [локальной инструкции](../../docs/runbooks/local-development.md),
+затем в другом терминале:
+
+```sh
+pnpm mobile:dev
+```
+
+Metro обслуживает приложение для совместимого Expo Go/устройства. На телефоне
+`localhost` — сам телефон, не компьютер. Устройства должны иметь сетевой доступ
+друг к другу; публичный dev-сервер не заменяет production-развёртывание.
+
+SDK 57 предоставляет streaming fetch на native. Секреты RouterAI/OpenAI/GigaChat
+остаются на API; никакой `EXPO_PUBLIC_*` не должен содержать ключ.
+
+## Проверка и распространение
+
+```sh
+pnpm mobile:export
+```
+
+Команда проверяет Android/iOS **JS-бандлы**, не собирает подписанный APK/IPA.
+Она не создаёт EAS-проект и не публикует приложение.
+
+Для установки на Honor 200 без компьютера/Expo Go нужны отдельная подписанная
+preview-сборка, корректный HTTPS API, проверка нового жилищного пути,
+холодного старта, обновления, TalkBack, слабой сети и отзыва сессии.
+Это задачи CG-045–049. Проект/подписи принадлежат владельцу; ключи не хранятся
+в Git. iOS и магазины требуют отдельной приёмки и доступов.
+
+Основной Web находится в `apps/web`; этот Expo-пакет не заменяет его.
