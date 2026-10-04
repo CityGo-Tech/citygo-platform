@@ -180,6 +180,53 @@ export const r1HousingAnswersSchema = z.strictObject({
 export type R1HousingAnswers = z.infer<typeof r1HousingAnswersSchema>;
 export type R1HousingField = z.infer<typeof r1HousingFieldSchema>;
 
+// CG-012 commands carry intent, never a trusted snapshot/provenance. The caller
+// supplies only its expected versions; the server assigns actor, event and time.
+function answerChange<K extends keyof typeof values>(
+  field: K,
+  optional = false,
+) {
+  const states = [
+    z.strictObject({ status: z.literal("known"), value: values[field] }),
+    z.strictObject({ status: z.literal("undecided"), note: text.optional() }),
+    z.strictObject({ status: z.literal("declined"), note: text.optional() }),
+  ] as const;
+  return z.strictObject({
+    field: z.literal(field),
+    expectedFieldRevision: r1HousingRevisionSchema,
+    answer: optional
+      ? z.discriminatedUnion("status", [
+          ...states,
+          z.strictObject({ status: z.literal("not_applicable") }),
+        ])
+      : z.discriminatedUnion("status", states),
+  });
+}
+export const r1HousingAnswerChangeSchema = z.discriminatedUnion("field", [
+  answerChange("stage"),
+  answerChange("priority"),
+  answerChange("monthlyRentRub"),
+  answerChange("upfrontBudgetRub"),
+  answerChange("moveTiming"),
+  answerChange("household"),
+  answerChange("housingType"),
+  answerChange("preferredAreas", true),
+  answerChange("commuteDestination", true),
+  answerChange("commuteMaxMinutes", true),
+  answerChange("mustHave", true),
+  answerChange("niceToHave", true),
+]);
+export const r1HousingBriefCreateCommandSchema = z.strictObject({
+  commandId: uuid,
+  plan: planRef,
+});
+export const r1HousingAnswerCommandSchema = z.strictObject({
+  commandId: uuid,
+  plan: planRef,
+  brief: ref,
+  change: r1HousingAnswerChangeSchema,
+});
+
 export function createR1HousingAnswers(): R1HousingAnswers {
   return r1HousingAnswersSchema.parse(
     Object.fromEntries(

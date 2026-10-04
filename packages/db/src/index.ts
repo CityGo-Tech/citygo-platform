@@ -3,6 +3,10 @@ import pg from "pg";
 export { Repository, DomainError } from "./repository.js";
 export { AiCreditLedger } from "./ai-credit.js";
 export { AiCreditCharges } from "./ai-credit-charges.js";
+export {
+  HousingAnswers,
+  type HousingBriefSnapshot,
+} from "./housing-answers.js";
 import { createHash } from "node:crypto";
 import { readdir, readFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";

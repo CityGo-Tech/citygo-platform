@@ -259,16 +259,21 @@ test("API schema and environment allowlist stay in sync", () => {
   assert.deepEqual([...apiKeys].sort(), keys.sort());
 });
 
-test("Turbo caches only non-secret Web configuration and passes the test DB only to API tests", () => {
+test("Turbo caches only non-secret Web configuration and passes the test DB only to API/DB tests", () => {
   const turbo = JSON.parse(readFileSync(join(root, "turbo.json"), "utf8"));
   assert.equal(turbo.envMode, "strict");
   assert.equal(turbo.globalPassThroughEnv, undefined);
   assert.equal(turbo.globalEnv, undefined);
   assert.ok(!turbo.globalDependencies.includes(".env"));
+  const databaseTasks = ["@citygo/api#test", "@citygo/db#test"];
+  for (const name of databaseTasks) {
+    assert.deepEqual(turbo.tasks[name].passThroughEnv, ["TEST_DATABASE_URL"]);
+    assert.equal(turbo.tasks[name].cache, false);
+  }
   for (const [name, task] of Object.entries(turbo.tasks)) {
     assert.deepEqual(
       task.passThroughEnv ?? [],
-      name === "@citygo/api#test" ? ["TEST_DATABASE_URL"] : [],
+      databaseTasks.includes(name) ? ["TEST_DATABASE_URL"] : [],
     );
     assert.deepEqual(
       task.env ?? [],

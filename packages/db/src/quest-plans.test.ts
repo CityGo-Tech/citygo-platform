@@ -8,6 +8,7 @@ import {
   Repository,
   DomainError,
   type Database,
+  type Sql,
 } from "./index.js";
 import type { QuestPlanReference } from "@citygo/contracts";
 
@@ -566,33 +567,108 @@ test("existing least-privilege API grants can start/complete after identity trig
   const db = await fixture(t),
     owner = await user(db),
     ref = await plan(db, owner);
-  const rows = await quests(db, owner, ref),
-    repo = new Repository(db);
-  const grants = await readFile(
-    new URL("../../../deploy/postgres/grants.sql", import.meta.url),
-    "utf8",
-  );
+  const rows = await quests(db, owner, ref);
+  const suffix = randomUUID().replaceAll("-", "");
+  const roles = {
+    citygo_api: `cg009_api_${suffix}`,
+    citygo_worker: `cg009_worker_${suffix}`,
+    citygo_backup: `cg009_backup_${suffix}`,
+  };
+  const created: string[] = [];
+  const failures: unknown[] = [];
   // Driver-level role check, not a substitute for the deployed migration-role drill.
-  await db.exec(
-    "create role citygo_api; create role citygo_worker; create role citygo_backup;",
-  );
-  await db.exec(grants.replace(/^\\set[^\n]*\r?\n/, ""));
-  await db.exec("set role citygo_api");
   try {
+    for (const role of Object.values(roles)) {
+      assert.match(role, /^cg009_(api|worker|backup)_[a-f0-9]{32}$/);
+      await db.exec(`create role ${role} nologin`);
+      created.push(role);
+      await db.exec(`grant usage on schema public to ${role}`);
+    }
+    const grants = (
+      await readFile(
+        new URL("../../../deploy/postgres/grants.sql", import.meta.url),
+        "utf8",
+      )
+    )
+      .replace(/^\\set[^\r\n]*(?:\r?\n|$)/gm, "")
+      .replace(
+        /\bcitygo_(api|worker|backup)\b/g,
+        (name) => roles[name as keyof typeof roles],
+      );
+    await db.exec(grants);
+    // Preserve real Repository transaction boundaries. Every transaction and
+    // standalone query runs as the API role on its own pinned connection.
+    // Never SET ROLE on the pool or emulate nested transactions with callbacks.
+    const asApi = <T>(work: (tx: Sql) => Promise<T>) =>
+      db.transaction(async (tx) => {
+        await tx.exec(`set local role ${roles.citygo_api}`);
+        assert.equal(
+          (await tx.query<{ role: string }>("select current_user as role"))
+            .rows[0]!.role,
+          roles.citygo_api,
+        );
+        return work(tx);
+      });
+    const apiDb: Database = {
+      ...db,
+      exec: (sql) => asApi((tx) => tx.exec(sql)),
+      query: <T>(sql: string, params?: unknown[]) =>
+        asApi((tx) => tx.query<T>(sql, params)),
+      transaction: asApi,
+    };
+    const repo = new Repository(apiDb);
     const thread = await repo.start(owner, rows[0]!.id);
-    await advice(db, thread.id);
+    await advice(apiDb, thread.id);
     assert.deepEqual(await repo.complete(owner, rows[0]!.id), { awarded: 60 });
     assert.deepEqual(await repo.complete(owner, rows[0]!.id), { awarded: 0 });
     await assert.rejects(
-      db.query("select * from citygo_quest_plan_preflight"),
-      /permission denied/,
+      apiDb.query("select * from citygo_quest_plan_preflight"),
+      { code: "42501" },
     );
+    assert.equal(
+      (
+        await db.query<{ reset: boolean }>(
+          "select current_user = session_user as reset",
+        )
+      ).rows[0]!.reset,
+      true,
+      "restricted role must not leak after commit or rollback",
+    );
+  } catch (error) {
+    failures.push(error);
   } finally {
-    await db.exec("reset role");
+    // Roles are cluster-global. Clean only roles created here, before t.after
+    // drops this fixture database; preserve both test and cleanup failures.
+    for (const role of created.reverse()) {
+      try {
+        await db.exec(`drop owned by ${role}; drop role ${role}`);
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    try {
+      assert.deepEqual(
+        (
+          await db.query(
+            "select rolname from pg_roles where rolname = any($1::text[])",
+            [created],
+          )
+        ).rows,
+        [],
+        "generated CG-009 roles must not remain in the cluster",
+      );
+    } catch (error) {
+      failures.push(error);
+    }
   }
+  if (failures.length)
+    throw new AggregateError(
+      failures,
+      "CG-009 API grants test or cleanup failed",
+    );
 });
 
-test("container smoke's actual synthetic rewind/seed SQL upgrades from 9 to 11 and preserves populated history", async (t) => {
+test("container smoke's actual synthetic rewind/seed SQL upgrades from 9 to 12 and preserves populated history", async (t) => {
   const db = await fixture(t);
   // Read literal fixture SQL without importing/executing the Docker harness.
   // Fail if its representation changes; never evaluate JavaScript from a file.
@@ -615,7 +691,7 @@ test("container smoke's actual synthetic rewind/seed SQL upgrades from 9 to 11 a
   await migrate(db);
   assert.equal(
     (await db.query("select name from citygo_migrations")).rows.length,
-    11,
+    12,
   );
   assert.deepEqual(await snapshot(db), before);
   const cleanup = script.match(

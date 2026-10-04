@@ -37,6 +37,8 @@
 - [Разделение окружений и секретов](runbooks/service-environments.md).
 - [Совместимость API, Web и Expo](architecture/api-compatibility.md).
 - [Реальное устройство AI-ролей](agents/README.md).
+- [CG-012A: история частичных ответов](implementation/cg-012-answer-history.md) —
+  первый неактивный инкремент хранения, границы и проверки; не полный новый путь.
 - [Границы безопасности](security/implementation-boundaries.md) и [классификация данных](security/data-classification.md).
 - [Почему monorepo](adr/0001-monorepo-first.md).
 
@@ -50,16 +52,16 @@
 топология, активные пути конфигураций, GitHub Secrets/Variables, стадии выпуска,
 границы автообновления, бэкапы и безопасная диагностика.
 
-| Задача                                 | Основная инструкция                                         | Дополнительные документы                                                                              |
-| -------------------------------------- | ----------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| Настроить AI                           | [Провайдеры](runbooks/ai-providers.md)                      | [DeepSeek](runbooks/routerai-deepseek.md), [GigaChat Ultra](runbooks/gigachat-ultra.md)               |
-| Проверить допуск RouterAI в production | [Production-допуск](runbooks/routerai-production.md)        | [Профиль развёртывания](runbooks/routerai-deployment-profile.md)                                      |
-| Разобраться с балансом                 | [Учёт стоимости RouterAI](runbooks/ai-credit-charging.md)   | [Бонус и сверка](runbooks/ai-credit.md), [суточные ограничения](runbooks/ai-user-budget.md)           |
+| Задача                                 | Основная инструкция                                         | Дополнительные документы                                                                                    |
+| -------------------------------------- | ----------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| Настроить AI                           | [Провайдеры](runbooks/ai-providers.md)                      | [DeepSeek](runbooks/routerai-deepseek.md), [GigaChat Ultra](runbooks/gigachat-ultra.md)                     |
+| Проверить допуск RouterAI в production | [Production-допуск](runbooks/routerai-production.md)        | [Профиль развёртывания](runbooks/routerai-deployment-profile.md)                                            |
+| Разобраться с балансом                 | [Учёт стоимости RouterAI](runbooks/ai-credit-charging.md)   | [Бонус и сверка](runbooks/ai-credit.md), [суточные ограничения](runbooks/ai-user-budget.md)                 |
 | Разобраться с Cloud.ru                 | [Руководство оператора](operations/server-handbook.md)      | [Первоначальная настройка](runbooks/cloudru-runtime.md), [снимок сервера](operations/runtime-2026-10-04.md) |
-| Выпустить изменения                    | [Обновление из main](runbooks/automatic-main-deployment.md) | [Релиз-кандидат](runbooks/release-candidate.md), [операторский порядок](runbooks/release-operator.md) |
-| Работать с резервными копиями          | [Почасовое хранение](runbooks/hourly-backup-retention.md)   | [Шифрование](runbooks/encrypted-backup.md), [эксплуатация backup](runbooks/backup-operations.md)      |
-| Провести закрытую репетицию запуска    | [Репетиция](runbooks/closed-restart-rehearsal.md)           | [Согласованная миграция](runbooks/release-approved-migration.md)                                      |
-| Обслуживать фоновые задачи             | [Координация worker](runbooks/worker-coordination.md)       | [Код worker](../apps/worker/src)                                                                      |
+| Выпустить изменения                    | [Обновление из main](runbooks/automatic-main-deployment.md) | [Релиз-кандидат](runbooks/release-candidate.md), [операторский порядок](runbooks/release-operator.md)       |
+| Работать с резервными копиями          | [Почасовое хранение](runbooks/hourly-backup-retention.md)   | [Шифрование](runbooks/encrypted-backup.md), [эксплуатация backup](runbooks/backup-operations.md)            |
+| Провести закрытую репетицию запуска    | [Репетиция](runbooks/closed-restart-rehearsal.md)           | [Согласованная миграция](runbooks/release-approved-migration.md)                                            |
+| Обслуживать фоновые задачи             | [Координация worker](runbooks/worker-coordination.md)       | [Код worker](../apps/worker/src)                                                                            |
 
 Инструкции `release-*` описывают отдельные контролируемые шаги релиза. Входить
 в них следует через операторский порядок, а не выбирать шаг по имени файла.
