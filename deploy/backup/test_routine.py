@@ -80,6 +80,9 @@ class Pruning(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.directory = Path(self.temp.name)
         self.config = sample()
+        clock = patch.object(time, 'time', return_value=datetime(2026, 10, 4, 6, 49, 20, tzinfo=timezone.utc).timestamp())
+        self.clock = clock.start()
+        self.addCleanup(clock.stop)
         self.records = [record(int(time.time()) - 10 - i * 3600, i) for i in range(80)]
         self.store = MemoryStore(self.records)
         self.freshness = patch.object(b, 'check_freshness')
@@ -104,10 +107,39 @@ class Pruning(unittest.TestCase):
         self.assertEqual(self.store.deleted, [])
 
     def test_versioned_candidate_stops_entire_delete_plan(self):
-        self.store.versioned.add(self.records[-1]['key'])
-        with self.assertRaisesRegex(b.BackupError, 'versioned'):
-            self.prune(delete=True)
-        self.assertEqual(self.store.deleted, [])
+        # Reproduce the failing CI hour, then cross UTC day/week/ISO-year boundaries.
+        dates = (
+            '2026-10-04T06:49:20+00:00', '2026-10-04T07:49:20+00:00',
+            '2026-10-04T23:59:59+00:00', '2026-10-05T00:00:00+00:00',
+            '2026-12-31T23:59:59+00:00', '2027-01-01T00:00:00+00:00',
+            '2027-01-03T23:59:59+00:00', '2027-01-04T00:00:00+00:00',
+        )
+        for date in dates:
+            now = datetime.fromisoformat(date).timestamp()
+            self.clock.return_value = now
+            self.records = [record(int(now) - 10 - i * 3600, i) for i in range(80)]
+            keep = r.keep_ids(self.records)
+            candidates = [v for v in self.records if v['backup_id'] not in keep]
+            self.assertGreater(len(candidates), 1)
+            # The oldest snapshot can be retained as a daily/weekly representative.
+            # Pick the LAST actual deletion candidate to detect partial deletion too.
+            candidate = candidates[-1]
+            for suffix in ('.dump.age', '.complete.json'):
+                with self.subTest(date=date, suffix=suffix):
+                    self.store = MemoryStore(self.records)
+                    original = dict(self.store.objects)
+                    self.store.versioned.add(candidate['key'].removesuffix('.dump.age') + suffix)
+                    with self.assertRaisesRegex(b.BackupError, '^retention-versioned-object$'):
+                        self.prune(delete=True)
+                    self.assertEqual(self.store.deleted, [])
+                    self.assertEqual(self.store.objects, original)
+
+    def test_oldest_snapshot_is_not_always_a_deletion_candidate(self):
+        for hour, retained in ((6, True), (7, False)):
+            with self.subTest(utc_hour=hour):
+                now = datetime(2026, 10, 4, hour, 49, 20, tzinfo=timezone.utc).timestamp()
+                values = [record(int(now) - 10 - i * 3600, i) for i in range(80)]
+                self.assertEqual(values[-1]['backup_id'] in r.keep_ids(values), retained)
 
     def test_freshness_failure_never_deletes(self):
         with patch.object(b, 'check_freshness', side_effect=b.BackupError('stale')):
