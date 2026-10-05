@@ -45,6 +45,10 @@ import type { ProviderMap } from "./provider.js";
 import { createAiExecution } from "./ai-execution.js";
 import { ApiDrain, registerDrain } from "./shutdown.js";
 import { registerSyntheticHousingApi } from "./housing.js";
+import {
+  registerR1SyntheticPermissionHttp,
+  type R1SyntheticPermissionHttpOptions,
+} from "./r1-permission-http.js";
 
 export async function buildApp(options: {
   db: Database;
@@ -54,9 +58,19 @@ export async function buildApp(options: {
   testing?: boolean;
   drain?: ApiDrain;
   housingLimits?: Partial<HousingStorageLimits>;
+  syntheticPermissions?: R1SyntheticPermissionHttpOptions;
 }) {
   const drain = options.drain ?? new ApiDrain();
   const config = options.config ?? readConfig();
+  // No environment activation or server/deploy wiring. Even an injected
+  // config must have BOTH test mode and the explicit test harness flag.
+  if (
+    options.syntheticPermissions !== undefined &&
+    (config.NODE_ENV !== "test" || options.testing !== true)
+  )
+    throw new Error(
+      "R1 permission HTTP is available only in a synthetic test harness",
+    );
   // Also guard explicitly supplied config objects, not just readConfig callers.
   if (
     config.NODE_ENV === "production" &&
@@ -274,6 +288,13 @@ export async function buildApp(options: {
       db: options.db,
       authenticate,
       limits: options.housingLimits,
+    });
+  if (options.syntheticPermissions !== undefined)
+    registerR1SyntheticPermissionHttp(app, {
+      db: options.db,
+      webOrigin: config.WEB_ORIGIN,
+      authenticate,
+      limits: options.syntheticPermissions,
     });
   for (const action of ["register", "login"] as const) {
     app.post(
