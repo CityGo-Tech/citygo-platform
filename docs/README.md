@@ -41,6 +41,8 @@
   отдельная операторская операция, не команда автоматического deployment.
 - [Чистый тестовый запуск](runbooks/fresh-test-launch.md): полный сброс прежней
   истории по новому решению владельца, тариф ×10 и подключения до открытия пилота.
+- [Подготовка боевой оплаты ЮKassa и чеков НПД](runbooks/yookassa-live-preparation.md):
+  проверенный sandbox, принятый порядок списания и условия включения live.
 - [Разделение окружений и секретов](runbooks/service-environments.md).
 - [Совместимость API, Web и Expo](architecture/api-compatibility.md).
 - [Реальное устройство AI-ролей](agents/README.md).
