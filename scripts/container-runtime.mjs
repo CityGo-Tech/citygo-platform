@@ -53,9 +53,17 @@ const citygo10xFixed = {
   AI_CREDIT_MODE: "routerai_citygo_10x",
   YOOKASSA_MODE: "disabled",
 };
+// Separate opt-in marker: adding a live key to either legacy profile is invalid.
+// This selects transports, not permission to open ingress or spend AI budget.
+const citygo10xLiveFixed = {
+  ...citygo10xFixed,
+  YOOKASSA_MODE: "live",
+  YOOKASSA_RECEIPT_MODE: "npd_manual",
+};
 const routerAiProfiles = {
   "routerai-credit-v1": routerAiFixed,
   "routerai-citygo-10x-v1": citygo10xFixed,
+  "routerai-citygo-10x-yookassa-live-v1": citygo10xLiveFixed,
 };
 const routerAiKeys = (fixed) => [
   "DATABASE_URL",
@@ -65,6 +73,9 @@ const routerAiKeys = (fixed) => [
   "ROUTERAI_PRODUCTION_POLICY_ID",
   ...Object.keys(fixed),
   ...Object.keys(routerAiLimits),
+  ...(fixed === citygo10xLiveFixed
+    ? ["YOOKASSA_SHOP_ID", "YOOKASSA_SECRET_KEY"]
+    : []),
 ];
 
 function validateRouterAi(value, fixed) {
@@ -89,7 +100,10 @@ function validateRouterAi(value, fixed) {
       value.ADMIN_USER_IDS.split(",").length ||
     !/^[a-f0-9]{64}$/.test(value.ROUTERAI_PRODUCTION_POLICY_ID) ||
     value.ROUTERAI_DATA_NOTICE.length > 4000 ||
-    value.ROUTERAI_API_KEY.length > 8192
+    value.ROUTERAI_API_KEY.length > 8192 ||
+    (fixed === citygo10xLiveFixed &&
+      (!/^[1-9][0-9]{0,19}$/.test(value.YOOKASSA_SHOP_ID) ||
+        !/^live_[A-Za-z0-9_=-]{8,8192}$/.test(value.YOOKASSA_SECRET_KEY)))
   )
     throw new Error();
 }

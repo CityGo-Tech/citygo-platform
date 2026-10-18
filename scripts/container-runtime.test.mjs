@@ -231,6 +231,110 @@ for (const [marker, file] of [
     );
   });
 
+test("live YooKassa uses a distinct API-only x10 marker and never inherits payment credentials", (t) => {
+  const directory = fixture(t);
+  const marker = "routerai-citygo-10x-yookassa-live-v1";
+  const value = JSON.parse(
+    readFileSync(
+      join(
+        root,
+        "deploy/fixtures/routerai-citygo-10x-yookassa-live-profile.fixture.json",
+      ),
+      "utf8",
+    ),
+  );
+  const inherited = {
+    CITYGO_MOUNTED_CONFIG: "1",
+    CITYGO_AI_PROFILE: marker,
+    LLM_PROVIDER: "routerai",
+    WEB_ORIGIN: "https://pilot.example.test",
+  };
+  const write = (data) =>
+    writeFileSync(join(directory, "api.json"), JSON.stringify(data));
+  const spec = (extra = {}, mode = "api") =>
+    containerSpec(mode, { ...inherited, ...extra }, directory, directory);
+  write(value);
+  const env = spec().env;
+  for (const [key, setting] of Object.entries(value))
+    assert.equal(env[key], setting);
+  assert.equal(env.NODE_ENV, "production");
+  assert.equal(env.CITYGO_AI_PROFILE, undefined);
+  assert.equal(env.YOOKASSA_MODE, "live");
+  assert.equal(env.YOOKASSA_RECEIPT_MODE, "npd_manual");
+  for (const key of ["OPENAI_API_KEY", "GIGACHAT_CREDENTIALS"])
+    assert.equal(env[key], undefined);
+  for (const key of Object.keys(value)) {
+    const missing = { ...value };
+    delete missing[key];
+    write(missing);
+    assert.throws(() => spec(), /Invalid mounted/);
+  }
+  for (const patch of [
+    { AI_CREDIT_MODE: "disabled" },
+    { AI_CREDIT_MODE: "routerai_at_cost" },
+    { YOOKASSA_MODE: "test" },
+    { YOOKASSA_MODE: "disabled" },
+    { YOOKASSA_RECEIPT_MODE: "disabled" },
+    { YOOKASSA_RECEIPT_MODE: "npd_partner" },
+    { YOOKASSA_SHOP_ID: "0" },
+    { YOOKASSA_SHOP_ID: "000123" },
+    { YOOKASSA_SHOP_ID: "1".repeat(21) },
+    { YOOKASSA_SECRET_KEY: "test_SYNTHETIC_NOT_A_REAL_KEY" },
+    { YOOKASSA_SECRET_KEY: "live_short" },
+    { YOOKASSA_SECRET_KEY: "live_" + "x".repeat(8193) },
+    { YOOKASSA_SECRET_KEY: "live_hidden\nvalue" },
+    { YOOKASSA_BASE_URL: "https://untrusted.test" },
+    { YOOKASSA_RETURN_URL: "https://untrusted.test" },
+    { WEB_ORIGIN: "https://untrusted.test" },
+    { ROUTERAI_MODEL: "other" },
+    { ROUTERAI_UPSTREAM: "other" },
+    { ROUTERAI_COUNTRY: "ru" },
+    { ROUTERAI_API_KEY: "hidden\nvalue" },
+    { ROUTERAI_PRODUCTION_POLICY_ID: "true" },
+    { ROUTERAI_DATA_NOTICE: " " },
+    { LLM_GLOBAL_DAILY_ATTEMPT_LIMIT: "1000001" },
+    { OPENAI_API_KEY: "hidden-value" },
+  ]) {
+    write({ ...value, ...patch });
+    assert.throws(
+      () => spec(),
+      (error) => {
+        assert.match(error.message, /Invalid mounted/);
+        assert.doesNotMatch(error.message, /SYNTHETIC|hidden-value|postgresql/);
+        return true;
+      },
+    );
+  }
+  write(value);
+  for (const mode of ["web", "worker", "migrate", "migrate-release"])
+    assert.throws(() => spec({}, mode), /Invalid container AI profile/);
+  for (const extra of [
+    { CITYGO_MOUNTED_CONFIG: undefined },
+    { LLM_PROVIDER: "disabled" },
+    { YOOKASSA_SHOP_ID: value.YOOKASSA_SHOP_ID },
+    { YOOKASSA_SECRET_KEY: value.YOOKASSA_SECRET_KEY },
+    { ROUTERAI_API_KEY: value.ROUTERAI_API_KEY },
+    { YOOKASSA_MODE: "live" },
+  ])
+    assert.throws(() => spec(extra), /Invalid container AI profile/);
+  for (const profile of [
+    undefined,
+    "routerai-credit-v1",
+    "routerai-citygo-10x-v1",
+  ])
+    assert.throws(
+      () => spec({ CITYGO_AI_PROFILE: profile }),
+      /Invalid mounted/,
+    );
+  // Independent credential bounds (the overall secret cap remains 16 KiB).
+  write({
+    ...value,
+    YOOKASSA_SHOP_ID: "1".repeat(20),
+    YOOKASSA_SECRET_KEY: "live_" + "x".repeat(8192),
+  });
+  assert.equal(spec().env.YOOKASSA_SECRET_KEY.length, 8197);
+});
+
 test("Nginx rendering rejects directives and sets bounded streaming/header rules", () => {
   for (const host of [
     "",

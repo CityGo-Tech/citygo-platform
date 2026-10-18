@@ -86,8 +86,22 @@ class OfflinePlan(unittest.TestCase):
         self.observation_file = self.directory / "observation.json"
         self.observation_file.write_bytes(planner.wire(self.observed))
 
-    def build(self, value=None):
-        return planner.build(self.source, planner.wire(self.observed if value is None else value), source_sha="b" * 40)
+    def build(self, value=None, *, transition="12-to-18"):
+        return planner.build(self.source, planner.wire(self.observed if value is None else value), source_sha="b" * 40,
+                             transition=transition)
+
+    def live_observation(self, *, current_profile=planner.PROFILE):
+        value = copy.deepcopy(self.observed)
+        value["version"] = 2
+        value["current_profile"] = current_profile
+        value["current_manifest"]["migrations"] = copy.deepcopy(self.migrations)
+        value["database"]["migrations"] = [{"name": item["name"], "checksum": item["sha256"]} for item in self.migrations]
+        value["secrets"]["api"] = metadata("/etc/citygo/closed-runtime-20261018/api.json", "c" * 64, mode="0444",
+            extra={"keys": sorted(planner.CITYGO_10X_API_KEYS) if current_profile == planner.PROFILE else ["DATABASE_URL"],
+                   "source": "active-release", "matches_active_pin": True})
+        for number, name in enumerate(planner.LIVE_SUFFIX, 19):
+            (self.source / "packages/db/migrations" / name).write_bytes(f"begin;\nselect {number};\ncommit;\n".encode())
+        return value
 
     def test_deterministic_exact_archive_never_executes_or_copies_extra_source_files(self):
         (self.source / ".env").write_text("DO_NOT_COPY=synthetic-not-a-real-secret", encoding="utf-8")
@@ -113,7 +127,9 @@ class OfflinePlan(unittest.TestCase):
         self.assertNotIn(b"DO_NOT_COPY", b"".join(first.values()))
 
     def test_every_draft_is_rejected_even_after_flags_and_times_are_changed(self):
-        outputs = self.build()
+        self.assert_inactive_drafts(self.build())
+
+    def assert_inactive_drafts(self, outputs):
         now = int(time.time())
         parsers = {"preparation": (t.approval, "allow_preparation"), "migration": (c.approval, "allow_migration"),
                    "startup": (s.approval, "allow_start"), "finish": (f.approval, "allow_finish")}
@@ -135,6 +151,107 @@ class OfflinePlan(unittest.TestCase):
             # any stage parser even when all other values have valid shapes.
             del value["draft"]
             self.assertEqual(parser(planner.wire(value), now), value)
+
+    def test_explicit_18_to_21_is_separate_closed_profile_with_exact_suffix_and_inactive_drafts(self):
+        value = self.live_observation()
+        outputs = self.build(value, transition="18-to-21")
+        plan = json.loads(outputs["plan.json"])
+        self.assertEqual(plan["transition"], {"name": "18-to-21", "current_migration_count": 18,
+                         "target_migration_count": 21, "required_suffix": list(planner.LIVE_SUFFIX)})
+        self.assertEqual([item["name"] for item in plan["candidate_migrations"]][18:], list(planner.LIVE_SUFFIX))
+        self.assertEqual(plan["current"]["profile"], planner.PROFILE)
+        self.assertEqual(plan["profile"]["name"], planner.LIVE_PROFILE)
+        self.assertEqual(plan["profile"]["approval_version"], 4)
+        self.assertEqual(plan["profile"]["YOOKASSA_MODE"], "live")
+        self.assertEqual(plan["profile"]["YOOKASSA_RECEIPT_MODE"], "npd_manual")
+        for key in planner.ROUTERAI_LIMIT_KEYS: self.assertEqual(plan["profile"][key], "0")
+        self.assertIsNone(plan["profile"]["api_secret_sha256"])
+        self.assertEqual(plan["authorizes"], planner.AUTHORIZES)
+        self.assertIs(plan["ready"], False)
+        self.assertIs(plan["payment_status"]["real_payments_authorized"], False)
+        self.assertIs(plan["payment_status"]["server_changed"], False)
+        self.assertIn("new-live-citygo-10x-api-secret-not-prepared", plan["blockers"])
+        self.assert_inactive_drafts(outputs)
+        self.assertEqual(planner.PROFILE, "citygo-api-web-routerai-citygo-10x-v1")
+
+    def test_18_observation_accepts_closed_disabled_active_profile_without_loosening_default(self):
+        value = self.live_observation(current_profile=planner.DISABLED_PROFILE)
+        value["secrets"]["api"]["path"] = "/etc/citygo/secrets/api.json"
+        self.assertEqual(json.loads(self.build(value, transition="18-to-21")["plan.json"])["current"]["profile"],
+                         planner.DISABLED_PROFILE)
+        with self.assertRaises(planner.PlanError): self.build(value)
+        with self.assertRaises(planner.PlanError): self.build(self.observed, transition="18-to-21")
+
+    def test_18_observation_distinguishes_actual_mount_pin_from_standing_policy(self):
+        value = self.live_observation()
+        for change in ({"source": "standing-policy"}, {"matches_active_pin": False}, {"matches_policy_pin": True},
+                       {"path": "/etc/citygo/other/api.json"}, {"path": "/etc/citygo/closed-runtime-20261018/../api.json"},
+                       {"keys": ["DATABASE_URL"]}, {"keys": sorted(planner.CITYGO_10X_API_KEYS | {"YOOKASSA_SECRET_KEY"})},
+                       {"value": "secret-content-must-not-be-accepted"}):
+            bad = copy.deepcopy(value); bad["secrets"]["api"].update(change)
+            with self.subTest(change=change), self.assertRaises(planner.PlanError): self.build(bad, transition="18-to-21")
+        for profile in (planner.LIVE_PROFILE, "citygo-api-web-routerai-credit-v1", True, None):
+            bad = copy.deepcopy(value); bad["current_profile"] = profile
+            with self.subTest(profile=profile), self.assertRaisesRegex(planner.PlanError, "current-profile"):
+                self.build(bad, transition="18-to-21")
+        bad = copy.deepcopy(value); bad["policy_profile"] = planner.PROFILE
+        with self.assertRaisesRegex(planner.PlanError, "observation-identity"): self.build(bad, transition="18-to-21")
+        bad = copy.deepcopy(value); bad["policy_enabled"] = True
+        with self.assertRaisesRegex(planner.PlanError, "observation-identity"): self.build(bad, transition="18-to-21")
+
+    def test_18_manual_controller_preserves_separate_standing_policy_initial_bundle(self):
+        value = self.live_observation()
+        value["initial_bundle"] = "/opt/citygo/autodeploy-controller-" + "f" * 16 + "/initial-bundle"
+        self.assertNotEqual(value["initial_bundle"], value["controller_directory"] + "/initial-bundle")
+        outputs = self.build(value, transition="18-to-21")
+        plan = json.loads(outputs["plan.json"])
+        preserved = plan["preserve_unchanged"]
+        self.assertEqual(preserved["initial_bundle"], value["initial_bundle"])
+        self.assertEqual(preserved["initial_manifest_sha256"], value["initial_manifest_sha256"])
+        self.assertEqual(preserved["bindings"], value["bindings"])
+        self.assertEqual(preserved["controller_directory"], value["controller_directory"])
+        for path in ("/tmp/initial-bundle", "/opt/citygo/autodeploy-controller-other/initial-bundle",
+                     "/opt/citygo/autodeploy-controller-" + "f" * 16 + "/../initial-bundle",
+                     "/opt/citygo/autodeploy-controller-" + "f" * 16 + "/initial-bundle/extra"):
+            bad = copy.deepcopy(value); bad["initial_bundle"] = path
+            with self.subTest(path=path), self.assertRaisesRegex(planner.PlanError, "observation-paths"):
+                self.build(bad, transition="18-to-21")
+        old = copy.deepcopy(self.observed); old["initial_bundle"] = value["initial_bundle"]
+        with self.assertRaisesRegex(planner.PlanError, "observation-paths"): planner.observation(planner.wire(old))
+
+    def test_18_transition_rejects_count_prefix_and_suffix_drift(self):
+        value = self.live_observation()
+        for section, field in (("database", "checksum"), ("current_manifest", "sha256")):
+            bad = copy.deepcopy(value); bad[section]["migrations"][17][field] = "f" * 64
+            with self.subTest(section=section), self.assertRaisesRegex(planner.PlanError, "prefix-drift"):
+                self.build(bad, transition="18-to-21")
+            bad = copy.deepcopy(value); bad[section]["migrations"].pop()
+            with self.subTest(count=section), self.assertRaisesRegex(planner.PlanError, "migration-count"):
+                self.build(bad, transition="18-to-21")
+        directory = self.source / "packages/db/migrations"
+        selected = directory / planner.LIVE_SUFFIX[-1]
+        renamed = directory / "0021_wrong_suffix.sql"
+        selected.rename(renamed)
+        with self.assertRaisesRegex(planner.PlanError, "source-migration-suffix"): self.build(value, transition="18-to-21")
+        renamed.rename(selected)
+        extra = directory / "0022_extra.sql"
+        extra.write_bytes(b"select 22;\n")
+        with self.assertRaisesRegex(planner.PlanError, "source-migration-count"): self.build(value, transition="18-to-21")
+        extra.unlink()
+        selected.unlink()
+        with self.assertRaisesRegex(planner.PlanError, "source-migration-count"): self.build(value, transition="18-to-21")
+
+    def test_cli_transition_is_closed_enum_and_default_remains_historical(self):
+        for supplied, expected in (([], "12-to-18"), (["--transition", "18-to-21"], "18-to-21")):
+            with patch.object(planner, "require_offline_user"), patch.object(planner, "create_plan", return_value={}) as create, \
+                 redirect_stdout(io.StringIO()):
+                self.assertEqual(planner.main(["--source", "source", "--observation", "observed", "--output", "output", *supplied]), 0)
+            self.assertEqual(create.call_args.kwargs["transition"], expected)
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            planner.main(["--source", "source", "--observation", "observed", "--output", "output", "--transition", "12-to-21"])
+        for transition in (None, True, "12-to-21", "18-to-21;open"):
+            with self.subTest(transition=transition), self.assertRaisesRegex(planner.PlanError, "transition"):
+                self.build(transition=transition)
 
     def test_fresh_free_observation_still_cannot_approve_server_or_payments(self):
         plan = json.loads(self.build()["plan.json"])

@@ -284,4 +284,26 @@ class CityGo10xCutover(RouterAiCutover):
         self.assertFalse((self.state / w.ADMISSION).exists())
 
 
+@unittest.skipUnless(sys.platform.startswith("linux"), "Linux protected live-profile atomic cutover")
+class CityGo10xLiveCutover(RouterAiCutover):
+    profile = s.CITYGO_10X_YOOKASSA_LIVE_PROFILE
+    marker = "routerai-citygo-10x-yookassa-live-v1"
+
+    def test_live_transport_generation_is_closed_and_keys_remain_only_in_api_mount(self):
+        self.finish()
+        spec = json.loads(self.plan["files"]["compose.json"])
+        value = json.loads(self.api.read_bytes())
+        self.assertEqual(value["YOOKASSA_MODE"], "live")
+        self.assertEqual(value["YOOKASSA_RECEIPT_MODE"], "npd_manual")
+        self.assertEqual(s.approval(self.start_approval.path.read_bytes(), time.time())["version"], 4)
+        for role in ("web", "worker", "backup"):
+            self.assertFalse(any("YOOKASSA" in key or "ROUTERAI" in key
+                                 for key in spec["services"][role].get("environment", {})))
+            self.assertFalse(any(mount.get("source") == "api_config" if isinstance(mount, dict)
+                                 else mount == "api_config" for mount in spec["services"][role].get("secrets", [])))
+        self.assertNotIn(value["YOOKASSA_SECRET_KEY"], self.plan["files"]["compose.json"].decode())
+        self.assertTrue(self.host.closed)
+        self.assertFalse((self.state / w.ADMISSION).exists())
+
+
 if __name__ == "__main__": unittest.main()

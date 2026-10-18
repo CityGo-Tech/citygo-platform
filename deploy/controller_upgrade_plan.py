@@ -28,6 +28,17 @@ HASH = r"[a-f0-9]{64}"
 SHA = r"[a-f0-9]{40}"
 DIGEST = "sha256:" + HASH
 PROFILE = "citygo-api-web-routerai-citygo-10x-v1"
+LIVE_PROFILE = "citygo-api-web-routerai-citygo-10x-yookassa-live-v1"
+DISABLED_PROFILE = "citygo-api-web-disabled-v1"
+LIVE_SUFFIX = ("0019_yookassa_live_orders.sql", "0020_ai_budget_provider_balance.sql",
+               "0021_payment_notifications.sql")
+TRANSITIONS = ("12-to-18", "18-to-21")
+ROUTERAI_LIMIT_KEYS = {"LLM_USER_DAILY_REQUEST_LIMIT", "LLM_GLOBAL_DAILY_REQUEST_LIMIT",
+                      "LLM_USER_DAILY_ATTEMPT_LIMIT", "LLM_GLOBAL_DAILY_ATTEMPT_LIMIT"}
+CITYGO_10X_API_KEYS = {"DATABASE_URL", "ADMIN_USER_IDS", "ROUTERAI_API_KEY", "ROUTERAI_DATA_NOTICE",
+                     "ROUTERAI_PRODUCTION_POLICY_ID", "AI_CREDIT_MODE", "YOOKASSA_MODE", "ROUTERAI_MODEL",
+                     "ROUTERAI_UPSTREAM", "ROUTERAI_COUNTRY", "ROUTERAI_REASONING_EFFORT",
+                     "ROUTERAI_MAX_OUTPUT_TOKENS", "ROUTERAI_REQUEST_TIMEOUT_MS", "LLM_MAX_INPUT_BYTES"} | ROUTERAI_LIMIT_KEYS
 METADATA = {"bytes", "gid", "mode", "path", "sha256", "uid"}
 BINDINGS = {"/etc/citygo/autodeploy.json", "/etc/citygo/backup-routine.json", "/etc/citygo/backup.json",
             "/etc/sudoers.d/citygo-deploy", "/var/lib/citygo-backup/autodeploy/current.json",
@@ -50,6 +61,11 @@ class PlanError(Exception):
 
 def require(condition, code):
     if not condition: raise PlanError(code)
+
+
+def transition_counts(transition):
+    require(type(transition) is str and transition in TRANSITIONS, "transition")
+    return (12, 18) if transition == "12-to-18" else (18, 21)
 
 
 def matches(value, expression):
@@ -147,15 +163,20 @@ def controller_digest(hashes):
     return sha256(json.dumps(hashes, sort_keys=True).encode())
 
 
-def observation(raw):
+def observation(raw, *, transition="12-to-18"):
+    current_count, _ = transition_counts(transition)
+    live_transition = transition == "18-to-21"
     value = strict_json(raw)
-    keys(value, OBSERVATION_FIELDS)
-    require(type(value["version"]) is int and value["version"] == 1
+    keys(value, OBSERVATION_FIELDS | ({"current_profile"} if live_transition else set()))
+    require(type(value["version"]) is int and value["version"] == (2 if live_transition else 1)
             and value["kind"] == "citygo-controller-observation"
             and matches(value["source_sha"], SHA) and value["project"] == "citygo-pilot"
             and matches(value["config_fingerprint"], HASH)
-            and value["policy_enabled"] is False and value["policy_profile"] == "citygo-api-web-disabled-v1"
+            and value["policy_enabled"] is False and value["policy_profile"] == DISABLED_PROFILE
             and value["visudo_valid"] is True, "observation-identity")
+    if live_transition:
+        require(type(value["current_profile"]) is str and value["current_profile"] in (DISABLED_PROFILE, PROFILE),
+                "observation-current-profile")
     try:
         origin = urlsplit(value["origin"])
         observed = datetime.fromisoformat(value["observed_at"].replace("Z", "+00:00"))
@@ -172,7 +193,13 @@ def observation(raw):
     for name, item in value["files"].items():
         metadata(item, value["controller_directory"] + "/" + name, mode="0644")
     require(controller_digest({name: item["sha256"] for name, item in value["files"].items()}) == value["controller_sha256"], "controller-digest")
-    require(value["initial_bundle"] == value["controller_directory"] + "/initial-bundle"
+    initial_bundle_valid = (matches(value["initial_bundle"],
+                            r"/opt/citygo/autodeploy-controller-[a-f0-9]{16}/initial-bundle") if live_transition else
+                            value["initial_bundle"] == value["controller_directory"] + "/initial-bundle")
+    # A manually installed closed controller does not rewrite the disabled
+    # standing policy's initial bundle. Preserve its distinct path/hash as
+    # observed evidence; neither is rebound to the new controller here.
+    require(initial_bundle_valid
             and matches(value["initial_manifest_sha256"], HASH)
             and value["state_directory"] == "/var/lib/citygo-backup"
             and value["compose_file"] == value["state_directory"] + "/release-" + value["source_sha"] + "/compose.json", "observation-paths")
@@ -184,7 +211,7 @@ def observation(raw):
     require(matches(current["path"], "/opt/citygo/autodeploy-bundles/" + value["source_sha"]
                     + r"-[1-9][0-9]{0,19}-[1-9][0-9]{0,5}/release\.json")
             and current["source_sha"] == value["source_sha"] and matches(current["sha256"], HASH), "current-manifest")
-    migration_inventory(current["migrations"], "sha256", 12)
+    migration_inventory(current["migrations"], "sha256", current_count)
     keys(current["bases"], {"node", "postgres"})
     require(matches(current["bases"]["node"], r"node:24-bookworm-slim@" + DIGEST)
             and matches(current["bases"]["postgres"], r"postgres:17-alpine@" + DIGEST), "current-bases")
@@ -196,11 +223,20 @@ def observation(raw):
     keys(database, {"database", "migrations", "read_only", "role", "server_version"})
     require(database["database"] == "citygo_pilot" and database["read_only"] == "on"
             and database["role"] == "citygo_backup" and matches(database["server_version"], r"17\.[0-9]+"), "database-observation")
-    migration_inventory(database["migrations"], "checksum", 12)
+    migration_inventory(database["migrations"], "checksum", current_count)
     require([entry["name"] for entry in current["migrations"]] == [entry["name"] for entry in database["migrations"]], "migration-history")
     keys(value["secrets"], {"api", "migration", "worker", "backup"})
     for role, item in value["secrets"].items():
         filename = {"api": "api.json", "migration": "migrate.json", "worker": "worker.json", "backup": "db_backup_password"}[role]
+        if live_transition and role == "api":
+            require(type(item) is dict and type(item.get("path")) is str
+                    and (item["path"] == "/etc/citygo/secrets/api.json"
+                         or matches(item["path"], r"/etc/citygo/closed-runtime-[0-9]{8}/api\.json")), "active-secret-path")
+            metadata(item, item["path"], mode="0444", extra={"keys", "source", "matches_active_pin"})
+            require(item["source"] == "active-release" and item["matches_active_pin"] is True, "active-secret-pin")
+            allowed_keys = CITYGO_10X_API_KEYS if value["current_profile"] == PROFILE else {"DATABASE_URL"}
+            require(type(item["keys"]) is list and item["keys"] == sorted(allowed_keys), "secret-metadata-only")
+            continue
         metadata(item, "/etc/citygo/secrets/" + filename, mode="0444",
                  extra={"matches_policy_pin"} | ({"keys"} if role != "backup" else set()))
         require(item["matches_policy_pin"] is True, "secret-pin")
@@ -236,7 +272,9 @@ def archive(files):
     return output.getvalue()
 
 
-def drafts(value):
+def drafts(value, *, transition="12-to-18"):
+    transition_counts(transition)
+    live_transition = transition == "18-to-21"
     common = {"draft": True, "approved_at": None, "expires_at": None}
     preparation = {**common, "version": 2, "purpose": "citygo-release-preparation", "repository_id": 1351070410,
         "organization_id": 248379281, "artifact_id": None, "current_manifest_sha256": value["current_manifest"]["sha256"],
@@ -246,7 +284,8 @@ def drafts(value):
     migration = {**common, "version": 1, "purpose": "citygo-release-migration", "preparation_sha256": None,
         "target_manifest_sha256": None, "configuration_sha256": value["config_fingerprint"], "project": value["project"],
         "origin": value["origin"], "network_id": None, "allow_migration": False, "allow_start": False, "allow_traffic": False}
-    startup = {**common, "version": 3, "purpose": "citygo-release-start", "profile": PROFILE,
+    startup = {**common, "version": 4 if live_transition else 3, "purpose": "citygo-release-start",
+        "profile": LIVE_PROFILE if live_transition else PROFILE,
         "migration_approval_sha256": None, "api_secret_sha256": None, "web_network_id": None,
         "allow_start": False, "allow_traffic": False}
     finish = {**common, "version": 1, "purpose": "citygo-release-finish", "profile": "citygo-closed-release-v1",
@@ -257,10 +296,12 @@ def drafts(value):
             "startup.draft.json": startup, "finish.draft.json": finish}
 
 
-def build(source, observed_raw, *, source_sha=None):
+def build(source, observed_raw, *, source_sha=None, transition="12-to-18"):
+    current_count, target_count = transition_counts(transition)
+    live_transition = transition == "18-to-21"
     source = local_path(source, directory=True)
     require(source_sha is None or matches(source_sha, SHA), "source-label")
-    value = observation(observed_raw)
+    value = observation(observed_raw, transition=transition)
     files = {name: read_once(source / name, 262144) for name in CONTROLLER_FILES}
     for name, raw in files.items():
         if name.endswith(".py"):
@@ -270,7 +311,9 @@ def build(source, observed_raw, *, source_sha=None):
     proposed_digest = controller_digest(hashes)
     migration_directory = local_path(source / "packages/db/migrations", directory=True)
     names = sorted(entry.name for entry in migration_directory.iterdir())
-    require(len(names) == 18, "source-migration-count")
+    require(len(names) == target_count, "source-migration-count")
+    if live_transition:
+        require(tuple(names[current_count:]) == LIVE_SUFFIX, "source-migration-suffix")
     migrations = []
     checksums = []
     for number, name in enumerate(names, 1):
@@ -280,17 +323,19 @@ def build(source, observed_raw, *, source_sha=None):
         except UnicodeError: raise PlanError("migration-encoding") from None
         migrations.append({"name": name, "sha256": sha256(raw)})
         checksums.append({"name": name, "checksum": sha256(canonical)})
-    require(checksums[:12] == value["database"]["migrations"], "source-database-prefix-drift")
-    require(migrations[:12] == value["current_manifest"]["migrations"], "source-manifest-prefix-drift")
+    require(checksums[:current_count] == value["database"]["migrations"], "source-database-prefix-drift")
+    require(migrations[:current_count] == value["current_manifest"]["migrations"], "source-manifest-prefix-drift")
     grants = read_once(source / "deploy/postgres/grants.sql", 262144)
     package = archive(files)
-    inactive = drafts(value)
+    inactive = drafts(value, transition=transition)
     blockers = ["target-main-publication-not-verified", "target-manifest-and-tested-images-unavailable",
                 "controller-not-installed-or-authorized", "new-citygo-10x-api-secret-not-prepared",
                 "local-image-and-runtime-inventory-not-verified", "fresh-backup-and-release-window-recheck-required",
                 "independent-stage-approvals-not-issued"]
     blockers += ["observed-lock-busy:" + name for name, state in value["locks"].items() if state == "busy"]
     blockers += ["observed-pending:" + name for name, present in value["pending"].items() if present]
+    if live_transition:
+        blockers[blockers.index("new-citygo-10x-api-secret-not-prepared")] = "new-live-citygo-10x-api-secret-not-prepared"
     for unit, item in value["systemd"].items():
         if unit.endswith(".service") and item["ActiveState"] != "inactive": blockers.append("observed-service-not-idle:" + unit)
         if item["Result"] != "success": blockers.append("observed-service-result:" + unit)
@@ -316,6 +361,21 @@ def build(source, observed_raw, *, source_sha=None):
                     "YOOKASSA_MODE": "disabled", "api_secret_sha256": None},
         "draft_hashes_not_active_approval_pins": {name: sha256(wire(data)) for name, data in inactive.items()},
         "activation_warning": "Draft hashes are not future active approval pins. Fresh independently approved bytes and times must be bound in order; this tool cannot activate or install them."}
+    if live_transition:
+        plan["transition"] = {"name": transition, "current_migration_count": current_count,
+                              "target_migration_count": target_count, "required_suffix": list(LIVE_SUFFIX)}
+        plan["current"]["profile"] = value["current_profile"]
+        plan["profile"] = {"name": LIVE_PROFILE, "approval_version": 4,
+                           "AI_CREDIT_MODE": "routerai_citygo_10x", "YOOKASSA_MODE": "live",
+                           "YOOKASSA_RECEIPT_MODE": "npd_manual", "api_secret_sha256": None,
+                           **{key: "0" for key in sorted(ROUTERAI_LIMIT_KEYS)}}
+        plan["pilot_opening_gaps"] = ["live-payment-and-refund-acceptance-not-verified",
+                                      "manual-npd-workflow-acceptance-not-verified",
+                                      "background-reconciliation-release-not-verified",
+                                      "separate-traffic-and-spending-approval-required"]
+        plan["payment_status"] = {"runtime_candidate_mode": "live", "server_changed": False,
+                                  "real_payments_authorized": False, "live_adapter_implemented": True,
+                                  "merchant_acceptance_verified": False, "npd_workflow_acceptance_verified": False}
     outputs = {name: wire(data) for name, data in inactive.items()}
     outputs.update({"plan.json": wire(plan), "controller-candidate.tar": package})
     return outputs
@@ -352,7 +412,7 @@ def directory_anchor(path):
         for descriptor in reversed(descriptors): os.close(descriptor)
 
 
-def create_plan(source, observation_file, output, *, source_sha=None):
+def create_plan(source, observation_file, output, *, source_sha=None, transition="12-to-18"):
     require_offline_user()
     output = Path(output)
     require(output.is_absolute() and ".." not in output.parts and output.name not in ("", ".", ".."), "local-path")
@@ -362,7 +422,7 @@ def create_plan(source, observation_file, output, *, source_sha=None):
         except FileNotFoundError: pass
         else: raise PlanError("output-already-exists")
         raw = read_once(observation_file, 512 * 1024)
-        outputs = build(source, raw, source_sha=source_sha)
+        outputs = build(source, raw, source_sha=source_sha, transition=transition)
         recheck_parent()
         try: os.mkdir(output.name, mode=0o700, dir_fd=parent)
         except FileExistsError: raise PlanError("output-already-exists") from None
@@ -407,10 +467,11 @@ def main(argv=None):
     parser = Parser(description=__doc__, allow_abbrev=False)
     for name in ("source", "observation", "output"): parser.add_argument("--" + name, required=True)
     parser.add_argument("--source-sha")
+    parser.add_argument("--transition", choices=TRANSITIONS, default="12-to-18")
     args = parser.parse_args(argv)
     try:
         require_offline_user()
-        result = create_plan(args.source, args.observation, args.output, source_sha=args.source_sha)
+        result = create_plan(args.source, args.observation, args.output, source_sha=args.source_sha, transition=args.transition)
         print(json.dumps(result, sort_keys=True))
         return 0
     except PlanError as error:

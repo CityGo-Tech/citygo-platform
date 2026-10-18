@@ -25,8 +25,9 @@ const implementationGaps = [
       "Долговечная очередь и ограниченная GET-сверка реализованы; регулярный drain и контроль его сбоев ещё не выпущены.",
   },
   {
-    code: "LIVE_RELEASE_PROFILE_NOT_IMPLEMENTED",
-    message: "Нужен проверенный production-профиль оплаты и тарифа CityGo ×10.",
+    code: "LIVE_RELEASE_PROFILE_ACCEPTANCE_PENDING",
+    message:
+      "Закрытый runtime-профиль оплаты и тарифа CityGo ×10 подготовлен; установка, закрытый выпуск и отдельный допуск приёма денег ещё не подтверждены.",
   },
 ] as const;
 

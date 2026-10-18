@@ -12,6 +12,7 @@ import { workerCoordinationSmoke } from "./worker-coordination-smoke.mjs";
 import { releasePrepareSmoke } from "./release-prepare-smoke.mjs";
 import { releaseMigrationSmoke } from "./release-migration-smoke.mjs";
 import { releaseUpgrade12Smoke } from "./release-upgrade-12-smoke.mjs";
+import { releaseUpgrade18Smoke } from "./release-upgrade-18-smoke.mjs";
 import { routerAiProfileSmoke } from "./routerai-profile-smoke.mjs";
 
 export async function pilotSmoke({
@@ -135,6 +136,7 @@ export async function pilotSmoke({
     ]);
     await releaseMigrationSmoke({ project, directory, compose, docker, psql });
     await releaseUpgrade12Smoke({ project, directory, compose, docker, psql });
+    await releaseUpgrade18Smoke({ project, directory, compose, docker, psql });
     await routerAiProfileSmoke({ project, directory, apiImage, docker, psql });
     compose(["up", "-d", "--wait", "--wait-timeout", "120", "api", "web"]);
     console.log("Pilot fixture: mounted-secret startup and migrations ready");

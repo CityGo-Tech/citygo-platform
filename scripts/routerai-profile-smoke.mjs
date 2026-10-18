@@ -17,6 +17,10 @@ export async function routerAiProfileSmoke({
   for (const [marker, fixture] of [
     ["routerai-credit-v1", "routerai-profile.fixture.json"],
     ["routerai-citygo-10x-v1", "routerai-citygo-10x-profile.fixture.json"],
+    [
+      "routerai-citygo-10x-yookassa-live-v1",
+      "routerai-citygo-10x-yookassa-live-profile.fixture.json",
+    ],
   ])
     await mountedProfileSmoke({
       project,
@@ -161,6 +165,14 @@ async function mountedProfileSmoke({
     assert.equal(psql("select enabled from ai_budget where id=1"), "f");
     assert.equal(psql("select count(*) from ai_model_attempts"), "0");
     assert.equal(psql("select count(*) from ai_credit_entries"), "0");
+    for (const table of [
+      "payment_topup_orders",
+      "ai_credit_topups",
+      "payment_refunds",
+      "npd_receipt_tasks",
+      "payment_notification_inbox",
+    ])
+      assert.equal(psql(`select count(*) from ${table}`), "0");
     // Inspect only key NAMES of the container environment, not mounted values.
     const env = JSON.parse(
       docker(["inspect", "--format", "{{json .Config.Env}}", id]),
@@ -182,7 +194,7 @@ async function mountedProfileSmoke({
     docker(["rm", id]);
   }
   console.log(
-    `RouterAI ${marker}: production-mode startup verified, zero attempts/credits; payment disabled, network egress blocked`,
+    `RouterAI ${marker}: production-mode startup verified, zero attempts/credits/payments; synthetic credentials only, network egress blocked`,
   );
 }
 

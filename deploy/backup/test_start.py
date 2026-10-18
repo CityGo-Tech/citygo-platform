@@ -180,10 +180,66 @@ class Validation(unittest.TestCase):
         spec = s.compose_spec("citygo-fixture", ORIGIN, {"api": image, "web": image}, "/tmp/api.json", s.CITYGO_10X_PROFILE)
         self.assertNotIn("CITYGO_AI_PROFILE", spec["services"]["web"]["environment"])
 
+    def test_live_yookassa_is_a_separate_exact_profile_with_manual_npd(self):
+        value = routerai_fixture(s.CITYGO_10X_YOOKASSA_LIVE_PROFILE)
+        def validate(data, profile=s.CITYGO_10X_YOOKASSA_LIVE_PROFILE):
+            with patch.object(t, "read_file", return_value=encoded(data)): return s.api_secret("/unused", profile)
+        self.assertEqual(validate(value), encoded(value))
+        self.assertEqual(s.PROFILE_VERSIONS[s.CITYGO_10X_YOOKASSA_LIVE_PROFILE], 4)
+        for key in value:
+            missing = dict(value); del missing[key]
+            with self.subTest(missing=key), self.assertRaises(b.BackupError): validate(missing)
+        for change in ({"YOOKASSA_MODE": "test"}, {"YOOKASSA_MODE": "disabled"},
+                       {"YOOKASSA_RECEIPT_MODE": "disabled"}, {"YOOKASSA_RECEIPT_MODE": "automatic"},
+                       {"YOOKASSA_SHOP_ID": "0123"}, {"YOOKASSA_SHOP_ID": "0"}, {"YOOKASSA_SHOP_ID": "1" * 21},
+                       {"YOOKASSA_SHOP_ID": 123}, {"YOOKASSA_SECRET_KEY": "test_synthetic-not-live"},
+                       {"YOOKASSA_SECRET_KEY": "live_short"}, {"YOOKASSA_SECRET_KEY": "live_invalid/key"},
+                       {"YOOKASSA_SECRET_KEY": "live_" + "x" * 8193}, {"YOOKASSA_SECRET_KEY": "live_line\nbreak"},
+                       {"YOOKASSA_BASE_URL": "https://untrusted.test"}, {"WEB_ORIGIN": "https://untrusted.test"},
+                       {"AI_CREDIT_MODE": "routerai_at_cost"}, {"ROUTERAI_MODEL": "other/model"},
+                       {"ROUTERAI_UPSTREAM": "other"}, {"ROUTERAI_COUNTRY": "ru"},
+                       {"OPENAI_API_KEY": "synthetic-hidden"}, {"LLM_USER_DAILY_ATTEMPT_LIMIT": "10001"}):
+            with self.subTest(keys=list(change)), self.assertRaises(b.BackupError): validate({**value, **change})
+        for profile in (s.PROFILE, s.ROUTERAI_PROFILE, s.CITYGO_10X_PROFILE):
+            with self.subTest(profile=profile), self.assertRaises(b.BackupError): validate(value, profile)
+        for profile in (s.ROUTERAI_PROFILE, s.CITYGO_10X_PROFILE):
+            with self.subTest(old_secret=profile), self.assertRaises(b.BackupError): validate(routerai_fixture(profile))
+        # Zero attempt/request quotas are deliberately valid for closed preparation.
+        validate({**value, **dict.fromkeys(s.ROUTERAI_LIMITS, "0")})
+
+    def test_live_profile_exposes_only_a_marker_to_api_not_keys_or_web_or_worker(self):
+        profile = s.CITYGO_10X_YOOKASSA_LIVE_PROFILE
+        self.assertEqual(s.profile_environment(profile),
+                         {"LLM_PROVIDER": "routerai", "CITYGO_AI_PROFILE": "routerai-citygo-10x-yookassa-live-v1"})
+        image = {"local_id": "sha256:" + "c" * 64, "config_id": "sha256:" + "c" * 64}
+        value = preparation_fixture.container("api"); value["Image"] = image["local_id"]; value["State"]["Dead"] = False
+        base = detail(value, "api", image, "/tmp/api.json", profile)
+        args = ("api", image, "citygo-fixture", ORIGIN, "/tmp/api.json", {"web_api": WEB_NETWORK, "database": "e" * 64})
+        s.runtime(base, *args, profile)
+        for old in (s.PROFILE, s.ROUTERAI_PROFILE, s.CITYGO_10X_PROFILE):
+            with self.subTest(profile=old), self.assertRaises(b.BackupError): s.runtime(base, *args, old)
+        for extra in ("YOOKASSA_MODE=live", "YOOKASSA_SHOP_ID=12345", "YOOKASSA_SECRET_KEY=live_synthetic-not-live",
+                      "YOOKASSA_RECEIPT_MODE=npd_manual", "ROUTERAI_API_KEY=synthetic-hidden"):
+            bad = copy.deepcopy(base); bad["Config"]["Env"].append(extra)
+            with self.subTest(extra=extra.split("=")[0]), self.assertRaises(b.BackupError): s.runtime(bad, *args, profile)
+        spec = s.compose_spec("citygo-fixture", ORIGIN, {"api": image, "web": image}, "/tmp/api.json", profile)
+        self.assertEqual(set(spec["services"]), {"api", "web"})
+        self.assertEqual(spec["services"]["api"]["environment"]["WEB_ORIGIN"], ORIGIN)
+        self.assertEqual(spec["services"]["api"]["secrets"], [{"source": "api_config", "target": "api.json"}])
+        self.assertNotIn("secrets", spec["services"]["web"])
+        self.assertEqual(spec["services"]["web"]["ports"], ["127.0.0.1:3000:3000"])
+        self.assertNotIn("ports", spec["services"]["api"])
+        self.assertFalse(any("YOOKASSA" in key or key == "CITYGO_AI_PROFILE"
+                             for key in spec["services"]["web"]["environment"]))
+
 
 def routerai_fixture(profile=s.ROUTERAI_PROFILE):
-    name = "routerai-citygo-10x-profile.fixture.json" if profile == s.CITYGO_10X_PROFILE else "routerai-profile.fixture.json"
-    return json.loads((Path(__file__).resolve().parent.parent / "fixtures" / name).read_bytes())
+    name = "routerai-citygo-10x-profile.fixture.json" if profile in (s.CITYGO_10X_PROFILE, s.CITYGO_10X_YOOKASSA_LIVE_PROFILE) else "routerai-profile.fixture.json"
+    value = json.loads((Path(__file__).resolve().parent.parent / "fixtures" / name).read_bytes())
+    if profile == s.CITYGO_10X_YOOKASSA_LIVE_PROFILE:
+        value.update(YOOKASSA_MODE="live", YOOKASSA_RECEIPT_MODE="npd_manual",
+                     YOOKASSA_SHOP_ID="12345", YOOKASSA_SECRET_KEY="live_synthetic-not-live")
+    return value
 
 
 def enable_routerai_fixture(test, profile=s.ROUTERAI_PROFILE):
@@ -277,6 +333,34 @@ class Startup(unittest.TestCase):
         self.assertFalse(result["startup"]["traffic_authorized"])
         self.assertFalse(result["startup"]["worker_authorized"])
         self.assertNotIn("synthetic-not-live", json.dumps(result))
+
+    def test_live_profile_starts_with_zero_quotas_and_retains_closed_access(self):
+        profile = s.CITYGO_10X_YOOKASSA_LIVE_PROFILE
+        value = routerai_fixture(profile)
+        value.update(dict.fromkeys(s.ROUTERAI_LIMITS, "0"))
+        self.api.write_bytes(encoded(value))
+        self.start_approval = synthetic_start_approval(self.directory, self.authorization, self.api, profile=profile)
+        result = self.start()
+        self.assertEqual(self.runtime_profile, profile)
+        self.assertTrue(self.pending.exists()); self.assertTrue(self.host.closed)
+        self.assertFalse(result["startup"]["traffic_authorized"])
+        self.assertFalse(result["startup"]["worker_authorized"])
+        self.assertFalse((self.state / w.ADMISSION).exists())
+        for hidden in ("live_synthetic-not-live", "YOOKASSA_SECRET_KEY", "ROUTERAI_API_KEY"):
+            self.assertNotIn(hidden, json.dumps(result))
+
+    def test_live_approval_binds_shop_key_mode_receipt_and_quotas_before_downtime(self):
+        profile = s.CITYGO_10X_YOOKASSA_LIVE_PROFILE
+        original = routerai_fixture(profile)
+        for change in ({"YOOKASSA_SHOP_ID": "54321"}, {"YOOKASSA_SECRET_KEY": "live_synthetic-other-key"},
+                       {"YOOKASSA_MODE": "test"}, {"YOOKASSA_RECEIPT_MODE": "disabled"},
+                       {"LLM_USER_DAILY_REQUEST_LIMIT": "0"}):
+            self.api.write_bytes(encoded(original))
+            self.start_approval = synthetic_start_approval(self.directory, self.authorization, self.api, profile=profile)
+            self.api.write_bytes(encoded({**original, **change}))
+            with self.subTest(keys=list(change)), self.assertRaises(b.BackupError): self.start()
+            self.assertEqual(self.host.events, []); self.assertFalse(self.pending.exists())
+            self.assertEqual(self.start_events, []); self.assertEqual(self.store.calls, [])
 
     def test_migration_approval_cannot_authorize_start(self):
         self.start_approval.path.write_bytes(self.authorization.path.read_bytes())
