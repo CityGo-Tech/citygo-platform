@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { randomUUID } from "node:crypto";
 import {
   AiCreditCharges,
   AiCreditLedger,
   connectDatabase,
   migrate,
+  type Database,
   type Sql,
 } from "@citygo/db";
 import { readConfig } from "@citygo/config";
@@ -17,22 +18,59 @@ import { seedTestBudget } from "./test-budget.js";
 
 const RUB = 1_000_000;
 async function fixture(
+  t: TestContext,
   ceiling = 100 * RUB,
   mode: "routerai_at_cost" | "routerai_citygo_10x" = "routerai_at_cost",
 ) {
   const base = process.env.TEST_DATABASE_URL;
-  if (base && !/^postgres(?:ql)?:\/\//.test(base))
-    throw new Error("Invalid test database");
-  const schema = "charging_test_" + randomUUID().replaceAll("-", "");
-  const adminDb = base ? await connectDatabase(base) : null;
+  const database = "citygo_charging_" + randomUUID().replaceAll("-", "");
+  assert.match(database, /^citygo_charging_[a-f0-9]{32}$/);
+  let adminDb: Database | undefined,
+    created = false;
+  const cleanup: {
+    db?: Database;
+    app?: Awaited<ReturnType<typeof buildApp>>;
+  } = {};
+  // Register before setup so a failed migration or application construction
+  // cannot leak this test's connections/database. Never drop a supplied target.
+  t.after(async () => {
+    const failures: unknown[] = [];
+    for (const close of [
+      async () => cleanup.app?.close(),
+      async () => cleanup.db?.close(),
+      async () => {
+        if (created) await adminDb!.query(`drop database "${database}"`);
+      },
+      async () => adminDb?.close(),
+    ]) {
+      try {
+        await close();
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length)
+      throw new AggregateError(failures, "Synthetic charging cleanup failed");
+  });
   let url = "pglite://:memory:";
-  if (adminDb && base) {
-    await adminDb.query('create schema "' + schema + '"');
+  if (base) {
     const scoped = new URL(base);
-    scoped.searchParams.set("options", "-c search_path=" + schema);
+    assert.ok(["postgres:", "postgresql:"].includes(scoped.protocol));
+    assert.ok(["127.0.0.1", "localhost", "[::1]"].includes(scoped.hostname));
+    assert.ok(["/citygo_test", "/citygo_synthetic"].includes(scoped.pathname));
+    assert.equal(scoped.search, "");
+    assert.equal(scoped.hash, "");
+    adminDb = await connectDatabase(base);
+    // Production trigger sources are deliberately public-qualified. A fresh
+    // disposable database exercises that exact contract, without rewriting SQL
+    // or changing search_path and without touching the entry database's tables.
+    await adminDb.query(`create database "${database}" template template0`);
+    created = true;
+    scoped.pathname = "/" + database;
     url = scoped.toString();
   }
   const db = await connectDatabase(url);
+  cleanup.db = db;
   await migrate(db);
   const state = {
     posts: 0,
@@ -106,6 +144,7 @@ async function fixture(
     [2000 * RUB, String(ceiling)],
   );
   const app = await buildApp({ db, config, provider, testing: true });
+  cleanup.app = app;
   const call = (
     method: "GET" | "POST",
     path: string,
@@ -176,20 +215,11 @@ async function fixture(
     state,
     provider,
     config,
-    async close() {
-      await app.close();
-      await db.close();
-      if (adminDb) {
-        await adminDb.query('drop schema "' + schema + '" cascade');
-        await adminDb.close();
-      }
-    },
   };
 }
 
 test("RouterAI bonus admission, exact at-cost debit, request replay and history", async (t) => {
-  const f = await fixture();
-  t.after(f.close);
+  const f = await fixture(t);
   const blocked = await f.send();
   assert.match(blocked.body, /AI_CREDIT_EXHAUSTED/);
   assert.equal(f.state.posts, 0);
@@ -241,8 +271,7 @@ test("RouterAI bonus admission, exact at-cost debit, request replay and history"
 });
 
 test("CityGo 10x mode credits payment 1:1, debits the exact raw price and never grants an unverified phone gift", async (t) => {
-  const f = await fixture(10 * RUB, "routerai_citygo_10x");
-  t.after(f.close);
+  const f = await fixture(t, 10 * RUB, "routerai_citygo_10x");
   assert.equal((await f.grant()).statusCode, 503);
   assert.equal((await f.balance()).bonusGranted, false);
   assert.match((await f.send()).body, /AI_CREDIT_EXHAUSTED/);
@@ -310,8 +339,7 @@ test("CityGo 10x mode credits payment 1:1, debits the exact raw price and never 
 });
 
 test("lost cost lookup keeps hold; owner-only reconciliation survives object recreation and is idempotent", async (t) => {
-  const f = await fixture();
-  t.after(f.close);
+  const f = await fixture(t);
   await f.grant();
   f.state.costDown = true;
   assert.match((await f.send()).body, /"type":"done"/);
@@ -369,8 +397,7 @@ test("lost cost lookup keeps hold; owner-only reconciliation survives object rec
 });
 
 test("interrupted transport is never free, never retried and cannot be automatically reconciled", async (t) => {
-  const f = await fixture();
-  t.after(f.close);
+  const f = await fixture(t);
   await f.grant();
   f.state.interrupted = true;
   const response = await f.send();
@@ -396,8 +423,7 @@ test("interrupted transport is never free, never retried and cannot be automatic
 });
 
 test("parallel requests cannot overspend one user credit; failed reservation rolls back operator money and attempts", async (t) => {
-  const f = await fixture(400 * RUB);
-  t.after(f.close);
+  const f = await fixture(t, 400 * RUB);
   await f.grant();
   f.state.costDown = true;
   const results = await Promise.all([f.send(), f.send()]);
@@ -427,8 +453,7 @@ test("parallel requests cannot overspend one user credit; failed reservation rol
 });
 
 test("proven no adapter entry releases user hold; an unknown provider outcome does not", async (t) => {
-  const f = await fixture();
-  t.after(f.close);
+  const f = await fixture(t);
   await f.grant();
   const mock = t.mock.method(
     AiCreditCharges.prototype,
@@ -449,8 +474,7 @@ test("proven no adapter entry releases user hold; an unknown provider outcome do
 });
 
 test("cost overrun never overcharges the user and closes the operator budget", async (t) => {
-  const f = await fixture();
-  t.after(f.close);
+  const f = await fixture(t);
   await f.grant();
   f.state.cost = "101";
   assert.match((await f.send()).body, /"type":"done"/);
@@ -466,8 +490,7 @@ test("cost overrun never overcharges the user and closes the operator budget", a
 });
 
 test("a reused provider generation cannot debit two requests", async (t) => {
-  const f = await fixture();
-  t.after(f.close);
+  const f = await fixture(t);
   await f.grant();
   f.state.sameId = true;
   assert.match((await f.send()).body, /"type":"done"/);
@@ -479,8 +502,7 @@ test("a reused provider generation cannot debit two requests", async (t) => {
 });
 
 test("settlement ledger and receipt roll back together when receipt persistence fails", async (t) => {
-  const f = await fixture();
-  t.after(f.close);
+  const f = await fixture(t);
   await f.grant();
   f.state.costDown = true;
   await f.send();

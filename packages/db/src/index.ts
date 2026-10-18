@@ -4,6 +4,11 @@ export { Repository, DomainError } from "./repository.js";
 export { AiCreditLedger } from "./ai-credit.js";
 export { AiCreditCharges } from "./ai-credit-charges.js";
 export {
+  NpdReceipts,
+  type NpdReceiptContext,
+  type NpdConfirmedRefundObservation,
+} from "./npd-receipts.js";
+export {
   ensureConversation,
   type ConversationThread,
 } from "./conversation-start.js";

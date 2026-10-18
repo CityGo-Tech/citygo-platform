@@ -25,7 +25,7 @@ const implementationGaps = [
   {
     code: "FISCAL_TRACKING_NOT_IMPLEMENTED",
     message:
-      "Нужны отдельный журнал статусов чеков и утверждённый порядок их выдачи.",
+      "Реестр ручных чеков не заменяет полный live-путь: нужны сверка поступлений/возвратов, своевременная выдача и контроль приёма оплат.",
   },
   {
     code: "BACKGROUND_RECONCILIATION_NOT_IMPLEMENTED",
@@ -81,9 +81,9 @@ export function inspectLivePaymentPreparation(
     }
     if (npdReceiptPlan?.receiptProvider === "npd_manual") {
       checks.push({
-        code: "MANUAL_RECEIPT_QUEUE_NOT_IMPLEMENTED",
+        code: "MANUAL_RECEIPT_LIVE_ACCEPTANCE_PENDING",
         message:
-          "Для ручных чеков НПД нужна долговечная очередь с ответственным оператором, защитой от дублей, коррекциями и отдельным учётом доставки.",
+          "Реестр ручных НПД-чеков реализован; до live нужны проверенный денежный/чековый путь, контроль сроков, приёма оплат и передачи ответственности.",
       });
     } else if (npdReceiptPlan?.receiptProvider === "npd_partner") {
       checks.push({

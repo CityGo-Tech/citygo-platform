@@ -24,11 +24,11 @@ export async function releaseMigrationSmoke({
     }));
   assert.equal(
     migrations.length,
-    15,
+    16,
     "Update the disposable upgrade fixture when migrations change",
   );
   const last = migrations.at(-1);
-  assert.equal(last.name, "0015_yookassa_orders.sql");
+  assert.equal(last.name, "0016_npd_receipts.sql");
   const plan = {
     version: 1,
     kind: "citygo-release-migration",
@@ -72,6 +72,20 @@ export async function releaseMigrationSmoke({
     assert.equal(psql("select count(*) from citygo_migrations"), "9");
     assert.equal(
       psql(
+        "select count(*) from information_schema.tables where table_schema='public' and table_name in ('npd_receipt_tasks','npd_receipt_commands','npd_receipt_evidence','npd_refund_observations')",
+      ),
+      "0",
+      "Failed release must roll back the entire NPD receipt registry",
+    );
+    assert.equal(
+      psql(
+        "select count(*) from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname in ('citygo_guard_npd_receipt_task','citygo_create_npd_receipt_task','citygo_apply_npd_refund_observation')",
+      ),
+      "0",
+      "Failed release must not leave NPD trigger functions behind",
+    );
+    assert.equal(
+      psql(
         "select count(*) from information_schema.tables where table_schema='public' and table_name in ('r1_housing_briefs','r1_housing_commands','r1_housing_brief_revisions')",
       ),
       "0",
@@ -110,6 +124,11 @@ export async function releaseMigrationSmoke({
   );
   psql(
     `begin;
+     drop trigger npd_live_topup_obligation on ai_credit_topups;
+     drop table npd_receipt_commands,npd_receipt_evidence,npd_refund_observations,npd_receipt_tasks;
+     drop function citygo_guard_npd_receipt_task();
+     drop function citygo_create_npd_receipt_task();
+     drop function citygo_apply_npd_refund_observation();
      drop trigger payment_isolation_sticky on account_security_state;
      drop trigger payment_topup_isolation on ai_credit_topups;
      drop trigger real_ai_isolation on ai_model_attempts;
@@ -142,7 +161,7 @@ export async function releaseMigrationSmoke({
      alter table user_quests add constraint user_quests_user_id_quest_id_key unique(user_id,quest_id);
      alter table user_quests drop column plan_id, drop column plan_version;
      alter table relocation_plans drop constraint relocation_plans_owner_version_key;
-     delete from citygo_migrations where name in ('0010_quest_plan_expand.sql','0011_quest_plan_validate.sql','0012_housing_answer_history.sql','0013_account_access.sql','0014_citygo_credit.sql','0015_yookassa_orders.sql');
+     delete from citygo_migrations where name in ('0010_quest_plan_expand.sql','0011_quest_plan_validate.sql','0012_housing_answer_history.sql','0013_account_access.sql','0014_citygo_credit.sql','0015_yookassa_orders.sql','0016_npd_receipts.sql');
      commit`,
   );
   // A populated OLD-schema fixture, not just empty-table DDL. Explicit user ID
@@ -223,7 +242,7 @@ export async function releaseMigrationSmoke({
   ]).trim();
   assert.match(
     migrationPath,
-    /^\/app\/node_modules\/[a-zA-Z0-9_@./+-]+\/migrations\/0015_yookassa_orders\.sql$/,
+    /^\/app\/node_modules\/[a-zA-Z0-9_@./+-]+\/migrations\/0016_npd_receipts\.sql$/,
   );
   const sqlFile = join(directory, "synthetic-failing-migration.sql");
   // Sequence increments survive rollback: prove the executor reached the SQL,
@@ -387,7 +406,35 @@ export async function releaseMigrationSmoke({
     );
     docker(["rm", ident]); // Exact disposable fixtures ONLY; runtime retains them.
   }
-  assert.equal(psql("select count(*) from citygo_migrations"), "15");
+  assert.equal(psql("select count(*) from citygo_migrations"), "16");
+  for (const table of [
+    "npd_receipt_tasks",
+    "npd_receipt_commands",
+    "npd_receipt_evidence",
+    "npd_refund_observations",
+  ]) {
+    assert.equal(psql(`select count(*) from ${table}`), "0");
+    assert.equal(
+      psql(
+        `select has_table_privilege('citygo_api','${table}','SELECT') and has_table_privilege('citygo_api','${table}','INSERT') and has_table_privilege('citygo_backup','${table}','SELECT')`,
+      ),
+      "t",
+    );
+    assert.equal(
+      psql(
+        `select has_table_privilege('citygo_api','${table}','DELETE') or has_table_privilege('citygo_api','${table}','TRUNCATE') or has_table_privilege('citygo_api','${table}','UPDATE') or has_table_privilege('citygo_worker','${table}','SELECT') or has_table_privilege('citygo_worker','${table}','INSERT')`,
+      ),
+      "f",
+      "Receipt history has no broad UPDATE/delete/truncate or Worker access",
+    );
+  }
+  assert.equal(
+    psql(
+      "select has_column_privilege('citygo_api','npd_receipt_tasks','revision','UPDATE') and has_column_privilege('citygo_api','sessions','expires_at','UPDATE') and not has_column_privilege('citygo_api','npd_receipt_tasks','buyer_email','UPDATE') and not has_column_privilege('citygo_api','npd_receipt_tasks','amount_kopeks','UPDATE')",
+    ),
+    "t",
+    "Only reviewed task observations/session locking columns are writable",
+  );
   assert.equal(
     psql(
       "select username is null and role='user' and not must_change_password from users where id=900009",

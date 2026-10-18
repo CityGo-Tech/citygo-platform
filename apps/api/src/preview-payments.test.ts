@@ -218,7 +218,7 @@ test("CLI accepts a manual NPD plan without requiring an automatic merchant rece
     assert.ok(
       report.blockers.some(
         (gap: { code: string }) =>
-          gap.code === "MANUAL_RECEIPT_QUEUE_NOT_IMPLEMENTED",
+          gap.code === "MANUAL_RECEIPT_LIVE_ACCEPTANCE_PENDING",
       ),
     );
     if (baseline) assert.deepEqual(report, baseline);

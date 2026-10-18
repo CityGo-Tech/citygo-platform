@@ -9,13 +9,15 @@ import {
 import { FreshAccountReset } from "./fresh-account-reset.js";
 import {
   captureRestartRows,
+  migrateLegacyRestartFixture,
+  seedRestartNpdObligation,
   seedRestartFixture,
 } from "./closed-account-restart-fixture.js";
 
 async function fixture(t: TestContext) {
   const db = await connectDatabase("pglite://:memory:");
   t.after(() => db.close());
-  await migrate(db);
+  await migrateLegacyRestartFixture(db);
   const data = await seedRestartFixture(db);
   await db.exec(
     "update ai_budget set enabled=true,daily_limit_micros=1000000,user_daily_limit_micros=500000,rules='[{}]'::jsonb where id=1",
@@ -43,6 +45,7 @@ async function fixture(t: TestContext) {
     "insert into ai_credit_topups(provider_payment_id,operation_id,user_id,paid_kopeks,credited_micros,merchant_id,test,verified_at,verification_receipt) values ('synthetic-payment',$1,$2,10000,100000000,'synthetic-merchant',false,now(),'{\"private\":\"PRIVATE-PAYMENT\"}')",
     [topupId, data.user],
   );
+  await migrate(db);
   return { db, data, reset: new FreshAccountReset(db) };
 }
 async function prepared(reset: FreshAccountReset, count = 2) {
@@ -247,6 +250,39 @@ test("unknown table inventory fails closed, not dynamically cascaded", async (t)
   );
   const before = await captureRestartRows(db);
   await assert.rejects(reset.plan(), /Состав таблиц/);
+  assert.deepEqual(await captureRestartRows(db), before);
+});
+
+test("any new NPD obligation blocks full reset without erasing receipt history or delivery contact", async (t) => {
+  const { db, data, reset } = await fixture(t);
+  const stale = await prepared(reset);
+  await seedRestartNpdObligation(db, data.user, true);
+  const before = await captureRestartRows(db);
+  const plan = await reset.plan({
+    expectedUserCount: 2,
+    maintenanceConfirmed: true,
+  });
+  assert.equal(plan.counts.npd_receipt_tasks, 1);
+  assert.equal(plan.counts.npd_receipt_commands, 2);
+  assert.equal(plan.counts.npd_receipt_evidence, 1);
+  assert.equal(plan.counts.npd_refund_observations, 1);
+  assert.ok(
+    plan.blockers.some(
+      (blocker) => blocker.code === "NPD_RECEIPT_HISTORY_PRESENT",
+    ),
+  );
+  for (const name of [
+    "npd_receipt_tasks",
+    "npd_receipt_commands",
+    "npd_receipt_evidence",
+    "npd_refund_observations",
+  ]) {
+    assert.equal(plan.erasedTables.includes(name), false);
+    assert.equal(plan.preservedTables.includes(name), true);
+  }
+  assert.doesNotMatch(JSON.stringify(plan), /PRIVATE-|@example\.test/);
+  await assert.rejects(reset.apply(stale), /изменились/);
+  await assert.rejects(reset.apply(await prepared(reset)), /заблокирован/);
   assert.deepEqual(await captureRestartRows(db), before);
 });
 

@@ -13,6 +13,7 @@ import {
   captureRestartRows,
   retainedFinancialTables,
   seedRestartFixture,
+  seedRestartNpdObligation,
 } from "./closed-account-restart-fixture.js";
 
 async function fixture(t: TestContext) {
@@ -224,6 +225,25 @@ test("full fingerprint catches changed private data, receipt, audit and schema e
     (await restart.plan({ expectedUserCount: 2 })).snapshotFingerprint,
     changedAudit.snapshotFingerprint,
   );
+});
+
+test("closed restart retains new NPD obligations and their delivery data byte-for-byte", async (t) => {
+  const { db, data, restart } = await fixture(t);
+  await seedRestartNpdObligation(db, data.user, true);
+  const names = [...retainedFinancialTables, "ai_credit_topups"];
+  const before = await captureRestartRows(db, names);
+  const plan = await restart.plan({
+    expectedUserCount: 2,
+    maintenanceConfirmed: true,
+  });
+  assert.equal(plan.counts.npd_receipt_tasks, 1);
+  assert.equal(plan.counts.npd_receipt_commands, 2);
+  assert.equal(plan.counts.npd_receipt_evidence, 1);
+  assert.equal(plan.counts.npd_refund_observations, 1);
+  assert.deepEqual(plan.blockers, []);
+  assert.doesNotMatch(JSON.stringify(plan), /PRIVATE-|@example\.test/);
+  await restart.apply(await prepared(restart));
+  assert.deepEqual(await captureRestartRows(db, names), before);
 });
 
 test("closed restart rejects malformed or missing attestations without any write", async (t) => {
