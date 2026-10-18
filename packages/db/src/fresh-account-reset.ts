@@ -38,6 +38,9 @@ const tables = [
   "npd_receipt_evidence",
   "npd_receipt_tasks",
   "npd_refund_observations",
+  "payment_admission",
+  "payment_admission_commands",
+  "payment_admission_reconciliation_events",
   "payment_notification_inbox",
   "payment_refund_events",
   "payment_refunds",
@@ -72,6 +75,13 @@ const protectedRefunds = [
 // Even an untrusted wake-up hint belongs to a bound external payment/refund.
 // Do not erase pending reconciliation or its completion history in this tool.
 const protectedNotifications = ["payment_notification_inbox"] as const;
+// Admission history has immutable TRUNCATE guards, even when empty. Its
+// singleton/configuration is retained verbatim, never reset with test money.
+const protectedAdmission = [
+  "payment_admission",
+  "payment_admission_commands",
+  "payment_admission_reconciliation_events",
+] as const;
 const protectedEmpty = [
   ...protectedNpd,
   ...protectedRefunds,
@@ -83,6 +93,7 @@ const preserved = [
   "quests",
   "ai_routing",
   ...protectedEmpty,
+  ...protectedAdmission,
 ] as const;
 const erased = [
   "agent_handoffs",
@@ -321,7 +332,11 @@ async function lockedSnapshot(
     hash.update(JSON.stringify([name, content]));
   }
   validCount(counts.users);
-  if (counts.account_security_state !== 1 || counts.ai_budget !== 1)
+  if (
+    counts.account_security_state !== 1 ||
+    counts.ai_budget !== 1 ||
+    counts.payment_admission !== 1
+  )
     refuse("Служебное состояние аккаунтов или бюджета не готово", 503);
   const schema = await schemaSnapshot(tx);
   hash.update(schema);
@@ -366,7 +381,22 @@ async function inspect(tx: Sql, options: Options) {
       code: "PAYMENT_NOTIFICATION_HISTORY_PRESENT",
       count: notificationHistoryCount,
     });
+  const admissionHistoryCount =
+    snapshot.counts.payment_admission_commands! +
+    snapshot.counts.payment_admission_reconciliation_events!;
+  if (admissionHistoryCount)
+    blockers.push({
+      code: "PAYMENT_ADMISSION_HISTORY_PRESENT",
+      count: admissionHistoryCount,
+    });
   for (const [code, sql] of [
+    [
+      "PAYMENT_ADMISSION_LINKED_OR_ACTIVE",
+      `select count(*)::int as count from payment_admission where owner_user_id is not null
+       or accepting_new_checkouts or mode<>'closed' or reconciliation_enabled
+       or reconciliation_run_id is not null or reconciliation_run_revision is not null
+       or reconciliation_run_until is not null`,
+    ],
     [
       "FRESH_RESET_ALREADY_COMPLETED",
       "select count(*)::int as count from audit_log where action='fresh-account-reset-completed' and entity_type='account-maintenance'",
@@ -434,13 +464,19 @@ export class FreshAccountReset {
         refuse("Данные изменились после dry-run; нужен новый снимок");
       if (plan.blockers.length)
         refuse("Полный тестовый сброс заблокирован; проверьте dry-run");
-      // All FK-dependent application tables are explicitly listed in ONE command.
+      // Truncate only reviewed child tables. Even EMPTY admission history has a
+      // users FK and immutable TRUNCATE guard; it must never join this command.
+      // Delete users separately after all history/owner blockers were checked.
       // No CASCADE, schema drop, sequence restart, role changes or migration edits.
       await tx.exec(
-        `truncate table ${[...erased, ...protectedEmpty]
+        `truncate table ${[
+          ...erased.filter((name) => name !== "users"),
+          ...protectedEmpty,
+        ]
           .map((name) => `public.${name}`)
           .join(",")}`,
       );
+      await tx.exec("delete from public.users");
       await tx.exec(
         "update ai_budget set enabled=false,total_reserved_micros=0,user_daily_limit_micros=null,revision=revision+1 where id=1",
       );

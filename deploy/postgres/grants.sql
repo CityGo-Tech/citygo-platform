@@ -20,6 +20,15 @@ grant select, insert on credit_source_lots, credit_hold_allocations,
 grant select, insert on payment_notification_inbox to citygo_api;
 grant update (status,attempt_count,lease_token,lease_until,next_attempt_at,last_reason,processed_at)
   on payment_notification_inbox to citygo_api;
+-- New-checkout admission is independent from settlement/refunds. Singleton is
+-- migration-owned; history is append-only; Worker has no financial permissions.
+grant select on payment_admission to citygo_api;
+grant update (revision,merchant_id,runtime_policy_id,accepting_new_checkouts,
+  reconciliation_enabled,mode,owner_user_id,lease_session_token_hash,lease_until,
+  manual_npd_responsibility_accepted,reconciliation_checked_at,reconciliation_ok,
+  reconciliation_run_id,reconciliation_run_revision,reconciliation_run_until,updated_at)
+  on payment_admission to citygo_api;
+grant select,insert on payment_admission_commands,payment_admission_reconciliation_events to citygo_api;
 grant update (spent_micros,held_micros,refund_reserved_micros,refunded_micros)
   on credit_source_lots to citygo_api;
 grant update (spent_micros,state) on credit_hold_allocations to citygo_api;

@@ -191,7 +191,7 @@ for (const mode of ["test", "live"] as const) {
       payment_id: i.paymentId,
       amount: { value: "1.01", currency: "RUB" },
       description:
-        mode === "test" ? "Тестовый возврат CityGo" : "Возврат CityGo",
+        mode === "test" ? "Тестовый возврат CityGo" : "Возврат средств CityGo",
       metadata: { citygo_refund_id: i.refundRequestId },
     };
     const f = modeFixture([
@@ -285,7 +285,9 @@ for (const mode of ["test", "live"] as const) {
           payment_id: i.paymentId,
           amount: { value: "1.01", currency: "RUB" },
           description:
-            mode === "test" ? "Возврат CityGo" : "Тестовый возврат CityGo",
+            mode === "test"
+              ? "Возврат средств CityGo"
+              : "Тестовый возврат CityGo",
           metadata: { citygo_refund_id: i.refundRequestId },
         },
       }),

@@ -102,6 +102,75 @@ async function fixture(t: TestContext, mode: YooKassaMode = "live") {
   };
 }
 
+async function pendingRefund(f: Awaited<ReturnType<typeof fixture>>) {
+  const ledger = new AiCreditLedger(f.db);
+  await ledger.topUpConfirmed(f.userId, f.order.id, {
+    providerPaymentId: f.providerId,
+    paidKopeks: f.order.amountKopeks,
+    merchantId: shop,
+    test: false,
+    verifiedAt: new Date().toISOString(),
+    verification: "server_get_succeeded",
+    currency: "RUB",
+  });
+  await f.db.query("update users set role='super_admin' where id=$1", [
+    f.userId,
+  ]);
+  const token = "1".repeat(64);
+  await f.db.query(
+    "insert into sessions(token_hash,user_id,expires_at) values($1,$2,clock_timestamp()+interval '1 day')",
+    [token, f.userId],
+  );
+  const refunds = new PaymentRefunds(f.db);
+  const ctx = { userId: f.userId, sessionTokenHash: token };
+  const created = await refunds.create(ctx, {
+    requestId: randomUUID(),
+    paymentOperationId: f.order.id,
+    amountKopeks: 1000,
+  });
+  const prepared = await refunds.prepareDispatch(ctx, created.refund.id, {
+    merchantId: shop,
+    test: false,
+  });
+  assert.ok(prepared.dispatch);
+  const providerRefundId = randomUUID();
+  await refunds.recordCreate(created.refund.id, prepared.dispatch.token, {
+    id: providerRefundId,
+    refundRequestId: created.refund.id,
+    paymentId: f.providerId,
+    orderId: f.order.id,
+    merchantId: shop,
+    amountKopeks: 1000,
+    currency: "RUB",
+    test: false,
+    refundedAmountKopeks: 0,
+    status: "pending",
+    observation: "create_response",
+    verifiedAt: new Date().toISOString(),
+  });
+  return { refunds, ctx, refund: created.refund, providerRefundId };
+}
+
+async function anotherPending(
+  f: Awaited<ReturnType<typeof fixture>>,
+  merchantId = shop,
+  providerId: string = randomUUID(),
+) {
+  const order = await f.orders.create(
+    f.userId,
+    randomUUID(),
+    10_000,
+    merchantId,
+    f.options.mode === "test",
+    "https://citygo.example/",
+  );
+  await f.orders.recordProvider(f.userId, order.id, {
+    providerPaymentId: providerId,
+    status: "pending",
+  });
+  return { ...order, providerId };
+}
+
 test("machine ingress durably queues only allowlisted bound IDs and discards incoming financial data", async (t) => {
   const f = await fixture(t);
   const malicious = {
@@ -430,51 +499,7 @@ test("storage refuses unbound inbox rows and persistence failure is never acknow
 
 test("bound refund notifications keep refund identity and never trust nonexistent refund mode fields", async (t) => {
   const f = await fixture(t);
-  const ledger = new AiCreditLedger(f.db);
-  await ledger.topUpConfirmed(f.userId, f.order.id, {
-    providerPaymentId: f.providerId,
-    paidKopeks: f.order.amountKopeks,
-    merchantId: shop,
-    test: false,
-    verifiedAt: new Date().toISOString(),
-    verification: "server_get_succeeded",
-    currency: "RUB",
-  });
-  await f.db.query("update users set role='super_admin' where id=$1", [
-    f.userId,
-  ]);
-  const token = "1".repeat(64);
-  await f.db.query(
-    "insert into sessions(token_hash,user_id,expires_at) values($1,$2,clock_timestamp()+interval '1 day')",
-    [token, f.userId],
-  );
-  const refunds = new PaymentRefunds(f.db);
-  const ctx = { userId: f.userId, sessionTokenHash: token };
-  const created = await refunds.create(ctx, {
-    requestId: randomUUID(),
-    paymentOperationId: f.order.id,
-    amountKopeks: 1000,
-  });
-  const prepared = await refunds.prepareDispatch(ctx, created.refund.id, {
-    merchantId: shop,
-    test: false,
-  });
-  assert.ok(prepared.dispatch);
-  const providerRefundId = randomUUID();
-  await refunds.recordCreate(created.refund.id, prepared.dispatch.token, {
-    id: providerRefundId,
-    refundRequestId: created.refund.id,
-    paymentId: f.providerId,
-    orderId: f.order.id,
-    merchantId: shop,
-    amountKopeks: 1000,
-    currency: "RUB",
-    test: false,
-    refundedAmountKopeks: 0,
-    status: "pending",
-    observation: "create_response",
-    verifiedAt: new Date().toISOString(),
-  });
+  const { refund, providerRefundId } = await pendingRefund(f);
   assert.equal(
     await f.inbox.enqueue(body(providerRefundId, "refund.succeeded")),
     "queued",
@@ -484,15 +509,291 @@ test("bound refund notifications keep refund identity and never trust nonexisten
     retained: 0,
   });
   assert.equal(f.calls[0]!.kind, "refund");
-  assert.equal(f.calls[0]!.localId, created.refund.id);
+  assert.equal(f.calls[0]!.localId, refund.id);
   assert.equal(f.calls[0]!.objectId, providerRefundId);
   assert.equal(f.calls[0]!.test, false);
   assert.equal(
     (
       await f.db.query("select status from payment_refunds where id=$1", [
-        created.refund.id,
+        refund.id,
       ])
     ).rows[0]!.status,
     "pending",
   );
+});
+
+test("known-ID fallback scans payment and refund together in bounded oldest-first batches", async (t) => {
+  const f = await fixture(t);
+  const { refund, providerRefundId } = await pendingRefund(f);
+  const later = await anotherPending(f);
+  await f.db.query(
+    "update payment_topup_orders set updated_at=clock_timestamp()+interval '2 minutes' where id=$1",
+    [f.order.id],
+  );
+  await f.db.query(
+    "update payment_topup_orders set updated_at=clock_timestamp()+interval '3 minutes' where id=$1",
+    [later.id],
+  );
+  assert.equal(await f.inbox.enqueueKnownPending(1), 1);
+  let rows = (await f.db.query("select * from payment_notification_inbox"))
+    .rows;
+  assert.equal(rows[0]!.object_id, providerRefundId);
+  assert.equal(rows[0]!.refund_id, refund.id);
+  assert.equal(rows[0]!.event, "refund.succeeded");
+  assert.equal(f.calls.length, 0);
+  assert.equal(await f.inbox.enqueueKnownPending(1), 1);
+  assert.equal(await f.inbox.enqueueKnownPending(1), 1);
+  assert.equal(await f.inbox.enqueueKnownPending(25), 0);
+  assert.equal(f.calls.length, 0); // No GET, POST, or money proof in the scan.
+  assert.equal(await f.inbox.hasUnresolvedVerificationFailures(), false);
+  rows = (await f.db.query("select * from payment_notification_inbox")).rows;
+  assert.deepEqual(
+    rows.map((row) => row.object_id).sort(),
+    [providerRefundId, f.providerId, later.providerId].sort(),
+  );
+  assert.deepEqual(await f.inbox.processPending(3), {
+    processed: 3,
+    retained: 0,
+  });
+  const completed = (
+    await f.db.query("select * from payment_notification_inbox order by id")
+  ).rows;
+  assert.equal(await f.inbox.enqueueKnownPending(25), 0);
+  assert.deepEqual(
+    (await f.db.query("select * from payment_notification_inbox order by id"))
+      .rows,
+    completed,
+  ); // Even still-pending local objects cannot rewrite processed hints.
+});
+
+test("known-ID fallback and failure health are isolated by exact merchant and test mode", async (t) => {
+  const f = await fixture(t);
+  const foreign = await anotherPending(f, "999999");
+  await f.orders.markReviewRequired(f.userId, foreign.id);
+  const foreignInbox = new PaymentNotificationInbox(f.db, {
+    ...f.options,
+    merchantId: "999999",
+  });
+  const testInbox = new PaymentNotificationInbox(f.db, {
+    ...f.options,
+    mode: "test",
+  });
+  assert.equal(await f.inbox.hasUnresolvedVerificationFailures(), false);
+  assert.equal(await foreignInbox.hasUnresolvedVerificationFailures(), true);
+  assert.equal(await testInbox.hasUnresolvedVerificationFailures(), false);
+  assert.equal(await testInbox.enqueueKnownPending(25), 0);
+  assert.equal(await foreignInbox.enqueueKnownPending(25), 0);
+  assert.equal(await f.inbox.enqueueKnownPending(25), 1);
+  assert.equal(
+    (await f.db.query("select * from payment_notification_inbox")).rows[0]!
+      .object_id,
+    f.providerId,
+  );
+  await f.orders.markReviewRequired(f.userId, f.order.id);
+  assert.equal(await f.inbox.hasUnresolvedVerificationFailures(), true);
+  assert.equal(await testInbox.hasUnresolvedVerificationFailures(), false);
+});
+
+test("test-mode fallback excludes queued unbound, terminal and review-required orders", async (t) => {
+  const f = await fixture(t, "test");
+  await f.orders.recordProvider(f.userId, f.order.id, {
+    providerPaymentId: f.providerId,
+    status: "canceled",
+  });
+  await f.orders.create(
+    f.userId,
+    randomUUID(),
+    10_000,
+    shop,
+    true,
+    "https://citygo.example/",
+  );
+  const review = await anotherPending(f);
+  await f.orders.markReviewRequired(f.userId, review.id);
+  const pending = await anotherPending(f);
+  assert.equal(await f.inbox.enqueueKnownPending(25), 1);
+  const rows = (await f.db.query("select * from payment_notification_inbox"))
+    .rows;
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]!.object_id, pending.providerId);
+  assert.equal(rows[0]!.test, true);
+  assert.equal(await f.inbox.hasUnresolvedVerificationFailures(), true);
+  const liveInbox = new PaymentNotificationInbox(f.db, {
+    ...f.options,
+    mode: "live",
+  });
+  assert.equal(await liveInbox.enqueueKnownPending(25), 0);
+  assert.equal(await liveInbox.hasUnresolvedVerificationFailures(), false);
+});
+
+test("legacy malformed and noncanonical IDs are skipped before LIMIT and require review without rewriting history", async (t) => {
+  const f = await fixture(t);
+  const ids: string[] = [];
+  for (let index = 0; index < 3; index++) {
+    const legacy = await anotherPending(f, shop, `legacy_provider_${index}`);
+    ids.push(legacy.id);
+  }
+  const uppercase = await anotherPending(f, shop, randomUUID().toUpperCase());
+  ids.push(uppercase.id);
+  await f.db.query(
+    "update payment_topup_orders set updated_at=clock_timestamp()+interval '1 minute' where id=$1",
+    [f.order.id],
+  );
+  const before = (
+    await f.db.query(
+      "select * from payment_topup_orders where id=any($1::uuid[]) order by id",
+      [ids],
+    )
+  ).rows;
+  assert.equal(await f.inbox.enqueueKnownPending(1), 1);
+  assert.equal(await f.inbox.enqueueKnownPending(1), 0);
+  assert.equal(await f.inbox.hasUnresolvedVerificationFailures(), true);
+  assert.deepEqual(
+    (
+      await f.db.query(
+        "select * from payment_topup_orders where id=any($1::uuid[]) order by id",
+        [ids],
+      )
+    ).rows,
+    before,
+  );
+  assert.equal(f.calls.length, 0);
+  assert.equal(
+    (await f.db.query("select * from payment_notification_inbox")).rows[0]!
+      .object_id,
+    f.providerId,
+  );
+});
+
+test("fallback wake hint needs a later authenticated GET callback before posting and settles a missing webhook exactly once", async (t) => {
+  const f = await fixture(t);
+  const ledger = new AiCreditLedger(f.db);
+  let authenticatedGets = 0;
+  f.setReconcile(async (item) => {
+    authenticatedGets++;
+    // Fake authenticated GET evidence, never an incoming event/status proof.
+    await ledger.topUpConfirmed(item.userId, item.localId, {
+      providerPaymentId: item.objectId,
+      paidKopeks: f.order.amountKopeks,
+      merchantId: item.merchantId,
+      test: item.test,
+      verifiedAt: new Date().toISOString(),
+      verification: "server_get_succeeded",
+      currency: "RUB",
+    });
+    await f.orders.recordProvider(item.userId, item.localId, {
+      providerPaymentId: item.objectId,
+      status: "succeeded",
+    });
+    return "verified";
+  });
+  assert.equal(await f.inbox.enqueueKnownPending(10), 1);
+  assert.equal(authenticatedGets, 0);
+  assert.equal((await ledger.status(f.userId)).availableMicros, 0);
+  assert.deepEqual(await f.inbox.processPending(10), {
+    processed: 1,
+    retained: 0,
+  });
+  assert.equal(authenticatedGets, 1);
+  assert.equal((await ledger.status(f.userId)).availableMicros, 100_000_000);
+  assert.equal(await f.inbox.enqueueKnownPending(10), 0);
+  assert.equal(await f.inbox.enqueue(body(f.providerId)), "duplicate");
+  assert.deepEqual(await f.inbox.processPending(10), {
+    processed: 0,
+    retained: 0,
+  });
+  assert.equal(authenticatedGets, 1);
+  assert.equal(
+    (await f.db.query("select count(*)::integer as n from ai_credit_topups"))
+      .rows[0]!.n,
+    1,
+  );
+});
+
+test("normal pending retry is healthy but failed authenticated verification stays unhealthy until resolved", async (t) => {
+  const f = await fixture(t);
+  f.setReconcile(async () => "retry");
+  assert.equal(await f.inbox.enqueueKnownPending(), 1);
+  assert.deepEqual(await f.inbox.processPending(1), {
+    processed: 0,
+    retained: 1,
+  });
+  assert.equal(await f.inbox.hasUnresolvedVerificationFailures(), false);
+  assert.equal(
+    (await f.db.query("select last_reason from payment_notification_inbox"))
+      .rows[0]!.last_reason,
+    "retry_required",
+  );
+  const dueDb: Database = {
+    ...f.db,
+    query: (sql, params) =>
+      f.db.query(
+        sql.includes("with candidate as")
+          ? sql.replace("next_attempt_at<=clock_timestamp()", "true")
+          : sql,
+        params,
+      ),
+  };
+  const restarted = new PaymentNotificationInbox(dueDb, f.options);
+  f.setReconcile(async () => {
+    throw new Error("PRIVATE fake GET verification failure");
+  });
+  assert.deepEqual(await restarted.processPending(1), {
+    processed: 0,
+    retained: 1,
+  });
+  assert.equal(await restarted.hasUnresolvedVerificationFailures(), true);
+  const oppositeMode = new PaymentNotificationInbox(f.db, {
+    ...f.options,
+    mode: "test",
+  });
+  assert.equal(await oppositeMode.hasUnresolvedVerificationFailures(), false);
+  const foreignShop = new PaymentNotificationInbox(f.db, {
+    ...f.options,
+    merchantId: "999999",
+  });
+  assert.equal(await foreignShop.hasUnresolvedVerificationFailures(), false);
+  assert.doesNotMatch(
+    JSON.stringify(
+      (await f.db.query("select * from payment_notification_inbox")).rows,
+    ),
+    /PRIVATE|fake GET/,
+  );
+  f.setReconcile(async () => "verified");
+  assert.deepEqual(await restarted.processPending(1), {
+    processed: 1,
+    retained: 0,
+  });
+  assert.equal(await restarted.hasUnresolvedVerificationFailures(), false);
+});
+
+test("refund review reasons block health without confusing normal provider pending with failure", async (t) => {
+  const f = await fixture(t);
+  const { refund, refunds } = await pendingRefund(f);
+  assert.equal(await f.inbox.hasUnresolvedVerificationFailures(), false);
+  await refunds.recordReconcileFailure(refund.id, "provider_transport_failure");
+  assert.equal(await f.inbox.hasUnresolvedVerificationFailures(), true);
+  const foreignShop = new PaymentNotificationInbox(f.db, {
+    ...f.options,
+    merchantId: "999999",
+  });
+  assert.equal(await foreignShop.hasUnresolvedVerificationFailures(), false);
+});
+
+test("known-ID fallback validates batch bounds before querying storage", async () => {
+  let queries = 0;
+  const db = {
+    query: async () => {
+      queries++;
+      throw new Error("must not query");
+    },
+  } as unknown as Database;
+  const inbox = new PaymentNotificationInbox(db, {
+    mode: "live",
+    merchantId: shop,
+    reconcile: async () => "verified",
+  });
+  for (const invalid of [0, 26, 1.5, NaN, Infinity])
+    await assert.rejects(inbox.enqueueKnownPending(invalid), DomainError);
+  assert.equal(queries, 0);
 });

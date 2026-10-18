@@ -10,6 +10,7 @@ import {
   AiCreditLedger,
   DomainError,
   PaymentTopupOrders,
+  assertLiveCheckoutAdmission,
   type Database,
   type PaymentTopupOrder,
 } from "@citygo/db";
@@ -19,6 +20,7 @@ import {
   YooKassaError,
   type YooKassaPayment,
 } from "./yookassa.js";
+import { createPaymentAdmissionBinding } from "./payment-admission.js";
 
 export type PaymentClient = Pick<YooKassaClient, "create" | "get">;
 const REPLAY_LIMIT_MS = 23 * 60 * 60 * 1000;
@@ -91,7 +93,10 @@ export function registerPaymentTopups(
     }) => Promise<{ id: string }>;
   },
 ) {
-  const orders = new PaymentTopupOrders(options.db);
+  // Even an injected live test transport gets the same trusted DB admission
+  // boundary. There is no option to omit/bypass this binding at the HTTP layer.
+  const binding = createPaymentAdmissionBinding(options.config);
+  const orders = new PaymentTopupOrders(options.db, binding);
   const ledger = new AiCreditLedger(
     options.db,
     "routerai_citygo_10x",
@@ -187,6 +192,12 @@ export function registerPaymentTopups(
       if (!Number.isFinite(age) || age < -60_000 || age >= REPLAY_LIMIT_MS)
         return publicOrder(await orders.markReviewRequired(user.id, order.id));
       // Persist first. Ambiguous transport outcomes keep the exact same key.
+      // Recheck after durable creation, immediately before the external POST;
+      // the provider call itself is never made inside a DB transaction.
+      if (binding)
+        await options.db.transaction((tx) =>
+          assertLiveCheckoutAdmission(tx, binding),
+        );
       const payment = await transport(() =>
         client.create({
           orderId: order.id,

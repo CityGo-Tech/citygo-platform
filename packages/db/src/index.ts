@@ -4,6 +4,12 @@ export { Repository, DomainError } from "./repository.js";
 export { AiCreditLedger } from "./ai-credit.js";
 export { AiCreditCharges } from "./ai-credit-charges.js";
 export {
+  PaymentAdmission,
+  assertLiveCheckoutAdmission,
+  type PaymentAdmissionBinding,
+  type PaymentAdmissionContext,
+} from "./payment-admission.js";
+export {
   PaymentRefunds,
   type PaymentRefundContext,
   type PaymentRefundObservation,

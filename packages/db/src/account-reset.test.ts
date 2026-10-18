@@ -297,9 +297,57 @@ test("an empty account database can be inspected without creating bootstrap or f
   });
   assert.equal(plan.accountCount, 0);
   assert.equal(plan.bootstrapCompleted, false);
-  assert.ok(Object.values(plan.counts).every((count) => count === 0));
+  assert.equal(plan.counts.payment_admission, 1);
+  assert.ok(
+    Object.entries(plan.counts).every(
+      ([name, count]) => name === "payment_admission" || count === 0,
+    ),
+  );
   assert.deepEqual(plan.blockers, [
     { code: "RESET_APPLY_NOT_IMPLEMENTED", count: 1 },
   ]);
   assert.deepEqual(await snapshot(db), before);
+});
+
+test("read-only reset inventories retained admission and reports its owner, enabled reconciliation and history blockers", async (t) => {
+  const { db, ids, reset } = await fixture(t);
+  await db.query(
+    "update payment_admission set owner_user_id=$1,merchant_id='123456',runtime_policy_id=repeat('a',64),reconciliation_enabled=true",
+    [ids[0]],
+  );
+  await db.query(
+    "insert into payment_admission_commands(request_id,actor_user_id,merchant_id,runtime_policy_id,payload,result_revision,result) values($1,$2,'123456',repeat('a',64),'{\"action\":\"close\"}',2,'{}')",
+    [randomUUID(), ids[0]],
+  );
+  await db.query(
+    "insert into payment_admission_reconciliation_events(run_id,admission_revision,merchant_id,runtime_policy_id,success) values($1,1,'123456',repeat('a',64),false)",
+    [randomUUID()],
+  );
+  const before = await snapshot(db);
+  const plan = await reset.plan({
+    expectedUserCount: 5,
+    maintenanceConfirmed: true,
+  });
+  assert.equal(plan.counts.payment_admission, 1);
+  assert.equal(plan.counts.payment_admission_commands, 1);
+  assert.equal(plan.counts.payment_admission_reconciliation_events, 1);
+  for (const name of [
+    "payment_admission",
+    "payment_admission_commands",
+    "payment_admission_reconciliation_events",
+  ])
+    assert.ok(plan.retained.includes(name));
+  assert.ok(
+    plan.blockers.some(
+      (item) => item.code === "PAYMENT_ADMISSION_LINKED_OR_ACTIVE",
+    ),
+  );
+  assert.ok(
+    plan.blockers.some(
+      (item) =>
+        item.code === "PAYMENT_ADMISSION_HISTORY_PRESENT" && item.count === 2,
+    ),
+  );
+  assert.deepEqual(await snapshot(db), before);
+  assert.equal("apply" in reset, false);
 });

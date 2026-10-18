@@ -7,6 +7,7 @@ import { root, serviceEnv } from "./env.mjs";
 import { pilotSmoke } from "./pilot-smoke.mjs";
 import { containerDrainSmoke } from "./container-drain-smoke.mjs";
 import { workerDrainSmoke } from "./worker-drain-smoke.mjs";
+import { assertClosedPaymentAdmission } from "./payment-admission-smoke.mjs";
 import {
   candidateDir,
   validateBases,
@@ -132,7 +133,7 @@ try {
   compose(["up", "-d", "--wait", "--wait-timeout", "90", "postgres"]);
   compose(["run", "--rm", "--no-deps", "migrator"]);
   const migrations = psql("select count(*) from citygo_migrations");
-  assert.equal(migrations, "21");
+  assert.equal(migrations, "22");
   compose(["run", "--rm", "--no-deps", "migrator"]);
   assert.equal(psql("select count(*) from citygo_migrations"), migrations);
   compose([
@@ -149,6 +150,7 @@ try {
     "-f",
     "/fixtures/grants.sql",
   ]);
+  assertClosedPaymentAdmission(psql);
   assert.equal(
     psql(
       "select has_schema_privilege('citygo_api','public','CREATE') or has_table_privilege('citygo_api','citygo_migrations','UPDATE')",

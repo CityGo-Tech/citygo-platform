@@ -206,11 +206,18 @@ test(
   pgOnly,
   async (t) => {
     const { db, data, restart } = await fixture(t);
+    const admission = [
+      "payment_admission",
+      "payment_admission_commands",
+      "payment_admission_reconciliation_events",
+    ];
+    const admissionBefore = await captureRestartRows(db, admission);
     const before = await captureRestartRows(db, retainedFinancialTables);
     const result = await restart.apply(await input(restart));
     assert.equal(result.accountsRetired, 2);
     assert.equal(result.accountsDeleted, 0);
     assert.equal(result.accountingPreserved, true);
+    assert.deepEqual(await captureRestartRows(db, admission), admissionBefore);
     assert.deepEqual(
       await captureRestartRows(db, retainedFinancialTables),
       before,
@@ -244,6 +251,56 @@ test(
     const after = await captureRestartRows(db);
     await assert.rejects(restart.apply(await input(restart)));
     assert.deepEqual(await captureRestartRows(db), after);
+  },
+);
+
+test(
+  "PostgreSQL closed restart refuses linked/active admission and append-only history without retiring users",
+  pgOnly,
+  async (t) => {
+    for (const kind of ["owner", "command", "event", "reconciliation"] as const)
+      await t.test(kind, async (t) => {
+        const { db, data, restart } = await fixture(t);
+        const stale = await input(restart);
+        if (kind === "owner")
+          await db.query("update payment_admission set owner_user_id=$1", [
+            data.user,
+          ]);
+        if (kind === "command")
+          await db.query(
+            "insert into payment_admission_commands(request_id,actor_user_id,merchant_id,runtime_policy_id,payload,result_revision,result) values($1,$2,'123456',repeat('a',64),'{\"action\":\"close\"}',2,'{}')",
+            [randomUUID(), data.user],
+          );
+        if (kind === "event")
+          await db.query(
+            "insert into payment_admission_reconciliation_events(run_id,admission_revision,merchant_id,runtime_policy_id,success) values($1,1,'123456',repeat('a',64),false)",
+            [randomUUID()],
+          );
+        if (kind === "reconciliation")
+          await db.exec(
+            "update payment_admission set merchant_id='123456',runtime_policy_id=repeat('a',64),reconciliation_enabled=true",
+          );
+        const before = await captureRestartRows(db);
+        const plan = await restart.plan({
+          expectedUserCount: 2,
+          maintenanceConfirmed: true,
+        });
+        assert.ok(
+          plan.blockers.some(
+            (item) =>
+              item.code ===
+              (kind === "command" || kind === "event"
+                ? "PAYMENT_ADMISSION_HISTORY_PRESENT"
+                : "PAYMENT_ADMISSION_LINKED_OR_ACTIVE"),
+          ),
+        );
+        await assert.rejects(restart.apply(stale), /изменились/);
+        await assert.rejects(
+          restart.apply(await input(restart)),
+          /заблокирован/,
+        );
+        assert.deepEqual(await captureRestartRows(db), before);
+      });
   },
 );
 

@@ -77,6 +77,12 @@ test("closed restart plan is complete, stable, count-only and nonmutating", asyn
 
 test("closed restart retires identity and conversations, preserving every financial value and original audit", async (t) => {
   const { db, data, restart } = await fixture(t);
+  const admission = [
+    "payment_admission",
+    "payment_admission_commands",
+    "payment_admission_reconciliation_events",
+  ];
+  const admissionBefore = await captureRestartRows(db, admission);
   const before = await captureRestartRows(db, retainedFinancialTables);
   const oldAudits = (await db.query("select * from audit_log order by id"))
     .rows;
@@ -96,6 +102,7 @@ test("closed restart retires identity and conversations, preserving every financ
   assert.equal(result.admin.role, "super_admin");
   assert.equal(result.admin.mustChangePassword, true);
   assert.equal(JSON.stringify(result).includes("PRIVATE-"), false);
+  assert.deepEqual(await captureRestartRows(db, admission), admissionBefore);
   assert.deepEqual(
     await captureRestartRows(db, retainedFinancialTables),
     before,
@@ -189,6 +196,84 @@ test("closed restart retires identity and conversations, preserving every financ
   assert.equal((await access.info(admin.id))?.mustChangePassword, false);
   assert.equal((await access.list(admin.id)).length, 1);
   await assert.rejects(access.bootstrapAdmin("another-hash"));
+});
+
+for (const kind of [
+  "owner",
+  "reconciliation",
+  "run",
+  "command",
+  "event",
+] as const)
+  test(`closed restart refuses ${kind} admission instead of retiring its authority or history`, async (t) => {
+    const { db, data, restart } = await fixture(t);
+    const stale = await prepared(restart);
+    if (kind === "owner")
+      await db.query("update payment_admission set owner_user_id=$1", [
+        data.user,
+      ]);
+    if (kind === "reconciliation")
+      await db.exec(
+        "update payment_admission set merchant_id='123456',runtime_policy_id=repeat('a',64),reconciliation_enabled=true",
+      );
+    if (kind === "run")
+      await db.exec(
+        "update payment_admission set reconciliation_run_id='0af9b212-c46b-42df-b923-e57d639b620b',reconciliation_run_revision=1,reconciliation_run_until=clock_timestamp()-interval '1 hour'",
+      );
+    if (kind === "command")
+      await db.query(
+        "insert into payment_admission_commands(request_id,actor_user_id,merchant_id,runtime_policy_id,payload,result_revision,result) values('58b8a462-17db-4ce8-b731-c7c6bec3e091',$1,'123456',repeat('a',64),'{\"action\":\"close\"}',2,'{}')",
+        [data.user],
+      );
+    if (kind === "event")
+      await db.exec(
+        "insert into payment_admission_reconciliation_events(run_id,admission_revision,merchant_id,runtime_policy_id,success) values('0af9b212-c46b-42df-b923-e57d639b620b',1,'123456',repeat('a',64),false)",
+      );
+    const before = await captureRestartRows(db);
+    const plan = await restart.plan({
+      expectedUserCount: 2,
+      maintenanceConfirmed: true,
+    });
+    assert.ok(
+      plan.blockers.some(
+        (item) =>
+          item.code ===
+          (kind === "command" || kind === "event"
+            ? "PAYMENT_ADMISSION_HISTORY_PRESENT"
+            : "PAYMENT_ADMISSION_LINKED_OR_ACTIVE"),
+      ),
+    );
+    for (const name of [
+      "payment_admission",
+      "payment_admission_commands",
+      "payment_admission_reconciliation_events",
+    ])
+      assert.equal(plan.retained.includes(name), true);
+    assert.notEqual(
+      plan.snapshotFingerprint,
+      stale.expectedSnapshotFingerprint,
+    );
+    await assert.rejects(restart.apply(stale), /изменились/);
+    await assert.rejects(
+      restart.apply(await prepared(restart)),
+      /заблокирован/,
+    );
+    assert.deepEqual(await captureRestartRows(db), before);
+  });
+
+test("closed retirement cannot mutate preserved admission through a user-update trigger", async (t) => {
+  const { db, restart } = await fixture(t);
+  await db.exec(`create function synthetic_retire_admission() returns trigger language plpgsql as $$ begin
+    update payment_admission set revision=revision+1; return new; end $$;
+    create trigger synthetic_retire_admission after update on users for each row
+    when (new.status='deleted') execute function synthetic_retire_admission()`);
+  const input = await prepared(restart);
+  const before = await captureRestartRows(db);
+  await assert.rejects(
+    restart.apply(input),
+    /Инвариант сохранения учёта нарушен/,
+  );
+  assert.deepEqual(await captureRestartRows(db), before);
 });
 
 test("full fingerprint catches changed private data, receipt, audit and schema even at the same account count", async (t) => {

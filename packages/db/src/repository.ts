@@ -49,7 +49,7 @@ export class Repository {
     public db: Database,
     private creditCharging = false,
     private creditTariff: CityGoTariffSnapshot = LEGACY_AT_COST_TARIFF,
-    private topUpAvailable = false,
+    private topUpAvailable: boolean | (() => Promise<boolean>) = false,
   ) {}
   aiBudget(executions: AiExecution[]) {
     return aiBudget(this.db, executions);
@@ -435,6 +435,13 @@ export class Repository {
     policy: AiPolicy | null,
     dailyLimit: number,
   ): Promise<Dashboard> {
+    // Admission status may read through this.db. Resolve before taking the user
+    // snapshot/transaction, including PGlite's single-connection transaction.
+    // This hint never replaces the order's atomic live-checkout admission.
+    const topUpAvailable =
+      typeof this.topUpAvailable === "function"
+        ? await this.topUpAvailable()
+        : this.topUpAvailable;
     return this.db.transaction(async (tx) => {
       // Stable plan/quest snapshot relative to start, completion and replacement.
       await tx.query("select id from users where id=$1 for share", [user.id]);
@@ -485,7 +492,7 @@ export class Repository {
                 ? "routerai_citygo_10x"
                 : "routerai_at_cost"
               : "not_connected",
-            this.topUpAvailable,
+            topUpAvailable,
           ).status(user.id, tx),
           budget: await aiUserBudget(tx, user.id),
           policy,
