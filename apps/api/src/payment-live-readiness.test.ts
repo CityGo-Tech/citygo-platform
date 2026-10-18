@@ -180,7 +180,7 @@ test("manual NPD plan removes the partner requirement without approving the live
       "LIVE_MERCHANT_ACCEPTANCE_PENDING",
       "FISCAL_WORKFLOW_LIVE_ACCEPTANCE_PENDING",
       "BACKGROUND_RECONCILIATION_RELEASE_PENDING",
-      "LIVE_RELEASE_PROFILE_NOT_IMPLEMENTED",
+      "LIVE_RELEASE_PROFILE_ACCEPTANCE_PENDING",
     ],
   );
 });

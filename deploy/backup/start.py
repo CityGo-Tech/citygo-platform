@@ -24,7 +24,9 @@ import worker as w
 PROFILE = "citygo-api-web-disabled-v1"
 ROUTERAI_PROFILE = "citygo-api-web-routerai-credit-v1"
 CITYGO_10X_PROFILE = "citygo-api-web-routerai-citygo-10x-v1"
-PROFILE_VERSIONS = {PROFILE: 1, ROUTERAI_PROFILE: 2, CITYGO_10X_PROFILE: 3}
+CITYGO_10X_YOOKASSA_LIVE_PROFILE = "citygo-api-web-routerai-citygo-10x-yookassa-live-v1"
+PROFILE_VERSIONS = {PROFILE: 1, ROUTERAI_PROFILE: 2, CITYGO_10X_PROFILE: 3,
+                    CITYGO_10X_YOOKASSA_LIVE_PROFILE: 4}
 # Public configuration is pinned together with the private key by startup approval.
 # No live budget, user bonus, consent or payment authorization is encoded here.
 ROUTERAI_FIXED = {
@@ -34,10 +36,16 @@ ROUTERAI_FIXED = {
     "ROUTERAI_REASONING_EFFORT": "high", "ROUTERAI_MAX_OUTPUT_TOKENS": "32768",
     "ROUTERAI_REQUEST_TIMEOUT_MS": "240000", "LLM_MAX_INPUT_BYTES": "64000",
 }
-# Production payment transport is not implemented. This profile prepares the
-# reviewed tariff without allowing sandbox credentials or claiming live checkout.
+# This historical profile keeps payments disabled. Adding a live transport must
+# not reinterpret an already approved configuration or admit sandbox funds.
 CITYGO_10X_FIXED = {**ROUTERAI_FIXED, "AI_CREDIT_MODE": "routerai_citygo_10x",
                    "YOOKASSA_MODE": "disabled"}
+# Separate closed startup scope. The complete private document (including shop,
+# keys and notice) is hash-bound by approval; no traffic or money allowance is
+# supplied here, and the manual NPD workflow is not a claim of automatic receipts.
+CITYGO_10X_YOOKASSA_LIVE_FIXED = {**CITYGO_10X_FIXED, "YOOKASSA_MODE": "live",
+                                "YOOKASSA_RECEIPT_MODE": "npd_manual"}
+YOOKASSA_LIVE_KEYS = {"YOOKASSA_SHOP_ID", "YOOKASSA_SECRET_KEY"}
 ROUTERAI_LIMITS = {
     "LLM_USER_DAILY_REQUEST_LIMIT": 10000, "LLM_GLOBAL_DAILY_REQUEST_LIMIT": 1000000,
     "LLM_USER_DAILY_ATTEMPT_LIMIT": 10000, "LLM_GLOBAL_DAILY_ATTEMPT_LIMIT": 1000000,
@@ -57,9 +65,11 @@ def api_secret(path, profile=PROFILE):
     if profile == PROFILE:
         b.require({"DATABASE_URL"} <= set(value) <= {"DATABASE_URL", "ADMIN_USER_IDS"}, "start-secret")
     else:
-        fixed = CITYGO_10X_FIXED if profile == CITYGO_10X_PROFILE else ROUTERAI_FIXED
+        fixed = (CITYGO_10X_YOOKASSA_LIVE_FIXED if profile == CITYGO_10X_YOOKASSA_LIVE_PROFILE else
+                 CITYGO_10X_FIXED if profile == CITYGO_10X_PROFILE else ROUTERAI_FIXED)
+        payment_keys = YOOKASSA_LIVE_KEYS if profile == CITYGO_10X_YOOKASSA_LIVE_PROFILE else set()
         t.keys(value, {"DATABASE_URL", "ADMIN_USER_IDS", "ROUTERAI_API_KEY", "ROUTERAI_DATA_NOTICE",
-                       "ROUTERAI_PRODUCTION_POLICY_ID"} | set(fixed) | set(ROUTERAI_LIMITS), "start-secret")
+                       "ROUTERAI_PRODUCTION_POLICY_ID"} | set(fixed) | set(ROUTERAI_LIMITS) | payment_keys, "start-secret")
         b.require(all(type(v) is str and v.strip() == v and v and not any(ord(c) < 32 for c in v)
                       for v in value.values()), "start-secret")
         b.require(all(value[k] == v for k, v in fixed.items()), "start-secret")
@@ -68,6 +78,12 @@ def api_secret(path, profile=PROFILE):
         b.require(t.matches(value["ROUTERAI_PRODUCTION_POLICY_ID"], t.HASH)
                   and len(value["ROUTERAI_DATA_NOTICE"].encode("utf-16-le")) <= 8000
                   and len(value["ROUTERAI_API_KEY"]) <= 8192, "start-secret")
+        if payment_keys:
+            # Match the application's explicit live-mode credential policy.
+            # Merchant ownership/mode is checked separately with GET /v3/me;
+            # neither the key prefix nor startup approval proves acceptance.
+            b.require(t.matches(value["YOOKASSA_SHOP_ID"], r"[1-9][0-9]{0,19}")
+                      and t.matches(value["YOOKASSA_SECRET_KEY"], r"live_[A-Za-z0-9_=-]{8,8192}"), "start-secret")
     url = value["DATABASE_URL"]
     b.require(type(url) is str and not any(ord(ch) <= 32 for ch in url), "start-secret")
     try:
@@ -133,6 +149,7 @@ def profile_environment(profile):
     b.require(type(profile) is str and profile in PROFILE_VERSIONS, "start-profile")
     return ({"LLM_PROVIDER": "disabled"} if profile == PROFILE else
             {"LLM_PROVIDER": "routerai", "CITYGO_AI_PROFILE":
+             "routerai-citygo-10x-yookassa-live-v1" if profile == CITYGO_10X_YOOKASSA_LIVE_PROFILE else
              "routerai-citygo-10x-v1" if profile == CITYGO_10X_PROFILE else "routerai-credit-v1"})
 
 

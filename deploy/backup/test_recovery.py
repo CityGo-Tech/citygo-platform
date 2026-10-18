@@ -47,7 +47,8 @@ class Validation(unittest.TestCase):
 @unittest.skipUnless(sys.platform.startswith("linux"), "Linux real barrier recovery")
 class Recovery(unittest.TestCase):
     def setUp(self):
-        setup = (fixture.CityGo10xCutover if getattr(self, "citygo_10x_profile", False) else
+        setup = (fixture.CityGo10xLiveCutover if getattr(self, "citygo_10x_live_profile", False) else
+                 fixture.CityGo10xCutover if getattr(self, "citygo_10x_profile", False) else
                  fixture.RouterAiCutover if getattr(self, "routerai_profile", False) else fixture.Cutover)
         if setup is not fixture.Cutover: self.profile = setup.profile
         setup.setUp(self)
@@ -194,6 +195,11 @@ class RouterAiRecovery(Recovery):
 @unittest.skipUnless(sys.platform.startswith("linux"), "Linux real barrier recovery")
 class CityGo10xRecovery(Recovery):
     citygo_10x_profile = True
+
+
+@unittest.skipUnless(sys.platform.startswith("linux"), "Linux real live-profile closed barrier recovery")
+class CityGo10xLiveRecovery(Recovery):
+    citygo_10x_live_profile = True
 
 
 if __name__ == "__main__": unittest.main()

@@ -269,6 +269,20 @@ class Capabilities(unittest.TestCase):
             with patch.dict(self.policy, changes), self.assertRaises(b.BackupError): self.capabilities()
         self.assertEqual(list(self.auto_directory.iterdir()), [])
 
+    def test_live_profile_cannot_be_selected_by_standing_autodeploy_or_reopen_traffic(self):
+        policy_path = self.entrypoint_fixture()
+        value = t.strict_json(policy_path.read_bytes())
+        value["profile"] = a.s.CITYGO_10X_YOOKASSA_LIVE_PROFILE
+        policy_path.write_bytes(encoded(value))
+        with self.assertRaisesRegex(b.BackupError, "autodeploy-live-profile-closed-only"):
+            a.policy(policy_path)
+        with patch.object(a, "resume") as resume, patch.object(ctl, "apply") as apply:
+            with self.assertRaisesRegex(b.BackupError, "autodeploy-live-profile-closed-only"):
+                a.apply(request(), policy_path=policy_path)
+            resume.assert_not_called(); apply.assert_not_called()
+        self.assertFalse(self.pending.exists()); self.assertEqual(self.host.events, [])
+        self.assertFalse((self.state / "autodeploy/pending.json").exists())
+
     def test_staged_bundle_is_exact_and_never_overwrites_existing(self):
         raw, _ = archive()
         artifact, checks = a.verify_github(request(), responses().__getitem__)

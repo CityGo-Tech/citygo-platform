@@ -16,6 +16,9 @@ paused, restart=no. По умолчанию AI disabled; отдельно сог
 [RouterAI-профиль](routerai-deployment-profile.md) требует startup approval v2
 или [профиль CityGo ×10](routerai-citygo-10x-profile.md) требует v3.
 Оба не включают денежный бюджет, бонусы, боевую оплату или публичный доступ.
+Для закрытого подключения боевого транспорта ЮKassa существует отдельный
+[live-профиль v4](yookassa-routerai-live-profile.md); он также не разрешает
+денежные операции или открытие доступа. Standing autodeploy этот профиль отвергает.
 Никаких hooks, произвольных команд, URL
 скачивания или подменяемых transport-классов в JSON-запросе нет.
 

@@ -1,0 +1,23 @@
+{
+  "DATABASE_URL": "postgresql://citygo_api:synthetic@postgres:5432/citygo_pilot",
+  "ADMIN_USER_IDS": "1",
+  "ROUTERAI_API_KEY": "synthetic-not-live",
+  "AI_CREDIT_MODE": "routerai_citygo_10x",
+  "YOOKASSA_MODE": "live",
+  "YOOKASSA_RECEIPT_MODE": "npd_manual",
+  "YOOKASSA_SHOP_ID": "123456",
+  "YOOKASSA_SECRET_KEY": "live_SYNTHETIC_NOT_A_REAL_KEY",
+  "ROUTERAI_MODEL": "deepseek/deepseek-v4-pro-0813",
+  "ROUTERAI_UPSTREAM": "deepseek",
+  "ROUTERAI_COUNTRY": "us",
+  "ROUTERAI_REASONING_EFFORT": "high",
+  "ROUTERAI_MAX_OUTPUT_TOKENS": "32768",
+  "ROUTERAI_REQUEST_TIMEOUT_MS": "240000",
+  "LLM_MAX_INPUT_BYTES": "64000",
+  "LLM_USER_DAILY_REQUEST_LIMIT": "0",
+  "LLM_GLOBAL_DAILY_REQUEST_LIMIT": "0",
+  "LLM_USER_DAILY_ATTEMPT_LIMIT": "0",
+  "LLM_GLOBAL_DAILY_ATTEMPT_LIMIT": "0",
+  "ROUTERAI_DATA_NOTICE": "Synthetic offline fixture only, not an operator notice or approval.",
+  "ROUTERAI_PRODUCTION_POLICY_ID": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}

@@ -49,6 +49,9 @@
   отдельный резерв, sandbox-сверка, связь с НПД и незакрытые условия live.
 - [Production профиль тарифа ×10](runbooks/routerai-citygo-10x-profile.md):
   отдельный approval v3, ЮKassa явно выключена, тестовые ключи запрещены.
+- [Закрытый live-профиль ЮKassa и RouterAI](runbooks/yookassa-routerai-live-profile.md):
+  отдельный approval v4, только API mount, ручные НПД-чеки;
+  [подготовка перехода 18 → 21](operations/closed-upgrade-18-to-21.md) без открытия доступа.
 - [Разделение окружений и секретов](runbooks/service-environments.md).
 - [Совместимость API, Web и Expo](architecture/api-compatibility.md).
 - [Реальное устройство AI-ролей](agents/README.md).

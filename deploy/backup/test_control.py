@@ -70,7 +70,8 @@ class Validation(unittest.TestCase):
 @unittest.skipUnless(sys.platform.startswith("linux"), "Linux protected operator requests")
 class Operator(unittest.TestCase):
     def setUp(self):
-        setup = (fixture.CityGo10xCutover if getattr(self, "citygo_10x_profile", False) else
+        setup = (fixture.CityGo10xLiveCutover if getattr(self, "citygo_10x_live_profile", False) else
+                 fixture.CityGo10xCutover if getattr(self, "citygo_10x_profile", False) else
                  fixture.RouterAiCutover if getattr(self, "routerai_profile", False) else fixture.Cutover)
         if setup is not fixture.Cutover: self.profile = setup.profile
         setup.setUp(self)
@@ -83,7 +84,8 @@ class Operator(unittest.TestCase):
         result = ctl.preflight(value, image_store_factory=lambda _: self.image_store)
         self.assertEqual(result["status"], "planned-not-approved")
         self.assertEqual(result["generation_sha256"], self.plan["sha256"])
-        expected_profile = (ctl.s.CITYGO_10X_PROFILE if getattr(self, "citygo_10x_profile", False) else
+        expected_profile = (ctl.s.CITYGO_10X_YOOKASSA_LIVE_PROFILE if getattr(self, "citygo_10x_live_profile", False) else
+                            ctl.s.CITYGO_10X_PROFILE if getattr(self, "citygo_10x_profile", False) else
                             ctl.s.ROUTERAI_PROFILE if getattr(self, "routerai_profile", False) else ctl.s.PROFILE)
         self.assertEqual(result["profile"], expected_profile)
         self.assertFalse(result["runtime_checked"])
@@ -142,6 +144,11 @@ class RouterAiOperator(Operator):
 @unittest.skipUnless(sys.platform.startswith("linux"), "Linux protected operator requests")
 class CityGo10xOperator(Operator):
     citygo_10x_profile = True
+
+
+@unittest.skipUnless(sys.platform.startswith("linux"), "Linux protected live-profile operator requests")
+class CityGo10xLiveOperator(Operator):
+    citygo_10x_live_profile = True
 
 
 if __name__ == "__main__": unittest.main()
