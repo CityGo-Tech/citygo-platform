@@ -23,6 +23,7 @@ import {
   refundCanSubmit,
   refundCanReconcile,
   refundMicros,
+  refundConfirmationText,
 } from "./payment-refunds-state.js";
 
 type Api = ReturnType<typeof createClient>;
@@ -253,12 +254,13 @@ export function PaymentRefundsControl({
   const sourceQuery = adminPaymentSourceQuerySchema.safeParse({ userId });
   return (
     <Card>
-      <h2>Возвраты · тестовый контур ЮKassa</h2>
+      <h2>Возвраты · ЮKassa</h2>
       <p>
-        Сейчас действия доступны только для sandbox-источников. Настоящие деньги
-        не возвращаются. Подарки и старый неразмеченный баланс не возвращаются;
-        разрешён только свободный оплаченный остаток конкретного платежа, без
-        AI-резервов и расходов.
+        Sandbox и боевые оплаты помечены отдельно. Доступность действий
+        проверяет сервер: показ источника не включает магазин и не разрешает
+        операцию в другом магазине или режиме. Подарки и старый неразмеченный
+        баланс не возвращаются; разрешён только свободный оплаченный остаток
+        конкретного платежа, без AI-резервов и расходов.
       </p>
       <p>
         Резервирование, отправка запроса и серверная сверка — разные шаги.
@@ -336,7 +338,7 @@ export function PaymentRefundsControl({
                     {refund.userId} ·{" "}
                     {refund.test
                       ? "sandbox"
-                      : "реальный источник; действия выключены"}{" "}
+                      : "боевой платёж: настоящие деньги"}{" "}
                     · {names[refund.status]}
                   </p>
                 </li>
@@ -421,11 +423,11 @@ export function PaymentRefundsControl({
               <option
                 key={source.sourceOperationId}
                 value={source.sourceOperationId}
-                disabled={!source.test || source.availableMicros < 1_000_000}
+                disabled={!sourceRefundable(source, 100)}
               >
                 {source.sourceOperationId} · до{" "}
                 {receiptMoney(Math.floor(source.availableMicros / 10_000))} ·{" "}
-                {source.test ? "sandbox" : "реальный; недоступен"}
+                {source.test ? "sandbox" : "боевой платёж"}
               </option>
             ))}
           </SelectField>
@@ -437,8 +439,16 @@ export function PaymentRefundsControl({
           <p>
             Операция {selected.sourceOperationId}; аккаунт {selected.userId};
             ЮKassa {selected.providerPaymentId}. Источник{" "}
-            {selected.test ? "sandbox" : "реальный — действия выключены"}.
+            {selected.test ? "sandbox" : "боевой платёж"}.
           </p>
+          {!selected.test && (
+            <p role="alert">
+              Боевой источник: возврат затрагивает настоящие деньги. Сейчас
+              подтверждается только локальный резерв выбранной суммы. Внешняя
+              отправка ЮKassa потребует отдельного подтверждения на следующем
+              шаге; окончательный результат проверит сервер.
+            </p>
+          )}
           <dl>
             <dt>Оплачено</dt>
             <dd>{refundMicros(selected.grossMicros)}</dd>
@@ -469,7 +479,11 @@ export function PaymentRefundsControl({
               setAmount(event.target.value);
               setConfirmed(false);
             }}
-            hint="Текущий технический порог теста — 1 ₽; это не юридическое ограничение суммы возврата."
+            hint={
+              selected.test
+                ? "Текущий технический порог теста — 1 ₽; это не юридическое ограничение суммы возврата."
+                : "Технический минимум операции — 1 ₽; сервер дополнительно проверит свободный оплаченный остаток и исходный магазин."
+            }
           />
           <label className="check">
             <input
@@ -477,8 +491,7 @@ export function PaymentRefundsControl({
               checked={confirmed}
               onChange={(event) => setConfirmed(event.target.checked)}
             />{" "}
-            Подтверждаю резервирование выбранной суммы из этого sandbox-платежа,
-            без отправки провайдеру.
+            {refundConfirmationText(selected.test, "reserve")}
           </label>
           <Button
             disabled={!confirmed || !eligible || !amountKopeks}
@@ -492,7 +505,9 @@ export function PaymentRefundsControl({
               if (parsed.success) void reserve(parsed.data);
             }}
           >
-            Зарезервировать тестовый возврат
+            {selected.test
+              ? "Зарезервировать тестовый возврат"
+              : "Зарезервировать боевой возврат"}
           </Button>
         </fieldset>
       )}
@@ -533,8 +548,16 @@ function RefundDetail({
         {names[refund.status]}.{" "}
         {refund.test
           ? "Sandbox: настоящие деньги не переводятся."
-          : "Реальный источник: управление выключено."}
+          : "Боевой источник: отдельная отправка запускает возврат настоящих денег покупателю."}
       </p>
+      {!refund.test && (
+        <p role="alert">
+          Это боевой возврат на {receiptMoney(refund.amountKopeks)} для аккаунта{" "}
+          {refund.userId}. Резерв, внешний POST и проверочный GET — три разных
+          шага. Неизвестный результат не разрешает новую отправку или
+          освобождение резерва.
+        </p>
+      )}
       <dl>
         <dt>Сумма</dt>
         <dd>{receiptMoney(refund.amountKopeks)}</dd>
@@ -575,11 +598,18 @@ function RefundDetail({
       )}
       {refundCanSubmit(refund) && (
         <fieldset disabled={busy}>
-          <legend>Отдельная отправка в sandbox ЮKassa</legend>
+          <legend>
+            {refund.test
+              ? "Отдельная отправка в sandbox ЮKassa"
+              : "Отдельная отправка боевого возврата в ЮKassa"}
+          </legend>
           <p>
             Подтверждён только резерв. Эта кнопка делает внешний запрос в
-            тестовую ЮKassa; успешный ответ создания сам по себе не подтверждает
-            завершённый возврат.
+            {refund.test
+              ? " тестовую ЮKassa"
+              : " боевую ЮKassa с возвратом настоящих денег"}
+            ; успешный ответ создания сам по себе не подтверждает завершённый
+            возврат.
           </p>
           <label className="check">
             <input
@@ -587,7 +617,7 @@ function RefundDetail({
               checked={confirmed}
               onChange={(event) => setConfirmed(event.target.checked)}
             />{" "}
-            Подтверждаю отдельную отправку этого тестового возврата.
+            {refundConfirmationText(refund.test, "submit")}
           </label>
           <Button
             disabled={!confirmed}
@@ -595,7 +625,9 @@ function RefundDetail({
               if (confirmed) onSubmit();
             }}
           >
-            Отправить тестовый возврат
+            {refund.test
+              ? "Отправить тестовый возврат"
+              : "Отправить боевой возврат"}
           </Button>
         </fieldset>
       )}

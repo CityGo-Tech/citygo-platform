@@ -31,6 +31,14 @@ function dashboard(topUpAvailable = true): Dashboard {
       policy: null,
       granted: false,
       dailyLimit: 0,
+      budget: {
+        currency: "RUB",
+        day: "2026-10-18",
+        resetAt: "2026-10-19T00:00:00.000Z",
+        limitMicros: 1_000_000,
+        reservedTodayMicros: Number.MAX_SAFE_INTEGER,
+        remainingMicros: 0,
+      },
       credit: {
         currency: "RUB",
         bonusGranted: false,
@@ -52,19 +60,28 @@ async function fixture(
     available?: boolean;
     failFirst?: boolean;
     unsafeUrl?: boolean;
+    live?: boolean;
   } = {},
 ) {
   const state = {
     creates: [] as { requestId: string; amountKopeks: number }[],
     reconciles: 0,
+    reads: 0,
+    credited: false,
     unexpected: [] as string[],
   };
   // Entire application API is intercepted. No real payment, account, DB or AI.
   await page.route("**/api/v1/**", async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
-    if (path === "/api/v1/dashboard")
-      return route.fulfill({ json: dashboard(options.available) });
+    if (path === "/api/v1/dashboard") {
+      const board = dashboard(options.available);
+      if (state.credited && board.aiAccess.credit) {
+        board.aiAccess.credit.grantedMicros = order.creditMicros;
+        board.aiAccess.credit.availableMicros = order.creditMicros;
+      }
+      return route.fulfill({ json: board });
+    }
     if (path === "/api/v1/payments/topups" && request.method() === "POST") {
       state.creates.push(request.postDataJSON());
       if (options.failFirst && state.creates.length === 1)
@@ -72,6 +89,7 @@ async function fixture(
       return route.fulfill({
         json: {
           ...order,
+          test: options.live !== true,
           ...(options.unsafeUrl
             ? { confirmationUrl: "http://checkout.example.test/unsafe" }
             : {}),
@@ -81,16 +99,24 @@ async function fixture(
     if (
       path === `/api/v1/payments/topups/${order.orderId}` &&
       request.method() === "GET"
-    )
-      return route.fulfill({ json: order });
+    ) {
+      state.reads++;
+      return route.fulfill({ json: { ...order, test: options.live !== true } });
+    }
     if (
       path === `/api/v1/payments/topups/${order.orderId}/reconcile` &&
       request.method() === "POST"
     ) {
       state.reconciles++;
+      state.credited = true;
       expect(request.postDataJSON()).toEqual({});
       return route.fulfill({
-        json: { ...order, status: "succeeded", credited: true },
+        json: {
+          ...order,
+          test: options.live !== true,
+          status: "succeeded",
+          credited: true,
+        },
       });
     }
     state.unexpected.push(path);
@@ -102,7 +128,7 @@ async function fixture(
   return state;
 }
 
-test("test checkout is hidden without the server capability; return parameters do not grant money", async ({
+test("checkout is hidden without the server capability; return parameters do not grant money", async ({
   page,
 }) => {
   const state = await fixture(page, { available: false });
@@ -111,8 +137,11 @@ test("test checkout is hidden without the server capability; return parameters d
     page.getByRole("heading", { name: "Баланс CityGo", exact: true }),
   ).toBeVisible();
   await expect(
+    page.getByText("9007199254.740991", { exact: false }),
+  ).toBeVisible();
+  await expect(
     page.getByRole("heading", {
-      name: "Тестовое пополнение ЮKassa",
+      name: "Пополнение баланса ЮKassa",
       exact: true,
     }),
   ).toHaveCount(0);
@@ -129,14 +158,12 @@ test("ambiguous create survives reload with the same key; only explicit reconcil
 }) => {
   const state = await fixture(page, { failFirst: true });
   await page.goto("/");
-  await expect(page.getByLabel("Сумма тестового пополнения")).toHaveValue(
-    "100",
-  );
+  await expect(page.getByLabel("Сумма пополнения")).toHaveValue("100");
   await expect(
-    page.getByRole("button", { name: "Создать тестовый платёж", exact: true }),
+    page.getByRole("button", { name: "Создать платёж", exact: true }),
   ).toBeEnabled();
   await page
-    .getByRole("button", { name: "Создать тестовый платёж", exact: true })
+    .getByRole("button", { name: "Создать платёж", exact: true })
     .click();
   await expect(page.locator(".ai-access [role=alert]")).toContainText(
     "Не удалось подтвердить результат",
@@ -148,7 +175,7 @@ test("ambiguous create survives reload with the same key; only explicit reconcil
     exact: true,
   });
   await expect(retry).toBeEnabled();
-  await expect(page.getByLabel("Сумма тестового пополнения")).toBeDisabled();
+  await expect(page.getByLabel("Сумма пополнения")).toBeDisabled();
   await retry.click();
   const checkout = page.getByRole("link", {
     name: "Открыть тестовую оплату ЮKassa",
@@ -167,10 +194,10 @@ test("ambiguous create survives reload with the same key; only explicit reconcil
   ).toBeVisible();
   expect(state.reconciles).toBe(0);
   await page
-    .getByRole("button", { name: "Проверить тестовый платёж", exact: true })
+    .getByRole("button", { name: "Проверить платёж", exact: true })
     .click();
   await expect(
-    page.getByText("тестовое зачисление подтверждено сервером", {
+    page.getByText("зачисление подтверждено сервером", {
       exact: false,
     }),
   ).toBeVisible();
@@ -179,7 +206,7 @@ test("ambiguous create survives reload with the same key; only explicit reconcil
     page.getByText("настоящие деньги не списываются", { exact: false }),
   ).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "Новый тестовый платёж", exact: true }),
+    page.getByRole("button", { name: "Новый платёж", exact: true }),
   ).toBeVisible();
   expect(state.unexpected).toEqual([]);
 });
@@ -190,7 +217,7 @@ test("a malformed checkout response never exposes an unsafe payment link or retr
   const state = await fixture(page, { unsafeUrl: true });
   await page.goto("/");
   await page
-    .getByRole("button", { name: "Создать тестовый платёж", exact: true })
+    .getByRole("button", { name: "Создать платёж", exact: true })
     .click();
   await expect(page.locator(".ai-access [role=alert]")).toContainText(
     "Не удалось подтвердить результат",
@@ -209,5 +236,67 @@ test("a malformed checkout response never exposes an unsafe payment link or retr
   ).toBeEnabled();
   expect(state.creates).toHaveLength(1);
   expect(state.reconciles).toBe(0);
+  expect(state.unexpected).toEqual([]);
+});
+
+test("live checkout explicitly warns about real money, credits 100 to 100 and never settles from return URL or an automatic GET", async ({
+  page,
+}) => {
+  const state = await fixture(page, { live: true });
+  await page.goto("/?payment=succeeded&credited=true&amount=10000");
+  const panel = page.getByRole("region", { name: "Пополнение баланса ЮKassa" });
+  await expect(panel).toBeVisible();
+  await expect(
+    page.getByRole("region", { name: "Баланс CityGo", exact: true }),
+  ).toContainText("Доступно: 0 ₽");
+  await expect(panel.getByLabel("Сумма пополнения")).toHaveValue("100");
+  expect(state.creates).toHaveLength(0);
+  expect(state.reconciles).toBe(0);
+  await panel
+    .getByRole("button", { name: "Создать платёж", exact: true })
+    .click();
+  await expect(panel).toContainText(
+    "Боевой платёж: на странице ЮKassa будут списаны настоящие деньги.",
+  );
+  await expect(panel).toContainText("100 ₽ CityGo");
+  await expect(panel).toContainText(
+    "Оплата 100 ₽ соответствует 100 ₽ CityGo, не 1 000 ₽.",
+  );
+  const checkout = panel.getByRole("link", {
+    name: "Перейти к оплате ЮKassa",
+    exact: true,
+  });
+  await expect(checkout).toHaveAttribute("href", order.confirmationUrl!);
+  await expect(checkout).toHaveAttribute("rel", "noopener noreferrer");
+  await expect(checkout).toHaveAttribute("target", "_blank");
+  await expect(
+    panel.getByRole("link", {
+      name: "Открыть тестовую оплату ЮKassa",
+      exact: true,
+    }),
+  ).toHaveCount(0);
+  expect(state.creates).toHaveLength(1);
+  expect(state.creates[0]?.amountKopeks).toBe(10000);
+  expect(state.reconciles).toBe(0);
+  await page.goto(`/?payment=succeeded&credited=true&orderId=${order.orderId}`);
+  await expect(panel).toContainText("зачисление не подтверждено");
+  await expect.poll(() => state.reads).toBe(1);
+  expect(state.creates).toHaveLength(1);
+  expect(state.reconciles).toBe(0);
+  await expect(
+    page.getByRole("region", { name: "Баланс CityGo", exact: true }),
+  ).toContainText("Доступно: 0 ₽");
+  await panel
+    .getByRole("button", { name: "Проверить платёж", exact: true })
+    .click();
+  await expect(panel).toContainText("зачисление подтверждено сервером");
+  await expect(
+    page.getByRole("region", { name: "Баланс CityGo", exact: true }),
+  ).toContainText("Доступно: 100 ₽");
+  expect(state.reconciles).toBe(1);
+  expect(state.creates).toHaveLength(1);
+  await expect(
+    panel.getByRole("button", { name: "Новый платёж", exact: true }),
+  ).toBeVisible();
   expect(state.unexpected).toEqual([]);
 });

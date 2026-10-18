@@ -121,26 +121,19 @@ export const serverConfigSchema = z.object({
   AI_CREDIT_MODE: z
     .enum(["disabled", "routerai_at_cost", "routerai_citygo_10x"])
     .default("disabled"),
-  YOOKASSA_MODE: z.enum(["disabled", "test"]).default("disabled"),
+  YOOKASSA_MODE: z.enum(["disabled", "test", "live"]).default("disabled"),
   YOOKASSA_SHOP_ID: optionalSetting,
   YOOKASSA_SECRET_KEY: optionalSetting,
+  // Technical workflow selection, not a tax opinion or provider contract.
+  // Live acceptance remains an independent release/merchant decision.
+  YOOKASSA_RECEIPT_MODE: z.enum(["disabled", "npd_manual"]).default("disabled"),
   // Development rehearsal only. This flag is not a production approval.
   R1_HOUSING_API_MODE: z.enum(["disabled", "synthetic"]).default("disabled"),
   TRUSTED_PROXY_CIDRS: trustedProxySchema,
 });
 export function readConfig(env: NodeJS.ProcessEnv = process.env) {
   const config = serverConfigSchema.parse(env);
-  if (
-    config.YOOKASSA_MODE === "test" &&
-    (config.NODE_ENV === "production" ||
-      config.LLM_PROVIDER !== "disabled" ||
-      config.AI_CREDIT_MODE !== "routerai_citygo_10x" ||
-      !/^[1-9][0-9]{0,19}$/.test(config.YOOKASSA_SHOP_ID ?? "") ||
-      !/^test_[A-Za-z0-9_=-]{8,8192}$/.test(config.YOOKASSA_SECRET_KEY ?? ""))
-  )
-    throw new Error(
-      "YooKassa test checkout requires an isolated non-production environment, disabled AI, CityGo 10x and test credentials",
-    );
+  validatePaymentConfig(config);
   if (
     config.NODE_ENV === "production" &&
     config.R1_HOUSING_API_MODE !== "disabled"
@@ -160,6 +153,50 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env) {
       "Production requires explicit TRUSTED_PROXY_CIDRS for the Web proxy; see docs/runbooks/production.md",
     );
   return config;
+}
+
+// Reused before DB access for explicitly injected config too. Neither a live
+// key nor an untrusted provider response can select a payment mode implicitly.
+export function validatePaymentConfig(
+  config: z.infer<typeof serverConfigSchema>,
+) {
+  if (!["disabled", "test", "live"].includes(config.YOOKASSA_MODE))
+    throw new Error("Unsupported YooKassa mode");
+  if (config.YOOKASSA_MODE === "disabled") return;
+  if (
+    config.YOOKASSA_MODE === "test" &&
+    (config.NODE_ENV === "production" ||
+      config.LLM_PROVIDER !== "disabled" ||
+      config.AI_CREDIT_MODE !== "routerai_citygo_10x" ||
+      !/^[1-9][0-9]{0,19}$/.test(config.YOOKASSA_SHOP_ID ?? "") ||
+      !/^test_[A-Za-z0-9_=-]{8,8192}$/.test(config.YOOKASSA_SECRET_KEY ?? ""))
+  )
+    throw new Error(
+      "YooKassa test checkout requires an isolated non-production environment, disabled AI, CityGo 10x and test credentials",
+    );
+  if (
+    config.YOOKASSA_MODE === "live" &&
+    (config.AI_CREDIT_MODE !== "routerai_citygo_10x" ||
+      !["disabled", "routerai"].includes(config.LLM_PROVIDER ?? "") ||
+      config.YOOKASSA_RECEIPT_MODE !== "npd_manual" ||
+      !/^[1-9][0-9]{0,19}$/.test(config.YOOKASSA_SHOP_ID ?? "") ||
+      !/^live_[A-Za-z0-9_=-]{8,8192}$/.test(config.YOOKASSA_SECRET_KEY ?? ""))
+  )
+    throw new Error(
+      "YooKassa live checkout requires explicit live credentials, CityGo 10x, RouterAI or disabled AI and the manual NPD receipt workflow",
+    );
+  const origin = new URL(config.WEB_ORIGIN);
+  if (
+    config.YOOKASSA_MODE === "live" &&
+    (origin.protocol !== "https:" ||
+      origin.username ||
+      origin.password ||
+      (origin.port && origin.port !== "443") ||
+      origin.pathname !== "/" ||
+      origin.search ||
+      origin.hash)
+  )
+    throw new Error("YooKassa checkout requires a fixed HTTPS return origin");
 }
 
 export function effectiveLlmLimits(

@@ -424,7 +424,12 @@ test("admin loads immutable pre-cap budget audit without losing the current pers
     rules: [],
   };
   status.budget = {
-    settings: { ...legacy, revision: 2, userDailyLimitMicros: 500_000_000 },
+    settings: {
+      ...legacy,
+      mode: "fixed",
+      revision: 2,
+      userDailyLimitMicros: 500_000_000,
+    },
     day: "2026-09-22",
     reservedTodayMicros: 0,
     totalReservedMicros: 0,
@@ -478,6 +483,7 @@ test("admin explicitly confirms money ceilings, refreshes conflicts and cannot s
     settings: {
       revision: 1,
       enabled: false,
+      mode: "fixed",
       currency: null,
       dailyLimitMicros: 0,
       totalLimitMicros: 0,
@@ -506,6 +512,7 @@ test("admin explicitly confirms money ceilings, refreshes conflicts and cannot s
       expect(input).toEqual({
         expectedRevision: 1,
         enabled: true,
+        mode: "fixed",
         currency: "RUB",
         totalLimitMicros: 2000000,
         dailyLimitMicros: 1000000,
@@ -516,6 +523,7 @@ test("admin explicitly confirms money ceilings, refreshes conflicts and cannot s
       status.budget!.settings = {
         revision: 2,
         enabled: true,
+        mode: "fixed",
         currency: "RUB",
         totalLimitMicros: 2000000,
         dailyLimitMicros: 1000000,
@@ -613,6 +621,7 @@ test("admin saves a 500 RUB personal cap without changing global allowance or lo
     settings: {
       revision: 1,
       enabled: false,
+      mode: "fixed",
       currency: "RUB",
       dailyLimitMicros: 5000000000,
       totalLimitMicros: 10000000000,
@@ -640,6 +649,7 @@ test("admin saves a 500 RUB personal cap without changing global allowance or lo
     expect(input).toEqual({
       expectedRevision: writes,
       enabled: false,
+      mode: "fixed",
       currency: "RUB",
       dailyLimitMicros: 5000000000,
       totalLimitMicros: 10000000000,
@@ -712,6 +722,141 @@ test("admin saves a 500 RUB personal cap without changing global allowance or lo
   await expect(budget).toContainText("Версия бюджета: 3");
   await expect(personal).toHaveValue("");
   expect(writes).toBe(2);
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBeTruthy();
+});
+
+test("admin explicitly removes project money caps only in RouterAI mode without inventing a provider balance", async ({
+  page,
+}) => {
+  const status = fixture();
+  const routerExecution = {
+    key: "e".repeat(64),
+    policy: {
+      ...status.options[0]!.policy!,
+      id: "f".repeat(64),
+      provider: "routerai" as const,
+      model: "synthetic/router-model",
+      recipient: "RouterAI",
+    },
+    maxInputBytes: 64000,
+    maxOutputTokens: 32768,
+  };
+  const directExecution = {
+    ...routerExecution,
+    key: "d".repeat(64),
+    policy: status.options[0]!.policy!,
+  };
+  status.budget = {
+    settings: {
+      revision: 1,
+      enabled: false,
+      mode: "fixed",
+      currency: "RUB",
+      dailyLimitMicros: 1000000,
+      totalLimitMicros: 2000000,
+      userDailyLimitMicros: 0,
+      rules: [
+        { ...routerExecution, attemptCeilingMicros: 1000000 },
+        { ...directExecution, attemptCeilingMicros: 1000000 },
+      ],
+    },
+    day: "2026-10-18",
+    reservedTodayMicros: 0,
+    totalReservedMicros: 0,
+    audit: [],
+    availableExecutions: [routerExecution, directExecution],
+  };
+  await page.route("**/api/v1/admin/overview", (route) =>
+    route.fulfill({
+      json: { counts: { users: 1, completed: 0, xp: 0 }, pendingHuman: [] },
+    }),
+  );
+  await page.route("**/api/v1/admin/ai", (route) =>
+    route.fulfill({ json: status }),
+  );
+  let writes = 0;
+  await page.route("**/api/v1/admin/ai/budget", (route) => {
+    writes++;
+    const input = route.request().postDataJSON();
+    expect(input).toEqual({
+      expectedRevision: 1,
+      enabled: true,
+      mode: "routerai_balance",
+      currency: "RUB",
+      dailyLimitMicros: null,
+      totalLimitMicros: null,
+      userDailyLimitMicros: null,
+      rules: [{ key: routerExecution.key, attemptCeilingMicros: 1000000 }],
+    });
+    const from = status.budget!.settings;
+    status.budget!.settings = {
+      ...from,
+      revision: 2,
+      enabled: true,
+      mode: "routerai_balance",
+      dailyLimitMicros: null,
+      totalLimitMicros: null,
+      userDailyLimitMicros: null,
+      rules: [{ ...routerExecution, attemptCeilingMicros: 1000000 }],
+    };
+    status.budget!.totalReservedMicros = Number.MAX_SAFE_INTEGER;
+    status.budget!.audit = [
+      {
+        id: "2",
+        actorUserId: "1",
+        createdAt: "2026-10-18T00:00:00Z",
+        payload: { from, to: status.budget!.settings },
+      },
+    ];
+    return route.fulfill({ json: status.budget!.settings });
+  });
+  await page.goto("/admin");
+  await page.getByRole("button", { name: "Обновить сводку" }).click();
+  const budget = page.getByRole("region", { name: "Денежный бюджет AI" });
+  const confirm = budget.getByRole("checkbox", {
+    name: "Подтверждаю бюджет, валюту и проверенные потолки для выбранных моделей.",
+  });
+  const save = budget.getByRole("button", {
+    name: "Сохранить денежный бюджет",
+  });
+  await expect(budget.getByLabel("Режим расходов оператора")).toHaveValue(
+    "fixed",
+  );
+  expect(writes).toBe(0);
+  await budget
+    .getByLabel("Режим расходов оператора")
+    .selectOption("routerai_balance");
+  await expect(budget.getByLabel("Общий бюджет", { exact: true })).toHaveCount(
+    0,
+  );
+  await expect(budget.getByLabel("Бюджет на сутки UTC")).toHaveCount(0);
+  await expect(budget.getByLabel("Валюта бюджета")).toHaveValue("RUB");
+  await expect(budget.getByLabel("Потолок на попытку · OpenAI")).toBeDisabled();
+  await expect(budget).toContainText("Этот провайдер недоступен");
+  await budget.getByLabel("Разрешить новые денежные резервы").check();
+  await confirm.check();
+  await budget
+    .getByLabel("Лимит на аккаунт в сутки UTC", { exact: true })
+    .fill("");
+  await expect(confirm).not.toBeChecked();
+  await expect(save).toBeDisabled();
+  await confirm.check();
+  await save.click();
+  await expect(budget).toContainText("Версия бюджета: 2");
+  await expect(budget).toContainText("9007199254.740991 RUB");
+  await expect(budget).toContainText("без отдельного общего лимита CityGo");
+  await expect(budget).toContainText(
+    "текущий баланс провайдера здесь не измеряется",
+  );
+  await expect(budget.getByRole("listitem")).toContainText(
+    "предоплата RouterAI, без общих денежных лимитов CityGo",
+  );
+  await expect(confirm).not.toBeChecked();
+  expect(writes).toBe(1);
   expect(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= innerWidth,

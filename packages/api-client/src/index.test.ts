@@ -185,11 +185,52 @@ test("test checkout client retains caller's idempotency key and requires explici
   );
 });
 
-test("test checkout client rejects unsafe payment links, invalid sums and real-payment DTOs", async () => {
+test("checkout client preserves the explicit server mode without activating checkout or initiating payment", async () => {
+  for (const testMode of [true, false]) {
+    const requests: { path: string; method: string; body: unknown }[] = [];
+    const client = createClient("/api", {
+      fetch: async (url, init) => {
+        requests.push({
+          path: String(url),
+          method: init?.method ?? "GET",
+          body: init?.body,
+        });
+        return Response.json({ ...paymentOrder, test: testMode });
+      },
+    });
+    const order = await client.topupOrder(paymentOrder.orderId);
+    assert.equal(order.test, testMode);
+    assert.equal(order.credited, false);
+    assert.equal(order.status, "pending");
+    // Reading a server-selected mode never creates a payment, changes mode or
+    // performs reconciliation automatically. Neither client input nor a DTO is
+    // a runtime/merchant authorization to activate real financial operations.
+    assert.deepEqual(requests, [
+      {
+        path: `/api/v1/payments/topups/${paymentOrder.orderId}`,
+        method: "GET",
+        body: undefined,
+      },
+    ]);
+    assert.throws(() =>
+      client.createTopup({
+        requestId: paymentOrder.orderId,
+        amountKopeks: 10000,
+        test: testMode,
+      } as Parameters<typeof client.createTopup>[0]),
+    );
+    assert.equal(requests.length, 1);
+  }
+});
+
+test("checkout client rejects unsafe payment links, invalid sums and malformed mode flags", async () => {
   for (const patch of [
     { confirmationUrl: "http://checkout.example.test" },
     { creditMicros: 1000000000 },
-    { test: false },
+    { test: "false" },
+    { test: null },
+    { test: undefined },
+    { test: 0 },
     { credited: true },
   ]) {
     const client = createClient("/api", {

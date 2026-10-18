@@ -13,7 +13,7 @@ import { CONTRACT_VERSION_HEADER } from "@citygo/contracts";
 import { readConfig } from "@citygo/config";
 import { buildApp } from "./app.js";
 import { tokenHash } from "./auth.js";
-import { prepareTestRefunds } from "./payment-refunds.js";
+import { prepareRefunds as prepareTestRefunds } from "./payment-refunds.js";
 
 const origin = "https://pilot.example.test",
   base = "/v1/admin/payments/refunds";

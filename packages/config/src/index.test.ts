@@ -40,6 +40,52 @@ test("YooKassa defaults disabled; test checkout cannot coexist with real AI or p
   }
 });
 
+test("live YooKassa requires exact credentials, HTTPS, CityGo tariff and an explicit NPD workflow", () => {
+  const live = {
+    ...production,
+    LLM_PROVIDER: "routerai",
+    AI_CREDIT_MODE: "routerai_citygo_10x",
+    YOOKASSA_MODE: "live",
+    YOOKASSA_SHOP_ID: "123456",
+    YOOKASSA_SECRET_KEY: "live_SYNTHETIC_NOT_A_REAL_KEY",
+    YOOKASSA_RECEIPT_MODE: "npd_manual",
+  };
+  assert.equal(readConfig(live).YOOKASSA_MODE, "live");
+  assert.equal(
+    readConfig({ ...live, LLM_PROVIDER: "disabled" }).YOOKASSA_MODE,
+    "live",
+  );
+  for (const patch of [
+    { YOOKASSA_SECRET_KEY: "test_SYNTHETIC_NOT_A_REAL_KEY" },
+    { YOOKASSA_SECRET_KEY: undefined },
+    { YOOKASSA_SHOP_ID: "0" },
+    { YOOKASSA_SHOP_ID: undefined },
+    { YOOKASSA_RECEIPT_MODE: undefined },
+    { YOOKASSA_RECEIPT_MODE: "disabled" },
+    { AI_CREDIT_MODE: "routerai_at_cost" },
+    { AI_CREDIT_MODE: "disabled" },
+    { LLM_PROVIDER: "openai" },
+    { LLM_PROVIDER: "gigachat" },
+    { LLM_PROVIDER: undefined },
+  ])
+    assert.throws(
+      () => readConfig({ ...live, ...patch }),
+      /live checkout requires/,
+    );
+  for (const WEB_ORIGIN of [
+    "http://citygo.example",
+    "https://user:pass@citygo.example",
+    "https://citygo.example:444/",
+    "https://citygo.example/path",
+    "https://citygo.example/?token=private",
+    "https://citygo.example/#private",
+  ])
+    assert.throws(
+      () => readConfig({ ...live, WEB_ORIGIN }),
+      /HTTPS return origin/,
+    );
+});
+
 test("housing API defaults closed; synthetic opt-in can never approve production", () => {
   assert.equal(readConfig({}).R1_HOUSING_API_MODE, "disabled");
   assert.equal(

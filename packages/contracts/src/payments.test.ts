@@ -15,8 +15,12 @@ const order = {
   updatedAt: "2026-10-18T10:00:00.000Z",
 } as const;
 
-test("test checkout contracts use exact kopeks and the 1:1 CityGo payment rate", () => {
+test("test and live checkout contracts use exact kopeks and the 1:1 CityGo payment rate", () => {
   assert.equal(topupOrderSchema.safeParse(order).success, true);
+  assert.equal(
+    topupOrderSchema.safeParse({ ...order, test: false }).success,
+    true,
+  );
   assert.equal(
     createTopupSchema.safeParse({
       requestId: order.orderId,
@@ -31,6 +35,16 @@ test("test checkout contracts use exact kopeks and the 1:1 CityGo payment rate",
       false,
     );
   }
+  // Clients cannot choose a shop or switch the server's test/live mode.
+  for (const extra of [{ test: false }, { merchantId: "other-shop" }])
+    assert.equal(
+      createTopupSchema.safeParse({
+        requestId: order.orderId,
+        amountKopeks: 10_000,
+        ...extra,
+      }).success,
+      false,
+    );
   assert.equal(
     topupOrderSchema.safeParse({ ...order, creditMicros: 1_000_000_000 })
       .success,
@@ -38,7 +52,7 @@ test("test checkout contracts use exact kopeks and the 1:1 CityGo payment rate",
   );
 });
 
-test("test checkout accepts only safe HTTPS links and server-confirmed terminal credit", () => {
+test("checkout accepts only safe HTTPS links and server-confirmed terminal credit", () => {
   for (const confirmationUrl of [
     "not-a-url",
     "https://[invalid",
@@ -53,7 +67,7 @@ test("test checkout accepts only safe HTTPS links and server-confirmed terminal 
     );
   }
   assert.equal(
-    topupOrderSchema.safeParse({ ...order, test: false }).success,
+    topupOrderSchema.safeParse({ ...order, test: "false" }).success,
     false,
   );
   assert.equal(
@@ -63,6 +77,15 @@ test("test checkout accepts only safe HTTPS links and server-confirmed terminal 
   assert.equal(
     topupOrderSchema.safeParse({
       ...order,
+      status: "succeeded",
+      credited: true,
+    }).success,
+    true,
+  );
+  assert.equal(
+    topupOrderSchema.safeParse({
+      ...order,
+      test: false,
       status: "succeeded",
       credited: true,
     }).success,

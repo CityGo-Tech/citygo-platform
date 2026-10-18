@@ -13,6 +13,7 @@ import {
   seedRestartNpdObligation,
   seedRestartFixture,
   seedRestartRefundHistory,
+  seedRestartPaymentNotification,
 } from "./closed-account-restart-fixture.js";
 
 async function fixture(t: TestContext) {
@@ -329,6 +330,41 @@ test("unreviewed materialized private history is not silently left behind", asyn
     1,
   );
 });
+
+for (const processed of [false, true])
+  test(`fresh reset retains ${processed ? "processed" : "pending"} payment notification evidence and refuses its erasure`, async (t) => {
+    const { db, data, reset } = await fixture(t);
+    const stale = await prepared(reset);
+    await seedRestartPaymentNotification(db, data.user, { processed });
+    const before = await captureRestartRows(db);
+    const plan = await reset.plan({
+      expectedUserCount: 2,
+      maintenanceConfirmed: true,
+    });
+    assert.equal(plan.counts.payment_notification_inbox, 1);
+    assert.equal(
+      plan.erasedTables.includes("payment_notification_inbox"),
+      false,
+    );
+    assert.equal(
+      plan.preservedTables.includes("payment_notification_inbox"),
+      true,
+    );
+    assert.ok(
+      plan.blockers.some(
+        (blocker) =>
+          blocker.code === "PAYMENT_NOTIFICATION_HISTORY_PRESENT" &&
+          blocker.count === 1,
+      ),
+    );
+    // This blocker does not merely piggyback on a receipt/refund obligation.
+    assert.equal(plan.counts.npd_receipt_tasks, 0);
+    assert.equal(plan.counts.payment_refunds, 0);
+    assert.doesNotMatch(JSON.stringify(plan), /PRIVATE-|@example\.test/);
+    await assert.rejects(reset.apply(stale), /изменились/);
+    await assert.rejects(reset.apply(await prepared(reset)), /заблокирован/);
+    assert.deepEqual(await captureRestartRows(db), before);
+  });
 
 for (const active of ["request", "lease", "busy"] as const)
   test(`active ${active} blocks destructive reset despite permission to erase history`, async (t) => {

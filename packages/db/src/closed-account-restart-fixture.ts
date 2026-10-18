@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFile, readdir } from "node:fs/promises";
 import { Repository, type Database } from "./index.js";
+import { PaymentTopupOrders } from "./payment-topup-orders.js";
 
 // Synthetic fixtures shared by in-memory correctness and opt-in PostgreSQL tests.
 // Never read an application database URL or provider credentials here.
@@ -306,6 +307,7 @@ export const retainedFinancialTables = [
   "credit_source_lots",
   "payment_refunds",
   "payment_refund_events",
+  "payment_notification_inbox",
   "npd_receipt_commands",
   "npd_receipt_evidence",
   "npd_receipt_tasks",
@@ -404,6 +406,77 @@ export async function seedRestartRefundHistory(
     }
   });
   return { ...source, refundId };
+}
+
+// Bounded hints only: this fixture does not fetch a provider, infer settlement,
+// post a balance or bypass the inbox's bound-source and lease guards.
+export async function seedRestartPaymentNotification(
+  db: Database,
+  userId: string,
+  {
+    processed = false,
+    refundId,
+  }: { processed?: boolean; refundId?: string } = {},
+) {
+  const id = randomUUID();
+  let orderId: string | null = null;
+  let objectId: string;
+  let event: "payment.succeeded" | "refund.succeeded";
+  if (refundId) {
+    const refund = (
+      await db.query<{
+        provider_refund_id: string | null;
+        merchant_id: string;
+        test: boolean;
+      }>(
+        "select provider_refund_id,merchant_id,test from payment_refunds where id=$1",
+        [refundId],
+      )
+    ).rows[0];
+    if (
+      !refund?.provider_refund_id ||
+      refund.merchant_id !== "123456" ||
+      refund.test
+    )
+      throw new Error(
+        "Synthetic notification needs the bound live-shaped refund",
+      );
+    objectId = refund.provider_refund_id;
+    event = "refund.succeeded";
+  } else {
+    const orders = new PaymentTopupOrders(db);
+    const order = await orders.create(
+      userId,
+      randomUUID(),
+      10_000,
+      "123456",
+      false,
+      "https://citygo.example.test/",
+    );
+    orderId = order.id;
+    objectId = randomUUID();
+    await orders.recordProvider(userId, order.id, {
+      providerPaymentId: objectId,
+      status: "pending",
+    });
+    event = "payment.succeeded";
+  }
+  await db.query(
+    `insert into payment_notification_inbox(id,event,object_id,payment_order_id,refund_id,merchant_id,test)
+     values ($1,$2,$3,$4,$5,'123456',false)`,
+    [id, event, objectId, orderId, refundId ?? null],
+  );
+  if (processed) {
+    await db.query(
+      "update payment_notification_inbox set status='processing',attempt_count=1,lease_token=$2,lease_until=clock_timestamp()+interval '1 minute' where id=$1",
+      [id, randomUUID()],
+    );
+    await db.query(
+      "update payment_notification_inbox set status='processed',lease_token=null,lease_until=null,processed_at=clock_timestamp() where id=$1",
+      [id],
+    );
+  }
+  return { id, orderId };
 }
 
 export async function captureRestartRows(

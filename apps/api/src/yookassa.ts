@@ -1,5 +1,6 @@
-// Test-shop boundary only. No API route, environment activation or live key is
-// accepted here. A create response is never proof authorizing balance credit.
+// Server-only transport. The caller explicitly chooses the shop mode; neither
+// the credentials nor a provider response can change it. A create response is
+// never proof authorizing balance credit: settlement requires a separate GET.
 const ENDPOINT = "https://api.yookassa.ru/v3";
 const MAX_RESPONSE_BYTES = 64 * 1024;
 const TIMEOUT_MS = 10_000;
@@ -8,20 +9,46 @@ const ORDER_ID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const AMOUNT = /^(0|[1-9][0-9]{0,7})\.([0-9]{2})$/;
 
-export type YooKassaTestPayment = {
+export type YooKassaMode = "test" | "live";
+export type YooKassaPayment = {
   id: string;
   orderId: string;
   merchantId: string;
   amountKopeks: number;
   currency: "RUB";
-  test: true;
+  test: boolean;
   status: "pending" | "waiting_for_capture" | "succeeded" | "canceled";
   paid: boolean;
   confirmationUrl?: string;
   verifiedAt: string;
 };
+export type YooKassaTestPayment = YooKassaPayment & { test: true };
 
-export class YooKassaTestError extends Error {
+export type YooKassaClientOptions = {
+  mode: YooKassaMode;
+  shopId: string;
+  secretKey: string;
+  fetch?: typeof globalThis.fetch;
+};
+
+// Prefix checks are an additional CityGo safety policy, not proof of merchant
+// ownership. Every payment observation also checks account_id and exact mode.
+export function validYooKassaCredentials(
+  options: Pick<YooKassaClientOptions, "mode" | "shopId" | "secretKey">,
+) {
+  return (
+    (options.mode === "test" || options.mode === "live") &&
+    typeof options.shopId === "string" &&
+    typeof options.secretKey === "string" &&
+    /^[1-9][0-9]{0,19}$/.test(options.shopId) &&
+    (options.mode === "test"
+      ? /^test_[A-Za-z0-9_=-]{8,8192}$/
+      : /^live_[A-Za-z0-9_=-]{8,8192}$/
+    ).test(options.secretKey)
+  );
+}
+
+export class YooKassaError extends Error {
   constructor(
     readonly code:
       | "configuration"
@@ -32,11 +59,13 @@ export class YooKassaTestError extends Error {
       | "invalid_response",
   ) {
     super(
-      "Не удалось выполнить тестовую операцию ЮKassa. Проверьте состояние перед повтором.",
+      "Не удалось выполнить операцию ЮKassa. Проверьте состояние перед повтором.",
     );
-    this.name = "YooKassaTestError";
+    this.name = "YooKassaError";
   }
 }
+// Kept as the same constructor so existing sandbox error handling remains valid.
+export { YooKassaError as YooKassaTestError };
 
 function object(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -72,21 +101,16 @@ function cancel(response: Response | undefined) {
   void response?.body?.cancel().catch(() => {});
 }
 
-export class YooKassaTestClient {
+export class YooKassaClient {
   #authorization: string;
   #shopId: string;
   #fetch: typeof globalThis.fetch;
+  #mode: YooKassaMode;
 
-  constructor(options: {
-    shopId: string;
-    secretKey: string;
-    fetch?: typeof globalThis.fetch;
-  }) {
-    if (
-      !/^[0-9]{1,100}$/.test(options.shopId) ||
-      !/^test_[^\s:]{1,200}$/.test(options.secretKey)
-    )
-      throw new YooKassaTestError("configuration");
+  constructor(options: YooKassaClientOptions) {
+    if (!validYooKassaCredentials(options))
+      throw new YooKassaError("configuration");
+    this.#mode = options.mode;
     this.#shopId = options.shopId;
     this.#authorization =
       "Basic " +
@@ -100,10 +124,11 @@ export class YooKassaTestClient {
     orderId: string;
     amountKopeks: number;
     returnUrl: string;
-  }): Promise<YooKassaTestPayment> {
+  }): Promise<YooKassaPayment> {
+    input = Object.freeze({ ...input });
     this.validateExpected(input);
     const returnUrl = httpsUrl(input.returnUrl);
-    if (!returnUrl) throw new YooKassaTestError("invalid_input");
+    if (!returnUrl) throw new YooKassaError("invalid_input");
     const amount = BigInt(input.amountKopeks);
     return this.request("POST", "/payments", input, {
       amount: {
@@ -112,7 +137,10 @@ export class YooKassaTestClient {
       },
       capture: true,
       confirmation: { type: "redirect", return_url: returnUrl },
-      description: "Пополнение тестового баланса CityGo",
+      description:
+        this.#mode === "test"
+          ? "Пополнение тестового баланса CityGo"
+          : "Пополнение баланса CityGo",
       metadata: { citygo_order_id: input.orderId },
     });
   }
@@ -120,10 +148,11 @@ export class YooKassaTestClient {
   async get(
     paymentId: string,
     expected: { orderId: string; amountKopeks: number },
-  ): Promise<YooKassaTestPayment> {
+  ): Promise<YooKassaPayment> {
+    expected = Object.freeze({ ...expected });
     this.validateExpected(expected);
     if (typeof paymentId !== "string" || !PROVIDER_ID.test(paymentId))
-      throw new YooKassaTestError("invalid_input");
+      throw new YooKassaError("invalid_input");
     return this.request(
       "GET",
       "/payments/" + encodeURIComponent(paymentId),
@@ -139,15 +168,15 @@ export class YooKassaTestClient {
       !ORDER_ID.test(input.orderId) ||
       !validAmount(input.amountKopeks)
     )
-      throw new YooKassaTestError("invalid_input");
+      throw new YooKassaError("invalid_input");
   }
 
   private parse(
     raw: unknown,
     expected: { orderId: string; amountKopeks: number },
     paymentId?: string,
-  ): YooKassaTestPayment {
-    const invalid = () => new YooKassaTestError("invalid_response");
+  ): YooKassaPayment {
+    const invalid = () => new YooKassaError("invalid_response");
     if (
       !object(raw) ||
       typeof raw.id !== "string" ||
@@ -157,7 +186,7 @@ export class YooKassaTestClient {
       raw.recipient.account_id !== this.#shopId ||
       !object(raw.metadata) ||
       raw.metadata.citygo_order_id !== expected.orderId ||
-      raw.test !== true ||
+      raw.test !== (this.#mode === "test") ||
       !object(raw.amount) ||
       raw.amount.currency !== "RUB" ||
       typeof raw.amount.value !== "string" ||
@@ -183,7 +212,7 @@ export class YooKassaTestClient {
       raw.paid !== (status === "succeeded" || status === "waiting_for_capture")
     )
       throw invalid();
-    // Refund accounting is outside this test-only boundary. Never let an
+    // Refund accounting is outside this payment transport. Never let an
     // already refunded payment masquerade as a fresh successful top-up.
     if (
       raw.refunded_amount !== undefined &&
@@ -207,7 +236,7 @@ export class YooKassaTestClient {
       merchantId: this.#shopId,
       amountKopeks: expected.amountKopeks,
       currency: "RUB",
-      test: true,
+      test: this.#mode === "test",
       status,
       paid: raw.paid,
       ...(confirmationUrl ? { confirmationUrl } : {}),
@@ -229,7 +258,7 @@ export class YooKassaTestClient {
     const deadline = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
         controller.abort();
-        reject(new YooKassaTestError("timeout"));
+        reject(new YooKassaError("timeout"));
       }, TIMEOUT_MS);
     });
     const wait = <T>(pending: Promise<T>) => Promise.race([pending, deadline]);
@@ -257,8 +286,8 @@ export class YooKassaTestClient {
       });
       response = await wait(pending);
       if (response.redirected || (response.url && response.url !== url))
-        throw new YooKassaTestError("invalid_response");
-      if (!response.ok) throw new YooKassaTestError("http");
+        throw new YooKassaError("invalid_response");
+      if (!response.ok) throw new YooKassaError("http");
       if (
         response.headers
           .get("content-type")
@@ -267,14 +296,14 @@ export class YooKassaTestClient {
           .toLowerCase() !== "application/json" ||
         !response.body
       )
-        throw new YooKassaTestError("invalid_response");
+        throw new YooKassaError("invalid_response");
       const length = response.headers.get("content-length");
       if (
         length &&
         /^\d+$/.test(length) &&
         BigInt(length) > BigInt(MAX_RESPONSE_BYTES)
       )
-        throw new YooKassaTestError("invalid_response");
+        throw new YooKassaError("invalid_response");
       reader = response.body.getReader();
       const decoder = new TextDecoder("utf-8", { fatal: true });
       let text = "",
@@ -284,7 +313,7 @@ export class YooKassaTestClient {
         if (result.done) break;
         bytes += result.value.byteLength;
         if (bytes > MAX_RESPONSE_BYTES)
-          throw new YooKassaTestError("invalid_response");
+          throw new YooKassaError("invalid_response");
         text += decoder.decode(result.value, { stream: true });
       }
       text += decoder.decode();
@@ -292,12 +321,12 @@ export class YooKassaTestClient {
       try {
         raw = JSON.parse(text);
       } catch {
-        throw new YooKassaTestError("invalid_response");
+        throw new YooKassaError("invalid_response");
       }
       return this.parse(raw, expected, paymentId);
     } catch (error) {
-      if (error instanceof YooKassaTestError) throw error;
-      throw new YooKassaTestError(
+      if (error instanceof YooKassaError) throw error;
+      throw new YooKassaError(
         controller.signal.aborted ? "timeout" : "transport",
       );
     } finally {
@@ -307,5 +336,28 @@ export class YooKassaTestClient {
         reader.releaseLock();
       } else cancel(response);
     }
+  }
+}
+
+// Sandbox callers cannot opt into live behavior through an accidental extra
+// property: the fixed mode is applied last and cannot change after construction.
+export class YooKassaTestClient extends YooKassaClient {
+  constructor(options: Omit<YooKassaClientOptions, "mode">) {
+    super({ ...options, mode: "test" });
+  }
+
+  override create(input: {
+    orderId: string;
+    amountKopeks: number;
+    returnUrl: string;
+  }): Promise<YooKassaTestPayment> {
+    return super.create(input) as Promise<YooKassaTestPayment>;
+  }
+
+  override get(
+    paymentId: string,
+    expected: { orderId: string; amountKopeks: number },
+  ): Promise<YooKassaTestPayment> {
+    return super.get(paymentId, expected) as Promise<YooKassaTestPayment>;
   }
 }

@@ -558,6 +558,32 @@ export class PaymentRefunds {
   }
 
   // A create response can pin an ID, but can NEVER settle/release money.
+  // TRUSTED SERVER ONLY. A bound inbox row may request GET reconciliation, not
+  // create a refund or invent a provider ID. No session/actor authority is used.
+  async prepareServerReconcile(
+    id: string,
+    expected: { merchantId: string; test: boolean },
+  ) {
+    input(z.uuid(), id);
+    return this.db.transaction(async (tx) => {
+      const row = await this.lockTrusted(tx, id);
+      if (
+        row.merchantId !== expected.merchantId ||
+        row.test !== expected.test ||
+        !row.providerRefundId
+      )
+        throw new DomainError(
+          409,
+          "Нужен сохранённый возврат исходного магазина",
+        );
+      return {
+        refundId: row.providerRefundId,
+        input: await this.dispatchInput(tx, row),
+      };
+    });
+  }
+
+  // A create response can pin an ID, but can NEVER settle/release money.
   async recordCreate(id: string, token: string, raw: PaymentRefundObservation) {
     const proof = input(proofSchema, raw);
     if (proof.observation !== "create_response")

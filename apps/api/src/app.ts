@@ -38,6 +38,7 @@ import {
   DomainError,
   AiCreditLedger,
   AiCreditCharges,
+  PaymentRefunds,
   assertRealAiDatabaseSafety,
   assertTestPaymentsDatabaseSafety,
   type Database,
@@ -47,7 +48,10 @@ import {
 import { readConfig, effectiveLlmLimits } from "@citygo/config";
 import { instructions, profileContext, routeAgent } from "@citygo/agents";
 import { redactPaths } from "@citygo/observability";
-import type { StreamingProvider } from "@citygo/llm";
+import {
+  RouterAIInsufficientFundsError,
+  type StreamingProvider,
+} from "@citygo/llm";
 import { hashPassword, verifyPassword, tokenHash, newToken } from "./auth.js";
 import { createAiControl } from "./ai-control.js";
 import type { ProviderMap } from "./provider.js";
@@ -55,20 +59,25 @@ import { createAiExecution } from "./ai-execution.js";
 import { ApiDrain, registerDrain } from "./shutdown.js";
 import { registerSyntheticHousingApi } from "./housing.js";
 import {
-  prepareTestPayments,
+  preparePayments,
   registerPaymentTopups,
-  type TestPaymentClient,
+  type PaymentClient,
 } from "./payments.js";
 import { registerNpdReceipts } from "./npd-receipts.js";
 import {
-  prepareTestRefunds,
+  prepareRefunds,
   registerPaymentRefunds,
-  type TestRefundClient,
+  type RefundClient,
 } from "./payment-refunds.js";
 import {
   registerR1SyntheticPermissionHttp,
   type R1SyntheticPermissionHttpOptions,
 } from "./r1-permission-http.js";
+import {
+  PaymentNotificationInbox,
+  PAYMENT_NOTIFICATION_PATH,
+  registerPaymentNotifications,
+} from "./payment-notifications.js";
 
 export async function buildApp(options: {
   db: Database;
@@ -79,27 +88,32 @@ export async function buildApp(options: {
   drain?: ApiDrain;
   housingLimits?: Partial<HousingStorageLimits>;
   syntheticPermissions?: R1SyntheticPermissionHttpOptions;
-  paymentClient?: TestPaymentClient;
-  refundClient?: TestRefundClient;
+  paymentClient?: PaymentClient;
+  refundClient?: RefundClient;
 }) {
   const drain = options.drain ?? new ApiDrain();
   const config = options.config ?? readConfig();
-  const paymentClient = prepareTestPayments(config, {
+  const paymentClient = preparePayments(config, {
     testing: options.testing,
     client: options.paymentClient,
   });
-  const refundClient = prepareTestRefunds(config, {
+  const refundClient = prepareRefunds(config, {
     testing: options.testing,
     client: options.refundClient,
   });
   if (
     paymentClient &&
+    config.YOOKASSA_MODE === "test" &&
     (options.provider || Object.values(options.providers ?? {}).some(Boolean))
   )
     throw new Error(
       "Test checkout cannot be combined with injected AI providers",
     );
-  if (paymentClient) await assertTestPaymentsDatabaseSafety(options.db);
+  if (paymentClient) {
+    if (config.YOOKASSA_MODE === "test")
+      await assertTestPaymentsDatabaseSafety(options.db);
+    else await assertRealAiDatabaseSafety(options.db);
+  }
   // No environment activation or server/deploy wiring. Even an injected
   // config must have BOTH test mode and the explicit test harness flag.
   if (
@@ -266,6 +280,18 @@ export async function buildApp(options: {
       .header("X-Content-Type-Options", "nosniff")
       .header("Cache-Control", "no-store");
     if (["GET", "HEAD", "OPTIONS"].includes(request.method)) return;
+    // One exact machine-only webhook. It cannot authenticate browser writes;
+    // the handler rejects Cookie/Origin/Authorization and only queues ID hints.
+    if (
+      config.YOOKASSA_MODE === "live" &&
+      paymentClient &&
+      request.method === "POST" &&
+      request.url === PAYMENT_NOTIFICATION_PATH &&
+      request.headers.origin === undefined &&
+      request.headers.cookie === undefined &&
+      request.headers.authorization === undefined
+    )
+      return;
     // Cookie-authenticated writes must be same-origin. Native clients use bearer sessions.
     if (
       request.headers.origin
@@ -339,9 +365,9 @@ export async function buildApp(options: {
   app.get("/ready", async () => {
     try {
       const result = await options.db.query(
-        "select name from citygo_migrations where name in ('0006_ai_budget.sql','0007_ai_user_daily_budget.sql','0008_ai_credit.sql','0009_ai_credit_charges.sql','0010_quest_plan_expand.sql','0011_quest_plan_validate.sql','0013_account_access.sql','0014_citygo_credit.sql','0015_yookassa_orders.sql','0016_npd_receipts.sql','0017_credit_source_lots.sql','0018_payment_refunds.sql')",
+        "select name from citygo_migrations where name in ('0006_ai_budget.sql','0007_ai_user_daily_budget.sql','0008_ai_credit.sql','0009_ai_credit_charges.sql','0010_quest_plan_expand.sql','0011_quest_plan_validate.sql','0013_account_access.sql','0014_citygo_credit.sql','0015_yookassa_orders.sql','0016_npd_receipts.sql','0017_credit_source_lots.sql','0018_payment_refunds.sql','0019_yookassa_live_orders.sql','0020_ai_budget_provider_balance.sql','0021_payment_notifications.sql')",
       );
-      if (result.rows.length !== 12) throw new Error("Pending migration");
+      if (result.rows.length !== 15) throw new Error("Pending migration");
       if (config.R1_HOUSING_API_MODE === "synthetic")
         await verifyHousingReadiness(options.db);
     } catch {
@@ -362,7 +388,7 @@ export async function buildApp(options: {
       authenticate,
       limits: options.syntheticPermissions,
     });
-  registerPaymentTopups(app, {
+  const topups = registerPaymentTopups(app, {
     db: options.db,
     config,
     client: paymentClient,
@@ -380,6 +406,59 @@ export async function buildApp(options: {
     client: refundClient,
     authenticate,
   });
+  if (paymentClient && refundClient && config.YOOKASSA_MODE === "live") {
+    const refundJournal = new PaymentRefunds(options.db);
+    const inbox = new PaymentNotificationInbox(options.db, {
+      mode: "live",
+      merchantId: config.YOOKASSA_SHOP_ID!,
+      reconcile: async (item) => {
+        if (item.kind === "payment") {
+          return (await topups.reconcileNotification(
+            item.userId,
+            item.localId,
+            item.objectId,
+          ))
+            ? "verified"
+            : "retry";
+        }
+        const saved = await refundJournal.prepareServerReconcile(item.localId, {
+          merchantId: item.merchantId,
+          test: item.test,
+        });
+        if (saved.refundId !== item.objectId)
+          throw new Error("Notification binding changed");
+        const observed = await refundClient.getRefund(
+          saved.refundId,
+          saved.input,
+        );
+        const result = await refundJournal.recordObservation(
+          item.localId,
+          observed,
+        );
+        return ["succeeded", "canceled"].includes(observed.status) &&
+          ["succeeded", "canceled"].includes(result.refund.status) &&
+          !result.refund.reviewReason
+          ? "verified"
+          : "retry";
+      },
+    });
+    registerPaymentNotifications(app, inbox);
+    // Bounded, authenticated drain. Scheduling it requires a separate reviewed
+    // release capability, never the existing unprivileged Worker DB role.
+    app.post(
+      "/v1/admin/payments/notifications/reconcile",
+      {
+        config: { rateLimit: { max: 5, timeWindow: 60_000 } },
+      },
+      async (request) => {
+        await authenticateAdmin(request);
+        const command = z
+          .strictObject({ limit: z.number().int().min(1).max(25).default(10) })
+          .parse(request.body);
+        return inbox.processPending(command.limit);
+      },
+    );
+  }
   for (const action of ["register", "login"] as const) {
     app.post(
       "/v1/auth/" + action,
@@ -766,7 +845,13 @@ export async function buildApp(options: {
           await reconcileCharge(user.id, creditHoldId).catch(() => {});
         }
         send({ type: "done", messageId });
-      } catch {
+      } catch (error) {
+        if (error instanceof RouterAIInsufficientFundsError)
+          attemptError = new DomainError(
+            503,
+            "AI временно недоступен: баланс внешнего сервиса исчерпан или недостаточен для запроса. Администратору нужно пополнить его. Повтор автоматически не выполняется; существующий резерв требует сверки.",
+            "AI_CREDIT_UNAVAILABLE",
+          );
         if (creditHoldId && !adapterEntered)
           await charges
             .releaseBeforeTransport(user.id, creditHoldId)

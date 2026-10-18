@@ -1,8 +1,13 @@
-// Server-only sandbox transport, not a refund endpoint or ledger primitive.
+// Server-only mode-bound transport, not a refund endpoint or ledger primitive.
 // The caller must persist this identity/payload and reserve refundable paid
 // funds before calling. This module neither reserves nor finalizes any balance.
 // API schema: https://yookassa.ru/developers/api/yookassa-openapi-specification.yaml
 import { isDeepStrictEqual } from "node:util";
+import {
+  validYooKassaCredentials,
+  type YooKassaClientOptions,
+  type YooKassaMode,
+} from "./yookassa.js";
 const ENDPOINT = "https://api.yookassa.ru/v3";
 const MAX_RESPONSE_BYTES = 64 * 1024;
 const TIMEOUT_MS = 10_000;
@@ -12,7 +17,7 @@ const REQUEST_ID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const AMOUNT = /^(0|[1-9][0-9]{0,7})\.([0-9]{2})$/;
 
-export type YooKassaTestRefundInput = {
+export type YooKassaRefundInput = {
   refundRequestId: string;
   paymentId: string;
   orderId: string;
@@ -25,8 +30,9 @@ export type YooKassaTestRefundInput = {
   // transport fixtures may omit it; runtime endpoints never construct it here.
   createPayload?: unknown;
 };
+export type YooKassaTestRefundInput = YooKassaRefundInput;
 
-export type YooKassaTestRefund = {
+export type YooKassaRefund = {
   id: string;
   refundRequestId: string;
   paymentId: string;
@@ -36,12 +42,13 @@ export type YooKassaTestRefund = {
   currency: "RUB";
   // Derived from an authenticated GET of the original payment, not from
   // nonexistent refund.test or refund.recipient fields.
-  test: true;
+  test: boolean;
   refundedAmountKopeks: number;
   status: "pending" | "succeeded" | "canceled";
   observation: "create_response" | "server_get";
   verifiedAt: string;
 };
+export type YooKassaTestRefund = YooKassaRefund & { test: true };
 
 type ErrorCode =
   | "configuration"
@@ -59,11 +66,12 @@ export class YooKassaTestRefundError extends Error {
       "not_sent" | "unknown" | "observation_failed" = "not_sent",
   ) {
     super(
-      "Тестовый возврат требует проверки состояния. Ошибка не доказывает отмену возврата и не разрешает освобождать резерв.",
+      "Возврат требует проверки состояния. Ошибка не доказывает отмену возврата и не разрешает освобождать резерв.",
     );
     this.name = "YooKassaTestRefundError";
   }
 }
+export { YooKassaTestRefundError as YooKassaRefundError };
 
 function object(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -96,21 +104,16 @@ type Request = (
   idempotenceKey?: string,
 ) => Promise<unknown>;
 
-export class YooKassaTestRefundClient {
+export class YooKassaRefundClient {
   #authorization: string;
   #shopId: string;
   #fetch: typeof globalThis.fetch;
+  #mode: YooKassaMode;
 
-  constructor(options: {
-    shopId: string;
-    secretKey: string;
-    fetch?: typeof globalThis.fetch;
-  }) {
-    if (
-      !/^[1-9][0-9]{0,19}$/.test(options.shopId) ||
-      !/^test_[A-Za-z0-9_=-]{8,8192}$/.test(options.secretKey)
-    )
+  constructor(options: YooKassaClientOptions) {
+    if (!validYooKassaCredentials(options))
       throw new YooKassaTestRefundError("configuration");
+    this.#mode = options.mode;
     this.#shopId = options.shopId;
     this.#authorization =
       "Basic " +
@@ -120,9 +123,7 @@ export class YooKassaTestRefundClient {
     this.#fetch = options.fetch ?? globalThis.fetch;
   }
 
-  async createRefund(
-    input: YooKassaTestRefundInput,
-  ): Promise<YooKassaTestRefund> {
+  async createRefund(input: YooKassaRefundInput): Promise<YooKassaRefund> {
     input = Object.freeze({ ...input });
     this.validate(input);
     this.createWindow(input);
@@ -133,7 +134,8 @@ export class YooKassaTestRefundClient {
         value: `${amount / 100n}.${(amount % 100n).toString().padStart(2, "0")}`,
         currency: "RUB",
       },
-      description: "Тестовый возврат CityGo",
+      description:
+        this.#mode === "test" ? "Тестовый возврат CityGo" : "Возврат CityGo",
       metadata: { citygo_refund_id: input.refundRequestId },
     };
     if (
@@ -166,8 +168,8 @@ export class YooKassaTestRefundClient {
 
   async getRefund(
     refundId: string,
-    input: YooKassaTestRefundInput,
-  ): Promise<YooKassaTestRefund> {
+    input: YooKassaRefundInput,
+  ): Promise<YooKassaRefund> {
     input = Object.freeze({ ...input });
     this.validate(input);
     if (typeof refundId !== "string" || !PROVIDER_ID.test(refundId))
@@ -175,7 +177,7 @@ export class YooKassaTestRefundClient {
     return this.operation(true, async (request) => {
       const raw = await request("GET", "/refunds/" + refundId);
       // Refund objects have neither recipient nor test. Bind the saved refund
-      // to a freshly authenticated payment from this exact sandbox shop.
+      // to a freshly authenticated payment from this exact shop and mode.
       const refunded = this.payment(
         await request("GET", "/payments/" + input.paymentId),
         input,
@@ -192,13 +194,13 @@ export class YooKassaTestRefundClient {
     });
   }
 
-  private createWindow(input: YooKassaTestRefundInput) {
+  private createWindow(input: YooKassaRefundInput) {
     const age = Date.now() - Date.parse(input.createdAt);
     if (age < -60_000 || age >= REPLAY_LIMIT_MS)
       throw new YooKassaTestRefundError("invalid_input");
   }
 
-  private validate(input: YooKassaTestRefundInput) {
+  private validate(input: YooKassaRefundInput) {
     if (
       !input ||
       typeof input.refundRequestId !== "string" ||
@@ -229,17 +231,13 @@ export class YooKassaTestRefundClient {
       throw new YooKassaTestRefundError("invalid_input");
   }
 
-  private payment(
-    raw: unknown,
-    input: YooKassaTestRefundInput,
-    creating: boolean,
-  ) {
+  private payment(raw: unknown, input: YooKassaRefundInput, creating: boolean) {
     if (
       !object(raw) ||
       raw.id !== input.paymentId ||
       raw.status !== "succeeded" ||
       raw.paid !== true ||
-      raw.test !== true ||
+      raw.test !== (this.#mode === "test") ||
       !object(raw.recipient) ||
       raw.recipient.account_id !== this.#shopId ||
       !object(raw.metadata) ||
@@ -260,11 +258,11 @@ export class YooKassaTestRefundClient {
 
   private refund(
     raw: unknown,
-    input: YooKassaTestRefundInput,
+    input: YooKassaRefundInput,
     refundedAmountKopeks: number,
-    observation: YooKassaTestRefund["observation"],
+    observation: YooKassaRefund["observation"],
     refundId?: string,
-  ): YooKassaTestRefund {
+  ): YooKassaRefund {
     if (
       !object(raw) ||
       typeof raw.id !== "string" ||
@@ -287,7 +285,7 @@ export class YooKassaTestRefundClient {
       merchantId: this.#shopId,
       amountKopeks: input.amountKopeks,
       currency: "RUB",
-      test: true,
+      test: this.#mode === "test",
       refundedAmountKopeks,
       status: raw.status,
       observation,
@@ -399,5 +397,24 @@ export class YooKassaTestRefundClient {
     } finally {
       if (timer) clearTimeout(timer);
     }
+  }
+}
+
+export class YooKassaTestRefundClient extends YooKassaRefundClient {
+  constructor(options: Omit<YooKassaClientOptions, "mode">) {
+    super({ ...options, mode: "test" });
+  }
+
+  override createRefund(
+    input: YooKassaRefundInput,
+  ): Promise<YooKassaTestRefund> {
+    return super.createRefund(input) as Promise<YooKassaTestRefund>;
+  }
+
+  override getRefund(
+    refundId: string,
+    input: YooKassaRefundInput,
+  ): Promise<YooKassaTestRefund> {
+    return super.getRefund(refundId, input) as Promise<YooKassaTestRefund>;
   }
 }

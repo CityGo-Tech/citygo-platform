@@ -3,6 +3,7 @@ import { useState } from "react";
 import { Button, Card } from "@citygo/ui-web";
 import {
   aiBudgetInputSchema,
+  formatMoneyCounterMicros,
   formatMoneyMicros,
   parseMoneyMicros,
   type AiBudgetInput,
@@ -20,12 +21,17 @@ export function AiBudgetControls({
 }) {
   const { settings } = status;
   const [enabled, setEnabled] = useState(settings.enabled);
+  const [mode, setMode] = useState(settings.mode);
   const [currency, setCurrency] = useState(settings.currency ?? "");
   const [daily, setDaily] = useState(
-    formatMoneyMicros(settings.dailyLimitMicros),
+    settings.dailyLimitMicros === null
+      ? ""
+      : formatMoneyMicros(settings.dailyLimitMicros),
   );
   const [total, setTotal] = useState(
-    formatMoneyMicros(settings.totalLimitMicros),
+    settings.totalLimitMicros === null
+      ? ""
+      : formatMoneyMicros(settings.totalLimitMicros),
   );
   const [userDaily, setUserDaily] = useState(
     settings.userDailyLimitMicros == null
@@ -52,12 +58,19 @@ export function AiBudgetControls({
   const parsed = aiBudgetInputSchema.safeParse({
     expectedRevision: settings.revision,
     enabled,
+    mode,
     currency,
-    dailyLimitMicros: parseMoneyMicros(daily),
-    totalLimitMicros: parseMoneyMicros(total),
+    dailyLimitMicros:
+      mode === "routerai_balance" ? null : parseMoneyMicros(daily),
+    totalLimitMicros:
+      mode === "routerai_balance" ? null : parseMoneyMicros(total),
     userDailyLimitMicros: userDailyMicros,
     rules: status.availableExecutions
-      .filter((item) => ceilings[item.key]?.trim())
+      .filter(
+        (item) =>
+          ceilings[item.key]?.trim() &&
+          (mode !== "routerai_balance" || item.policy.provider === "routerai"),
+      )
       .map((item) => ({
         key: item.key,
         attemptCeilingMicros: parseMoneyMicros(ceilings[item.key]!),
@@ -71,14 +84,25 @@ export function AiBudgetControls({
         })
       : [];
   const lostRules = settings.rules.filter(
-    (rule) => !status.availableExecutions.some((item) => item.key === rule.key),
+    (rule) =>
+      !status.availableExecutions.some((item) => item.key === rule.key) ||
+      (mode === "routerai_balance" && rule.policy.provider !== "routerai"),
   );
-  const money = (amount: number) =>
-    `${formatMoneyMicros(amount)} ${settings.currency ?? "(валюта не выбрана)"}`;
+  const money = (amount: number | null) => {
+    if (amount === null) return "без отдельного лимита CityGo";
+    return `${formatMoneyCounterMicros(amount)} ${settings.currency ?? "(валюта не выбрана)"}`;
+  };
   return (
     <Card style={{ marginTop: 20, overflowWrap: "anywhere" }}>
       <section aria-label="Денежный бюджет AI">
         <h2>Денежный резерв AI</h2>
+        <p>
+          Режим:{" "}
+          {settings.mode === "routerai_balance"
+            ? "до исчерпания предоплаченного баланса RouterAI"
+            : "фиксированные денежные лимиты CityGo"}
+          .
+        </p>
         <p>
           Новые резервы:{" "}
           {settings.enabled
@@ -87,10 +111,15 @@ export function AiBudgetControls({
           . Версия бюджета: {settings.revision}.
         </p>
         <p>
-          Всего зарезервировано: {money(status.totalReservedMicros)} из{" "}
-          {money(settings.totalLimitMicros)}. За {status.day} (UTC):{" "}
-          {money(status.reservedTodayMicros)} из{" "}
-          {money(settings.dailyLimitMicros)}.
+          Всего зарезервировано: {money(status.totalReservedMicros)}
+          {settings.totalLimitMicros === null
+            ? "; без отдельного общего лимита CityGo"
+            : ` из ${money(settings.totalLimitMicros)}`}
+          . За {status.day} (UTC): {money(status.reservedTodayMicros)}
+          {settings.dailyLimitMicros === null
+            ? "; без отдельного суточного лимита CityGo"
+            : ` из ${money(settings.dailyLimitMicros)}`}
+          .
         </p>
         <p>
           Это лимит выделенного резерва, не фактический счёт провайдера. Перед
@@ -98,12 +127,21 @@ export function AiBudgetControls({
           Автоматических возвратов нет. Исторические вызовы до включения учёта
           сюда не входят.
         </p>
+        {settings.mode === "routerai_balance" && (
+          <p>
+            CityGo не ограничивает общий и суточный расход оператора отдельной
+            суммой. Достаточность предоплаты проверяет RouterAI при запросе;
+            текущий баланс провайдера здесь не измеряется. При нехватке средств
+            автоматического повтора и переключения модели нет. Денежный журнал,
+            потолок попытки и доступный баланс пользователя сохраняются.
+          </p>
+        )}
         <p>
           Действующий лимит на аккаунт в сутки UTC:{" "}
           {settings.userDailyLimitMicros == null
             ? "без отдельного ограничения"
             : money(settings.userDailyLimitMicros)}
-          . Общий и суточный бюджеты проекта продолжают действовать независимо.
+          . Баланс пользователя и технические ограничения действуют независимо.
         </p>
         <p>
           До включения проверьте тариф, налоги и достаточность потолка для
@@ -125,10 +163,29 @@ export function AiBudgetControls({
             <span>Разрешить новые денежные резервы</span>
           </label>
           <label className="cg-field">
+            <span>Режим расходов оператора</span>
+            <select
+              value={mode}
+              onChange={(event) => {
+                const next = event.target.value as typeof mode;
+                setMode(next);
+                if (next === "routerai_balance" && !status.totalReservedMicros)
+                  setCurrency("RUB");
+              }}
+            >
+              <option value="fixed">Фиксированные лимиты CityGo</option>
+              <option value="routerai_balance">
+                До исчерпания предоплаченного баланса RouterAI
+              </option>
+            </select>
+          </label>
+          <label className="cg-field">
             <span>Валюта бюджета</span>
             <select
               value={currency}
-              disabled={status.totalReservedMicros > 0}
+              disabled={
+                status.totalReservedMicros > 0 || mode === "routerai_balance"
+              }
               onChange={(event) => setCurrency(event.target.value)}
             >
               <option value="">Выберите валюту</option>
@@ -140,22 +197,32 @@ export function AiBudgetControls({
             После первого резерва валюта фиксируется. Изменения бюджета не
             обнуляют накопленную сумму.
           </p>
-          <label className="cg-field">
-            <span>Общий бюджет</span>
-            <input
-              inputMode="decimal"
-              value={total}
-              onChange={(event) => setTotal(event.target.value)}
-            />
-          </label>
-          <label className="cg-field">
-            <span>Бюджет на сутки UTC</span>
-            <input
-              inputMode="decimal"
-              value={daily}
-              onChange={(event) => setDaily(event.target.value)}
-            />
-          </label>
+          {mode === "fixed" ? (
+            <>
+              <label className="cg-field">
+                <span>Общий бюджет</span>
+                <input
+                  inputMode="decimal"
+                  value={total}
+                  onChange={(event) => setTotal(event.target.value)}
+                />
+              </label>
+              <label className="cg-field">
+                <span>Бюджет на сутки UTC</span>
+                <input
+                  inputMode="decimal"
+                  value={daily}
+                  onChange={(event) => setDaily(event.target.value)}
+                />
+              </label>
+            </>
+          ) : (
+            <p role="status">
+              Общий и суточный денежные лимиты CityGo отсутствуют, валюта RUB.
+              Этот режим разрешает только RouterAI. Для возврата к фиксированным
+              лимитам их нужно указать и подтвердить заново.
+            </p>
+          )}
           <label className="cg-field">
             <span>Лимит на аккаунт в сутки UTC</span>
             <input
@@ -182,6 +249,13 @@ export function AiBudgetControls({
                 {execution.policy.recipient} · {execution.policy.model}
               </h3>
               <p>{execution.policy.routing}</p>
+              {mode === "routerai_balance" &&
+                execution.policy.provider !== "routerai" && (
+                  <p>
+                    Этот провайдер недоступен в режиме предоплаты RouterAI; его
+                    разрешение не сохраняется.
+                  </p>
+                )}
               <p>
                 Вход: не более {execution.maxInputBytes} байт JSON-контекста;
                 выход: не более {execution.maxOutputTokens} токенов. При
@@ -192,6 +266,10 @@ export function AiBudgetControls({
                 <span>Потолок на попытку · {execution.policy.recipient}</span>
                 <input
                   inputMode="decimal"
+                  disabled={
+                    mode === "routerai_balance" &&
+                    execution.policy.provider !== "routerai"
+                  }
                   value={ceilings[execution.key] ?? ""}
                   onChange={(event) =>
                     setCeilings((current) => ({
@@ -229,8 +307,10 @@ export function AiBudgetControls({
         {!parsed.success && (
           <p>
             Укажите валюту и корректные суммы. Для включения нужны положительный
-            суточный бюджет и хотя бы один потолок; суточный бюджет не больше
-            общего.
+            потолок попытки и подходящий провайдер. Фиксированный суточный
+            бюджет должен быть положительным и не больше общего; режим
+            предоплаты RouterAI требует RUB и не задаёт общих денежных лимитов
+            CityGo.
           </p>
         )}
         <p>
@@ -265,9 +345,10 @@ export function AiBudgetControls({
             <li key={item.id}>
               Версия {item.payload.to.revision} ·{" "}
               {item.payload.to.enabled ? "включён" : "отключён"} ·{" "}
-              {formatMoneyMicros(item.payload.to.totalLimitMicros)}{" "}
-              {item.payload.to.currency} общий /{" "}
-              {formatMoneyMicros(item.payload.to.dailyLimitMicros)} суточный ·{" "}
+              {item.payload.to.mode === "routerai_balance"
+                ? "предоплата RouterAI, без общих денежных лимитов CityGo"
+                : `${formatMoneyMicros(item.payload.to.totalLimitMicros!)} ${item.payload.to.currency} общий / ${formatMoneyMicros(item.payload.to.dailyLimitMicros!)} суточный`}{" "}
+              ·{" "}
               {item.payload.to.userDailyLimitMicros == null
                 ? "без отдельного лимита на аккаунт"
                 : `${formatMoneyMicros(item.payload.to.userDailyLimitMicros)} ${item.payload.to.currency ?? ""} на аккаунт в сутки UTC`}{" "}

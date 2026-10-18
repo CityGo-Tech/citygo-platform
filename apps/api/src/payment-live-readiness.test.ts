@@ -39,7 +39,9 @@ test("empty preparation stays blocked with named operator and engineering gaps",
     result.blockers.some((gap) => gap.code === "SOURCE_POLICY_REQUIRED"),
   );
   assert.ok(
-    result.blockers.some((gap) => gap.code === "REFUND_LEDGER_NOT_IMPLEMENTED"),
+    result.blockers.some(
+      (gap) => gap.code === "LIVE_MERCHANT_ACCEPTANCE_PENDING",
+    ),
   );
 });
 
@@ -54,7 +56,7 @@ test("all reported choices cannot turn a technical preview into live approval", 
   assert.equal(result.readyForLive, false);
   assert.equal(result.taxComplianceConfirmed, false);
   assert.equal(result.credentialsChecked, false);
-  assert.equal(result.blockers.length, 6);
+  assert.equal(result.blockers.length, 4);
 });
 
 test("a valid but different sales model does not silently change the product", () => {
@@ -175,11 +177,9 @@ test("manual NPD plan removes the partner requirement without approving the live
     result.blockers.map((gap) => gap.code),
     [
       "MANUAL_RECEIPT_LIVE_ACCEPTANCE_PENDING",
-      "LIVE_CHECKOUT_NOT_IMPLEMENTED",
-      "PAID_SOURCE_ALLOCATION_NOT_IMPLEMENTED",
-      "REFUND_LEDGER_NOT_IMPLEMENTED",
-      "FISCAL_TRACKING_NOT_IMPLEMENTED",
-      "BACKGROUND_RECONCILIATION_NOT_IMPLEMENTED",
+      "LIVE_MERCHANT_ACCEPTANCE_PENDING",
+      "FISCAL_WORKFLOW_LIVE_ACCEPTANCE_PENDING",
+      "BACKGROUND_RECONCILIATION_RELEASE_PENDING",
       "LIVE_RELEASE_PROFILE_NOT_IMPLEMENTED",
     ],
   );
@@ -230,7 +230,7 @@ test("future payment and receipt providers remain unimplemented independently", 
       );
       assert.ok(
         result.blockers.some(
-          (gap) => gap.code === "REFUND_LEDGER_NOT_IMPLEMENTED",
+          (gap) => gap.code === "LIVE_MERCHANT_ACCEPTANCE_PENDING",
         ),
       );
     }

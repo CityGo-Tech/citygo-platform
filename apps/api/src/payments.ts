@@ -13,43 +13,33 @@ import {
   type Database,
   type PaymentTopupOrder,
 } from "@citygo/db";
-import type { readConfig } from "@citygo/config";
+import { validatePaymentConfig, type readConfig } from "@citygo/config";
 import {
-  YooKassaTestClient,
-  YooKassaTestError,
-  type YooKassaTestPayment,
+  YooKassaClient,
+  YooKassaError,
+  type YooKassaPayment,
 } from "./yookassa.js";
 
-export type TestPaymentClient = Pick<YooKassaTestClient, "create" | "get">;
+export type PaymentClient = Pick<YooKassaClient, "create" | "get">;
 const REPLAY_LIMIT_MS = 23 * 60 * 60 * 1000;
 const paramsSchema = z.strictObject({ orderId: z.uuid() });
 
 // Check injected config before DB initialization as well as readConfig callers.
-export function prepareTestPayments(
+export function preparePayments(
   config: ReturnType<typeof readConfig>,
-  options: { testing?: boolean; client?: TestPaymentClient } = {},
-): TestPaymentClient | undefined {
+  options: { testing?: boolean; client?: PaymentClient } = {},
+): PaymentClient | undefined {
+  validatePaymentConfig(config);
   if (
     options.client !== undefined &&
     (config.NODE_ENV !== "test" ||
       options.testing !== true ||
-      config.YOOKASSA_MODE !== "test")
+      config.YOOKASSA_MODE === "disabled")
   )
     throw new Error(
       "Synthetic payment clients require the explicit isolated test harness",
     );
   if (config.YOOKASSA_MODE === "disabled") return;
-  if (
-    config.YOOKASSA_MODE !== "test" ||
-    config.NODE_ENV === "production" ||
-    config.LLM_PROVIDER !== "disabled" ||
-    config.AI_CREDIT_MODE !== "routerai_citygo_10x" ||
-    !/^[1-9][0-9]{0,19}$/.test(config.YOOKASSA_SHOP_ID ?? "") ||
-    !/^test_[A-Za-z0-9_=-]{8,8192}$/.test(config.YOOKASSA_SECRET_KEY ?? "")
-  )
-    throw new Error(
-      "Test checkout requires isolated non-production settings, disabled AI and test credentials",
-    );
   const origin = new URL(config.WEB_ORIGIN);
   if (
     origin.protocol !== "https:" ||
@@ -60,7 +50,8 @@ export function prepareTestPayments(
     throw new Error("Test checkout requires a fixed HTTPS return origin");
   return (
     options.client ??
-    new YooKassaTestClient({
+    new YooKassaClient({
+      mode: config.YOOKASSA_MODE,
       shopId: config.YOOKASSA_SHOP_ID!,
       secretKey: config.YOOKASSA_SECRET_KEY!,
     })
@@ -73,7 +64,7 @@ function publicOrder(order: PaymentTopupOrder): TopupOrder {
     amountKopeks: order.amountKopeks,
     creditMicros: order.amountKopeks * 10_000,
     currency: "RUB",
-    test: true,
+    test: order.test,
     status: order.credited
       ? "succeeded"
       : order.status === "queued"
@@ -93,7 +84,7 @@ export function registerPaymentTopups(
   options: {
     db: Database;
     config: ReturnType<typeof readConfig>;
-    client?: TestPaymentClient;
+    client?: PaymentClient;
     authenticate: (request: {
       headers: { authorization?: string };
       cookies: Record<string, string | undefined>;
@@ -115,12 +106,12 @@ export function registerPaymentTopups(
   function configured(order: PaymentTopupOrder) {
     if (
       order.merchantId !== options.config.YOOKASSA_SHOP_ID ||
-      order.test !== true ||
+      order.test !== (options.config.YOOKASSA_MODE === "test") ||
       order.returnUrl !== returnUrl
     )
       throw new DomainError(
         409,
-        "Для проверки нужна исходная конфигурация тестового магазина",
+        "Для проверки нужна исходная конфигурация магазина и режима оплаты",
       );
     const amount = BigInt(order.amountKopeks);
     const payload = {
@@ -131,7 +122,9 @@ export function registerPaymentTopups(
       capture: true,
       confirmation: { type: "redirect", return_url: returnUrl },
       metadata: { citygo_order_id: order.id },
-      description: "Пополнение тестового баланса CityGo",
+      description: order.test
+        ? "Пополнение тестового баланса CityGo"
+        : "Пополнение баланса CityGo",
     };
     if (
       order.createKey !== order.id ||
@@ -142,19 +135,16 @@ export function registerPaymentTopups(
         "Сохранённый запрос платежа требует проверки владельцем",
       );
   }
-  function verified(payment: YooKassaTestPayment, order: PaymentTopupOrder) {
+  function verified(payment: YooKassaPayment, order: PaymentTopupOrder) {
     if (
       payment.orderId !== order.id ||
       payment.amountKopeks !== order.amountKopeks ||
       payment.merchantId !== order.merchantId ||
-      payment.test !== true ||
+      payment.test !== order.test ||
       payment.currency !== "RUB" ||
       (order.providerPaymentId && payment.id !== order.providerPaymentId)
     )
-      throw new DomainError(
-        409,
-        "Данные тестового платежа не соответствуют пополнению",
-      );
+      throw new DomainError(409, "Данные платежа не соответствуют пополнению");
   }
   async function transport<T>(work: () => Promise<T>) {
     try {
@@ -162,15 +152,12 @@ export function registerPaymentTopups(
     } catch (error) {
       if (error instanceof DomainError) throw error;
       // No provider bodies, headers, keys, IDs or injected exceptions escape.
-      if (error instanceof YooKassaTestError || error instanceof Error)
+      if (error instanceof YooKassaError || error instanceof Error)
         throw new DomainError(
           503,
-          "Не удалось проверить тестовый платёж. Повторите проверку состояния, не создавайте новый платёж.",
+          "Не удалось проверить платёж. Повторите проверку состояния, не создавайте новый платёж.",
         );
-      throw new DomainError(
-        503,
-        "Тестовый платёж требует повторной проверки состояния",
-      );
+      throw new DomainError(503, "Платёж требует повторной проверки состояния");
     }
   }
 
@@ -186,7 +173,7 @@ export function registerPaymentTopups(
         input.requestId,
         input.amountKopeks,
         options.config.YOOKASSA_SHOP_ID!,
-        true,
+        options.config.YOOKASSA_MODE === "test",
         returnUrl,
       );
       configured(order);
@@ -229,60 +216,89 @@ export function registerPaymentTopups(
     return publicOrder(order); // No provider call and no monetary mutation.
   });
 
+  // Trusted server entrypoint reused by authenticated owners and the durable
+  // provider inbox. IDs from notifications never act as monetary proof.
+  async function reconcileOrder(
+    userId: string,
+    orderId: string,
+    forceGet = false,
+    expectedProviderId?: string,
+    observed?: (status: YooKassaPayment["status"]) => void,
+  ) {
+    const client = available();
+    const order = await orders.get(userId, orderId);
+    configured(order);
+    if (
+      expectedProviderId !== undefined &&
+      order.providerPaymentId !== expectedProviderId
+    )
+      throw new DomainError(409, "Привязка уведомления к платежу изменилась");
+    if (!forceGet && (order.credited || order.status === "canceled"))
+      return publicOrder(order);
+    if (!order.providerPaymentId) {
+      const age = Date.now() - Date.parse(order.createdAt);
+      if (!Number.isFinite(age) || age < -60_000 || age >= REPLAY_LIMIT_MS)
+        return publicOrder(await orders.markReviewRequired(userId, order.id));
+      throw new DomainError(
+        409,
+        "Создание платежа не подтверждено. Повторите исходное создание с прежним ID попытки.",
+      );
+    }
+    const payment = await transport(() =>
+      client.get(order.providerPaymentId!, {
+        orderId: order.id,
+        amountKopeks: order.amountKopeks,
+      }),
+    );
+    verified(payment, order);
+    observed?.(payment.status);
+    if (payment.status === "succeeded" && payment.paid === true) {
+      await ledger.topUpConfirmed(userId, order.id, {
+        providerPaymentId: payment.id,
+        paidKopeks: order.amountKopeks,
+        merchantId: order.merchantId,
+        test: order.test,
+        verifiedAt: payment.verifiedAt,
+        verification: "server_get_succeeded",
+        currency: "RUB",
+      });
+    }
+    const recorded = await orders.recordProvider(userId, order.id, {
+      providerPaymentId: payment.id,
+      status:
+        payment.status === "succeeded" && payment.paid === true
+          ? "succeeded"
+          : payment.status === "canceled"
+            ? "canceled"
+            : "pending",
+      ...(payment.confirmationUrl
+        ? { confirmationUrl: payment.confirmationUrl }
+        : {}),
+    });
+    return publicOrder(recorded);
+  }
   app.post(
     "/v1/payments/topups/:orderId/reconcile",
     { config: { rateLimit: { max: 10, timeWindow: 60_000 } } },
     async (request) => {
       const user = await options.authenticate(request);
-      const client = available();
       const input = paramsSchema.parse(request.params);
       z.strictObject({}).parse(request.body);
-      const order = await orders.get(user.id, input.orderId);
-      configured(order);
-      if (order.credited || order.status === "canceled")
-        return publicOrder(order);
-      if (!order.providerPaymentId) {
-        const age = Date.now() - Date.parse(order.createdAt);
-        if (!Number.isFinite(age) || age < -60_000 || age >= REPLAY_LIMIT_MS)
-          return publicOrder(
-            await orders.markReviewRequired(user.id, order.id),
-          );
-        throw new DomainError(
-          409,
-          "Создание платежа не подтверждено. Повторите исходное создание с прежним ID попытки.",
-        );
-      }
-      const payment = await transport(() =>
-        client.get(order.providerPaymentId!, {
-          orderId: order.id,
-          amountKopeks: order.amountKopeks,
-        }),
-      );
-      verified(payment, order);
-      if (payment.status === "succeeded" && payment.paid === true) {
-        await ledger.topUpConfirmed(user.id, order.id, {
-          providerPaymentId: payment.id,
-          paidKopeks: order.amountKopeks,
-          merchantId: order.merchantId,
-          test: true,
-          verifiedAt: payment.verifiedAt,
-          verification: "server_get_succeeded",
-          currency: "RUB",
-        });
-      }
-      const recorded = await orders.recordProvider(user.id, order.id, {
-        providerPaymentId: payment.id,
-        status:
-          payment.status === "succeeded" && payment.paid === true
-            ? "succeeded"
-            : payment.status === "canceled"
-              ? "canceled"
-              : "pending",
-        ...(payment.confirmationUrl
-          ? { confirmationUrl: payment.confirmationUrl }
-          : {}),
-      });
-      return publicOrder(recorded);
+      return reconcileOrder(user.id, input.orderId);
     },
   );
+  return {
+    reconcileOrder,
+    async reconcileNotification(
+      userId: string,
+      orderId: string,
+      providerId: string,
+    ) {
+      let terminal = false;
+      await reconcileOrder(userId, orderId, true, providerId, (status) => {
+        terminal = status === "succeeded" || status === "canceled";
+      });
+      return terminal;
+    },
+  };
 }

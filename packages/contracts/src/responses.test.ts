@@ -75,6 +75,7 @@ test("pre-cap budget audit snapshots stay readable without weakening current set
   };
   const settings = {
     ...legacy,
+    mode: "fixed",
     revision: 2,
     userDailyLimitMicros: 500_000_000,
   };
@@ -107,6 +108,10 @@ test("pre-cap budget audit snapshots stay readable without weakening current set
     Object.hasOwn(result.budget!.audit[0]!.payload.to, "userDailyLimitMicros"),
     false,
   );
+  assert.equal(
+    Object.hasOwn(result.budget!.audit[0]!.payload.to, "mode"),
+    false,
+  );
   assert.equal(aiBudgetSettingsSchema.safeParse(legacy).success, false);
   assert.equal(
     aiControlResponseSchema.safeParse({
@@ -127,6 +132,57 @@ test("pre-cap budget audit snapshots stay readable without weakening current set
       );
     }
   }
+});
+test("budget responses distinguish absent operator caps from zero and retain safe lifetime counters", () => {
+  const settings = {
+    revision: 2,
+    enabled: false,
+    mode: "routerai_balance",
+    currency: "RUB",
+    dailyLimitMicros: null,
+    totalLimitMicros: null,
+    userDailyLimitMicros: null,
+    rules: [],
+  };
+  assert.deepEqual(aiBudgetSettingsSchema.parse(settings), settings);
+  for (const patch of [
+    { mode: "fixed" },
+    { mode: undefined },
+    { currency: "USD" },
+    { dailyLimitMicros: 0 },
+    { totalLimitMicros: 1000000000000 },
+  ])
+    assert.equal(
+      aiBudgetSettingsSchema.safeParse({ ...settings, ...patch }).success,
+      false,
+    );
+  const status = {
+    current: { provider: "disabled", policyId: null, revision: 1 },
+    effectiveProvider: "unconfigured",
+    environmentDisabled: false,
+    automaticFallback: false,
+    options: [],
+    audit: [],
+    budget: {
+      settings,
+      totalReservedMicros: Number.MAX_SAFE_INTEGER,
+      day: "2026-10-18",
+      reservedTodayMicros: 1000000000001,
+      availableExecutions: [],
+      audit: [],
+    },
+  };
+  assert.equal(aiControlResponseSchema.safeParse(status).success, true);
+  assert.equal(
+    aiControlResponseSchema.safeParse({
+      ...status,
+      budget: {
+        ...status.budget,
+        totalReservedMicros: Number.MAX_SAFE_INTEGER + 1,
+      },
+    }).success,
+    false,
+  );
 });
 test("dashboard validates nested profile, quest, message, policy and budget fields", () => {
   for (const change of [

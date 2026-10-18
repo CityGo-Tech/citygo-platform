@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
-import { YooKassaTestClient, YooKassaTestError } from "./yookassa.js";
+import {
+  YooKassaClient,
+  YooKassaError,
+  YooKassaTestClient,
+  YooKassaTestError,
+  type YooKassaMode,
+} from "./yookassa.js";
 
 const orderId = randomUUID();
 const paymentId = "2419a771-000f-5000-9000-1edaf29243f2";
@@ -73,6 +79,160 @@ test("test client rejects live keys and malformed configuration without disclosi
   const { client } = fixture(() => json(valid()));
   assert.equal(JSON.stringify(client), "{}");
 });
+
+test("general client requires explicit mode and matching credentials before any HTTP", () => {
+  assert.equal(YooKassaError, YooKassaTestError);
+  for (const options of [
+    { mode: "live", shopId, secretKey },
+    { mode: "test", shopId, secretKey: "live_SYNTHETIC_NOT_REAL" },
+    { mode: undefined, shopId, secretKey },
+    { mode: "LIVE", shopId, secretKey: "live_SYNTHETIC_NOT_REAL" },
+    { mode: "live", shopId: "0", secretKey: "live_SYNTHETIC_NOT_REAL" },
+    { mode: "live", shopId, secretKey: "live_" },
+    { mode: "live", shopId, secretKey: "live_PRIVATE:key" },
+    { mode: "live", shopId, secretKey: "live_PRIVATE\nkey" },
+    { mode: "live", shopId, secretKey: " live_PRIVATE_KEY" },
+  ])
+    assert.throws(
+      () =>
+        new YooKassaClient(
+          options as ConstructorParameters<typeof YooKassaClient>[0],
+        ),
+      (error: unknown) =>
+        error instanceof YooKassaError &&
+        error.code === "configuration" &&
+        !/PRIVATE|SYNTHETIC/.test(String(error) + JSON.stringify(error)),
+    );
+  // Extra runtime properties cannot change the sandbox wrapper's fixed mode.
+  assert.throws(
+    () =>
+      new YooKassaTestClient({
+        ...{ mode: "live" },
+        shopId,
+        secretKey: "live_SYNTHETIC_NOT_REAL",
+      }),
+    YooKassaError,
+  );
+});
+
+for (const mode of ["test", "live"] as const) {
+  const modeKey = mode + "_SYNTHETIC_NOT_REAL";
+  const modeResponse = () => ({ ...valid(), test: mode === "test" });
+  function modeFixture(response: () => Response | Promise<Response>) {
+    const calls: { url: string; init: RequestInit }[] = [];
+    const client = new YooKassaClient({
+      mode,
+      shopId,
+      secretKey: modeKey,
+      fetch: async (url, init) => {
+        calls.push({ url: String(url), init: init ?? {} });
+        return response();
+      },
+    });
+    return { client, calls };
+  }
+
+  test(`${mode} payment create and independent settlement GET retain exact configured mode`, async () => {
+    const raw = modeResponse();
+    const f = modeFixture(() => json(raw));
+    const created = await f.client.create({
+      ...expected,
+      returnUrl: "https://citygo.example/balance",
+    });
+    assert.equal(created.test, mode === "test");
+    assert.equal(created.status, "pending");
+    assert.equal("credited" in created, false);
+    const post = f.calls[0]!;
+    assert.equal(post.url, "https://api.yookassa.ru/v3/payments");
+    assert.equal(post.init.redirect, "error");
+    assert.equal(post.init.credentials, "omit");
+    assert.deepEqual(JSON.parse(String(post.init.body)), {
+      amount: { value: "100.01", currency: "RUB" },
+      capture: true,
+      confirmation: {
+        type: "redirect",
+        return_url: "https://citygo.example/balance",
+      },
+      description:
+        mode === "test"
+          ? "Пополнение тестового баланса CityGo"
+          : "Пополнение баланса CityGo",
+      metadata: { citygo_order_id: orderId },
+    });
+    assert.equal(
+      new Headers(post.init.headers).get("Authorization"),
+      "Basic " + Buffer.from(shopId + ":" + modeKey).toString("base64"),
+    );
+    raw.status = "succeeded";
+    raw.paid = true;
+    const settled = await f.client.get(paymentId, expected);
+    assert.equal(settled.test, mode === "test");
+    assert.equal(settled.status, "succeeded");
+    assert.equal(f.calls[1]!.init.method, "GET");
+    assert.equal(
+      new Headers(f.calls[1]!.init.headers).has("Idempotence-Key"),
+      false,
+    );
+    assert.equal(JSON.stringify(f.client), "{}");
+  });
+
+  test(`${mode} settlement cannot accept another mode, missing mode or wrong financial binding`, async () => {
+    for (const patch of [
+      { test: mode !== "test" },
+      { test: undefined },
+      { test: "false" },
+      { id: randomUUID() },
+      { recipient: { account_id: "999999" } },
+      { metadata: { citygo_order_id: randomUUID() } },
+      { amount: { value: "100.00", currency: "RUB" } },
+      { refunded_amount: { value: "0.01", currency: "RUB" } },
+    ]) {
+      const f = modeFixture(() => json({ ...modeResponse(), ...patch }));
+      await rejected(f.client.get(paymentId, expected), "invalid_response");
+      assert.equal(f.calls.length, 1);
+    }
+  });
+
+  test(`${mode} HTTP500 and redirection are sanitized, bounded and never automatically retried`, async () => {
+    for (const [make, code] of [
+      [() => new Response("PRIVATE response body", { status: 500 }), "http"],
+      [
+        () => {
+          const response = json(modeResponse());
+          Object.defineProperty(response, "redirected", { value: true });
+          return response;
+        },
+        "invalid_response",
+      ],
+      [
+        () => json({ ...modeResponse(), private: "a".repeat(65_536) }),
+        "invalid_response",
+      ],
+    ] as const) {
+      const f = modeFixture(make);
+      await rejected(
+        f.client.create({
+          ...expected,
+          returnUrl: "https://citygo.example/balance",
+        }),
+        code,
+      );
+      assert.equal(f.calls.length, 1);
+    }
+  });
+
+  test(`${mode} client cannot change mode through caller configuration mutation`, async () => {
+    const options = {
+      mode: mode as YooKassaMode,
+      shopId,
+      secretKey: modeKey,
+      fetch: async () => json(modeResponse()),
+    };
+    const client = new YooKassaClient(options);
+    options.mode = mode === "test" ? "live" : "test";
+    assert.equal((await client.get(paymentId, expected)).test, mode === "test");
+  });
+}
 
 test("create uses exact kopeks, fixed endpoint, stable key and server-only Basic credentials", async () => {
   const f = fixture(() =>

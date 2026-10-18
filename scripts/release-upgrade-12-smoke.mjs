@@ -1,5 +1,7 @@
 // Only the disposable pilot harness, before its API/Worker starts. This is not
-// production rollback tooling: the harness already owns an empty 18-entry DB.
+// production rollback tooling: the harness already owns an empty current DB.
+// Rehearsing 12→21 here does not authorize any production release or alter the
+// separately pinned historical 12→18 controller profile and approvals.
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -93,9 +95,32 @@ export async function releaseUpgrade12Smoke({
       name,
       sha256: digest(readFileSync(join(migrationDirectory, name))),
     }));
-  assert.equal(migrations.length, 18);
-  assert.equal(migrations[11].name, "0012_housing_answer_history.sql");
-  assert.equal(migrations[17].name, "0018_payment_refunds.sql");
+  assert.deepEqual(
+    migrations.map(({ name }) => name),
+    [
+      "0001_initial.sql",
+      "0002_vertical_slice.sql",
+      "0003_ai_access.sql",
+      "0004_ai_routing.sql",
+      "0005_ai_attempts.sql",
+      "0006_ai_budget.sql",
+      "0007_ai_user_daily_budget.sql",
+      "0008_ai_credit.sql",
+      "0009_ai_credit_charges.sql",
+      "0010_quest_plan_expand.sql",
+      "0011_quest_plan_validate.sql",
+      "0012_housing_answer_history.sql",
+      "0013_account_access.sql",
+      "0014_citygo_credit.sql",
+      "0015_yookassa_orders.sql",
+      "0016_npd_receipts.sql",
+      "0017_credit_source_lots.sql",
+      "0018_payment_refunds.sql",
+      "0019_yookassa_live_orders.sql",
+      "0020_ai_budget_provider_balance.sql",
+      "0021_payment_notifications.sql",
+    ],
+  );
   const expectedJournal = migrations.map(({ name }) => ({
     name,
     checksum: digest(
@@ -113,9 +138,22 @@ export async function releaseUpgrade12Smoke({
     );
   assert.deepEqual(journal(), expectedJournal);
 
-  // Synthetic-only rewind: unlike the older 9→18 drill, all actual 0010–0012
+  // Synthetic-only rewind: unlike the older 9→current drill, actual 0010–0012
   // structures, constraints and journal entries remain in place.
   psql(`begin;
+    drop table payment_notification_inbox;
+    drop function citygo_guard_payment_notification();
+    alter table ai_budget drop constraint ai_budget_mode_limits,
+      drop constraint ai_budget_enabled_rule,drop constraint ai_budget_reserved_safe_integer,
+      drop column mode,
+      alter column daily_limit_micros set not null,
+      alter column total_limit_micros set not null,
+      add constraint ai_budget_check check(daily_limit_micros <= total_limit_micros),
+      add constraint ai_budget_check1 check(total_reserved_micros <= total_limit_micros),
+      add constraint ai_budget_check2 check(not enabled or (currency is not null and daily_limit_micros>0 and jsonb_array_length(rules)>0)),
+      add constraint ai_budget_total_reserved_micros_check check(total_reserved_micros between 0 and 1000000000000);
+    alter table ai_budget_daily drop constraint ai_budget_daily_reserved_safe_integer,
+      add constraint ai_budget_daily_reserved_micros_check check(reserved_micros between 0 and 1000000000000);
     drop table payment_refund_events,payment_refunds;
     drop function guard_payment_refund_identity();
     drop function guard_payment_refund_event_immutable();
@@ -157,7 +195,8 @@ export async function releaseUpgrade12Smoke({
     alter table users drop column username,drop column role,drop column must_change_password;
     delete from citygo_migrations where name in (
       '0013_account_access.sql','0014_citygo_credit.sql','0015_yookassa_orders.sql',
-      '0016_npd_receipts.sql','0017_credit_source_lots.sql','0018_payment_refunds.sql');
+      '0016_npd_receipts.sql','0017_credit_source_lots.sql','0018_payment_refunds.sql',
+      '0019_yookassa_live_orders.sql','0020_ai_budget_provider_balance.sql','0021_payment_notifications.sql');
     commit`);
 
   psql(`begin;
@@ -250,7 +289,7 @@ export async function releaseUpgrade12Smoke({
     assert.deepEqual(journal(), expectedJournal.slice(0, 12));
     assert.equal(
       psql(
-        "select count(*) from information_schema.tables where table_schema='public' and table_name in ('account_security_state','ai_credit_topups','payment_topup_orders','npd_receipt_tasks','npd_receipt_commands','npd_receipt_evidence','npd_refund_observations','credit_source_lots','credit_hold_allocations','credit_refund_allocations','payment_refunds','payment_refund_events')",
+        "select count(*) from information_schema.tables where table_schema='public' and table_name in ('account_security_state','ai_credit_topups','payment_topup_orders','npd_receipt_tasks','npd_receipt_commands','npd_receipt_evidence','npd_refund_observations','credit_source_lots','credit_hold_allocations','credit_refund_allocations','payment_refunds','payment_refund_events','payment_notification_inbox')",
       ),
       "0",
     );
@@ -363,6 +402,7 @@ export async function releaseUpgrade12Smoke({
     "t",
   );
   const moneyTables = [
+    "payment_notification_inbox",
     "credit_source_lots",
     "credit_hold_allocations",
     "credit_refund_allocations",
@@ -389,7 +429,7 @@ export async function releaseUpgrade12Smoke({
   }
   assert.equal(
     psql(
-      "select has_column_privilege('citygo_api','credit_source_lots','held_micros','UPDATE') and not has_column_privilege('citygo_api','credit_source_lots','gross_micros','UPDATE') and has_column_privilege('citygo_api','payment_refunds','status','UPDATE') and not has_column_privilege('citygo_api','payment_refunds','amount_kopeks','UPDATE') and has_column_privilege('citygo_api','npd_receipt_tasks','revision','UPDATE') and not has_column_privilege('citygo_api','npd_receipt_tasks','buyer_email','UPDATE') and not has_table_privilege('citygo_api','citygo_migrations','UPDATE')",
+      "select has_column_privilege('citygo_api','credit_source_lots','held_micros','UPDATE') and not has_column_privilege('citygo_api','credit_source_lots','gross_micros','UPDATE') and has_column_privilege('citygo_api','payment_refunds','status','UPDATE') and not has_column_privilege('citygo_api','payment_refunds','amount_kopeks','UPDATE') and has_column_privilege('citygo_api','npd_receipt_tasks','revision','UPDATE') and not has_column_privilege('citygo_api','npd_receipt_tasks','buyer_email','UPDATE') and has_column_privilege('citygo_api','payment_notification_inbox','status','UPDATE') and not has_column_privilege('citygo_api','payment_notification_inbox','object_id','UPDATE') and not has_table_privilege('citygo_api','citygo_migrations','UPDATE')",
     ),
     "t",
   );
@@ -438,6 +478,6 @@ export async function releaseUpgrade12Smoke({
   assert.equal(psql("select count(*) from ai_model_attempts"), "0");
   assert.deepEqual(journal(), expectedJournal);
   console.log(
-    "Exact synthetic 12→18 upgrade passed: six production migrations + ACLs, late-grants transactional rollback, preserved 12-era data, conservative source backfill, restricted runtime roles; no deploy or provider calls",
+    "Exact synthetic 12→21 rehearsal passed: nine current migrations + ACLs, late-grants transactional rollback, preserved 12-era data, conservative source backfill, restricted runtime roles; no production authorization, deploy or provider calls",
   );
 }
