@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import { randomUUID } from "node:crypto";
-import { connectDatabase, migrate, Repository } from "@citygo/db";
+import {
+  connectDatabase,
+  migrate,
+  Repository,
+  type Database,
+} from "@citygo/db";
 import { testProfile, TestProvider } from "@citygo/testkit";
 import {
   aiProviderIds,
@@ -510,177 +515,231 @@ async function fixture(
   seedBudget = true,
 ) {
   const base = process.env.TEST_DATABASE_URL;
-  const schema = "test_" + randomUUID().replaceAll("-", "");
-  const admin = base ? await connectDatabase(base) : null;
-  let url = "pglite://:memory:";
-  if (admin && base) {
-    await admin.query('create schema "' + schema + '"');
-    const scoped = new URL(base);
-    scoped.searchParams.set("options", "-c search_path=" + schema);
-    url = scoped.toString();
+  const database = "api_test_" + randomUUID().replaceAll("-", "");
+  assert.match(database, /^api_test_[a-f0-9]{32}$/);
+  const scoped = base ? new URL(base) : null;
+  if (scoped) {
+    assert.ok(["postgres:", "postgresql:"].includes(scoped.protocol));
+    assert.ok(["127.0.0.1", "localhost", "[::1]"].includes(scoped.hostname));
+    assert.ok(["5432", "55438"].includes(scoped.port || "5432"));
+    assert.ok(["/citygo_test", "/citygo_synthetic"].includes(scoped.pathname));
+    assert.equal(scoped.search, "");
+    assert.equal(scoped.hash, "");
   }
-  const db = await connectDatabase(url);
-  await migrate(db);
-  await migrate(db);
-  const instance =
-    provider === true ? new TestProvider() : provider || undefined;
-  const config = readConfig({ NODE_ENV: "test", ...env });
-  const drain = new ApiDrain();
-  if (seedBudget)
-    await seedTestBudget(db, config, {
-      ...providers,
-      ...(instance ? { [instance.name]: instance } : {}),
-    });
-  const app = await buildApp({
-    db,
-    provider: instance,
-    providers,
-    testing: true,
-    config,
-    drain,
-  });
-  async function close() {
-    await app.close();
-    await db.close();
-    if (admin) {
-      await admin.query('drop schema "' + schema + '" cascade');
-      await admin.close();
+  const resources: {
+    admin?: Database;
+    db?: Database;
+    app?: Awaited<ReturnType<typeof buildApp>>;
+  } = {};
+  let created = false,
+    closing: Promise<void> | undefined;
+  const close = () =>
+    (closing ??= (async () => {
+      const failures: unknown[] = [];
+      for (const action of [
+        async () => resources.app?.close(),
+        async () => resources.db?.close(),
+        async () => {
+          if (created)
+            await resources.admin!.query(`drop database "${database}"`);
+        },
+        async () => resources.admin?.close(),
+      ]) {
+        try {
+          await action();
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+      if (failures.length)
+        throw new AggregateError(
+          failures,
+          "Synthetic API fixture cleanup failed",
+        );
+    })());
+  try {
+    let url = "pglite://:memory:";
+    if (scoped && base) {
+      resources.admin = await connectDatabase(base);
+      await resources.admin.query(
+        `create database "${database}" template template0`,
+      );
+      created = true;
+      scoped.pathname = "/" + database;
+      url = scoped.toString();
     }
-  }
-  const origin = "http://localhost:3000";
-  const call = async (
-    method: "GET" | "POST",
-    path: string,
-    token = "",
-    body?: object,
-  ) => {
-    // Model the updated client's dashboard snapshot, never auto-grant consent.
-    if (path.endsWith("/messages") && token && body && !("policyId" in body)) {
+    const db = await connectDatabase(url);
+    resources.db = db;
+    await migrate(db);
+    await migrate(db);
+    const instance =
+      provider === true ? new TestProvider() : provider || undefined;
+    const config = readConfig({ NODE_ENV: "test", ...env });
+    const drain = new ApiDrain();
+    if (seedBudget)
+      await seedTestBudget(db, config, {
+        ...providers,
+        ...(instance ? { [instance.name]: instance } : {}),
+      });
+    const app = await buildApp({
+      db,
+      provider: instance,
+      providers,
+      testing: true,
+      config,
+      drain,
+    });
+    resources.app = app;
+    const origin = "http://localhost:3000";
+    const call = async (
+      method: "GET" | "POST",
+      path: string,
+      token = "",
+      body?: object,
+    ) => {
+      // Model the updated client's dashboard snapshot, never auto-grant consent.
+      if (
+        path.endsWith("/messages") &&
+        token &&
+        body &&
+        !("policyId" in body)
+      ) {
+        const board = (
+          await app.inject({
+            method: "GET",
+            url: "/v1/dashboard",
+            headers: { cookie: "citygo=" + token },
+          })
+        ).json<Dashboard>();
+        body = { ...body, policyId: board.aiAccess?.policy?.id };
+      }
+      return app.inject({
+        method,
+        url: path,
+        headers: { origin, ...(token ? { cookie: "citygo=" + token } : {}) },
+        ...(body ? { payload: body } : {}),
+      });
+    };
+    async function consent(token: string, target = app) {
+      const headers = { origin, cookie: "citygo=" + token };
       const board = (
-        await app.inject({
-          method: "GET",
-          url: "/v1/dashboard",
-          headers: { cookie: "citygo=" + token },
-        })
+        await target.inject({ method: "GET", url: "/v1/dashboard", headers })
       ).json<Dashboard>();
-      body = { ...body, policyId: board.aiAccess?.policy?.id };
+      const policyId = board.aiAccess.policy!.id;
+      const result = await target.inject({
+        method: "POST",
+        url: "/v1/ai/consent",
+        headers,
+        payload: { action: "granted", policyId },
+      });
+      assert.equal(result.statusCode, 200, result.body);
+      return policyId;
     }
-    return app.inject({
-      method,
-      url: path,
-      headers: { origin, ...(token ? { cookie: "citygo=" + token } : {}) },
-      ...(body ? { payload: body } : {}),
-    });
-  };
-  async function consent(token: string, target = app) {
-    const headers = { origin, cookie: "citygo=" + token };
-    const board = (
-      await target.inject({ method: "GET", url: "/v1/dashboard", headers })
-    ).json<Dashboard>();
-    const policyId = board.aiAccess.policy!.id;
-    const result = await target.inject({
-      method: "POST",
-      url: "/v1/ai/consent",
-      headers,
-      payload: { action: "granted", policyId },
-    });
-    assert.equal(result.statusCode, 200, result.body);
-    return policyId;
+    async function activate(
+      token: string,
+      target = app,
+      selected?: AiProviderId | "disabled",
+    ) {
+      const headers = { origin, cookie: "citygo=" + token };
+      const response = await target.inject({
+        method: "GET",
+        url: "/v1/admin/ai",
+        headers,
+      });
+      assert.equal(response.statusCode, 200, response.body);
+      const status = response.json<AiControlStatus>();
+      const option = status.options.find(
+        (entry) => entry.policy && (!selected || entry.provider === selected),
+      );
+      if (selected !== "disabled") assert.ok(option?.policy);
+      const changed = await target.inject({
+        method: "POST",
+        url: "/v1/admin/ai",
+        headers,
+        payload: {
+          provider: selected === "disabled" ? "disabled" : option!.provider,
+          policyId: selected === "disabled" ? null : option!.policy!.id,
+          expectedRevision: status.current.revision,
+        },
+      });
+      assert.equal(changed.statusCode, 200, changed.body);
+      return changed.json<AiControlStatus["current"]>();
+    }
+    async function register() {
+      const email = randomUUID() + "@example.test";
+      const result = await call("POST", "/v1/auth/register", "", {
+        email,
+        password: "CityGo-test-password",
+      });
+      assert.equal(result.statusCode, 200, result.body);
+      assert.match(String(result.headers["set-cookie"]), /HttpOnly/);
+      // Explicit test-fixture setup, never a production allowlist authority.
+      const userId = result.json<{ user: { id: string } }>().user.id;
+      if (
+        config.ADMIN_USER_IDS.split(",")
+          .map((value) => value.trim())
+          .includes(userId)
+      )
+        await db.query("update users set role='super_admin' where id=$1", [
+          userId,
+        ]);
+      return { email, token: result.cookies[0]!.value };
+    }
+    async function approveBudget(
+      token: string,
+      target = app,
+      changes: Partial<AiBudgetInput> = {},
+    ) {
+      const headers = { origin, cookie: "citygo=" + token };
+      const response = await target.inject({
+        method: "GET",
+        url: "/v1/admin/ai",
+        headers,
+      });
+      assert.equal(response.statusCode, 200, response.body);
+      const budget = response.json<AiControlStatus>().budget!;
+      const result = await target.inject({
+        method: "POST",
+        url: "/v1/admin/ai/budget",
+        headers,
+        payload: {
+          expectedRevision: budget.settings.revision,
+          enabled: true,
+          currency: "RUB",
+          dailyLimitMicros: 1000000,
+          totalLimitMicros: 1000000,
+          rules: budget.availableExecutions.map((item) => ({
+            key: item.key,
+            attemptCeilingMicros: 1,
+          })),
+          ...changes,
+        },
+      });
+      assert.equal(result.statusCode, 200, result.body);
+      return result.json();
+    }
+    return {
+      app,
+      db,
+      drain,
+      call,
+      consent,
+      activate,
+      register,
+      close,
+      approveBudget,
+    };
+  } catch (error) {
+    try {
+      await close();
+    } catch (cleanup) {
+      throw new AggregateError(
+        [error, cleanup],
+        "Synthetic API fixture setup and cleanup failed",
+      );
+    }
+    throw error;
   }
-  async function activate(
-    token: string,
-    target = app,
-    selected?: AiProviderId | "disabled",
-  ) {
-    const headers = { origin, cookie: "citygo=" + token };
-    const response = await target.inject({
-      method: "GET",
-      url: "/v1/admin/ai",
-      headers,
-    });
-    assert.equal(response.statusCode, 200, response.body);
-    const status = response.json<AiControlStatus>();
-    const option = status.options.find(
-      (entry) => entry.policy && (!selected || entry.provider === selected),
-    );
-    if (selected !== "disabled") assert.ok(option?.policy);
-    const changed = await target.inject({
-      method: "POST",
-      url: "/v1/admin/ai",
-      headers,
-      payload: {
-        provider: selected === "disabled" ? "disabled" : option!.provider,
-        policyId: selected === "disabled" ? null : option!.policy!.id,
-        expectedRevision: status.current.revision,
-      },
-    });
-    assert.equal(changed.statusCode, 200, changed.body);
-    return changed.json<AiControlStatus["current"]>();
-  }
-  async function register() {
-    const email = randomUUID() + "@example.test";
-    const result = await call("POST", "/v1/auth/register", "", {
-      email,
-      password: "CityGo-test-password",
-    });
-    assert.equal(result.statusCode, 200, result.body);
-    assert.match(String(result.headers["set-cookie"]), /HttpOnly/);
-    // Explicit test-fixture setup, never a production allowlist authority.
-    const userId = result.json<{ user: { id: string } }>().user.id;
-    if (
-      config.ADMIN_USER_IDS.split(",")
-        .map((value) => value.trim())
-        .includes(userId)
-    )
-      await db.query("update users set role='super_admin' where id=$1", [
-        userId,
-      ]);
-    return { email, token: result.cookies[0]!.value };
-  }
-  async function approveBudget(
-    token: string,
-    target = app,
-    changes: Partial<AiBudgetInput> = {},
-  ) {
-    const headers = { origin, cookie: "citygo=" + token };
-    const response = await target.inject({
-      method: "GET",
-      url: "/v1/admin/ai",
-      headers,
-    });
-    assert.equal(response.statusCode, 200, response.body);
-    const budget = response.json<AiControlStatus>().budget!;
-    const result = await target.inject({
-      method: "POST",
-      url: "/v1/admin/ai/budget",
-      headers,
-      payload: {
-        expectedRevision: budget.settings.revision,
-        enabled: true,
-        currency: "RUB",
-        dailyLimitMicros: 1000000,
-        totalLimitMicros: 1000000,
-        rules: budget.availableExecutions.map((item) => ({
-          key: item.key,
-          attemptCeilingMicros: 1,
-        })),
-        ...changes,
-      },
-    });
-    assert.equal(result.statusCode, 200, result.body);
-    return result.json();
-  }
-  return {
-    app,
-    db,
-    drain,
-    call,
-    consent,
-    activate,
-    register,
-    close,
-    approveBudget,
-  };
 }
 
 async function chatUser(f: Awaited<ReturnType<typeof fixture>>, grant = true) {
