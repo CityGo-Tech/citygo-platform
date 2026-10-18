@@ -121,12 +121,26 @@ export const serverConfigSchema = z.object({
   AI_CREDIT_MODE: z
     .enum(["disabled", "routerai_at_cost", "routerai_citygo_10x"])
     .default("disabled"),
+  YOOKASSA_MODE: z.enum(["disabled", "test"]).default("disabled"),
+  YOOKASSA_SHOP_ID: optionalSetting,
+  YOOKASSA_SECRET_KEY: optionalSetting,
   // Development rehearsal only. This flag is not a production approval.
   R1_HOUSING_API_MODE: z.enum(["disabled", "synthetic"]).default("disabled"),
   TRUSTED_PROXY_CIDRS: trustedProxySchema,
 });
 export function readConfig(env: NodeJS.ProcessEnv = process.env) {
   const config = serverConfigSchema.parse(env);
+  if (
+    config.YOOKASSA_MODE === "test" &&
+    (config.NODE_ENV === "production" ||
+      config.LLM_PROVIDER !== "disabled" ||
+      config.AI_CREDIT_MODE !== "routerai_citygo_10x" ||
+      !/^[1-9][0-9]{0,19}$/.test(config.YOOKASSA_SHOP_ID ?? "") ||
+      !/^test_[A-Za-z0-9_=-]{8,8192}$/.test(config.YOOKASSA_SECRET_KEY ?? ""))
+  )
+    throw new Error(
+      "YooKassa test checkout requires an isolated non-production environment, disabled AI, CityGo 10x and test credentials",
+    );
   if (
     config.NODE_ENV === "production" &&
     config.R1_HOUSING_API_MODE !== "disabled"

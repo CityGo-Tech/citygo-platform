@@ -9,6 +9,7 @@ import {
 } from "@citygo/contracts";
 import type { Database, Sql } from "./index.js";
 import { DomainError } from "./errors.js";
+import { lockPaymentMode } from "./payment-isolation.js";
 
 const amountSchema = z.number().int().min(0).max(CITYGO_MAX_AMOUNT_MICROS);
 const operationSchema = z.uuid();
@@ -30,7 +31,8 @@ type Entry = {
 };
 
 // Trusted server ledger primitive. Not a payment endpoint or provider billing API.
-// Every operation locks users -> credit account. No network while locks are held.
+// Isolation-aware holds/top-ups lock security -> users -> credit account; other
+// resolutions keep users -> credit account. No network while locks are held.
 export class AiCreditLedger {
   constructor(
     private db: Database,
@@ -165,6 +167,7 @@ export class AiCreditLedger {
     const credited = citygoTopUpMicrosFromPaidKopeks(input.paidKopeks);
     try {
       await this.db.transaction(async (tx) => {
+        await lockPaymentMode(tx, input.test ? "test" : "real");
         await this.lock(tx, userId);
         const priorOperation = await this.entry(tx, operationId);
         const priorPayment = (
@@ -257,6 +260,7 @@ export class AiCreditLedger {
     operationSchema.parse(operationId);
     amountSchema.positive().parse(amountMicros);
     const work = async (tx: Sql) => {
+      await lockPaymentMode(tx, "real");
       await this.lock(tx, userId);
       const previous = await this.entry(tx, operationId);
       if (previous) {

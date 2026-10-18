@@ -6,17 +6,20 @@ import {
   type AiConsentInput,
 } from "@citygo/contracts";
 import { Button, Card } from "@citygo/ui-web";
+import { TestTopupPanel, type TopupActions } from "./test-topup";
 
 export function AiAccessPanel({
   access,
   busy,
   onConsent,
   userId,
+  topups,
 }: {
   access: AiAccess;
   busy: boolean;
   onConsent: (input: AiConsentInput) => void;
   userId?: string;
+  topups?: TopupActions;
 }) {
   const [checked, setChecked] = useState(false);
   const policy = access.policy;
@@ -60,9 +63,19 @@ export function AiAccessPanel({
               : access.credit.chargingStatus === "routerai_at_cost"
                 ? "Ответы RouterAI — по подтверждённой стоимости без наценки. Перед запросом сумма резервируется; при неизвестной стоимости резерв остаётся на сверке. Доли микрорубля округляются вниз."
                 : "Автоматическое списание за ответы пока не подключено."}{" "}
-            Пополнение пока недоступно. Бонус не включает ИИ и не заменяет общий
-            бюджет сервиса.
+            {access.credit.topUpAvailable === true
+              ? "Доступна только тестовая проверка пополнения ниже."
+              : "Пополнение пока недоступно."}{" "}
+            Бонус не включает ИИ и не заменяет общий бюджет сервиса.
           </p>
+          {access.credit.topUpAvailable === true && userId && topups && (
+            <TestTopupPanel
+              key={userId}
+              userId={userId}
+              actions={topups}
+              disabled={busy}
+            />
+          )}
           {!!access.credit.pending?.length && (
             <div role="status">
               <p>Резервы на сверке. При обращении к владельцу укажите ID:</p>

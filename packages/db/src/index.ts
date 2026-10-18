@@ -31,6 +31,14 @@ export {
   type FreshAccountResetReceipt,
 } from "./fresh-account-reset.js";
 export {
+  PaymentTopupOrders,
+  type PaymentTopupOrder,
+} from "./payment-topup-orders.js";
+export {
+  assertRealAiDatabaseSafety,
+  assertTestPaymentsDatabaseSafety,
+} from "./payment-isolation.js";
+export {
   HousingAnswers,
   type HousingBriefSnapshot,
   type HousingBriefSummary,

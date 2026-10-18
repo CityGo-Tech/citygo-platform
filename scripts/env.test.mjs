@@ -24,6 +24,9 @@ const canaries = {
   ROUTERAI_DATA_NOTICE: "Synthetic public operator notice",
   ROUTERAI_PRODUCTION_POLICY_ID: "a".repeat(64),
   AI_CREDIT_MODE: "routerai_at_cost",
+  YOOKASSA_MODE: "test",
+  YOOKASSA_SHOP_ID: "12345",
+  YOOKASSA_SECRET_KEY: "test_synthetic_canary",
   R1_HOUSING_API_MODE: "synthetic",
   GIGACHAT_CREDENTIALS: "synthetic-gigachat",
   GIGACHAT_ACCESS_TOKEN: "synthetic-token",
@@ -71,6 +74,9 @@ test("API gets only known API settings; worker/migrator get no LLM or API settin
   assert.equal(api.ROUTERAI_API_KEY, canaries.ROUTERAI_API_KEY);
   assert.equal(api.ROUTERAI_DATA_NOTICE, canaries.ROUTERAI_DATA_NOTICE);
   assert.equal(api.AI_CREDIT_MODE, canaries.AI_CREDIT_MODE);
+  assert.equal(api.YOOKASSA_MODE, canaries.YOOKASSA_MODE);
+  assert.equal(api.YOOKASSA_SHOP_ID, canaries.YOOKASSA_SHOP_ID);
+  assert.equal(api.YOOKASSA_SECRET_KEY, canaries.YOOKASSA_SECRET_KEY);
   assert.equal(api.R1_HOUSING_API_MODE, "synthetic");
   assert.equal(
     api.ROUTERAI_PRODUCTION_POLICY_ID,

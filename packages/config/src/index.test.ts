@@ -9,6 +9,37 @@ const production = {
   TRUSTED_PROXY_CIDRS: "10.0.0.8/32, ::1/128",
 };
 
+test("YooKassa defaults disabled; test checkout cannot coexist with real AI or production", () => {
+  assert.equal(readConfig({}).YOOKASSA_MODE, "disabled");
+  const isolated = {
+    NODE_ENV: "test",
+    LLM_PROVIDER: "disabled",
+    AI_CREDIT_MODE: "routerai_citygo_10x",
+    YOOKASSA_MODE: "test",
+    YOOKASSA_SHOP_ID: "12345",
+    YOOKASSA_SECRET_KEY: "test_synthetic_nonworking",
+  };
+  assert.equal(readConfig(isolated).YOOKASSA_MODE, "test");
+  for (const patch of [
+    production,
+    { LLM_PROVIDER: "routerai" },
+    { LLM_PROVIDER: undefined },
+    { AI_CREDIT_MODE: "disabled" },
+    { YOOKASSA_SHOP_ID: undefined },
+    { YOOKASSA_SHOP_ID: "0" },
+    { YOOKASSA_SECRET_KEY: "live_not_a_real_key" },
+    { YOOKASSA_SECRET_KEY: undefined },
+  ]) {
+    assert.throws(
+      () => readConfig({ ...isolated, ...patch }),
+      /isolated non-production/,
+    );
+  }
+  for (const mode of ["live", "true", "enabled", ""]) {
+    assert.throws(() => readConfig({ YOOKASSA_MODE: mode }));
+  }
+});
+
 test("housing API defaults closed; synthetic opt-in can never approve production", () => {
   assert.equal(readConfig({}).R1_HOUSING_API_MODE, "disabled");
   assert.equal(

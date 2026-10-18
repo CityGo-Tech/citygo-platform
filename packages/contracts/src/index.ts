@@ -5,6 +5,7 @@ export * from "./ai-access.js";
 export * from "./ai-budget.js";
 export * from "./ai-credit.js";
 export * from "./citygo-tariff.js";
+export * from "./payments.js";
 export * from "./responses.js";
 export * from "./protocol.js";
 export * from "./r1.js";

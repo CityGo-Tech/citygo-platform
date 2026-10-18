@@ -31,6 +31,7 @@ const tables = [
   "generated_artifacts",
   "knowledge_sources",
   "messages",
+  "payment_topup_orders",
   "questionnaire_answers",
   "quests",
   "r1_housing_brief_revisions",
@@ -71,6 +72,7 @@ const erased = [
   "generated_artifacts",
   "knowledge_sources",
   "messages",
+  "payment_topup_orders",
   "questionnaire_answers",
   "r1_housing_brief_revisions",
   "r1_housing_briefs",
@@ -378,6 +380,12 @@ export class FreshAccountReset {
       await tx.exec(
         "update ai_budget set enabled=false,total_reserved_micros=0,user_daily_limit_micros=null,revision=revision+1 where id=1",
       );
+      // The sticky test/live boundary can only be cleared while every account,
+      // attempt and payment has been erased and the operator budget is disabled.
+      // The DB trigger verifies those facts; runtime cannot clear the marker.
+      await tx.exec(
+        "update account_security_state set test_payments_seen=false,real_ai_admitted=false where id=1",
+      );
       const authSubject = randomUUID();
       const admin = (
         await tx.query<{ id: string }>(
@@ -480,7 +488,9 @@ export class FreshAccountReset {
         audit?.actor_user_id !== null ||
         canonical(audit?.payload) !== canonical(auditPayload) ||
         finalState.length !== 1 ||
-        JSON.parse(finalState[0]!).bootstrap_completed !== true
+        JSON.parse(finalState[0]!).bootstrap_completed !== true ||
+        JSON.parse(finalState[0]!).test_payments_seen !== false ||
+        JSON.parse(finalState[0]!).real_ai_admitted !== false
       )
         refuse(
           "Первичный аккаунт или квитанция не прошли проверку; транзакция отменена",

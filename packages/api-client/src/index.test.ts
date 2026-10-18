@@ -115,3 +115,113 @@ test("SSE connection closing without done is a visible error", async () => {
     globalThis.fetch = original;
   }
 });
+
+const paymentOrder = {
+  orderId: "4a7ecb31-0895-4b81-965b-69f47c6ce9e7",
+  amountKopeks: 10000,
+  creditMicros: 100000000,
+  currency: "RUB",
+  test: true,
+  status: "pending",
+  credited: false,
+  confirmationUrl: "https://checkout.example.test/pay",
+  createdAt: "2026-10-18T10:00:00.000Z",
+  updatedAt: "2026-10-18T10:00:00.000Z",
+} as const;
+
+test("test checkout client retains caller's idempotency key and requires explicit reconciliation", async () => {
+  const requests: {
+    url: string;
+    method: string;
+    body: unknown;
+    credentials: unknown;
+    token: unknown;
+  }[] = [];
+  const client = createClient("/api", {
+    token: () => "synthetic-session",
+    fetch: async (url, init) => {
+      requests.push({
+        url: String(url),
+        method: init?.method ?? "GET",
+        body:
+          init?.body === undefined ? undefined : JSON.parse(String(init.body)),
+        credentials: init?.credentials,
+        token: (init?.headers as Record<string, string>).Authorization,
+      });
+      return Response.json(paymentOrder);
+    },
+  });
+  const input = {
+    requestId: "356c6b57-eb44-43c6-af7c-7e392a315aeb",
+    amountKopeks: 10000,
+  };
+  await client.createTopup(input);
+  await client.createTopup(input);
+  await client.topupOrder(paymentOrder.orderId);
+  await client.reconcileTopup(paymentOrder.orderId);
+  assert.deepEqual(
+    requests.map(({ url, method, body }) => ({ url, method, body })),
+    [
+      { url: "/api/v1/payments/topups", method: "POST", body: input },
+      { url: "/api/v1/payments/topups", method: "POST", body: input },
+      {
+        url: `/api/v1/payments/topups/${paymentOrder.orderId}`,
+        method: "GET",
+        body: undefined,
+      },
+      {
+        url: `/api/v1/payments/topups/${paymentOrder.orderId}/reconcile`,
+        method: "POST",
+        body: {},
+      },
+    ],
+  );
+  assert.ok(
+    requests.every(
+      (request) =>
+        request.credentials === "include" &&
+        request.token === "Bearer synthetic-session",
+    ),
+  );
+});
+
+test("test checkout client rejects unsafe payment links, invalid sums and real-payment DTOs", async () => {
+  for (const patch of [
+    { confirmationUrl: "http://checkout.example.test" },
+    { creditMicros: 1000000000 },
+    { test: false },
+    { credited: true },
+  ]) {
+    const client = createClient("/api", {
+      fetch: async () => Response.json({ ...paymentOrder, ...patch }),
+    });
+    await assert.rejects(
+      client.topupOrder(paymentOrder.orderId),
+      /не соответствует/,
+    );
+  }
+  let calls = 0;
+  const client = createClient("/api", {
+    fetch: async () => {
+      calls++;
+      return Response.json(paymentOrder);
+    },
+  });
+  assert.throws(() =>
+    client.createTopup({ requestId: paymentOrder.orderId, amountKopeks: 99 }),
+  );
+  assert.equal(calls, 0);
+});
+
+test("test checkout client rejects another order or another amount returned by the server", async () => {
+  const client = createClient("/api", {
+    fetch: async () => Response.json(paymentOrder),
+  });
+  const otherId = "356c6b57-eb44-43c6-af7c-7e392a315aeb";
+  await assert.rejects(client.topupOrder(otherId), /запрошенному платежу/);
+  await assert.rejects(client.reconcileTopup(otherId), /запрошенному платежу/);
+  await assert.rejects(
+    client.createTopup({ requestId: otherId, amountKopeks: 100 }),
+    /запрошенному платежу/,
+  );
+});

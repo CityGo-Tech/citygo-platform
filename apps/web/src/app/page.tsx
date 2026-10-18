@@ -233,6 +233,27 @@ export default function Home() {
     abort.current = null;
   }
   const Experience = board?.profile ? Journey : ConversationHome;
+  const topups = {
+    createTopup: async (input: Parameters<typeof api.createTopup>[0]) => {
+      const ticket = session.capture();
+      const order = await api.createTopup(input);
+      ticket.check();
+      return order;
+    },
+    topupOrder: async (orderId: string) => {
+      const ticket = session.capture();
+      const order = await api.topupOrder(orderId);
+      ticket.check();
+      return order;
+    },
+    reconcileTopup: async (orderId: string) => {
+      const ticket = session.capture();
+      const order = await api.reconcileTopup(orderId);
+      ticket.check();
+      return order;
+    },
+    onCredited: () => refresh(session.capture()),
+  };
   return (
     <div
       className={
@@ -428,6 +449,7 @@ export default function Home() {
             onChat={chat}
             onStop={() => abort.current?.abort()}
             onPassword={() => setPasswordOpen(true)}
+            topups={topups}
             onBegin={() =>
               void act(async (ticket) => {
                 await api.startConversation();

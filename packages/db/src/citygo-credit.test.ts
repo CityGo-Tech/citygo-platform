@@ -26,7 +26,7 @@ const proof = (paymentId = randomUUID(), kopeks = 10_000) => ({
   providerPaymentId: paymentId,
   paidKopeks: kopeks,
   merchantId: "synthetic-shop",
-  test: true,
+  test: false,
   verifiedAt: "2026-10-18T00:00:00.000Z",
   verification: "server_get_succeeded" as const,
   currency: "RUB" as const,
@@ -207,7 +207,7 @@ test("top-up binds global payment, operation, owner, amount, merchant and mode",
   for (const patch of [
     { paidKopeks: 9999 },
     { merchantId: "other-shop" },
-    { test: false },
+    { test: true },
   ])
     await assert.rejects(
       f.ledger.topUpConfirmed(f.user, randomUUID(), { ...payment, ...patch }),

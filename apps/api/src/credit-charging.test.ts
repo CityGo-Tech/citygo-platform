@@ -247,13 +247,14 @@ test("CityGo 10x mode credits payment 1:1, debits the exact raw price and never 
   assert.equal((await f.balance()).bonusGranted, false);
   assert.match((await f.send()).body, /AI_CREDIT_EXHAUSTED/);
   assert.equal(f.state.posts, 0);
-  // The trusted payment boundary is synthetic here. No real payment or gift is
-  // invented on the server; the future YooKassa adapter must perform its GET.
+  // Synthetic proof of a live-mode payment: both this fixture and RouterAI HTTP
+  // below are mocked, with no payment/AI network calls or actual money. test:false
+  // matters: a test-shop receipt must quarantine this DB from all model spending.
   await new AiCreditLedger(f.db).topUpConfirmed(f.user.id, randomUUID(), {
     providerPaymentId: "synthetic-payment-" + randomUUID(),
     paidKopeks: 20000,
     merchantId: "synthetic-shop",
-    test: true,
+    test: false,
     verifiedAt: new Date().toISOString(),
     verification: "server_get_succeeded",
     currency: "RUB",

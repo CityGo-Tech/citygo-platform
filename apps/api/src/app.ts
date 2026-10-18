@@ -38,6 +38,8 @@ import {
   DomainError,
   AiCreditLedger,
   AiCreditCharges,
+  assertRealAiDatabaseSafety,
+  assertTestPaymentsDatabaseSafety,
   type Database,
   HousingStoredDataError,
   verifyHousingReadiness,
@@ -53,6 +55,11 @@ import { createAiExecution } from "./ai-execution.js";
 import { ApiDrain, registerDrain } from "./shutdown.js";
 import { registerSyntheticHousingApi } from "./housing.js";
 import {
+  prepareTestPayments,
+  registerPaymentTopups,
+  type TestPaymentClient,
+} from "./payments.js";
+import {
   registerR1SyntheticPermissionHttp,
   type R1SyntheticPermissionHttpOptions,
 } from "./r1-permission-http.js";
@@ -66,9 +73,22 @@ export async function buildApp(options: {
   drain?: ApiDrain;
   housingLimits?: Partial<HousingStorageLimits>;
   syntheticPermissions?: R1SyntheticPermissionHttpOptions;
+  paymentClient?: TestPaymentClient;
 }) {
   const drain = options.drain ?? new ApiDrain();
   const config = options.config ?? readConfig();
+  const paymentClient = prepareTestPayments(config, {
+    testing: options.testing,
+    client: options.paymentClient,
+  });
+  if (
+    paymentClient &&
+    (options.provider || Object.values(options.providers ?? {}).some(Boolean))
+  )
+    throw new Error(
+      "Test checkout cannot be combined with injected AI providers",
+    );
+  if (paymentClient) await assertTestPaymentsDatabaseSafety(options.db);
   // No environment activation or server/deploy wiring. Even an injected
   // config must have BOTH test mode and the explicit test harness flag.
   if (
@@ -95,12 +115,28 @@ export async function buildApp(options: {
     config.AI_CREDIT_MODE === "disabled"
       ? "not_connected"
       : config.AI_CREDIT_MODE;
-  const repo = new Repository(options.db, creditCharging, tariff);
+  const repo = new Repository(
+    options.db,
+    creditCharging,
+    tariff,
+    !!paymentClient,
+  );
   const accounts = new AccountAccess(options.db);
-  const credit = new AiCreditLedger(options.db, chargingStatus);
+  const credit = new AiCreditLedger(
+    options.db,
+    chargingStatus,
+    !!paymentClient,
+  );
   const charges = new AiCreditCharges(options.db, tariff);
   const providers: ProviderMap = { ...options.providers };
   if (options.provider) providers[options.provider.name] = options.provider;
+  // Quarantine survives process restarts and changing YOOKASSA_MODE back to
+  // disabled. A per-admission DB guard also protects already running replicas.
+  if (
+    config.LLM_PROVIDER !== "disabled" ||
+    Object.values(providers).some(Boolean)
+  )
+    await assertRealAiDatabaseSafety(options.db);
   async function reconcileCharge(userId: string, holdId: string) {
     const charge = await charges.get(userId, holdId);
     if (charge.receipt) return credit.status(userId);
@@ -292,9 +328,9 @@ export async function buildApp(options: {
   app.get("/ready", async () => {
     try {
       const result = await options.db.query(
-        "select name from citygo_migrations where name in ('0006_ai_budget.sql','0007_ai_user_daily_budget.sql','0008_ai_credit.sql','0009_ai_credit_charges.sql','0010_quest_plan_expand.sql','0011_quest_plan_validate.sql','0013_account_access.sql','0014_citygo_credit.sql')",
+        "select name from citygo_migrations where name in ('0006_ai_budget.sql','0007_ai_user_daily_budget.sql','0008_ai_credit.sql','0009_ai_credit_charges.sql','0010_quest_plan_expand.sql','0011_quest_plan_validate.sql','0013_account_access.sql','0014_citygo_credit.sql','0015_yookassa_orders.sql')",
       );
-      if (result.rows.length !== 8) throw new Error("Pending migration");
+      if (result.rows.length !== 9) throw new Error("Pending migration");
       if (config.R1_HOUSING_API_MODE === "synthetic")
         await verifyHousingReadiness(options.db);
     } catch {
@@ -315,6 +351,12 @@ export async function buildApp(options: {
       authenticate,
       limits: options.syntheticPermissions,
     });
+  registerPaymentTopups(app, {
+    db: options.db,
+    config,
+    client: paymentClient,
+    authenticate,
+  });
   for (const action of ["register", "login"] as const) {
     app.post(
       "/v1/auth/" + action,

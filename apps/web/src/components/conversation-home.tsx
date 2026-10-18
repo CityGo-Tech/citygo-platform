@@ -258,6 +258,7 @@ export function ConversationHome(props: JourneyProps) {
                 busy={busy}
                 onConsent={props.onConsent}
                 userId={board.user.id}
+                topups={props.topups}
               />
             )}
           </div>

@@ -1277,7 +1277,7 @@ test("upgrade 0011 → current preserves populated records and is replay-safe", 
         "select count(*)::int as n from citygo_migrations",
       )
     ).rows[0]!.n,
-    14,
+    15,
   );
   const store = new HousingAnswers(db);
   assert.equal(

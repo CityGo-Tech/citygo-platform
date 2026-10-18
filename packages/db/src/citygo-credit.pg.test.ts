@@ -50,7 +50,7 @@ const payment = (providerPaymentId = randomUUID()) => ({
   providerPaymentId,
   paidKopeks: 10_000,
   merchantId: "synthetic-shop",
-  test: true,
+  test: false,
   verifiedAt: "2026-10-18T00:00:00.000Z",
   verification: "server_get_succeeded" as const,
   currency: "RUB" as const,

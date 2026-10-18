@@ -31,6 +31,7 @@ const tables = [
   "generated_artifacts",
   "knowledge_sources",
   "messages",
+  "payment_topup_orders",
   "questionnaire_answers",
   "quests",
   "r1_housing_brief_revisions",
@@ -62,6 +63,7 @@ const retainedTables = [
   "citygo_migration_lock",
   "citygo_migrations",
   "knowledge_sources",
+  "payment_topup_orders",
   "quests",
   "generated_artifacts",
 ] as const;

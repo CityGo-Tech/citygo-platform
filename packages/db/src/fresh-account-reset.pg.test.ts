@@ -81,7 +81,7 @@ async function fixture(t: TestContext) {
     [data.user],
   );
   await db.query(
-    "insert into ai_credit_topups(provider_payment_id,operation_id,user_id,paid_kopeks,credited_micros,merchant_id,test,verified_at,verification_receipt) values ('synthetic-payment',$1,$2,10000,100000000,'synthetic-merchant',true,now(),'{\"private\":\"PRIVATE-PAYMENT\"}')",
+    "insert into ai_credit_topups(provider_payment_id,operation_id,user_id,paid_kopeks,credited_micros,merchant_id,test,verified_at,verification_receipt) values ('synthetic-payment',$1,$2,10000,100000000,'synthetic-merchant',false,now(),'{\"private\":\"PRIVATE-PAYMENT\"}')",
     [operationId, data.user],
   );
   t.diagnostic(

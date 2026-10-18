@@ -24,11 +24,11 @@ export async function releaseMigrationSmoke({
     }));
   assert.equal(
     migrations.length,
-    14,
+    15,
     "Update the disposable upgrade fixture when migrations change",
   );
   const last = migrations.at(-1);
-  assert.equal(last.name, "0014_citygo_credit.sql");
+  assert.equal(last.name, "0015_yookassa_orders.sql");
   const plan = {
     version: 1,
     kind: "citygo-release-migration",
@@ -110,6 +110,14 @@ export async function releaseMigrationSmoke({
   );
   psql(
     `begin;
+     drop trigger payment_isolation_sticky on account_security_state;
+     drop trigger payment_topup_isolation on ai_credit_topups;
+     drop trigger real_ai_isolation on ai_model_attempts;
+     drop table payment_topup_orders;
+     drop function citygo_guard_payment_topup_order();
+     drop function citygo_keep_payment_isolation();
+     drop function citygo_mark_payment_isolation();
+     alter table account_security_state drop column test_payments_seen, drop column real_ai_admitted;
      drop table ai_credit_topups;
      drop index ai_credit_entry_topup_identity;
      alter table ai_credit_charges drop column tariff_snapshot, drop column real_ceiling_micros;
@@ -134,7 +142,7 @@ export async function releaseMigrationSmoke({
      alter table user_quests add constraint user_quests_user_id_quest_id_key unique(user_id,quest_id);
      alter table user_quests drop column plan_id, drop column plan_version;
      alter table relocation_plans drop constraint relocation_plans_owner_version_key;
-     delete from citygo_migrations where name in ('0010_quest_plan_expand.sql','0011_quest_plan_validate.sql','0012_housing_answer_history.sql','0013_account_access.sql','0014_citygo_credit.sql');
+     delete from citygo_migrations where name in ('0010_quest_plan_expand.sql','0011_quest_plan_validate.sql','0012_housing_answer_history.sql','0013_account_access.sql','0014_citygo_credit.sql','0015_yookassa_orders.sql');
      commit`,
   );
   // A populated OLD-schema fixture, not just empty-table DDL. Explicit user ID
@@ -215,7 +223,7 @@ export async function releaseMigrationSmoke({
   ]).trim();
   assert.match(
     migrationPath,
-    /^\/app\/node_modules\/[a-zA-Z0-9_@./+-]+\/migrations\/0014_citygo_credit\.sql$/,
+    /^\/app\/node_modules\/[a-zA-Z0-9_@./+-]+\/migrations\/0015_yookassa_orders\.sql$/,
   );
   const sqlFile = join(directory, "synthetic-failing-migration.sql");
   // Sequence increments survive rollback: prove the executor reached the SQL,
@@ -379,7 +387,7 @@ export async function releaseMigrationSmoke({
     );
     docker(["rm", ident]); // Exact disposable fixtures ONLY; runtime retains them.
   }
-  assert.equal(psql("select count(*) from citygo_migrations"), "14");
+  assert.equal(psql("select count(*) from citygo_migrations"), "15");
   assert.equal(
     psql(
       "select username is null and role='user' and not must_change_password from users where id=900009",
