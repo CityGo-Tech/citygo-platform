@@ -145,6 +145,9 @@ async function fixture(ceiling = 100 * RUB) {
   };
   const admin = await signup(),
     user = await signup();
+  // Only this disposable fixture actor receives the persisted admin role;
+  // ordinary registration and the legacy environment variable grant nothing.
+  await db.query("update users set role='admin' where id=$1", [admin.id]);
   const grant = () =>
     call("POST", "/v1/admin/ai/credit/welcome", admin.token, {
       userId: user.id,

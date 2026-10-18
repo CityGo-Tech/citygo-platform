@@ -41,7 +41,9 @@ the existing chat admission and consent rules and does not contact a real person
    model/account/upstream pricing, provider-side caps and a pilot allowance. No
    sample amount is a recommended tariff, no prices are fetched, and no live call
    is made by opening or saving the admin screen.
-3. Open `/admin` with an existing allowlisted `ADMIN_USER_IDS` account and refresh.
+3. Open `/admin` with an existing DB-role `admin` / `super_admin` account and refresh.
+   The environment allowlist no longer grants roles; see the closed operator bootstrap
+   in [conversation restart](../implementation/conversation-restart.md).
    Choose RUB or USD explicitly, a lifetime/project total and a per-UTC-day budget.
    Set a conservative per-attempt ceiling for each intended exact execution rule.
    Leave a field empty to leave that model unapproved. Check the confirmation and
@@ -236,8 +238,8 @@ provider and credit-mode restrictions.
 Hard-disabled servers prepare no adapters. No raw constructor errors, credentials,
 certificate paths, configurable endpoints or API keys appear in the control API.
 
-Log in through Web with an account listed by internal ID in server-side
-`ADMIN_USER_IDS`, visit `/admin`, and choose **Обновить сводку**. The control shows
+Log in through Web with an existing DB-role `admin` / `super_admin` account,
+visit `/admin`, and choose **Обновить сводку**. The control shows
 the saved selection, the locally matching configuration, allowed options, model,
 recipient restrictions and the last 20 changes. Select an allowed provider (or
 disable), read the model/recipient, check the explicit confirmation and apply.

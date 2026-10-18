@@ -30,7 +30,7 @@ const stateLabels: Record<Quest["state"], string> = {
   in_progress: "В работе",
   completed: "Завершено",
 };
-type JourneyProps = {
+export type JourneyProps = {
   board: Dashboard;
   busy: boolean;
   sending: boolean;
@@ -44,6 +44,8 @@ type JourneyProps = {
   onConsent: (input: AiConsentInput) => void;
   onStart: (id: string) => Promise<boolean>;
   onComplete: (id: string) => Promise<boolean>;
+  onBegin?: () => void;
+  onPassword?: () => void;
 };
 
 function Avatar({

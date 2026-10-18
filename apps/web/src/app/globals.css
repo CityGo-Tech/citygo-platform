@@ -108,6 +108,133 @@ small {
   color: var(--cg-color-muted);
   flex: 1;
 }
+.wordmark .citygo-brand-symbol,
+.wordmark .citygo-brand-wordmark {
+  display: block;
+  flex: none;
+  background-image: url("/figma/citygo-original-logo.png");
+  background-repeat: no-repeat;
+}
+.wordmark .citygo-brand-symbol {
+  width: 52px;
+  height: 36.63px;
+  background-size: 210.38% 298.66%;
+  background-position: 50.15% 39.77%;
+}
+.wordmark .citygo-brand-wordmark {
+  width: 128.65px;
+  height: 40px;
+  background-size: 281.09% 904.05%;
+  background-position: 49.94% 71.48%;
+}
+.conversation-tabs {
+  display: flex;
+  gap: var(--cg-space-compact);
+  flex-wrap: wrap;
+  margin-bottom: var(--cg-space-lg);
+}
+.conversation-workspace {
+  display: grid;
+  grid-template-columns: 200px minmax(0, 1fr) 240px;
+  align-items: start;
+  gap: var(--cg-space-lg);
+}
+.conversation-home h1 {
+  font-size: clamp(26px, 3vw, 32px);
+}
+.conversation-main,
+.conversation-topics .cg-card,
+.conversation-context .cg-card {
+  display: grid;
+  gap: var(--cg-space-md);
+  min-width: 0;
+}
+.conversation-main .cg-card {
+  min-width: 0;
+}
+.conversation-topics .cg-card {
+  padding: var(--cg-space-md);
+}
+.conversation-context .cg-card {
+  padding: var(--cg-space-comfortable);
+}
+.conversation-context img {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1;
+  object-fit: cover;
+  border-radius: var(--cg-radius-card);
+}
+.conversation-topics img {
+  object-fit: cover;
+  border-radius: var(--cg-radius-full);
+}
+.conversation-context h2 {
+  font-size: 18px;
+}
+.conversation-note,
+.conversation-message {
+  background: var(--cg-color-background);
+  border-radius: var(--cg-radius-card);
+  padding: var(--cg-space-comfortable);
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.conversation-message {
+  margin-block: var(--cg-space-md);
+}
+.conversation-message.user {
+  background: var(--cg-color-primary-soft);
+}
+.conversation-message strong {
+  font-size: 12px;
+}
+.conversation-message p {
+  color: var(--cg-color-foreground);
+  white-space: pre-wrap;
+}
+.conversation-message p:last-child {
+  margin-bottom: 0;
+}
+.conversation-helper-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--cg-space-lg);
+}
+.conversation-helper-grid > h1,
+.conversation-helper-grid > p {
+  grid-column: 1 / -1;
+}
+.password-card {
+  max-width: 560px;
+  margin: auto;
+}
+@media (max-width: 1100px) {
+  .conversation-workspace {
+    grid-template-columns: 180px minmax(0, 1fr);
+  }
+  .conversation-context {
+    display: none;
+  }
+}
+@media (max-width: 700px) {
+  .conversation-workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .conversation-topics {
+    display: none;
+  }
+  .conversation-helper-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .conversation-tabs {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .wordmark .citygo-brand-wordmark {
+    display: none;
+  }
+}
 .account {
   display: flex;
   align-items: center;

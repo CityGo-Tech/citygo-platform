@@ -24,11 +24,11 @@ export async function releaseMigrationSmoke({
     }));
   assert.equal(
     migrations.length,
-    12,
+    13,
     "Update the disposable upgrade fixture when migrations change",
   );
   const last = migrations.at(-1);
-  assert.equal(last.name, "0012_housing_answer_history.sql");
+  assert.equal(last.name, "0013_account_access.sql");
   const plan = {
     version: 1,
     kind: "citygo-release-migration",
@@ -79,6 +79,20 @@ export async function releaseMigrationSmoke({
     );
     assert.equal(
       psql(
+        "select count(*) from information_schema.tables where table_schema='public' and table_name='account_security_state'",
+      ),
+      "0",
+      "Failed release must roll back the account-security table",
+    );
+    assert.equal(
+      psql(
+        "select count(*) from information_schema.columns where table_schema='public' and table_name='users' and column_name in ('username','role','must_change_password')",
+      ),
+      "0",
+      "Failed release must roll back account-role columns too",
+    );
+    assert.equal(
+      psql(
         "select count(*) from information_schema.columns where table_schema='public' and table_name='user_quests' and column_name='plan_id'",
       ),
       "0",
@@ -96,6 +110,8 @@ export async function releaseMigrationSmoke({
   );
   psql(
     `begin;
+     drop table account_security_state;
+     alter table users drop column username, drop column role, drop column must_change_password;
      drop table r1_housing_brief_revisions, r1_housing_commands, r1_housing_briefs;
      drop function citygo_keep_housing_history();
      drop trigger user_quests_keep_identity on user_quests;
@@ -105,7 +121,7 @@ export async function releaseMigrationSmoke({
      alter table user_quests add constraint user_quests_user_id_quest_id_key unique(user_id,quest_id);
      alter table user_quests drop column plan_id, drop column plan_version;
      alter table relocation_plans drop constraint relocation_plans_owner_version_key;
-     delete from citygo_migrations where name in ('0010_quest_plan_expand.sql','0011_quest_plan_validate.sql','0012_housing_answer_history.sql');
+     delete from citygo_migrations where name in ('0010_quest_plan_expand.sql','0011_quest_plan_validate.sql','0012_housing_answer_history.sql','0013_account_access.sql');
      commit`,
   );
   // A populated OLD-schema fixture, not just empty-table DDL. Explicit user ID
@@ -186,7 +202,7 @@ export async function releaseMigrationSmoke({
   ]).trim();
   assert.match(
     migrationPath,
-    /^\/app\/node_modules\/[a-zA-Z0-9_@./+-]+\/migrations\/0012_housing_answer_history\.sql$/,
+    /^\/app\/node_modules\/[a-zA-Z0-9_@./+-]+\/migrations\/0013_account_access\.sql$/,
   );
   const sqlFile = join(directory, "synthetic-failing-migration.sql");
   // Sequence increments survive rollback: prove the executor reached the SQL,
@@ -350,7 +366,20 @@ export async function releaseMigrationSmoke({
     );
     docker(["rm", ident]); // Exact disposable fixtures ONLY; runtime retains them.
   }
-  assert.equal(psql("select count(*) from citygo_migrations"), "12");
+  assert.equal(psql("select count(*) from citygo_migrations"), "13");
+  assert.equal(
+    psql(
+      "select username is null and role='user' and not must_change_password from users where id=900009",
+    ),
+    "t",
+    "An existing account is not silently promoted or made temporary",
+  );
+  assert.equal(
+    psql("select bootstrap_completed from account_security_state where id=1"),
+    "f",
+    "Migration installs only state, never a known bootstrap account",
+  );
+  assert.equal(psql("select count(*) from users"), "1");
   for (const table of [
     "r1_housing_briefs",
     "r1_housing_commands",

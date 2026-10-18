@@ -1,5 +1,7 @@
 import {
+  accountUserResponseSchema,
   adminOverviewResponseSchema,
+  adminUsersResponseSchema,
   aiBudgetSettingsSchema,
   aiCreditResponseSchema,
   aiControlResponseSchema,
@@ -15,6 +17,7 @@ import {
   CONTRACT_VERSION_HEADER,
   supportsContractVersion,
   type ApiErrorResponse,
+  type AccountRole,
   type AiConsentInput,
   type AiRoutingInput,
   type AiBudgetInput,
@@ -170,7 +173,21 @@ export function createClient(
         { email, password },
       ),
     logout: () => request("/v1/auth/logout", okResponseSchema, {}),
+    changePassword: (currentPassword: string, password: string) =>
+      request(
+        "/v1/auth/password",
+        options.native ? nativeAuthResponseSchema : authResponseSchema,
+        { currentPassword, password },
+      ),
+    accountUsers: () => request("/v1/admin/accounts", adminUsersResponseSchema),
+    setAccountRole: (userId: string, role: AccountRole) =>
+      request("/v1/admin/accounts/role", accountUserResponseSchema, {
+        userId,
+        role,
+      }),
     dashboard: () => request("/v1/dashboard", dashboardResponseSchema),
+    startConversation: () =>
+      request("/v1/conversations/start", startResponseSchema, {}),
     aiConsent: (input: AiConsentInput) =>
       request("/v1/ai/consent", okResponseSchema, input),
     aiControl: () => request("/v1/admin/ai", aiControlResponseSchema),

@@ -3,12 +3,53 @@ import type { AiProviderId, ModelGeneration } from "./llm.js";
 import { aiPolicyIdSchema, type AiAccess } from "./ai-access.js";
 import type { ApiErrorResponse } from "./protocol.js";
 
-export const credentialsSchema = z.object({
+const accountEmailSchema = z
+  .email()
+  .max(254)
+  .transform((value) => value.trim().toLowerCase());
+export const registrationCredentialsSchema = z.object({
+  email: accountEmailSchema,
+  // Passwords are opaque: do not trim, normalize or require character classes.
+  password: z.string().min(6).max(128),
+});
+// Kept for existing registration callers; login has separate validation so that
+// a short bootstrap password can only be used to authenticate, not register.
+export const credentialsSchema = registrationCredentialsSchema;
+export const loginSchema = z.object({
   email: z
-    .email()
+    .string()
+    .trim()
+    .min(1)
     .max(254)
-    .transform((v) => v.trim().toLowerCase()),
-  password: z.string().min(12).max(128),
+    .refine(
+      (value) =>
+        z.email().safeParse(value).success ||
+        /^[a-z0-9_.-]{1,64}$/i.test(value),
+    )
+    .transform((value) => value.toLowerCase()),
+  password: z.string().min(1).max(128),
+});
+export const accountRoleSchema = z.enum(["user", "admin", "super_admin"]);
+export type AccountRole = z.infer<typeof accountRoleSchema>;
+export const accountUserSchema = z.object({
+  id: z.string().min(1).max(200).regex(/^\S+$/),
+  email: z.email().max(254),
+  // Additive for compatibility with older servers and persisted fixtures.
+  username: z.string().min(1).max(64).nullable().optional(),
+  role: accountRoleSchema.optional(),
+  mustChangePassword: z.boolean().optional(),
+});
+export type AccountUser = z.infer<typeof accountUserSchema>;
+export const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1).max(128),
+  password: z.string().min(6).max(128),
+});
+export const changeRoleSchema = z.object({
+  userId: z
+    .string()
+    .regex(/^[1-9]\d*$/)
+    .max(19),
+  role: accountRoleSchema,
 });
 // Stored profiles remain valid after the move date has passed.
 export const profileSchema = z.object({
@@ -75,7 +116,7 @@ export type Message = {
   generation?: ModelGeneration | null;
 };
 export type Dashboard = {
-  user: { id: string; email: string };
+  user: AccountUser;
   profile: Questionnaire | null;
   xp: number;
   quests: Quest[];

@@ -744,12 +744,13 @@ export class Repository {
           JSON.stringify({ agentKey: thread.agent_key, status: "complete" }),
         ],
       );
-      const profile = (
-        await tx.query<{ preferences: Questionnaire }>(
-          "select preferences from relocation_profiles where user_id=$1",
-          [userId],
-        )
-      ).rows[0]!.preferences;
+      const profile =
+        (
+          await tx.query<{ preferences: Questionnaire }>(
+            "select preferences from relocation_profiles where user_id=$1",
+            [userId],
+          )
+        ).rows[0]?.preferences ?? null;
       return {
         thread,
         lease,

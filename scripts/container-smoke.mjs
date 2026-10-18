@@ -132,7 +132,7 @@ try {
   compose(["up", "-d", "--wait", "--wait-timeout", "90", "postgres"]);
   compose(["run", "--rm", "--no-deps", "migrator"]);
   const migrations = psql("select count(*) from citygo_migrations");
-  assert.equal(migrations, "12");
+  assert.equal(migrations, "13");
   compose(["run", "--rm", "--no-deps", "migrator"]);
   assert.equal(psql("select count(*) from citygo_migrations"), migrations);
   compose([
@@ -205,18 +205,31 @@ try {
   assert.equal((await credit.json()).availableMicros, 0);
   const syntheticUserId = (await board.json()).user.id;
   assert.equal(syntheticUserId, "1");
+  const grantOptions = {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      userId: syntheticUserId,
+      confirmOneTime500Rub: true,
+    }),
+  };
+  assert.equal(
+    (await request("/api/v1/admin/ai/credit/welcome", grantOptions)).status,
+    403,
+    "A fresh account stays unprivileged despite the legacy smoke allowlist",
+  );
+  // Fixture setup ONLY in the disposable DB created above. This is not a
+  // registration capability or an environment-based production elevation.
+  psql("update users set role='admin' where id=1 and status='active'");
+  assert.equal(psql("select role from users where id=1"), "admin");
   for (let attempt = 0; attempt < 2; attempt++) {
-    const grant = await request("/api/v1/admin/ai/credit/welcome", {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${token}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        userId: syntheticUserId,
-        confirmOneTime500Rub: true,
-      }),
-    });
+    const grant = await request(
+      "/api/v1/admin/ai/credit/welcome",
+      grantOptions,
+    );
     assert.equal(grant.status, 200);
     assert.equal((await grant.json()).availableMicros, 500000000);
   }

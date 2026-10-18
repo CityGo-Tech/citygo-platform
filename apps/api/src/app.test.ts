@@ -93,6 +93,7 @@ test("production RouterAI approval still requires user consent, monetary approva
     return reply.cookies[0]!.value;
   };
   const admin = await register();
+  await f.db.query("update users set role='super_admin' where id=1");
   const user = await register();
   assert.equal((await call("GET", "/v1/admin/ai", user)).statusCode, 403);
   assert.equal(
@@ -624,6 +625,16 @@ async function fixture(
     });
     assert.equal(result.statusCode, 200, result.body);
     assert.match(String(result.headers["set-cookie"]), /HttpOnly/);
+    // Explicit test-fixture setup, never a production allowlist authority.
+    const userId = result.json<{ user: { id: string } }>().user.id;
+    if (
+      config.ADMIN_USER_IDS.split(",")
+        .map((value) => value.trim())
+        .includes(userId)
+    )
+      await db.query("update users set role='super_admin' where id=$1", [
+        userId,
+      ]);
     return { email, token: result.cookies[0]!.value };
   }
   async function approveBudget(
@@ -892,6 +903,11 @@ test("runtime response schemas accept the actual API journey and admin payloads"
   });
   authResponseSchema.parse(auth.json());
   const token = auth.cookies[0]!.value;
+  // This response-shape fixture deliberately exercises the admin payloads too;
+  // its persisted role, not the legacy environment allowlist, grants access.
+  await f.db.query("update users set role='super_admin' where id=$1", [
+    auth.json<{ user: { id: string } }>().user.id,
+  ]);
   okResponseSchema.parse(
     (await f.call("POST", "/v1/questionnaire", token, testProfile)).json(),
   );
@@ -2673,7 +2689,8 @@ test("failed requests consume personal quota across restarts and provider change
   const switched: StreamingProvider = { ...provider, name: "gigachat" };
   const f = await fixture(
     provider,
-    { LLM_USER_DAILY_REQUEST_LIMIT: "1" },
+    // The same fixture actor explicitly changes the synthetic provider below.
+    { LLM_USER_DAILY_REQUEST_LIMIT: "1", ADMIN_USER_IDS: "1" },
     { gigachat: switched },
   );
   t.after(f.close);
@@ -2838,6 +2855,7 @@ for (const migration of [
   "0009_ai_credit_charges.sql",
   "0010_quest_plan_expand.sql",
   "0011_quest_plan_validate.sql",
+  "0013_account_access.sql",
 ]) {
   test(`readiness requires ${migration}`, async (t) => {
     const f = await fixture(false);
@@ -3761,7 +3779,8 @@ for (const failure of [
 }
 
 test("changing injected providers between API instances preserves history and records each answer's source", async (t) => {
-  const f = await fixture();
+  // Persist the fixture actor's role before its explicit provider switch.
+  const f = await fixture(true, { ADMIN_USER_IDS: "1" });
   t.after(f.close);
   const user = await f.register();
   await f.consent(user.token);

@@ -9,6 +9,9 @@ import {
   completionSchema,
   questStartSchema,
   credentialsSchema,
+  loginSchema,
+  changePasswordSchema,
+  changeRoleSchema,
   questionnaireSchema,
   aiConsentSchema,
   aiRoutingInputSchema,
@@ -28,6 +31,8 @@ import {
 } from "@citygo/contracts";
 import {
   Repository,
+  AccountAccess,
+  ensureConversation,
   DomainError,
   AiCreditLedger,
   AiCreditCharges,
@@ -81,6 +86,7 @@ export async function buildApp(options: {
     );
   const creditCharging = config.AI_CREDIT_MODE === "routerai_at_cost";
   const repo = new Repository(options.db, creditCharging);
+  const accounts = new AccountAccess(options.db);
   const credit = new AiCreditLedger(
     options.db,
     creditCharging ? "routerai_at_cost" : "not_connected",
@@ -173,25 +179,31 @@ export async function buildApp(options: {
   const dummyHash = hashPassword(randomUUID());
   const bearer = (authorization?: string) =>
     authorization?.startsWith("Bearer ") ? authorization.slice(7) : undefined;
-  async function authenticate(request: {
-    headers: { authorization?: string };
-    cookies: Record<string, string | undefined>;
-  }) {
+  async function authenticate(
+    request: {
+      headers: { authorization?: string };
+      cookies: Record<string, string | undefined>;
+    },
+    allowPasswordChange = false,
+  ) {
     const token =
       bearer(request.headers.authorization) ?? request.cookies[sessionName];
     const user = token ? await repo.session(tokenHash(token)) : undefined;
     if (!user) throw new DomainError(401, "Войдите в аккаунт");
-    return user;
+    const account = await accounts.info(user.id);
+    if (!account) throw new DomainError(401, "Войдите в аккаунт");
+    if (account.mustChangePassword && !allowPasswordChange)
+      throw new DomainError(
+        403,
+        "Сначала измените временный пароль в личном кабинете",
+      );
+    return account;
   }
   async function authenticateAdmin(
     request: Parameters<typeof authenticate>[0],
   ) {
     const user = await authenticate(request);
-    if (
-      !config.ADMIN_USER_IDS.split(",")
-        .map((value) => value.trim())
-        .includes(user.id)
-    )
+    if (user.role !== "admin" && user.role !== "super_admin")
       throw new DomainError(403, "Доступ только для администратора");
     return user;
   }
@@ -273,9 +285,9 @@ export async function buildApp(options: {
   app.get("/ready", async () => {
     try {
       const result = await options.db.query(
-        "select name from citygo_migrations where name in ('0006_ai_budget.sql','0007_ai_user_daily_budget.sql','0008_ai_credit.sql','0009_ai_credit_charges.sql','0010_quest_plan_expand.sql','0011_quest_plan_validate.sql')",
+        "select name from citygo_migrations where name in ('0006_ai_budget.sql','0007_ai_user_daily_budget.sql','0008_ai_credit.sql','0009_ai_credit_charges.sql','0010_quest_plan_expand.sql','0011_quest_plan_validate.sql','0013_account_access.sql')",
       );
-      if (result.rows.length !== 6) throw new Error("Pending migration");
+      if (result.rows.length !== 7) throw new Error("Pending migration");
       if (config.R1_HOUSING_API_MODE === "synthetic")
         await verifyHousingReadiness(options.db);
     } catch {
@@ -308,34 +320,86 @@ export async function buildApp(options: {
         },
       },
       async (request, reply) => {
-        const input = credentialsSchema.parse(request.body);
+        const input = (
+          action === "register" ? credentialsSchema : loginSchema
+        ).parse(request.body);
         let id: string;
-        if (action === "register")
-          id = await repo.register(
-            input.email,
-            await hashPassword(input.password),
-          );
-        else {
-          const candidate = await repo.credentials(input.email);
+        let expectedHash: string;
+        if (action === "register") {
+          expectedHash = await hashPassword(input.password);
+          id = await repo.register(input.email, expectedHash);
+        } else {
+          const candidate = await accounts.credentials(input.email);
           const valid = await verifyPassword(
             input.password,
             candidate?.password_hash ?? (await dummyHash),
           );
           if (!candidate || !valid)
-            throw new DomainError(401, "Неверная почта или пароль");
+            throw new DomainError(401, "Неверный логин или пароль");
           id = candidate.id;
+          expectedHash = candidate.password_hash;
         }
         const token = newToken();
-        await repo.createSession(id, tokenHash(token));
+        // Recheck the verified hash under the same lock as password rotation.
+        // A pending login with an old password cannot mint a fresh session.
+        const user = await accounts.createVerifiedSession(
+          id,
+          expectedHash,
+          tokenHash(token),
+        );
         reply.setCookie(sessionName, token, cookieOptions);
         // Native mode is explicit; browser sessions remain HttpOnly.
         return {
-          user: { id, email: input.email },
+          user,
           ...(request.headers["x-citygo-client"] === "native" ? { token } : {}),
         };
       },
     );
   }
+  app.post(
+    "/v1/auth/password",
+    { config: { rateLimit: { max: 10, timeWindow: "15 minutes" } } },
+    async (request, reply) => {
+      const user = await authenticate(request, true);
+      const input = changePasswordSchema.parse(request.body);
+      const current = await accounts.credentials(user.email);
+      if (
+        !current ||
+        !(await verifyPassword(input.currentPassword, current.password_hash))
+      )
+        throw new DomainError(401, "Текущий пароль неверен");
+      if (input.password === input.currentPassword)
+        throw new DomainError(
+          400,
+          "Новый пароль должен отличаться от временного или текущего",
+        );
+      const token = newToken();
+      const account = await accounts.changePassword(
+        user.id,
+        current.password_hash,
+        await hashPassword(input.password),
+        tokenHash(token),
+      );
+      reply.setCookie(sessionName, token, cookieOptions);
+      return {
+        user: account,
+        ...(request.headers["x-citygo-client"] === "native" ? { token } : {}),
+      };
+    },
+  );
+  app.get("/v1/admin/accounts", async (request) => {
+    const actor = await authenticateAdmin(request);
+    return { users: await accounts.list(actor.id) };
+  });
+  app.post("/v1/admin/accounts/role", async (request) => {
+    const actor = await authenticateAdmin(request);
+    const input = changeRoleSchema.parse(request.body);
+    return { user: await accounts.setRole(actor.id, input.userId, input.role) };
+  });
+  app.post("/v1/conversations/start", async (request) => {
+    const user = await authenticate(request);
+    return ensureConversation(options.db, user.id);
+  });
   app.post("/v1/auth/logout", async (request, reply) => {
     const token =
       bearer(request.headers.authorization) ?? request.cookies[sessionName];
@@ -349,7 +413,7 @@ export async function buildApp(options: {
     return { ok: true };
   });
   app.get("/v1/dashboard", async (request) => {
-    const user = await authenticate(request);
+    const user = await authenticate(request, true);
     const active = await currentAi();
     return repo.dashboard(
       user,

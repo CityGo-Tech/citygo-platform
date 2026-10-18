@@ -9,10 +9,10 @@ import {
   subscribeBrowserSessionChange,
   type SessionTicket,
 } from "@citygo/api-client";
-import type { AgentKey, Dashboard, Questionnaire } from "@citygo/contracts";
+import type { AgentKey, Dashboard } from "@citygo/contracts";
 import { Button, Card, Field, Badge } from "@citygo/ui-web";
 import { Journey } from "../components/journey";
-import { QuestionnaireForm } from "../components/questionnaire";
+import { ConversationHome } from "../components/conversation-home";
 
 export default function Home() {
   const [session] = useState(createSessionGuard);
@@ -25,6 +25,7 @@ export default function Home() {
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const [mode, setMode] = useState<"register" | "login">("register");
+  const [passwordOpen, setPasswordOpen] = useState(false);
   const [text, setText] = useState("");
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
@@ -58,6 +59,7 @@ export default function Home() {
     setNotice("");
     setLoading(false);
     setLogoutUnconfirmed(false);
+    setPasswordOpen(false);
     setFormVersion((value) => value + 1);
     window.history.replaceState(
       null,
@@ -159,21 +161,29 @@ export default function Home() {
       if (ticket.active()) setBusy(false);
     }
   }
-  function questionnaire(event: FormEvent<HTMLFormElement>) {
+  function changePassword(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
     void act(async (ticket) => {
-      if (data.get("aiConsent") !== "on")
-        throw new Error("Подтвердите использование анкеты для плана");
-      await api.questionnaire({
-        originCity: String(data.get("originCity")),
-        targetCity: String(data.get("targetCity")),
-        monthlyBudget: Number(data.get("monthlyBudget")),
-        moveTargetDate: String(data.get("moveTargetDate")),
-        household: String(data.get("household")) as Questionnaire["household"],
-        aiConsent: true,
-      });
-      await refresh(ticket);
+      await api.changePassword(
+        String(data.get("currentPassword")),
+        String(data.get("password")),
+      );
+      ticket.check();
+      // Rotation invalidates every old session, including other browser tabs.
+      notifyBrowserSessionChange();
+      clearUserState();
+      const rotated = session.capture();
+      try {
+        await refresh(rotated);
+        rotated.check();
+        setNotice("Пароль изменён. Другие сессии завершены.");
+      } catch {
+        if (rotated.active())
+          setNotice(
+            "Пароль изменён. Не удалось загрузить кабинет — войдите снова с новым паролем.",
+          );
+      }
     });
   }
   async function chat(event: FormEvent) {
@@ -222,6 +232,7 @@ export default function Home() {
     setStreamAgent(null);
     abort.current = null;
   }
+  const Experience = board?.profile ? Journey : ConversationHome;
   return (
     <div
       className={
@@ -231,13 +242,16 @@ export default function Home() {
     >
       <header className="topbar">
         <Link className="wordmark" href="/" aria-label="CityGo — главная">
-          City<span>Go</span>
-          <i />
+          <span className="citygo-brand-symbol" aria-hidden="true" />
+          <span className="citygo-brand-wordmark" aria-hidden="true" />
         </Link>
         <span className="header-caption">Новый город. Ваша история.</span>
         {board ? (
           <div className="account">
             <Badge>{board.xp} XP</Badge>
+            <Button variant="ghost" onClick={() => setPasswordOpen(true)}>
+              Пароль
+            </Button>
             <Button variant="ghost" onClick={() => void logout()}>
               Выйти
             </Button>
@@ -304,10 +318,14 @@ export default function Home() {
               <p>Сохраним план, диалоги и каждый завершённый шаг.</p>
               <form key={formVersion} onSubmit={auth}>
                 <Field
-                  label="Электронная почта"
+                  label={
+                    mode === "register"
+                      ? "Электронная почта"
+                      : "Логин или электронная почта"
+                  }
                   name="email"
-                  type="email"
-                  autoComplete="email"
+                  type={mode === "register" ? "email" : "text"}
+                  autoComplete={mode === "register" ? "email" : "username"}
                   maxLength={254}
                   required
                 />
@@ -315,12 +333,16 @@ export default function Home() {
                   label="Пароль"
                   name="password"
                   type="password"
-                  minLength={12}
+                  minLength={mode === "register" ? 6 : 1}
                   maxLength={128}
                   autoComplete={
                     mode === "register" ? "new-password" : "current-password"
                   }
-                  hint="Не менее 12 символов"
+                  hint={
+                    mode === "register"
+                      ? "Не менее 6 любых символов"
+                      : undefined
+                  }
                   required
                 />
                 <Button disabled={busy || logoutUnconfirmed} type="submit">
@@ -348,14 +370,52 @@ export default function Home() {
               </small>
             </Card>
           </div>
-        ) : !board.profile ? (
-          <QuestionnaireForm
-            key={board.user.id + ":" + formVersion}
-            busy={busy}
-            onSubmit={questionnaire}
-          />
+        ) : board.user.mustChangePassword || passwordOpen ? (
+          <Card className="auth-card password-card">
+            <h1>Изменить пароль</h1>
+            <p>
+              {board.user.mustChangePassword
+                ? "Временный пароль нужно заменить до работы с AI и админкой."
+                : "После изменения все остальные сессии завершатся."}
+            </p>
+            <form
+              key={board.user.id + ":password:" + formVersion}
+              onSubmit={changePassword}
+            >
+              <Field
+                label="Текущий пароль"
+                name="currentPassword"
+                type="password"
+                autoComplete="current-password"
+                required
+                maxLength={128}
+              />
+              <Field
+                label="Новый пароль"
+                name="password"
+                type="password"
+                autoComplete="new-password"
+                minLength={6}
+                maxLength={128}
+                hint="Не менее 6 любых символов; отличается от текущего"
+                required
+              />
+              <Button type="submit" disabled={busy}>
+                Сохранить новый пароль
+              </Button>
+            </form>
+            {!board.user.mustChangePassword && (
+              <Button
+                variant="ghost"
+                disabled={busy}
+                onClick={() => setPasswordOpen(false)}
+              >
+                Назад
+              </Button>
+            )}
+          </Card>
         ) : (
-          <Journey
+          <Experience
             key={board.user.id}
             board={board}
             busy={busy}
@@ -367,6 +427,13 @@ export default function Home() {
             onText={setText}
             onChat={chat}
             onStop={() => abort.current?.abort()}
+            onPassword={() => setPasswordOpen(true)}
+            onBegin={() =>
+              void act(async (ticket) => {
+                await api.startConversation();
+                await refresh(ticket);
+              })
+            }
             onConsent={(input) =>
               void act(async (ticket) => {
                 try {
@@ -401,7 +468,7 @@ export default function Home() {
       </main>
       <footer>
         CityGo · Место для вашего нового начала{" "}
-        <span>Web MVP · Жилищный маршрут CityGo</span>
+        <span>Web · AI-помощники по переезду</span>
       </footer>
     </div>
   );

@@ -3,6 +3,7 @@ import { aiCreditResponseSchema } from "./ai-credit.js";
 import { errorMetadataSchema } from "./protocol.js";
 export { apiErrorResponseSchema } from "./protocol.js";
 import {
+  accountUserSchema,
   agentKeySchema,
   profileSchema,
   questPlanReferenceSchema,
@@ -41,7 +42,7 @@ const auditTimestamp = z
         value.replace(" ", "T").replace(/([+-]\d{2})$/, "$1:00"),
       ).success,
   );
-const user = z.object({ id, email: z.email().max(254) });
+const user = accountUserSchema;
 
 export const okResponseSchema = z.object({ ok: z.literal(true) });
 export const authResponseSchema = z.object({
@@ -51,6 +52,10 @@ export const authResponseSchema = z.object({
 export const nativeAuthResponseSchema = authResponseSchema.extend({
   token: z.string().min(1).max(4096),
 });
+export const adminUsersResponseSchema = z.object({
+  users: z.array(accountUserSchema).max(200),
+});
+export const accountUserResponseSchema = z.object({ user: accountUserSchema });
 export const startResponseSchema = z.object({ id });
 export const completionResponseSchema = z.object({ awarded: count });
 

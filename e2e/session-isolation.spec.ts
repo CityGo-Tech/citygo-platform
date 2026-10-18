@@ -29,16 +29,22 @@ function fixture(id: string, withProfile = true): Dashboard {
         data: "Вымышленные данные",
       },
     },
-    quests: [
-      {
-        id: `quest-${id}`,
-        slug: "housing-search",
-        title: "Составить план поиска жилья",
-        state: "in_progress",
-        xpReward: 60,
-      },
-    ],
-    thread: { id: `thread-${id}`, agentKey: "housing", messages: [] },
+    quests: withProfile
+      ? [
+          {
+            id: `quest-${id}`,
+            slug: "housing-search",
+            title: "Составить план поиска жилья",
+            state: "in_progress",
+            xpReward: 60,
+          },
+        ]
+      : [],
+    thread: {
+      id: `thread-${id}`,
+      agentKey: withProfile ? "housing" : "support",
+      messages: [],
+    },
   };
 }
 async function install(page: Page, withProfile = true) {
@@ -91,31 +97,46 @@ test("logout A → login B clears chat drafts and allows a fresh B draft", async
   await expect(page.getByLabel("Сообщение помощнику")).toHaveValue("Только B");
 });
 
-test("changed user ID remounts an unfinished questionnaire and clears consent", async ({
+test("changed user ID clears a no-profile dialog draft and unconfirmed AI permission", async ({
   page,
 }) => {
   const state = await install(page, false);
-  await page.route("**/api/v1/questionnaire", async (route) => {
-    state.board = fixture("B", false);
-    await route.fulfill({ json: { ok: true } });
+  const questionnaireWrites: string[] = [];
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      request.url().endsWith("/v1/questionnaire")
+    )
+      questionnaireWrites.push(request.url());
   });
-  await page.goto("/");
-  await page.getByLabel("Откуда переезжаете").fill("Город пользователя A");
-  await page.getByLabel("Город назначения").fill("Москва");
-  await page.getByLabel("Бюджет аренды в месяц, ₽").fill("65000");
-  await page.getByLabel("Планируемая дата переезда").fill("2099-01-01");
-  await page.getByRole("radio", { name: "С семьёй", exact: true }).check();
-  await page.getByRole("checkbox").check();
-  await page.getByRole("button", { name: "Построить план переезда" }).click();
-  await expect(page.getByLabel("Откуда переезжаете")).toHaveValue("");
-  await expect(page.getByLabel("Город назначения")).toHaveValue("");
-  await expect(page.getByRole("checkbox")).not.toBeChecked();
+  await page.goto("/#chat");
+  await page
+    .getByLabel("Сообщение помощнику")
+    .fill("Черновик без анкеты пользователя A");
+  state.board!.aiAccess.granted = false;
+  const revoked = page.waitForResponse("**/api/v1/dashboard");
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await revoked;
+  await expect(page.getByLabel("Сообщение помощнику")).toHaveValue(
+    "Черновик без анкеты пользователя A",
+  );
+  const consent = page.getByRole("checkbox", {
+    name: "Разрешаю передачу указанных данных этому получателю для рекомендаций.",
+  });
+  await consent.check();
+  state.board = fixture("B", false);
+  state.board.aiAccess.granted = false;
+  const changedOwner = page.waitForResponse("**/api/v1/dashboard");
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await changedOwner;
+  await expect(page.getByLabel("Сообщение помощнику")).toHaveValue("");
+  await expect(consent).not.toBeChecked();
   await expect(
-    page.getByRole("radio", { name: "Один", exact: true }),
-  ).toBeChecked();
-  await expect(
-    page.getByRole("button", { name: "Построить план переезда" }),
-  ).toBeEnabled();
+    page.getByRole("button", { name: "Подтвердить получателя AI" }),
+  ).toBeDisabled();
+  await expect(page.getByLabel("Откуда переезжаете")).toHaveCount(0);
+  await expect(page.locator(".account")).toContainText("0 XP");
+  expect(questionnaireWrites).toEqual([]);
 });
 
 test("focus refresh preserves the same owner's draft but clears it when the cookie owner changes", async ({
@@ -219,18 +240,31 @@ test("failed Web logout clears local data but does not claim server revocation",
   await expect(page.locator("body")).not.toContainText("Черновик A");
 });
 
-test("cross-tab invalidation clears an open questionnaire without transmitting identity", async ({
+test("cross-tab invalidation clears a no-profile conversation draft before another account signs in", async ({
   page,
   context,
 }) => {
   await install(page, false);
-  await page.goto("/");
-  await page.getByLabel("Откуда переезжаете").fill("Черновик A");
+  await page.goto("/#chat");
+  await page
+    .getByLabel("Сообщение помощнику")
+    .fill("Черновик диалога A без профиля");
   const second = await context.newPage();
   await install(second);
   await second.goto("/");
   await second.getByRole("button", { name: "Выйти", exact: true }).click();
-  await expect(page.getByLabel("Электронная почта")).toBeVisible();
-  await expect(page.locator("body")).not.toContainText("Черновик A");
+  await expect(
+    page.getByLabel("Электронная почта", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByLabel("Сообщение помощнику")).toHaveCount(0);
+  await expect(
+    page.getByLabel("Электронная почта", { exact: true }),
+  ).toHaveValue("");
+  await signInB(page);
+  await expect(
+    page.getByRole("heading", { name: "Давайте начнём с того, что волнует" }),
+  ).toBeVisible();
+  await expect(page.getByLabel("Сообщение помощнику")).toHaveValue("");
+  await expect(page.getByLabel("Откуда переезжаете")).toHaveCount(0);
   await second.close();
 });

@@ -61,6 +61,9 @@ async function fixture() {
   const admin = await signup(),
     user = await signup(),
     other = await signup();
+  // Persist only this test actor's application role. ADMIN_USER_IDS is no
+  // longer runtime authority, and the other signups remain ordinary users.
+  await db.query("update users set role='admin' where id=$1", [admin.id]);
   const ledger = new AiCreditLedger(db);
   return {
     db,
