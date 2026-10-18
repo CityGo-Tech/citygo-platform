@@ -24,11 +24,11 @@ export async function releaseMigrationSmoke({
     }));
   assert.equal(
     migrations.length,
-    16,
+    18,
     "Update the disposable upgrade fixture when migrations change",
   );
   const last = migrations.at(-1);
-  assert.equal(last.name, "0016_npd_receipts.sql");
+  assert.equal(last.name, "0018_payment_refunds.sql");
   const plan = {
     version: 1,
     kind: "citygo-release-migration",
@@ -70,6 +70,20 @@ export async function releaseMigrationSmoke({
   };
   const assertOld = () => {
     assert.equal(psql("select count(*) from citygo_migrations"), "9");
+    assert.equal(
+      psql(
+        "select count(*) from information_schema.tables where table_schema='public' and table_name in ('credit_source_lots','credit_hold_allocations','credit_refund_allocations','payment_refunds','payment_refund_events')",
+      ),
+      "0",
+      "Failed release must roll back source reservations and monetary refund journal",
+    );
+    assert.equal(
+      psql(
+        "select count(*) from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname in ('citygo_guard_credit_source_lot','citygo_create_credit_gift_lot','citygo_create_credit_paid_lot','citygo_guard_credit_allocation','guard_payment_refund_identity','guard_payment_refund_event_immutable')",
+      ),
+      "0",
+      "Failed release must not leave financial guard functions behind",
+    );
     assert.equal(
       psql(
         "select count(*) from information_schema.tables where table_schema='public' and table_name in ('npd_receipt_tasks','npd_receipt_commands','npd_receipt_evidence','npd_refund_observations')",
@@ -124,6 +138,17 @@ export async function releaseMigrationSmoke({
   );
   psql(
     `begin;
+     drop table payment_refund_events,payment_refunds;
+     drop function guard_payment_refund_identity();
+     drop function guard_payment_refund_event_immutable();
+     drop trigger credit_gift_lot on ai_credit_entries;
+     drop trigger credit_paid_lot on ai_credit_topups;
+     drop table credit_hold_allocations,credit_refund_allocations,credit_source_lots;
+     drop function citygo_guard_credit_source_lot();
+     drop function citygo_create_credit_gift_lot();
+     drop function citygo_create_credit_paid_lot();
+     drop function citygo_guard_credit_allocation();
+     alter table ai_credit_accounts drop column billing_review_required;
      drop trigger npd_live_topup_obligation on ai_credit_topups;
      drop table npd_receipt_commands,npd_receipt_evidence,npd_refund_observations,npd_receipt_tasks;
      drop function citygo_guard_npd_receipt_task();
@@ -161,7 +186,7 @@ export async function releaseMigrationSmoke({
      alter table user_quests add constraint user_quests_user_id_quest_id_key unique(user_id,quest_id);
      alter table user_quests drop column plan_id, drop column plan_version;
      alter table relocation_plans drop constraint relocation_plans_owner_version_key;
-     delete from citygo_migrations where name in ('0010_quest_plan_expand.sql','0011_quest_plan_validate.sql','0012_housing_answer_history.sql','0013_account_access.sql','0014_citygo_credit.sql','0015_yookassa_orders.sql','0016_npd_receipts.sql');
+     delete from citygo_migrations where name in ('0010_quest_plan_expand.sql','0011_quest_plan_validate.sql','0012_housing_answer_history.sql','0013_account_access.sql','0014_citygo_credit.sql','0015_yookassa_orders.sql','0016_npd_receipts.sql','0017_credit_source_lots.sql','0018_payment_refunds.sql');
      commit`,
   );
   // A populated OLD-schema fixture, not just empty-table DDL. Explicit user ID
@@ -186,7 +211,7 @@ export async function releaseMigrationSmoke({
     'quests',(select jsonb_agg(to_jsonb(q)-'plan_id'-'plan_version' order by q.id) from user_quests q where user_id=900009),
     'xp',(select jsonb_agg(to_jsonb(x) order by x.id) from xp_events x where user_id=900009),
     'consent',(select to_jsonb(c) from ai_consents c where user_id=900009),
-    'credit',(select to_jsonb(c) from ai_credit_accounts c where user_id=900009),
+    'credit',(select to_jsonb(c)-'billing_review_required' from ai_credit_accounts c where user_id=900009),
     'ledger',(select jsonb_agg(to_jsonb(e) order by e.id) from ai_credit_entries e where user_id=900009))::text`);
   const before = legacySnapshot();
   assertOld();
@@ -242,7 +267,7 @@ export async function releaseMigrationSmoke({
   ]).trim();
   assert.match(
     migrationPath,
-    /^\/app\/node_modules\/[a-zA-Z0-9_@./+-]+\/migrations\/0016_npd_receipts\.sql$/,
+    /^\/app\/node_modules\/[a-zA-Z0-9_@./+-]+\/migrations\/0018_payment_refunds\.sql$/,
   );
   const sqlFile = join(directory, "synthetic-failing-migration.sql");
   // Sequence increments survive rollback: prove the executor reached the SQL,
@@ -406,7 +431,34 @@ export async function releaseMigrationSmoke({
     );
     docker(["rm", ident]); // Exact disposable fixtures ONLY; runtime retains them.
   }
-  assert.equal(psql("select count(*) from citygo_migrations"), "16");
+  assert.equal(psql("select count(*) from citygo_migrations"), "18");
+  assert.equal(
+    psql(
+      "select kind||':'||gross_micros::text||':'||spent_micros::text||':'||held_micros::text from credit_source_lots where user_id=900009",
+    ),
+    "legacy_nonrefundable:500000000:0:0",
+    "Historical balance is conservatively migrated, not made refundable",
+  );
+  for (const table of [
+    "credit_source_lots",
+    "credit_hold_allocations",
+    "credit_refund_allocations",
+    "payment_refunds",
+    "payment_refund_events",
+  ]) {
+    assert.equal(
+      psql(
+        `select has_table_privilege('citygo_api','${table}','SELECT') and has_table_privilege('citygo_api','${table}','INSERT') and has_table_privilege('citygo_backup','${table}','SELECT')`,
+      ),
+      "t",
+    );
+    assert.equal(
+      psql(
+        `select has_table_privilege('citygo_api','${table}','UPDATE') or has_table_privilege('citygo_api','${table}','DELETE') or has_table_privilege('citygo_api','${table}','TRUNCATE') or has_table_privilege('citygo_worker','${table}','SELECT')`,
+      ),
+      "f",
+    );
+  }
   for (const table of [
     "npd_receipt_tasks",
     "npd_receipt_commands",
@@ -515,7 +567,7 @@ export async function releaseMigrationSmoke({
   // Remove ONLY the synthetic records created above, leaving subsequent pilot
   // tests and their first registration unchanged. No production cleanup helper.
   psql(
-    "begin; delete from ai_credit_entries where user_id=900009; delete from ai_credit_accounts where user_id=900009; delete from users where id=900009 and auth_subject='cg009-release-fixture'; commit",
+    "begin; delete from credit_hold_allocations where source_lot_id in (select id from credit_source_lots where user_id=900009); delete from credit_source_lots where user_id=900009; delete from ai_credit_entries where user_id=900009; delete from ai_credit_accounts where user_id=900009; delete from users where id=900009 and auth_subject='cg009-release-fixture'; commit",
   );
   assert.equal(psql("select count(*) from users"), "0");
 }

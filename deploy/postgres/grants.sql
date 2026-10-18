@@ -12,6 +12,17 @@ grant select on users, user_credentials, sessions, relocation_profiles,
 -- Receipt duties and manual evidence are server-owned. Worker has no access.
 grant select, insert on npd_receipt_tasks, npd_receipt_commands,
   npd_receipt_evidence, npd_refund_observations to citygo_api;
+-- Source-aware reservations and the monetary refund journal stay server-owned.
+-- Financial identity is immutable; history/events have no deletion privileges.
+grant select, insert on credit_source_lots, credit_hold_allocations,
+  credit_refund_allocations, payment_refunds, payment_refund_events to citygo_api;
+grant update (spent_micros,held_micros,refund_reserved_micros,refunded_micros)
+  on credit_source_lots to citygo_api;
+grant update (spent_micros,state) on credit_hold_allocations to citygo_api;
+grant update (state) on credit_refund_allocations to citygo_api;
+grant update (status,provider_refund_id,revision,attempt_count,last_attempt_at,
+  dispatch_token,dispatch_lease_until,review_reason,updated_at)
+  on payment_refunds to citygo_api;
 -- Source identity/contact are immutable; append-only history has no UPDATE,
 -- DELETE or TRUNCATE grant. Task INSERT is needed by the invoker top-up trigger.
 grant update (cumulative_refunded_kopeks,revision,claimed_by_user_id,

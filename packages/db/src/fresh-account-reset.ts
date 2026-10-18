@@ -28,6 +28,9 @@ const tables = [
   "citygo_migration_lock",
   "citygo_migrations",
   "consent_events",
+  "credit_hold_allocations",
+  "credit_refund_allocations",
+  "credit_source_lots",
   "generated_artifacts",
   "knowledge_sources",
   "messages",
@@ -35,6 +38,8 @@ const tables = [
   "npd_receipt_evidence",
   "npd_receipt_tasks",
   "npd_refund_observations",
+  "payment_refund_events",
+  "payment_refunds",
   "payment_topup_orders",
   "questionnaire_answers",
   "quests",
@@ -52,12 +57,18 @@ const tables = [
 // These reviewed FK children may participate in the single TRUNCATE only when
 // all are empty under the snapshot's table locks. Any receipt obligation,
 // contact, correction or delivery history blocks this TEST-only eraser.
-const protectedEmpty = [
+const protectedNpd = [
   "npd_receipt_commands",
   "npd_receipt_evidence",
   "npd_receipt_tasks",
   "npd_refund_observations",
 ] as const;
+const protectedRefunds = [
+  "credit_refund_allocations",
+  "payment_refund_events",
+  "payment_refunds",
+] as const;
+const protectedEmpty = [...protectedNpd, ...protectedRefunds] as const;
 const preserved = [
   "citygo_migration_lock",
   "citygo_migrations",
@@ -83,6 +94,8 @@ const erased = [
   "audit_log",
   "chat_requests",
   "consent_events",
+  "credit_hold_allocations",
+  "credit_source_lots",
   "generated_artifacts",
   "knowledge_sources",
   "messages",
@@ -318,7 +331,7 @@ async function inspect(tx: Sql, options: Options) {
     blockers.push({ code: "EXPECTED_USER_COUNT_MISMATCH", count: 1 });
   if (options.maintenanceConfirmed !== true)
     blockers.push({ code: "MAINTENANCE_NOT_CONFIRMED", count: 1 });
-  const npdHistoryCount = protectedEmpty.reduce(
+  const npdHistoryCount = protectedNpd.reduce(
     (count, name) => count + snapshot.counts[name]!,
     0,
   );
@@ -326,6 +339,15 @@ async function inspect(tx: Sql, options: Options) {
     blockers.push({
       code: "NPD_RECEIPT_HISTORY_PRESENT",
       count: npdHistoryCount,
+    });
+  const refundHistoryCount = protectedRefunds.reduce(
+    (count, name) => count + snapshot.counts[name]!,
+    0,
+  );
+  if (refundHistoryCount)
+    blockers.push({
+      code: "REFUND_FINANCIAL_HISTORY_PRESENT",
+      count: refundHistoryCount,
     });
   for (const [code, sql] of [
     [

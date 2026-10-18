@@ -45,6 +45,8 @@
   проверенный sandbox, принятый порядок списания и условия включения live.
 - [Ручной учёт НПД-чеков](runbooks/manual-npd-receipts.md): текущий выбранный процесс;
   [Robokassa](implementation/robokassa-npd-assessment.md) — будущая автоматизация.
+- [Оплаченные лоты и денежные возвраты](runbooks/paid-lots-and-refunds.md): gift-first/FIFO,
+  отдельный резерв, sandbox-сверка, связь с НПД и незакрытые условия live.
 - [Разделение окружений и секретов](runbooks/service-environments.md).
 - [Совместимость API, Web и Expo](architecture/api-compatibility.md).
 - [Реальное устройство AI-ролей](agents/README.md).

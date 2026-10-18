@@ -141,6 +141,32 @@ export async function seedRestartFixture(db: Database) {
     "insert into ai_credit_entries(user_id,operation_id,kind,amount_micros,hold_id) values ($1,$2,'settle',120000,$3)",
     [user, randomUUID(), hold],
   );
+  // The same fixture is also seeded before 0017. Keep the current-schema raw
+  // synthetic posting consistent without changing historical migration seeds.
+  if (
+    (
+      await db.query<{ present: boolean }>(
+        "select to_regclass('public.credit_source_lots') is not null as present",
+      )
+    ).rows[0]!.present
+  ) {
+    await db.query(
+      "update credit_source_lots set held_micros=1000000 where user_id=$1 and kind='gift'",
+      [user],
+    );
+    await db.query(
+      "insert into credit_hold_allocations(hold_id,source_lot_id,ordinal,reserved_micros) select $1,id,0,1000000 from credit_source_lots where user_id=$2 and kind='gift'",
+      [hold, user],
+    );
+    await db.query(
+      "update credit_hold_allocations set state='settled',spent_micros=120000 where hold_id=$1",
+      [hold],
+    );
+    await db.query(
+      "update credit_source_lots set held_micros=0,spent_micros=120000 where user_id=$1 and kind='gift'",
+      [user],
+    );
+  }
   const receipt = {
     generationId: "synthetic-generation",
     reference: hold,
@@ -275,6 +301,11 @@ export async function seedRestartNpdObligation(
 }
 
 export const retainedFinancialTables = [
+  "credit_hold_allocations",
+  "credit_refund_allocations",
+  "credit_source_lots",
+  "payment_refunds",
+  "payment_refund_events",
   "npd_receipt_commands",
   "npd_receipt_evidence",
   "npd_receipt_tasks",
@@ -292,6 +323,88 @@ export const retainedFinancialTables = [
   "citygo_migrations",
   "quests",
 ] as const;
+
+// A source-pinned monetary refund history, not a request to any provider. The
+// optional canceled terminal result releases the reservation so closed restart
+// can demonstrate exact retention even after the money is no longer held.
+export async function seedRestartRefundHistory(
+  db: Database,
+  userId: string,
+  { journal = true, canceled = false } = {},
+) {
+  const source = await seedRestartNpdObligation(db, userId);
+  const refundId = randomUUID();
+  await db.transaction(async (tx) => {
+    await tx.query(
+      "update credit_source_lots set refund_reserved_micros=1000000 where id=$1",
+      [source.operationId],
+    );
+    await tx.query(
+      "update ai_credit_accounts set held_micros=held_micros+1000000 where user_id=$1",
+      [userId],
+    );
+    await tx.query(
+      "insert into credit_refund_allocations(refund_id,user_id,source_lot_id,amount_micros,refunded_before_kopeks) values ($1,$2,$3,1000000,0)",
+      [refundId, userId, source.operationId],
+    );
+    if (journal) {
+      await tx.query(
+        "insert into payment_refunds(id,request_id,created_by_user_id,user_id,payment_operation_id,provider_payment_id,merchant_id,test,amount_kopeks,payment_amount_kopeks,refunded_before_kopeks,create_key,create_payload) values ($1,$2,$3,$3,$4,$5,'123456',false,100,10000,0,$1,$6)",
+        [
+          refundId,
+          randomUUID(),
+          userId,
+          source.operationId,
+          source.paymentId,
+          JSON.stringify({
+            payment_id: source.paymentId,
+            amount: { value: "1.00", currency: "RUB" },
+            description: "Возврат средств CityGo",
+            metadata: { citygo_refund_id: refundId },
+          }),
+        ],
+      );
+      await tx.query(
+        "insert into payment_refund_events(refund_id,action,actor_user_id,revision,payload) values ($1,'reserved',$2,1,$3)",
+        [refundId, userId, JSON.stringify({ amountKopeks: 100 })],
+      );
+    }
+    if (canceled) {
+      await tx.query(
+        "update credit_refund_allocations set state='released' where refund_id=$1",
+        [refundId],
+      );
+      await tx.query(
+        "update credit_source_lots set refund_reserved_micros=0 where id=$1",
+        [source.operationId],
+      );
+      await tx.query(
+        "update ai_credit_accounts set held_micros=held_micros-1000000 where user_id=$1",
+        [userId],
+      );
+      if (journal) {
+        const providerRefundId = randomUUID();
+        await tx.query(
+          "update payment_refunds set status='canceled',provider_refund_id=$2,revision=2,updated_at=clock_timestamp() where id=$1",
+          [refundId, providerRefundId],
+        );
+        await tx.query(
+          "insert into payment_refund_events(refund_id,action,actor_user_id,revision,payload) values ($1,'provider_observed',$2,2,$3)",
+          [
+            refundId,
+            null,
+            JSON.stringify({
+              providerRefundId,
+              providerStatus: "canceled",
+              observation: "server_get",
+            }),
+          ],
+        );
+      }
+    }
+  });
+  return { ...source, refundId };
+}
 
 export async function captureRestartRows(
   db: Database,

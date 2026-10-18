@@ -138,7 +138,7 @@ async function snapshot(db: Database) {
   for (const table of businessTables)
     data[table] = (
       await db.query(
-        `select ${table === "users" ? "to_jsonb(t)-'username'-'role'-'must_change_password'" : "to_jsonb(t)"} as row from ${table} t order by to_jsonb(t)::text`,
+        `select ${table === "users" ? "to_jsonb(t)-'username'-'role'-'must_change_password'" : table === "ai_credit_accounts" ? "to_jsonb(t)-'billing_review_required'" : "to_jsonb(t)"} as row from ${table} t order by to_jsonb(t)::text`,
       )
     ).rows;
   data.quests = (
@@ -149,6 +149,15 @@ async function snapshot(db: Database) {
   return data;
 }
 async function assertLegacyAccountDefaults(db: Database, userId: string) {
+  assert.deepEqual(
+    (
+      await db.query(
+        "select billing_review_required from ai_credit_accounts where user_id=$1",
+        [userId],
+      )
+    ).rows,
+    [{ billing_review_required: false }],
+  );
   assert.deepEqual(
     (
       await db.query(
@@ -690,7 +699,7 @@ test("existing least-privilege API grants can start/complete after identity trig
     );
 });
 
-test("container smoke's actual synthetic rewind/seed SQL upgrades from 9 to 16 and preserves populated history", async (t) => {
+test("container smoke's actual synthetic rewind/seed SQL upgrades from 9 to 18 and preserves populated history", async (t) => {
   const db = await fixture(t);
   // Read literal fixture SQL without importing/executing the Docker harness.
   // Fail if its representation changes; never evaluate JavaScript from a file.
@@ -713,12 +722,12 @@ test("container smoke's actual synthetic rewind/seed SQL upgrades from 9 to 16 a
   await migrate(db);
   assert.equal(
     (await db.query("select name from citygo_migrations")).rows.length,
-    16,
+    18,
   );
   assert.deepEqual(await snapshot(db), before);
   await assertLegacyAccountDefaults(db, "900009");
   const cleanup = script.match(
-    /"(begin; delete from ai_credit_entries[^"\n]+commit)"/,
+    /"(begin; delete from credit_hold_allocations[^"\n]+commit)"/,
   )?.[1];
   assert.ok(cleanup);
   await db.exec(cleanup);

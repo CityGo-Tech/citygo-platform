@@ -5,6 +5,7 @@ import { connectDatabase, migrate } from "./index.js";
 import {
   seedRestartFixture,
   seedRestartNpdObligation,
+  seedRestartRefundHistory,
 } from "./closed-account-restart-fixture.js";
 
 const tables = [
@@ -12,9 +13,14 @@ const tables = [
   "npd_receipt_commands",
   "npd_receipt_evidence",
   "npd_refund_observations",
+  "credit_source_lots",
+  "credit_hold_allocations",
+  "credit_refund_allocations",
+  "payment_refunds",
+  "payment_refund_events",
 ];
 
-test("the disposable release fixture rewinds only reviewed new schema and reapplies all sixteen migrations", async (t) => {
+test("the disposable release fixture rewinds only reviewed new schema and reapplies all eighteen migrations", async (t) => {
   const db = await connectDatabase("pglite://:memory:");
   t.after(() => db.close());
   await migrate(db);
@@ -23,7 +29,7 @@ test("the disposable release fixture rewinds only reviewed new schema and reappl
     "utf8",
   );
   const rewind =
-    /psql\(\s*`(begin;\s*drop trigger npd_live_topup_obligation[\s\S]*?commit)`/.exec(
+    /psql\(\s*`(begin;\s*drop table payment_refund_events,payment_refunds[\s\S]*?commit)`/.exec(
       source,
     );
   assert.ok(
@@ -50,6 +56,12 @@ test("the disposable release fixture rewinds only reviewed new schema and reappl
     "citygo_guard_npd_receipt_task",
     "citygo_create_npd_receipt_task",
     "citygo_apply_npd_refund_observation",
+    "citygo_guard_credit_source_lot",
+    "citygo_create_credit_gift_lot",
+    "citygo_create_credit_paid_lot",
+    "citygo_guard_credit_allocation",
+    "guard_payment_refund_identity",
+    "guard_payment_refund_event_immutable",
   ])
     assert.equal(
       (await db.query("select 1 from pg_proc where proname=$1", [name])).rows
@@ -59,7 +71,7 @@ test("the disposable release fixture rewinds only reviewed new schema and reappl
   await migrate(db);
   assert.equal(
     (await db.query("select 1 from citygo_migrations")).rows.length,
-    16,
+    18,
   );
 });
 
@@ -132,7 +144,12 @@ test("reviewed NPD grants support invoker duties/session locks but not identity 
       /permission denied/,
     );
   }
-  for (const table of tables.filter((name) => name !== "npd_receipt_tasks"))
+  for (const table of [
+    "npd_receipt_commands",
+    "npd_receipt_evidence",
+    "npd_refund_observations",
+    "payment_refund_events",
+  ])
     await assert.rejects(
       db.exec(`update ${table} set created_at=created_at`),
       /permission denied/,
@@ -149,4 +166,113 @@ test("reviewed NPD grants support invoker duties/session locks but not identity 
     1,
   );
   await db.exec("reset role");
+});
+
+test("refund/source grants allow observations, not frozen identity, history rewrites or Worker access", async (t) => {
+  const db = await connectDatabase("pglite://:memory:");
+  t.after(() => db.close());
+  await migrate(db);
+  const data = await seedRestartFixture(db);
+  await db.exec(
+    "create role citygo_api; create role citygo_worker; create role citygo_backup;",
+  );
+  const grants = await readFile(
+    new URL("../../../deploy/postgres/grants.sql", import.meta.url),
+    "utf8",
+  );
+  await db.exec(grants.replace(/^\\set[^\n]*\n/gm, ""));
+  for (const [table, mutable, frozen] of [
+    [
+      "credit_source_lots",
+      [
+        "spent_micros",
+        "held_micros",
+        "refund_reserved_micros",
+        "refunded_micros",
+      ],
+      ["user_id", "kind", "gross_micros", "paid_operation_id"],
+    ],
+    [
+      "credit_hold_allocations",
+      ["spent_micros", "state"],
+      ["hold_id", "source_lot_id", "reserved_micros"],
+    ],
+    [
+      "credit_refund_allocations",
+      ["state"],
+      [
+        "refund_id",
+        "user_id",
+        "source_lot_id",
+        "amount_micros",
+        "refunded_before_kopeks",
+      ],
+    ],
+    [
+      "payment_refunds",
+      [
+        "status",
+        "revision",
+        "provider_refund_id",
+        "attempt_count",
+        "last_attempt_at",
+        "dispatch_token",
+        "dispatch_lease_until",
+        "review_reason",
+        "updated_at",
+      ],
+      [
+        "user_id",
+        "request_id",
+        "payment_operation_id",
+        "provider_payment_id",
+        "merchant_id",
+        "test",
+        "amount_kopeks",
+        "payment_amount_kopeks",
+        "refunded_before_kopeks",
+        "created_at",
+      ],
+    ],
+  ] as const) {
+    for (const [columns, expected] of [
+      [mutable, true],
+      [frozen, false],
+    ] as const)
+      for (const column of columns)
+        assert.equal(
+          (
+            await db.query<{ writable: boolean }>(
+              "select has_column_privilege('citygo_api',$1,$2,'UPDATE') as writable",
+              [table, column],
+            )
+          ).rows[0]!.writable,
+          expected,
+          `${table}.${column}`,
+        );
+  }
+  await db.exec("set role citygo_api");
+  const source = await seedRestartRefundHistory(db, data.user, {
+    canceled: true,
+  });
+  await assert.rejects(
+    db.query("update payment_refunds set amount_kopeks=100 where id=$1", [
+      source.refundId,
+    ]),
+    /permission denied/,
+  );
+  await assert.rejects(
+    db.exec("update payment_refund_events set payload='{}'"),
+    /permission denied/,
+  );
+  await db.exec("reset role");
+  // Even an owner cannot silently rewrite or delete append-only monetary proof.
+  await assert.rejects(
+    db.exec("update payment_refund_events set payload='{}'"),
+    /append only/,
+  );
+  await assert.rejects(
+    db.exec("delete from payment_refund_events"),
+    /append only/,
+  );
 });

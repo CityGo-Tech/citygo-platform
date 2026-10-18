@@ -61,6 +61,11 @@ import {
 } from "./payments.js";
 import { registerNpdReceipts } from "./npd-receipts.js";
 import {
+  prepareTestRefunds,
+  registerPaymentRefunds,
+  type TestRefundClient,
+} from "./payment-refunds.js";
+import {
   registerR1SyntheticPermissionHttp,
   type R1SyntheticPermissionHttpOptions,
 } from "./r1-permission-http.js";
@@ -75,12 +80,17 @@ export async function buildApp(options: {
   housingLimits?: Partial<HousingStorageLimits>;
   syntheticPermissions?: R1SyntheticPermissionHttpOptions;
   paymentClient?: TestPaymentClient;
+  refundClient?: TestRefundClient;
 }) {
   const drain = options.drain ?? new ApiDrain();
   const config = options.config ?? readConfig();
   const paymentClient = prepareTestPayments(config, {
     testing: options.testing,
     client: options.paymentClient,
+  });
+  const refundClient = prepareTestRefunds(config, {
+    testing: options.testing,
+    client: options.refundClient,
   });
   if (
     paymentClient &&
@@ -329,9 +339,9 @@ export async function buildApp(options: {
   app.get("/ready", async () => {
     try {
       const result = await options.db.query(
-        "select name from citygo_migrations where name in ('0006_ai_budget.sql','0007_ai_user_daily_budget.sql','0008_ai_credit.sql','0009_ai_credit_charges.sql','0010_quest_plan_expand.sql','0011_quest_plan_validate.sql','0013_account_access.sql','0014_citygo_credit.sql','0015_yookassa_orders.sql','0016_npd_receipts.sql')",
+        "select name from citygo_migrations where name in ('0006_ai_budget.sql','0007_ai_user_daily_budget.sql','0008_ai_credit.sql','0009_ai_credit_charges.sql','0010_quest_plan_expand.sql','0011_quest_plan_validate.sql','0013_account_access.sql','0014_citygo_credit.sql','0015_yookassa_orders.sql','0016_npd_receipts.sql','0017_credit_source_lots.sql','0018_payment_refunds.sql')",
       );
-      if (result.rows.length !== 10) throw new Error("Pending migration");
+      if (result.rows.length !== 12) throw new Error("Pending migration");
       if (config.R1_HOUSING_API_MODE === "synthetic")
         await verifyHousingReadiness(options.db);
     } catch {
@@ -361,6 +371,13 @@ export async function buildApp(options: {
   registerNpdReceipts(app, {
     db: options.db,
     sessionName,
+    authenticate,
+  });
+  registerPaymentRefunds(app, {
+    db: options.db,
+    config,
+    sessionName,
+    client: refundClient,
     authenticate,
   });
   for (const action of ["register", "login"] as const) {

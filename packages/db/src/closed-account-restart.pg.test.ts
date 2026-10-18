@@ -16,6 +16,7 @@ import {
   retainedFinancialTables,
   seedRestartFixture,
   seedRestartNpdObligation,
+  seedRestartRefundHistory,
 } from "./closed-account-restart-fixture.js";
 
 const pgOnly = {
@@ -176,6 +177,31 @@ test(
 );
 
 test(
+  "PostgreSQL closed restart retains source allocations and canceled monetary refund events",
+  pgOnly,
+  async (t) => {
+    const { db, data, restart } = await fixture(t);
+    await seedRestartRefundHistory(db, data.user, { canceled: true });
+    const before = await captureRestartRows(db, retainedFinancialTables);
+    const plan = await restart.plan({
+      expectedUserCount: 2,
+      maintenanceConfirmed: true,
+    });
+    assert.deepEqual(plan.blockers, []);
+    assert.equal(plan.counts.credit_source_lots, 2);
+    assert.equal(plan.counts.credit_hold_allocations, 1);
+    assert.equal(plan.counts.credit_refund_allocations, 1);
+    assert.equal(plan.counts.payment_refunds, 1);
+    assert.equal(plan.counts.payment_refund_events, 2);
+    await restart.apply(await input(restart));
+    assert.deepEqual(
+      await captureRestartRows(db, retainedFinancialTables),
+      before,
+    );
+  },
+);
+
+test(
   "PostgreSQL closed restart preserves paid-attempt FK history and one-time bootstrap",
   pgOnly,
   async (t) => {
@@ -303,6 +329,21 @@ test(
     await db.query(
       "update ai_credit_accounts set held_micros=1000 where user_id=$1",
       [data.user],
+    );
+    // A new current-schema hold must carry the same source reservation as the
+    // aggregate account. This case tests locking, not unresolved legacy drift.
+    assert.equal(
+      (
+        await db.query(
+          "update credit_source_lots set held_micros=held_micros+1000 where user_id=$1 and kind='gift' returning id",
+          [data.user],
+        )
+      ).rows.length,
+      1,
+    );
+    await db.query(
+      "insert into credit_hold_allocations(hold_id,source_lot_id,ordinal,reserved_micros) select $1,id,0,1000 from credit_source_lots where user_id=$2 and kind='gift'",
+      [pending, data.user],
     );
     const options = await input(restart);
     const gate = { entered: signal(), release: signal(), afterUserRows: true };

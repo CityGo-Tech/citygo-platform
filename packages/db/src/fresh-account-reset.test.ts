@@ -12,6 +12,7 @@ import {
   migrateLegacyRestartFixture,
   seedRestartNpdObligation,
   seedRestartFixture,
+  seedRestartRefundHistory,
 } from "./closed-account-restart-fixture.js";
 
 async function fixture(t: TestContext) {
@@ -285,6 +286,36 @@ test("any new NPD obligation blocks full reset without erasing receipt history o
   await assert.rejects(reset.apply(await prepared(reset)), /заблокирован/);
   assert.deepEqual(await captureRestartRows(db), before);
 });
+
+for (const journal of [false, true])
+  test(`refund ${journal ? "journal and events" : "allocation alone"} blocks full reset without financial erasure`, async (t) => {
+    const { db, data, reset } = await fixture(t);
+    await seedRestartRefundHistory(db, data.user, { journal });
+    const before = await captureRestartRows(db);
+    const plan = await reset.plan({
+      expectedUserCount: 2,
+      maintenanceConfirmed: true,
+    });
+    assert.ok(
+      plan.blockers.some(
+        (blocker) => blocker.code === "REFUND_FINANCIAL_HISTORY_PRESENT",
+      ),
+    );
+    assert.equal(plan.counts.credit_refund_allocations, 1);
+    assert.equal(plan.counts.payment_refunds, journal ? 1 : 0);
+    assert.equal(plan.counts.payment_refund_events, journal ? 1 : 0);
+    for (const name of [
+      "credit_refund_allocations",
+      "payment_refunds",
+      "payment_refund_events",
+    ]) {
+      assert.equal(plan.erasedTables.includes(name), false);
+      assert.equal(plan.preservedTables.includes(name), true);
+    }
+    assert.doesNotMatch(JSON.stringify(plan), /PRIVATE-|@example\.test/);
+    await assert.rejects(reset.apply(await prepared(reset)), /заблокирован/);
+    assert.deepEqual(await captureRestartRows(db), before);
+  });
 
 test("unreviewed materialized private history is not silently left behind", async (t) => {
   const { db, reset } = await fixture(t);

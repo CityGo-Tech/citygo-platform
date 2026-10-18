@@ -10,6 +10,10 @@ import {
 import type { Database, Sql } from "./index.js";
 import { DomainError } from "./errors.js";
 import { lockPaymentMode } from "./payment-isolation.js";
+import {
+  reserveCreditSources,
+  resolveCreditSources,
+} from "./credit-source-lots.js";
 
 const amountSchema = z.number().int().min(0).max(CITYGO_MAX_AMOUNT_MICROS);
 const operationSchema = z.uuid();
@@ -289,6 +293,7 @@ export class AiCreditLedger {
         "insert into ai_credit_entries(user_id,operation_id,kind,amount_micros) values ($1,$2,'hold',$3)",
         [userId, operationId, amountMicros],
       );
+      await reserveCreditSources(tx, userId, operationId, amountMicros);
     };
     if (transaction) await work(transaction);
     else await this.db.transaction(work);
@@ -340,6 +345,7 @@ export class AiCreditLedger {
         throw new DomainError(409, "Резерв уже завершён");
       if (resolution.amountMicros > Number(held.amount_micros))
         throw new DomainError(409, "Списание превышает подтверждённый резерв");
+      await resolveCreditSources(tx, userId, holdId, resolution);
       await tx.query(
         "insert into ai_credit_entries(user_id,operation_id,kind,amount_micros,hold_id) values ($1,$2,$3,$4,$5)",
         [userId, operationId, resolution.kind, resolution.amountMicros, holdId],

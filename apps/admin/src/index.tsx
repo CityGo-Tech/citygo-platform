@@ -13,6 +13,7 @@ import { AiBudgetControls } from "./ai-budget.js";
 import { AiCreditControls } from "./ai-credit.js";
 import { AccountsControl } from "./accounts-control.js";
 import { NpdReceiptsControl } from "./npd-receipts.js";
+import { PaymentRefundsControl } from "./payment-refunds.js";
 export function AdminOverview() {
   const [session] = useState(createSessionGuard);
   const api = useMemo(
@@ -241,6 +242,18 @@ export function AdminOverview() {
             invalidate();
             setError(
               "Доступ к реестру или сессия изменились. Войдите под администратором и обновите сводку.",
+            );
+          }}
+        />
+      )}
+      {viewer && (
+        <PaymentRefundsControl
+          key={`refunds-${viewer.id}-${refreshVersion}`}
+          viewerId={viewer.id}
+          onAccessLost={() => {
+            invalidate();
+            setError(
+              "Доступ к возвратам или сессия изменились. Войдите под администратором и обновите сводку.",
             );
           }}
         />

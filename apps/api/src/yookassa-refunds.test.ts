@@ -43,6 +43,43 @@ const json = (value: unknown) =>
   new Response(JSON.stringify(value), {
     headers: { "Content-Type": "application/json; charset=utf-8" },
   });
+
+test("persisted monetary POST body cannot drift across explicit retries or code versions", async () => {
+  const i = input();
+  const payload = {
+    payment_id: i.paymentId,
+    amount: { value: "1.01", currency: "RUB" },
+    description: "Тестовый возврат CityGo",
+    metadata: { citygo_refund_id: i.refundRequestId },
+  };
+  let posts = 0;
+  const client = new YooKassaTestRefundClient({
+    shopId,
+    secretKey,
+    fetch: async (_url, init) => {
+      if (init?.method === "POST") {
+        posts++;
+        assert.deepEqual(JSON.parse(String(init.body)), payload);
+        return json(refund(i));
+      }
+      return json(payment(i));
+    },
+  });
+  await client.createRefund({ ...i, createPayload: payload });
+  assert.equal(posts, 1);
+  for (const changed of [
+    { ...payload, description: "changed by future deployment" },
+    { ...payload, amount: { value: "1.02", currency: "RUB" } },
+    {},
+  ])
+    await assert.rejects(
+      client.createRefund({ ...i, createPayload: changed }),
+      (failure: unknown) =>
+        failure instanceof YooKassaTestRefundError &&
+        failure.outcome === "not_sent",
+    );
+  assert.equal(posts, 1);
+});
 function fixture(responses: (() => Response | Promise<Response>)[]) {
   const calls: { url: string; init: RequestInit }[] = [];
   const fetch: typeof globalThis.fetch = async (url, init) => {

@@ -345,10 +345,13 @@ export class NpdReceipts {
   // TRUSTED SERVER ONLY. No public/admin route accepts this proof. Caller must
   // authenticate GET refund + original live YooKassa payment first. This records
   // a correction obligation only, never money or a legally proven refund date.
-  async observeConfirmedRefund(raw: NpdConfirmedRefundObservation) {
+  async observeConfirmedRefund(
+    raw: NpdConfirmedRefundObservation,
+    transaction?: Sql,
+  ) {
     const input = parse(refundSchema, raw);
     try {
-      return await this.db.transaction(async (tx) => {
+      const work = async (tx: Sql) => {
         const security = await tx.query(
           "select id from account_security_state where id=1 for update",
         );
@@ -414,7 +417,10 @@ export class NpdReceipts {
           ],
         );
         return this.detail(tx, task.id);
-      });
+      };
+      return await (transaction
+        ? work(transaction)
+        : this.db.transaction(work));
     } catch (error) {
       return this.conflict(error);
     }
