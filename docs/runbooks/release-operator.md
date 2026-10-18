@@ -14,7 +14,8 @@ migration → start/health → finish в одном процессе. Отдел
 разрешением мигрировать живую БД. Выпуск всегда закрытый: ingress 503, Worker
 paused, restart=no. По умолчанию AI disabled; отдельно согласованный
 [RouterAI-профиль](routerai-deployment-profile.md) требует startup approval v2
-и не включает денежный бюджет, бонусы или публичный доступ.
+или [профиль CityGo ×10](routerai-citygo-10x-profile.md) требует v3.
+Оба не включают денежный бюджет, бонусы, боевую оплату или публичный доступ.
 Никаких hooks, произвольных команд, URL
 скачивания или подменяемых transport-классов в JSON-запросе нет.
 

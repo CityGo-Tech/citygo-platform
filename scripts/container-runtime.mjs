@@ -46,29 +46,39 @@ const routerAiLimits = {
   LLM_USER_DAILY_ATTEMPT_LIMIT: 10000,
   LLM_GLOBAL_DAILY_ATTEMPT_LIMIT: 1000000,
 };
-const routerAiKeys = [
+// Never reinterpret the legacy at-cost profile as a different customer tariff.
+// Payments stay disabled: sandbox funds must not enter a real-AI database.
+const citygo10xFixed = {
+  ...routerAiFixed,
+  AI_CREDIT_MODE: "routerai_citygo_10x",
+  YOOKASSA_MODE: "disabled",
+};
+const routerAiProfiles = {
+  "routerai-credit-v1": routerAiFixed,
+  "routerai-citygo-10x-v1": citygo10xFixed,
+};
+const routerAiKeys = (fixed) => [
   "DATABASE_URL",
   "ADMIN_USER_IDS",
   "ROUTERAI_API_KEY",
   "ROUTERAI_DATA_NOTICE",
   "ROUTERAI_PRODUCTION_POLICY_ID",
-  ...Object.keys(routerAiFixed),
+  ...Object.keys(fixed),
   ...Object.keys(routerAiLimits),
 ];
 
-function validateRouterAi(value) {
+function validateRouterAi(value, fixed) {
+  const keys = routerAiKeys(fixed);
   if (
-    Object.keys(value).length !== routerAiKeys.length ||
-    routerAiKeys.some(
+    Object.keys(value).length !== keys.length ||
+    keys.some(
       (key) =>
         typeof value[key] !== "string" ||
         !value[key] ||
         value[key] !== value[key].trim() ||
         [...value[key]].some((char) => char.charCodeAt(0) < 32),
     ) ||
-    Object.entries(routerAiFixed).some(
-      ([key, setting]) => value[key] !== setting,
-    ) ||
+    Object.entries(fixed).some(([key, setting]) => value[key] !== setting) ||
     Object.entries(routerAiLimits).some(
       ([key, maximum]) =>
         !/^(0|[1-9][0-9]{0,6})$/.test(value[key]) ||
@@ -96,14 +106,16 @@ export function containerSpec(
   const profile = inherited.CITYGO_AI_PROFILE;
   if (
     profile !== undefined &&
-    (profile !== "routerai-credit-v1" ||
+    (!Object.hasOwn(routerAiProfiles, profile) ||
       mode !== "api" ||
       inherited.CITYGO_MOUNTED_CONFIG !== "1" ||
       inherited.LLM_PROVIDER !== "routerai" ||
       Object.keys(inherited).some(
         (key) =>
           key !== "LLM_PROVIDER" &&
-          /^(OPENAI_|GIGACHAT_|ROUTERAI_|LLM_|AI_CREDIT_MODE$)/.test(key),
+          /^(OPENAI_|GIGACHAT_|ROUTERAI_|LLM_|YOOKASSA_|AI_CREDIT_MODE$)/.test(
+            key,
+          ),
       ))
   )
     throw new Error("Invalid container AI profile (contents hidden)");
@@ -131,14 +143,18 @@ export function containerSpec(
         typeof secrets.DATABASE_URL !== "string" ||
         Object.entries(secrets).some(
           ([key, value]) =>
-            !(profile ? routerAiKeys : secretKeys[mode]).includes(key) ||
+            !(
+              profile
+                ? routerAiKeys(routerAiProfiles[profile])
+                : secretKeys[mode]
+            ).includes(key) ||
             typeof value !== "string" ||
             !value.trim() ||
             /[\r\n\0]/.test(value),
         )
       )
         throw new Error();
-      if (profile) validateRouterAi(secrets);
+      if (profile) validateRouterAi(secrets, routerAiProfiles[profile]);
       // Avoid an accidental second source silently selecting the wrong database/key.
       if (Object.keys(secrets).some((key) => inherited[key] !== undefined))
         throw new Error();

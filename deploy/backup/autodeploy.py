@@ -68,7 +68,7 @@ def policy(path=POLICY_PATH):
     b.require(type(value["version"]) is int and value["version"] == 1 and value["enabled"] is True
               and value["purpose"] == "citygo-main-standing-authorization" and value["repository"] == t.REPOSITORY,
               "autodeploy-disabled")
-    b.require(value["profile"] in (s.PROFILE, s.ROUTERAI_PROFILE) and type(value["allow_new_migrations"]) is bool,
+    b.require(type(value["profile"]) is str and value["profile"] in s.PROFILE_VERSIONS and type(value["allow_new_migrations"]) is bool,
               "autodeploy-policy")
     p.hostname(value["origin"])
     for key in ("config_path", "ingress_directory", "bundles_directory", "initial_bundle", "registry_config", "nginx_config"):
@@ -259,7 +259,7 @@ def stage_capabilities(value, req, config, current, target, directory, host, sto
         "target_manifest_sha256": prep["target_manifest_sha256"], "configuration_sha256": fingerprint, "project": config["project"],
         "origin": value["origin"], "network_id": network["id"], "allow_migration": True, "allow_start": False, "allow_traffic": False, **times}
     f.write_new(migrate_path, m.wire(migration))
-    startup = {"version": 1 if value["profile"] == s.PROFILE else 2, "purpose": "citygo-release-start", "profile": value["profile"],
+    startup = {"version": s.PROFILE_VERSIONS[value["profile"]], "purpose": "citygo-release-start", "profile": value["profile"],
         "migration_approval_sha256": t.sha256(t.read_file(migrate_path)), "api_secret_sha256": value["secret_sha256"]["api"],
         "web_network_id": web_network["id"], "allow_start": True, "allow_traffic": False, **times}
     f.write_new(start_path, m.wire(startup))

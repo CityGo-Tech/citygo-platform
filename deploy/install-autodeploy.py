@@ -44,6 +44,18 @@ def write_once(path, data, mode):
         stream.write(data); stream.flush(); os.fchmod(stream.fileno(), mode); os.fsync(stream.fileno())
 
 
+def api_profile(api, startup):
+    """Select only a named tariff, never silently enroll a new config as legacy."""
+    require(type(api) is dict, "ai-profile-mismatch")
+    if "ROUTERAI_API_KEY" not in api:
+        require("AI_CREDIT_MODE" not in api and "YOOKASSA_MODE" not in api, "ai-profile-mismatch")
+        return startup.PROFILE
+    profiles = {"routerai_at_cost": startup.ROUTERAI_PROFILE,
+                "routerai_citygo_10x": startup.CITYGO_10X_PROFILE}
+    require(type(api.get("AI_CREDIT_MODE")) is str and api["AI_CREDIT_MODE"] in profiles, "ai-profile-mismatch")
+    return profiles[api["AI_CREDIT_MODE"]]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, required=True)
@@ -103,12 +115,12 @@ def main():
     secrets = {"api": "/etc/citygo/secrets/api.json", "migration": "/etc/citygo/secrets/migrate.json",
                "worker": "/etc/citygo/secrets/worker.json", "backup": "/etc/citygo/secrets/db_backup_password"}
     api = t.strict_json(t.read_file(secrets["api"]))
-    profile = a.s.ROUTERAI_PROFILE if "ROUTERAI_API_KEY" in api else a.s.PROFILE
+    profile = api_profile(api, a.s)
     host = a.s.Host(config, Path(config["state_dir"]), "/var/lib/citygo/ingress", args.origin)
     values = host.inventory()
     app = next(v for v in values if v["Labels"].get("com.docker.compose.service") == "api")
     environment = dict(item.split("=", 1) for item in host.detail(app["Id"])["Config"]["Env"])
-    require(environment.get("LLM_PROVIDER") == ("disabled" if profile == a.s.PROFILE else "routerai"), "ai-profile-mismatch")
+    require(all(environment.get(key) == setting for key, setting in a.s.profile_environment(profile).items()), "ai-profile-mismatch")
     nginx = "/etc/nginx/sites-available/citygo-pilot"
     bundles = INSTALL_ROOT / "autodeploy-bundles"
     bundles.mkdir(mode=0o700, exist_ok=True); b.protected(bundles, directory=True)

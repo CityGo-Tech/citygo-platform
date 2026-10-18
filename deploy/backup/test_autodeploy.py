@@ -225,6 +225,45 @@ class Capabilities(unittest.TestCase):
         self.assertFalse(self.pending.exists())
         self.assertEqual(self.host.events, [])
 
+    def test_citygo_10x_capability_is_v3_and_closed_finish_does_not_resume(self):
+        import test_start
+        self.api.write_bytes(encoded(test_start.routerai_fixture(a.s.CITYGO_10X_PROFILE)))
+        self.policy["profile"] = a.s.CITYGO_10X_PROFILE
+        self.policy["secret_sha256"]["api"] = t.sha256(self.api.read_bytes())
+        command = self.capabilities()
+        startup = t.strict_json(t.read_file(command["startup_approval"]))
+        self.assertEqual((startup["version"], startup["profile"]), (3, a.s.CITYGO_10X_PROFILE))
+        self.assertFalse(startup["allow_traffic"])
+        result = ctl.preflight(command, verify_finish=True, image_store_factory=lambda _: self.image_store)
+        self.assertEqual(result["profile"], a.s.CITYGO_10X_PROFILE)
+        config, images, auth = ctl.inputs(command)
+        with patch.object(a, "resume") as resume:
+            result = f.finish(config, command["target_sha"], ORIGIN, self.ingress, images, self.secret, self.api, self.worker, self.password,
+                allow_stop=True, allow_upload=True, allow_migration=True, allow_start=True, allow_finish=True,
+                image_store_factory=lambda _: self.image_store, host_factory=lambda *_: self.host,
+                storage_factory=lambda *_: self.store, encryptor=self.encrypt, min_free=0,
+                transport_factory=lambda *_: self.transport, **auth)
+            resume.assert_not_called()
+        self.assertEqual(result["finish"]["source_sha"], "b" * 40)
+        self.assertTrue(self.host.closed)
+        self.assertFalse((self.state / a.w.ADMISSION).exists())
+
+    def test_citygo_10x_policy_pins_tariff_without_admitting_yookassa(self):
+        import test_start
+        self.api.write_bytes(encoded(test_start.routerai_fixture(a.s.CITYGO_10X_PROFILE)))
+        self.policy["profile"] = a.s.CITYGO_10X_PROFILE
+        policy_path = self.entrypoint_fixture()
+        policy, _ = a.policy(policy_path)
+        self.assertEqual(policy["profile"], a.s.CITYGO_10X_PROFILE)
+        a.check_pins(policy)
+        for profile in (a.s.PROFILE, a.s.ROUTERAI_PROFILE):
+            with self.subTest(profile=profile), self.assertRaises(b.BackupError):
+                a.check_pins({**policy, "profile": profile})
+        invalid = dict(policy, profile="unknown")
+        policy_path.write_bytes(encoded(invalid))
+        with self.assertRaisesRegex(b.BackupError, "autodeploy-policy"): a.policy(policy_path)
+        self.assertFalse(self.pending.exists()); self.assertEqual(self.host.events, [])
+
     def test_no_automatic_database_upgrade_or_unapproved_migrations(self):
         for changes in ({"postgres_image": "postgres:17-alpine@sha256:" + "9" * 64}, {"allow_new_migrations": False}):
             with patch.dict(self.policy, changes), self.assertRaises(b.BackupError): self.capabilities()

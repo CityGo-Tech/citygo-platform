@@ -22,7 +22,7 @@ WEB_NETWORK = "f" * 64
 
 def synthetic_start_approval(directory, migration, secret, network=WEB_NETWORK, profile=s.PROFILE):
     now = int(time.time())
-    value = {"version": 2 if profile == s.ROUTERAI_PROFILE else 1, "purpose": "citygo-release-start", "profile": profile,
+    value = {"version": s.PROFILE_VERSIONS[profile], "purpose": "citygo-release-start", "profile": profile,
              "migration_approval_sha256": t.sha256(migration.path.read_bytes()),
              "api_secret_sha256": t.sha256(secret.read_bytes()), "web_network_id": network,
              "approved_at": now - 1, "expires_at": now + 3600, "allow_start": True, "allow_traffic": False}
@@ -59,8 +59,12 @@ class Validation(unittest.TestCase):
         self.assertEqual(s.approval(encoded(value), now), value)
         routerai = {**value, "version": 2, "profile": s.ROUTERAI_PROFILE}
         self.assertEqual(s.approval(encoded(routerai), now), routerai)
-        for bad in ({**value, "profile": s.ROUTERAI_PROFILE}, {**routerai, "profile": s.PROFILE}):
-            with self.assertRaises(b.BackupError): s.approval(encoded(bad), now)
+        for profile, version in s.PROFILE_VERSIONS.items():
+            approved = {**value, "version": version, "profile": profile}
+            self.assertEqual(s.approval(encoded(approved), now), approved)
+            for wrong in set(s.PROFILE_VERSIONS.values()) - {version}:
+                with self.subTest(profile=profile, wrong_version=wrong), self.assertRaises(b.BackupError):
+                    s.approval(encoded({**approved, "version": wrong}), now)
         for change in ({"version": True}, {"allow_start": 1}, {"allow_traffic": True}, {"profile": "any"},
                        {"expires_at": now}, {"approved_at": now + 1}, {"expires_at": now + 86400},
                        {"migration_approval_sha256": "main"}, {"extra": "ignored"}):
@@ -143,14 +147,48 @@ class Validation(unittest.TestCase):
             bad = copy.deepcopy(base); bad["Config"]["Env"] = bad_env
             with self.assertRaises(b.BackupError): s.runtime(bad, *args, s.ROUTERAI_PROFILE)
 
+    def test_citygo_10x_is_exact_and_cannot_enable_yookassa_or_reuse_legacy_approval(self):
+        value = routerai_fixture(s.CITYGO_10X_PROFILE)
+        def validate(data, profile=s.CITYGO_10X_PROFILE):
+            with patch.object(t, "read_file", return_value=encoded(data)): return s.api_secret("/unused", profile)
+        validate(value)
+        for key in value:
+            missing = dict(value); del missing[key]
+            with self.subTest(missing=key), self.assertRaises(b.BackupError): validate(missing)
+        for patch_value in ({"AI_CREDIT_MODE": "routerai_at_cost"}, {"AI_CREDIT_MODE": "disabled"},
+                            {"YOOKASSA_MODE": "test"}, {"YOOKASSA_MODE": "live"},
+                            {"YOOKASSA_SHOP_ID": "12345"}, {"YOOKASSA_SECRET_KEY": "test_hidden"},
+                            {"OPENAI_API_KEY": "synthetic-hidden"}, {"ROUTERAI_MODEL": "other/model"}):
+            with self.subTest(keys=list(patch_value)), self.assertRaises(b.BackupError): validate({**value, **patch_value})
+        for profile in (s.PROFILE, s.ROUTERAI_PROFILE):
+            with self.subTest(profile=profile), self.assertRaises(b.BackupError): validate(value, profile)
+        with self.assertRaises(b.BackupError): validate(routerai_fixture())
+        self.assertEqual(s.profile_environment(s.CITYGO_10X_PROFILE),
+                         {"LLM_PROVIDER": "routerai", "CITYGO_AI_PROFILE": "routerai-citygo-10x-v1"})
 
-def routerai_fixture():
-    return json.loads((Path(__file__).resolve().parent.parent / "fixtures/routerai-profile.fixture.json").read_bytes())
+    def test_citygo_10x_runtime_is_api_only_and_cannot_silently_downgrade(self):
+        image = {"local_id": "sha256:" + "c" * 64, "config_id": "sha256:" + "c" * 64}
+        value = preparation_fixture.container("api"); value["Image"] = image["local_id"]; value["State"]["Dead"] = False
+        base = detail(value, "api", image, "/tmp/api.json", s.CITYGO_10X_PROFILE)
+        args = ("api", image, "citygo-fixture", ORIGIN, "/tmp/api.json", {"web_api": WEB_NETWORK, "database": "e" * 64})
+        s.runtime(base, *args, s.CITYGO_10X_PROFILE)
+        for profile in (s.PROFILE, s.ROUTERAI_PROFILE):
+            with self.assertRaises(b.BackupError): s.runtime(base, *args, profile)
+        for extra in ("YOOKASSA_MODE=disabled", "YOOKASSA_SHOP_ID=12345", "YOOKASSA_SECRET_KEY=test_hidden"):
+            bad = copy.deepcopy(base); bad["Config"]["Env"].append(extra)
+            with self.assertRaises(b.BackupError): s.runtime(bad, *args, s.CITYGO_10X_PROFILE)
+        spec = s.compose_spec("citygo-fixture", ORIGIN, {"api": image, "web": image}, "/tmp/api.json", s.CITYGO_10X_PROFILE)
+        self.assertNotIn("CITYGO_AI_PROFILE", spec["services"]["web"]["environment"])
 
 
-def enable_routerai_fixture(test):
-    test.api.write_bytes(encoded(routerai_fixture()))
-    test.start_approval = synthetic_start_approval(test.directory, test.authorization, test.api, profile=s.ROUTERAI_PROFILE)
+def routerai_fixture(profile=s.ROUTERAI_PROFILE):
+    name = "routerai-citygo-10x-profile.fixture.json" if profile == s.CITYGO_10X_PROFILE else "routerai-profile.fixture.json"
+    return json.loads((Path(__file__).resolve().parent.parent / "fixtures" / name).read_bytes())
+
+
+def enable_routerai_fixture(test, profile=s.ROUTERAI_PROFILE):
+    test.api.write_bytes(encoded(routerai_fixture(profile)))
+    test.start_approval = synthetic_start_approval(test.directory, test.authorization, test.api, profile=profile)
 
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "Linux live operation and protected inputs")
@@ -167,7 +205,9 @@ class Startup(unittest.TestCase):
         self.host.web_network = lambda: {"id": WEB_NETWORK, "peers": sorted(v["Id"] for v in self.host.values
             if v["Labels"]["com.docker.compose.service"] in ("api", "web") and v["State"]["Running"])}
         def replace(directory, spec):
-            self.runtime_profile = (s.ROUTERAI_PROFILE if "CITYGO_AI_PROFILE" in spec["services"]["api"]["environment"] else s.PROFILE)
+            environment = spec["services"]["api"]["environment"]
+            self.runtime_profile = next(profile for profile in s.PROFILE_VERSIONS
+                if all(environment.get(key) == setting for key, setting in s.profile_environment(profile).items()))
             self.start_events.append("replace")
             self.assertTrue(self.pending.exists()); self.assertTrue(self.host.closed)
             with self.assertRaisesRegex(b.BackupError, "already-running"):
@@ -220,6 +260,23 @@ class Startup(unittest.TestCase):
         self.api.write_bytes(encoded(value))
         with self.assertRaisesRegex(b.BackupError, "start-binding"): self.start()
         self.assertEqual(self.host.events, []); self.assertFalse(self.pending.exists())
+
+    def test_citygo_10x_approval_starts_closed_and_changed_payment_mode_refuses_before_stop(self):
+        enable_routerai_fixture(self, s.CITYGO_10X_PROFILE)
+        original = self.api.read_bytes()
+        changed = routerai_fixture(s.CITYGO_10X_PROFILE); changed["YOOKASSA_MODE"] = "test"
+        self.api.write_bytes(encoded(changed))
+        with self.assertRaises(b.BackupError): self.start()
+        self.assertEqual(self.host.events, []); self.assertFalse(self.pending.exists())
+        self.api.write_bytes(original)
+        # Failed approvals are intentionally not reusable, even after restoring bytes.
+        self.start_approval = synthetic_start_approval(self.directory, self.authorization, self.api, profile=s.CITYGO_10X_PROFILE)
+        result = self.start()
+        self.assertEqual(self.runtime_profile, s.CITYGO_10X_PROFILE)
+        self.assertTrue(self.pending.exists()); self.assertTrue(self.host.closed)
+        self.assertFalse(result["startup"]["traffic_authorized"])
+        self.assertFalse(result["startup"]["worker_authorized"])
+        self.assertNotIn("synthetic-not-live", json.dumps(result))
 
     def test_migration_approval_cannot_authorize_start(self):
         self.start_approval.path.write_bytes(self.authorization.path.read_bytes())

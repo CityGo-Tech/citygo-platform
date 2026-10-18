@@ -245,24 +245,43 @@ class Cutover(unittest.TestCase):
 class RouterAiCutover(Cutover):
     # Run the entire existing failure/drift/atomic-cutover suite for the new
     # profile too. All keys, images, network and approvals remain synthetic.
+    profile = s.ROUTERAI_PROFILE
+    marker = "routerai-credit-v1"
+
     def setUp(self):
         Cutover.setUp(self)
-        startup_fixture.enable_routerai_fixture(self)
+        startup_fixture.enable_routerai_fixture(self, self.profile)
         verified = self.selection.verify(self.config, "b" * 40, ORIGIN, IMAGES)
         local = f.g.verify(self.image_store, verified, IMAGES)
-        self.plan = f.generation(self.config, "b" * 40, ORIGIN, local, self.api, self.worker, self.password, s.ROUTERAI_PROFILE)
+        self.plan = f.generation(self.config, "b" * 40, ORIGIN, local, self.api, self.worker, self.password, self.profile)
         self.finish_approval = synthetic_finish_approval(self.directory, self.config, self.start_approval, self.plan)
 
     def test_routerai_generation_contains_only_the_profile_marker_not_key_or_notice(self):
         result = self.finish()
         spec = json.loads(self.plan["files"]["compose.json"])
-        self.assertEqual(spec["services"]["api"]["environment"]["CITYGO_AI_PROFILE"], "routerai-credit-v1")
+        self.assertEqual(spec["services"]["api"]["environment"]["CITYGO_AI_PROFILE"], self.marker)
         self.assertEqual(spec["services"]["api"]["environment"]["LLM_PROVIDER"], "routerai")
         for role in ("web", "worker", "backup"):
             self.assertNotIn("CITYGO_AI_PROFILE", spec["services"][role].get("environment", {}))
         for text in (json.dumps(result), self.plan["files"]["compose.json"].decode()):
             self.assertNotIn("synthetic-not-live", text)
             self.assertNotIn("Synthetic offline fixture", text)
+
+
+@unittest.skipUnless(sys.platform.startswith("linux"), "Linux protected atomic cutover")
+class CityGo10xCutover(RouterAiCutover):
+    profile = s.CITYGO_10X_PROFILE
+    marker = "routerai-citygo-10x-v1"
+
+    def test_closed_generation_never_mounts_or_publishes_yookassa_credentials(self):
+        self.finish()
+        spec = json.loads(self.plan["files"]["compose.json"])
+        self.assertEqual(json.loads(self.api.read_bytes())["YOOKASSA_MODE"], "disabled")
+        self.assertEqual(s.approval(self.start_approval.path.read_bytes(), time.time())["version"], 3)
+        self.assertNotIn("YOOKASSA", self.plan["files"]["compose.json"].decode())
+        self.assertEqual(set(spec["services"]), {"api", "web", "worker", "backup"})
+        self.assertTrue(self.host.closed)
+        self.assertFalse((self.state / w.ADMISSION).exists())
 
 
 if __name__ == "__main__": unittest.main()
