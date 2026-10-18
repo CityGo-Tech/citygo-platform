@@ -1,7 +1,7 @@
 import { z } from "zod";
 
-// These contracts describe test checkout only. A redirect or client report is
-// never payment evidence; the server must reconcile with the provider.
+// The server selects the test/live shop. A redirect or client report is never
+// payment evidence; the server must reconcile with that configured provider.
 export const createTopupSchema = z.strictObject({
   requestId: z.uuid(),
   amountKopeks: z.number().int().min(100).max(1_000_000),
@@ -14,7 +14,7 @@ export const topupOrderSchema = z
     amountKopeks: createTopupSchema.shape.amountKopeks,
     creditMicros: z.number().int().min(1_000_000).max(10_000_000_000),
     currency: z.literal("RUB"),
-    test: z.literal(true),
+    test: z.boolean(),
     status: z.enum([
       "creating",
       "pending",

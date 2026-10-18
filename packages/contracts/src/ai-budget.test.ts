@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   aiBudgetInputSchema,
+  formatMoneyCounterMicros,
   formatMoneyMicros,
   parseMoneyMicros,
 } from "./ai-budget.js";
@@ -33,6 +34,19 @@ test("money decimal conversion is exact, bounded and never silently rounded", ()
     assert.equal(parseMoneyMicros(text), null, text);
   for (const value of [-1, 0.1, Infinity, 1000000000001])
     assert.throws(() => formatMoneyMicros(value));
+});
+
+test("cumulative money counters render exactly without raising input limits", () => {
+  assert.equal(formatMoneyCounterMicros(0), "0");
+  assert.equal(formatMoneyCounterMicros(1_000_000_000_001), "1000000.000001");
+  assert.equal(
+    formatMoneyCounterMicros(Number.MAX_SAFE_INTEGER),
+    "9007199254.740991",
+  );
+  assert.equal(parseMoneyMicros("9007199254.740991"), null);
+  assert.throws(() => formatMoneyMicros(Number.MAX_SAFE_INTEGER));
+  for (const value of [-1, 0.1, Infinity, NaN, Number.MAX_SAFE_INTEGER + 1])
+    assert.throws(() => formatMoneyCounterMicros(value));
 });
 test("money settings are strict integers, explicit currency and unique bounded rules", () => {
   const input = {
@@ -101,4 +115,43 @@ test("personal daily cap distinguishes omitted, null, zero and exact currency mi
       false,
     );
   }
+});
+
+test("RouterAI balance mode is explicit, RUB-only, and has truly absent global caps", () => {
+  const input = {
+    expectedRevision: 1,
+    enabled: true,
+    mode: "routerai_balance",
+    currency: "RUB",
+    dailyLimitMicros: null,
+    totalLimitMicros: null,
+    userDailyLimitMicros: null,
+    rules: [{ key: "a".repeat(64), attemptCeilingMicros: 1000000 }],
+  };
+  assert.deepEqual(aiBudgetInputSchema.parse(input), input);
+  for (const patch of [
+    { mode: undefined },
+    { mode: "fixed" },
+    { mode: "unlimited" },
+    { currency: "USD" },
+    { dailyLimitMicros: 0 },
+    { totalLimitMicros: 1000000000000 },
+    { rules: [] },
+    { rules: [{ ...input.rules[0], attemptCeilingMicros: null }] },
+  ])
+    assert.equal(
+      aiBudgetInputSchema.safeParse({ ...input, ...patch }).success,
+      false,
+      JSON.stringify(patch),
+    );
+  const { mode: _mode, ...legacy } = {
+    ...input,
+    dailyLimitMicros: 1,
+    totalLimitMicros: 1,
+    userDailyLimitMicros: 0,
+  };
+  assert.equal(_mode, "routerai_balance");
+  const parsed = aiBudgetInputSchema.parse(legacy);
+  assert.equal(Object.hasOwn(parsed, "mode"), false);
+  assert.equal(parsed.userDailyLimitMicros, 0);
 });

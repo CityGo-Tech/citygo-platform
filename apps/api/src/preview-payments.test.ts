@@ -134,8 +134,24 @@ test("non-NPD preparation is still blocked and old --profile cannot guess the op
   });
   const result = f.run(["--input", input]);
   assert.equal(result.status, 2);
-  assert.equal(JSON.parse(result.stdout).fiscalProfileTechnicallyValid, true);
-  assert.equal(JSON.parse(result.stdout).blockers.length, 6);
+  const report = JSON.parse(result.stdout);
+  assert.equal(report.fiscalProfileTechnicallyValid, true);
+  // Paid-source allocation and the refund journal are implemented. They must
+  // not remain fictional gaps, but a valid preparation file is still neither
+  // merchant/fiscal acceptance nor authority to open the service.
+  assert.deepEqual(
+    report.blockers.map((gap: { code: string }) => gap.code),
+    [
+      "LIVE_MERCHANT_ACCEPTANCE_PENDING",
+      "FISCAL_WORKFLOW_LIVE_ACCEPTANCE_PENDING",
+      "BACKGROUND_RECONCILIATION_RELEASE_PENDING",
+      "LIVE_RELEASE_PROFILE_NOT_IMPLEMENTED",
+    ],
+  );
+  assert.equal(report.activationSupported, false);
+  assert.equal(report.readyForLive, false);
+  assert.equal(report.taxComplianceConfirmed, false);
+  assert.equal(report.credentialsChecked, false);
   const legacy = await f.file("profile.json", profile);
   const legacyResult = f.run(["--profile", legacy]);
   assert.equal(legacyResult.status, 2);

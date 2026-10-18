@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import { RouterAIProvider } from "./routerai.js";
+import {
+  RouterAIProvider,
+  RouterAIInsufficientFundsError,
+} from "./routerai.js";
 import type { ModelStreamEvent } from "./provider.js";
 
 const chunk = (delta: object, finish_reason: string | null = null) => ({
@@ -405,6 +408,53 @@ for (const status of [401, 402, 404, 429, 500, 503]) {
     assert.equal(calls, 1);
   });
 }
+
+test("prepaid exhaustion is a redacted non-retryable 402, never inferred from an error body", async () => {
+  for (const status of [402, 500]) {
+    let posts = 0,
+      retries = 0,
+      identities = 0;
+    const provider = makeProvider(async () => {
+      posts++;
+      return new Response("PRIVATE 402 insufficient funds secret", {
+        status,
+        headers: { "x-generation-id": "untrusted-error-identity" },
+      });
+    });
+    await assert.rejects(
+      async () => {
+        for await (const event of provider.stream(
+          "",
+          [],
+          new AbortController().signal,
+          {
+            beforeRetry: async () => {
+              retries++;
+            },
+            billing: {
+              reference: "synthetic",
+              onGeneration: async () => {
+                identities++;
+              },
+            },
+          },
+        ))
+          void event;
+      },
+      (error: unknown) => {
+        assert.equal(
+          error instanceof RouterAIInsufficientFundsError,
+          status === 402,
+        );
+        assert.doesNotMatch(String(error), /PRIVATE|secret/);
+        return true;
+      },
+    );
+    assert.equal(posts, 1);
+    assert.equal(retries, 0);
+    if (status === 402) assert.equal(identities, 0);
+  }
+});
 
 test("RouterAI rejects wrong content type, truncated and oversized SSE frames", async () => {
   for (const response of [

@@ -1,5 +1,6 @@
 import {
   aiBudgetInputSchema,
+  MAX_MONEY_MICROS,
   type AiBudgetInput,
   type AiBudgetSettings,
   type AiBudgetStatus,
@@ -10,14 +11,26 @@ import {
 import type { Database, Sql } from "./index.js";
 import { DomainError } from "./errors.js";
 
+function ledgerCounter(value: string): number {
+  const counter = Number(value);
+  if (!Number.isSafeInteger(counter) || counter < 0)
+    throw new DomainError(
+      503,
+      "Денежный журнал AI требует проверки. Новые резервы остановлены.",
+      "AI_BUDGET_UNAVAILABLE",
+    );
+  return counter;
+}
+
 async function readBudget(tx: Sql) {
   const row = (
     await tx.query<{
       revision: number;
       enabled: boolean;
+      mode: AiBudgetSettings["mode"];
       currency: AiBudgetSettings["currency"];
-      daily_limit_micros: string;
-      total_limit_micros: string;
+      daily_limit_micros: string | null;
+      total_limit_micros: string | null;
       total_reserved_micros: string;
       user_daily_limit_micros: string | null;
       rules: AiBudgetSettings["rules"];
@@ -41,18 +54,21 @@ async function readBudget(tx: Sql) {
     settings: {
       revision: row.revision,
       enabled: row.enabled,
+      mode: row.mode,
       currency: row.currency,
-      dailyLimitMicros: Number(row.daily_limit_micros),
-      totalLimitMicros: Number(row.total_limit_micros),
+      dailyLimitMicros:
+        row.daily_limit_micros === null ? null : Number(row.daily_limit_micros),
+      totalLimitMicros:
+        row.total_limit_micros === null ? null : Number(row.total_limit_micros),
       userDailyLimitMicros:
         row.user_daily_limit_micros == null
           ? null
           : Number(row.user_daily_limit_micros),
       rules: row.rules,
     },
-    totalReservedMicros: Number(row.total_reserved_micros),
+    totalReservedMicros: ledgerCounter(row.total_reserved_micros),
     day: row.day,
-    reservedTodayMicros: Number(row.today),
+    reservedTodayMicros: ledgerCounter(row.today),
     reservedAt: row.reserved_at,
     resetAt: row.reset_at,
   };
@@ -74,7 +90,7 @@ async function userReservedToday(
       [userId, currency, day],
     )
   ).rows[0]!;
-  return Number(row.reserved);
+  return ledgerCounter(row.reserved);
 }
 
 // Informational snapshot for the authenticated account only. Admission rechecks
@@ -157,6 +173,22 @@ export async function changeAiBudget(
         "REVISION_CONFLICT",
         current.settings.revision,
       );
+    const mode = input.mode ?? current.settings.mode;
+    // A legacy editor must not implicitly change a newly selected mode. It
+    // cannot express null global caps, so fail instead of restoring fixed caps.
+    if (
+      (mode === "routerai_balance" &&
+        (input.currency !== "RUB" ||
+          input.dailyLimitMicros !== null ||
+          input.totalLimitMicros !== null ||
+          rules.some((rule) => rule.policy.provider !== "routerai"))) ||
+      (mode === "fixed" &&
+        (input.dailyLimitMicros === null || input.totalLimitMicros === null))
+    )
+      throw new DomainError(
+        409,
+        "Режим бюджета или его ограничения изменились. Обновите настройки и подтвердите режим явно.",
+      );
     if (
       current.totalReservedMicros > 0 &&
       input.currency !== current.settings.currency
@@ -166,8 +198,10 @@ export async function changeAiBudget(
         "После первого резерва валюту менять нельзя. Автоматической конвертации нет.",
       );
     if (
-      input.totalLimitMicros < current.totalReservedMicros ||
-      input.dailyLimitMicros < current.reservedTodayMicros
+      (input.totalLimitMicros !== null &&
+        input.totalLimitMicros < current.totalReservedMicros) ||
+      (input.dailyLimitMicros !== null &&
+        input.dailyLimitMicros < current.reservedTodayMicros)
     )
       throw new DomainError(
         409,
@@ -176,6 +210,7 @@ export async function changeAiBudget(
     const next: AiBudgetSettings = {
       revision: current.settings.revision + 1,
       enabled: input.enabled,
+      mode,
       currency: input.currency,
       dailyLimitMicros: input.dailyLimitMicros,
       totalLimitMicros: input.totalLimitMicros,
@@ -189,7 +224,7 @@ export async function changeAiBudget(
       rules,
     };
     await tx.query(
-      `update ai_budget set revision=$1,enabled=$2,currency=$3,daily_limit_micros=$4,total_limit_micros=$5,rules=$6,user_daily_limit_micros=$7 where id=1`,
+      `update ai_budget set revision=$1,enabled=$2,currency=$3,daily_limit_micros=$4,total_limit_micros=$5,rules=$6,user_daily_limit_micros=$7,mode=$8 where id=1`,
       [
         next.revision,
         next.enabled,
@@ -198,6 +233,7 @@ export async function changeAiBudget(
         next.totalLimitMicros,
         JSON.stringify(rules),
         next.userDailyLimitMicros,
+        next.mode,
       ],
     );
     await tx.query(
@@ -214,7 +250,12 @@ export async function reserveAiMoney(
   tx: Sql,
   execution: AiExecution,
   userId: string,
-): Promise<AiMoneyReservation & { reservedAt: string }> {
+): Promise<
+  AiMoneyReservation & {
+    reservedAt: string;
+    budgetMode: AiBudgetSettings["mode"];
+  }
+> {
   await tx.query("select id from ai_budget where id=1 for update");
   const current = await readBudget(tx);
   const { settings } = current;
@@ -234,6 +275,23 @@ export async function reserveAiMoney(
     throw new DomainError(
       503,
       "Денежный резерв для этой модели и её ограничений не подтверждён администратором.",
+      "AI_BUDGET_UNAVAILABLE",
+    );
+  if (
+    (settings.mode === "routerai_balance" &&
+      (settings.currency !== "RUB" ||
+        settings.dailyLimitMicros !== null ||
+        settings.totalLimitMicros !== null ||
+        execution.policy.provider !== "routerai" ||
+        rule.policy.provider !== "routerai")) ||
+    (settings.mode === "fixed" &&
+      (settings.dailyLimitMicros === null ||
+        settings.totalLimitMicros === null)) ||
+    (settings.mode !== "fixed" && settings.mode !== "routerai_balance")
+  )
+    throw new DomainError(
+      503,
+      "Режим денежного бюджета не подходит для выбранного провайдера.",
       "AI_BUDGET_UNAVAILABLE",
     );
   const amount = rule.attemptCeilingMicros;
@@ -258,8 +316,14 @@ export async function reserveAiMoney(
   if (
     !Number.isSafeInteger(amount) ||
     amount <= 0 ||
-    amount > settings.totalLimitMicros - current.totalReservedMicros ||
-    amount > settings.dailyLimitMicros - current.reservedTodayMicros
+    amount > MAX_MONEY_MICROS ||
+    // Never round lifetime audit counters after the CityGo money cap is removed.
+    amount > Number.MAX_SAFE_INTEGER - current.totalReservedMicros ||
+    amount > Number.MAX_SAFE_INTEGER - current.reservedTodayMicros ||
+    (settings.totalLimitMicros !== null &&
+      amount > settings.totalLimitMicros - current.totalReservedMicros) ||
+    (settings.dailyLimitMicros !== null &&
+      amount > settings.dailyLimitMicros - current.reservedTodayMicros)
   )
     throw new DomainError(
       429,
@@ -280,5 +344,6 @@ export async function reserveAiMoney(
     revision: settings.revision,
     ruleKey: execution.key,
     reservedAt: current.reservedAt,
+    budgetMode: settings.mode,
   };
 }

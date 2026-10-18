@@ -15,33 +15,34 @@ import {
 } from "@citygo/contracts";
 import { DomainError, PaymentRefunds, type Database } from "@citygo/db";
 import { tokenHash } from "./auth.js";
-import { prepareTestPayments } from "./payments.js";
+import { preparePayments } from "./payments.js";
 import {
-  YooKassaTestRefundClient,
-  YooKassaTestRefundError,
+  YooKassaRefundClient,
+  YooKassaRefundError,
 } from "./yookassa-refunds.js";
 
-export type TestRefundClient = Pick<
-  YooKassaTestRefundClient,
+export type RefundClient = Pick<
+  YooKassaRefundClient,
   "createRefund" | "getRefund"
 >;
-export function prepareTestRefunds(
+export function prepareRefunds(
   config: ReturnType<typeof readConfig>,
-  options: { testing?: boolean; client?: TestRefundClient } = {},
-): TestRefundClient | undefined {
+  options: { testing?: boolean; client?: RefundClient } = {},
+): RefundClient | undefined {
   if (
     options.client !== undefined &&
     (config.NODE_ENV !== "test" ||
       options.testing !== true ||
-      config.YOOKASSA_MODE !== "test")
+      config.YOOKASSA_MODE === "disabled")
   )
     throw new Error(
       "Synthetic refund clients require the isolated test harness",
     );
-  if (!prepareTestPayments(config)) return;
+  if (!preparePayments(config)) return;
   return (
     options.client ??
-    new YooKassaTestRefundClient({
+    new YooKassaRefundClient({
+      mode: config.YOOKASSA_MODE as "test" | "live",
       shopId: config.YOOKASSA_SHOP_ID!,
       secretKey: config.YOOKASSA_SECRET_KEY!,
     })
@@ -71,13 +72,10 @@ function output<T>(schema: z.ZodType<T>, value: unknown): T {
   return parsed.data;
 }
 function failure(error: unknown) {
-  if (
-    error instanceof YooKassaTestRefundError &&
-    error.code === "invalid_input"
-  )
+  if (error instanceof YooKassaRefundError && error.code === "invalid_input")
     return { reason: "manual_review_required" as const, review: true };
   if (
-    error instanceof YooKassaTestRefundError &&
+    error instanceof YooKassaRefundError &&
     ["payment_mismatch", "invalid_response"].includes(error.code)
   )
     return { reason: "payment_mismatch" as const, review: true };
@@ -85,28 +83,25 @@ function failure(error: unknown) {
 }
 
 // The reads expose existing history even with checkout disabled. Monetary HTTP
-// commands are sandbox-only: there is intentionally no live refund adapter.
+// commands use an explicitly selected merchant/mode; the ledger rechecks both.
 export function registerPaymentRefunds(
   app: FastifyInstance,
   options: {
     db: Database;
     config: ReturnType<typeof readConfig>;
     sessionName: string;
-    client?: TestRefundClient;
+    client?: RefundClient;
     authenticate: (request: FastifyRequest) => Promise<{ id: string }>;
   },
 ) {
   const refunds = new PaymentRefunds(options.db);
   const expected = {
     merchantId: options.config.YOOKASSA_SHOP_ID ?? "",
-    test: true,
+    test: options.config.YOOKASSA_MODE === "test",
   };
   const available = () => {
     if (!options.client)
-      throw new DomainError(
-        503,
-        "Сейчас доступен только изолированный тестовый контур возвратов",
-      );
+      throw new DomainError(503, "Возвраты сейчас отключены");
     return options.client;
   };
   async function context(request: FastifyRequest) {

@@ -53,7 +53,7 @@ export type PaymentTopupOrder = {
   amountKopeks: number;
   currency: "RUB";
   merchantId: string;
-  test: true;
+  test: boolean;
   returnUrl: string;
   createPayload: {
     amount: { value: string; currency: "RUB" };
@@ -125,17 +125,17 @@ export class PaymentTopupOrders {
     requestId: string,
     amountKopeks: number,
     merchantId: string,
-    test: true,
+    test: boolean,
     returnUrl: string,
   ) {
     creditUserIdSchema.parse(userId);
     idSchema.parse(requestId);
     amountSchema.parse(amountKopeks);
     merchantSchema.parse(merchantId);
-    z.literal(true).parse(test);
+    z.boolean().parse(test);
     returnUrlSchema.parse(returnUrl);
     return this.db.transaction(async (tx) => {
-      await lockPaymentMode(tx, "test");
+      await lockPaymentMode(tx, test ? "test" : "real");
       await this.lockUser(tx, userId);
       const existing = (
         await tx.query<{ id: string }>(
@@ -166,7 +166,9 @@ export class PaymentTopupOrders {
         capture: true,
         confirmation: { type: "redirect", return_url: returnUrl },
         metadata: { citygo_order_id: id },
-        description: "Пополнение тестового баланса CityGo",
+        description: test
+          ? "Пополнение тестового баланса CityGo"
+          : "Пополнение баланса CityGo",
       };
       await tx.query(
         `insert into payment_topup_orders(id,user_id,request_id,amount_kopeks,merchant_id,test,return_url,create_payload)

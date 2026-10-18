@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import {
+  YooKassaRefundClient,
+  YooKassaRefundError,
   YooKassaTestRefundClient,
   YooKassaTestRefundError,
   type YooKassaTestRefundInput,
@@ -128,6 +130,198 @@ test("refund transport accepts sandbox credentials only and does not serialize s
     );
   assert.equal(JSON.stringify(fixture([]).client), "{}");
 });
+
+test("refund mode must be explicit and key prefix must match before HTTP", () => {
+  assert.equal(YooKassaRefundError, YooKassaTestRefundError);
+  for (const options of [
+    { mode: "live", shopId, secretKey },
+    { mode: "test", shopId, secretKey: "live_SYNTHETIC_NOT_REAL" },
+    { mode: undefined, shopId, secretKey },
+    { mode: "live", shopId, secretKey: "live_" },
+    { mode: "live", shopId, secretKey: "live_PRIVATE:key" },
+    { mode: "live", shopId, secretKey: "live_PRIVATE\nkey" },
+    { mode: "live", shopId: "0", secretKey: "live_SYNTHETIC_NOT_REAL" },
+  ])
+    assert.throws(
+      () =>
+        new YooKassaRefundClient(
+          options as ConstructorParameters<typeof YooKassaRefundClient>[0],
+        ),
+      (error: unknown) =>
+        error instanceof YooKassaRefundError &&
+        error.code === "configuration" &&
+        error.outcome === "not_sent" &&
+        !/SYNTHETIC|PRIVATE/.test(String(error) + JSON.stringify(error)),
+    );
+  assert.throws(
+    () =>
+      new YooKassaTestRefundClient({
+        ...{ mode: "live" },
+        shopId,
+        secretKey: "live_SYNTHETIC_NOT_REAL",
+      }),
+    YooKassaRefundError,
+  );
+});
+
+for (const mode of ["test", "live"] as const) {
+  function modeFixture(responses: (() => Response | Promise<Response>)[]) {
+    const calls: { url: string; init: RequestInit }[] = [];
+    const client = new YooKassaRefundClient({
+      mode,
+      shopId,
+      secretKey: mode + "_SYNTHETIC_NOT_REAL",
+      fetch: async (url, init) => {
+        calls.push({ url: String(url), init: init ?? {} });
+        const next = responses[calls.length - 1];
+        assert.ok(next, "No unplanned requests or implicit retries");
+        return next();
+      },
+    });
+    return { client, calls };
+  }
+  const modePayment = (i: YooKassaTestRefundInput, refunded = "0.00") => ({
+    ...payment(i, refunded),
+    test: mode === "test",
+  });
+
+  test(`${mode} refund POST and settlement GET use the original merchant/mode, never invented refund fields`, async () => {
+    const i = input();
+    const payload = {
+      payment_id: i.paymentId,
+      amount: { value: "1.01", currency: "RUB" },
+      description:
+        mode === "test" ? "Тестовый возврат CityGo" : "Возврат CityGo",
+      metadata: { citygo_refund_id: i.refundRequestId },
+    };
+    const f = modeFixture([
+      () => json(modePayment(i)),
+      () => json(refund(i, "succeeded")),
+      () => json(refund(i, "succeeded")),
+      () => json(modePayment(i, "1.01")),
+    ]);
+    const created = await f.client.createRefund({
+      ...i,
+      createPayload: payload,
+    });
+    assert.equal(created.test, mode === "test");
+    assert.equal(created.observation, "create_response");
+    assert.equal(created.refundedAmountKopeks, 0);
+    assert.deepEqual(JSON.parse(String(f.calls[1]!.init.body)), payload);
+    const observed = await f.client.getRefund(refundId, i);
+    assert.equal(observed.test, mode === "test");
+    assert.equal(observed.observation, "server_get");
+    assert.equal(observed.refundedAmountKopeks, 101);
+    assert.deepEqual(
+      f.calls.map((call) => call.init.method),
+      ["GET", "POST", "GET", "GET"],
+    );
+    assert.equal(
+      new Headers(f.calls[1]!.init.headers).get("Idempotence-Key"),
+      i.refundRequestId,
+    );
+    assert.equal(
+      new Headers(f.calls[1]!.init.headers).get("Authorization"),
+      "Basic " +
+        Buffer.from(shopId + ":" + mode + "_SYNTHETIC_NOT_REAL").toString(
+          "base64",
+        ),
+    );
+    assert.equal(JSON.stringify(f.client), "{}");
+  });
+
+  test(`${mode} cross-mode or wrong-original payment cannot authorize a refund POST or settlement`, async () => {
+    for (const patch of [
+      { test: mode !== "test" },
+      { test: undefined },
+      { test: "false" },
+      { recipient: { account_id: "999999" } },
+      { metadata: { citygo_order_id: randomUUID() } },
+      { amount: { value: "100.00", currency: "RUB" } },
+    ]) {
+      const i = input();
+      const create = modeFixture([() => json({ ...modePayment(i), ...patch })]);
+      await rejected(create.client.createRefund(i), "payment_mismatch");
+      assert.equal(create.calls.length, 1);
+      const read = modeFixture([
+        () => json(refund(i, "succeeded")),
+        () => json({ ...modePayment(i, "1.01"), ...patch }),
+      ]);
+      await rejected(
+        read.client.getRefund(refundId, i),
+        "payment_mismatch",
+        "observation_failed",
+      );
+      assert.equal(read.calls.length, 2);
+    }
+  });
+
+  test(`${mode} ambiguous POST remains unknown with no implicit retry and same immutable body on explicit replay`, async () => {
+    const i = input();
+    const f = modeFixture([
+      () => json(modePayment(i)),
+      () => new Response("PRIVATE response body", { status: 500 }),
+      () => json(modePayment(i)),
+      () => json(refund(i)),
+    ]);
+    await rejected(f.client.createRefund(i), "http", "unknown");
+    assert.equal(f.calls.length, 2);
+    await f.client.createRefund(i);
+    assert.equal(f.calls.length, 4);
+    assert.equal(f.calls[1]!.init.body, f.calls[3]!.init.body);
+    assert.equal(
+      new Headers(f.calls[1]!.init.headers).get("Idempotence-Key"),
+      new Headers(f.calls[3]!.init.headers).get("Idempotence-Key"),
+    );
+  });
+
+  test(`${mode} persisted refund description cannot cross modes or drift on retry`, async () => {
+    const i = input();
+    const f = modeFixture([]);
+    await rejected(
+      f.client.createRefund({
+        ...i,
+        createPayload: {
+          payment_id: i.paymentId,
+          amount: { value: "1.01", currency: "RUB" },
+          description:
+            mode === "test" ? "Возврат CityGo" : "Тестовый возврат CityGo",
+          metadata: { citygo_refund_id: i.refundRequestId },
+        },
+      }),
+      "invalid_input",
+    );
+    assert.equal(f.calls.length, 0);
+  });
+
+  test(`${mode} expired create window stops before HTTP and old refunds remain GET-only`, async () => {
+    const i = { ...input(), createdAt: "2025-01-01T00:00:00.000Z" };
+    const f = modeFixture([
+      () => json(refund(i, "succeeded")),
+      () => json(modePayment(i, "1.01")),
+    ]);
+    await rejected(f.client.createRefund(i), "invalid_input");
+    assert.equal(f.calls.length, 0);
+    assert.equal((await f.client.getRefund(refundId, i)).test, mode === "test");
+    assert.equal(f.calls.length, 2);
+  });
+
+  test(`${mode} one refund deadline bounds stalled POST and preserves unknown outcome`, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const i = input();
+    const f = modeFixture([
+      () => json(modePayment(i)),
+      () => new Promise<Response>(() => {}),
+    ]);
+    const pending = rejected(f.client.createRefund(i), "timeout", "unknown");
+    for (let n = 0; n < 20; n++) await Promise.resolve();
+    assert.equal(f.calls.length, 2);
+    assert.equal(f.calls[0]!.init.signal, f.calls[1]!.init.signal);
+    t.mock.timers.tick(10_001);
+    await pending;
+    assert.equal(f.calls[1]!.init.signal?.aborted, true);
+  });
+}
 
 test("refund create authenticates original sandbox payment first and sends exact frozen identity", async () => {
   const i = input();

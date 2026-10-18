@@ -2,6 +2,7 @@
 import { useState } from "react";
 import {
   formatMoneyMicros,
+  formatMoneyCounterMicros,
   type AiAccess,
   type AiConsentInput,
 } from "@citygo/contracts";
@@ -64,7 +65,7 @@ export function AiAccessPanel({
                 ? "Ответы RouterAI — по подтверждённой стоимости без наценки. Перед запросом сумма резервируется; при неизвестной стоимости резерв остаётся на сверке. Доли микрорубля округляются вниз."
                 : "Автоматическое списание за ответы пока не подключено."}{" "}
             {access.credit.topUpAvailable === true
-              ? "Доступна только тестовая проверка пополнения ниже."
+              ? "Пополнение доступно ниже. Перед оплатой проверьте режим платежа."
               : "Пополнение пока недоступно."}{" "}
             Бонус не включает ИИ и не заменяет общий бюджет сервиса.
           </p>
@@ -166,7 +167,7 @@ export function AiAccessPanel({
           {formatMoneyMicros(access.budget.limitMicros)}{" "}
           {access.budget.currency ?? "(валюта не выбрана)"} в сутки.
           Зарезервировано:{" "}
-          {formatMoneyMicros(access.budget.reservedTodayMicros)}. Остаток
+          {formatMoneyCounterMicros(access.budget.reservedTodayMicros)}. Остаток
           резерва: {formatMoneyMicros(access.budget.remainingMicros ?? 0)}.
           Обновление в 00:00 UTC (03:00 по Москве). Это резерв, не фактическое
           списание провайдера; общий бюджет сервиса также может ограничить

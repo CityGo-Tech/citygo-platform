@@ -16,6 +16,10 @@ grant select, insert on npd_receipt_tasks, npd_receipt_commands,
 -- Financial identity is immutable; history/events have no deletion privileges.
 grant select, insert on credit_source_lots, credit_hold_allocations,
   credit_refund_allocations, payment_refunds, payment_refund_events to citygo_api;
+-- Provider events are durable ID hints, never settlement proof or Worker jobs.
+grant select, insert on payment_notification_inbox to citygo_api;
+grant update (status,attempt_count,lease_token,lease_until,next_attempt_at,last_reason,processed_at)
+  on payment_notification_inbox to citygo_api;
 grant update (spent_micros,held_micros,refund_reserved_micros,refunded_micros)
   on credit_source_lots to citygo_api;
 grant update (spent_micros,state) on credit_hold_allocations to citygo_api;

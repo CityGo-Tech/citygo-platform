@@ -18,9 +18,10 @@ const tables = [
   "credit_refund_allocations",
   "payment_refunds",
   "payment_refund_events",
+  "payment_notification_inbox",
 ];
 
-test("the disposable release fixture rewinds only reviewed new schema and reapplies all eighteen migrations", async (t) => {
+test("the disposable release fixture rewinds only reviewed new schema and reapplies all twenty-one migrations", async (t) => {
   const db = await connectDatabase("pglite://:memory:");
   t.after(() => db.close());
   await migrate(db);
@@ -29,7 +30,7 @@ test("the disposable release fixture rewinds only reviewed new schema and reappl
     "utf8",
   );
   const rewind =
-    /psql\(\s*`(begin;\s*drop table payment_refund_events,payment_refunds[\s\S]*?commit)`/.exec(
+    /psql\(\s*`(begin;\s*drop table payment_notification_inbox;[\s\S]*?commit)`/.exec(
       source,
     );
   assert.ok(
@@ -62,6 +63,7 @@ test("the disposable release fixture rewinds only reviewed new schema and reappl
     "citygo_guard_credit_allocation",
     "guard_payment_refund_identity",
     "guard_payment_refund_event_immutable",
+    "citygo_guard_payment_notification",
   ])
     assert.equal(
       (await db.query("select 1 from pg_proc where proname=$1", [name])).rows
@@ -71,7 +73,7 @@ test("the disposable release fixture rewinds only reviewed new schema and reappl
   await migrate(db);
   assert.equal(
     (await db.query("select 1 from citygo_migrations")).rows.length,
-    18,
+    21,
   );
 });
 

@@ -1271,13 +1271,16 @@ test("upgrade 0011 → current preserves populated records and is replay-safe", 
     revisions: 0,
     xp: 0,
   });
-  assert.equal(
-    (
-      await db.query<{ n: number }>(
-        "select count(*)::int as n from citygo_migrations",
-      )
-    ).rows[0]!.n,
-    18,
+  const expectedMigrations = (
+    await readdir(new URL("../migrations/", import.meta.url))
+  )
+    .filter((name) => name.endsWith(".sql"))
+    .sort();
+  assert.equal(expectedMigrations.length, 21);
+  assert.equal(expectedMigrations.at(-1), "0021_payment_notifications.sql");
+  assert.deepEqual(
+    (await db.query("select name from citygo_migrations order by name")).rows,
+    expectedMigrations.map((name) => ({ name })),
   );
   const store = new HousingAnswers(db);
   assert.equal(

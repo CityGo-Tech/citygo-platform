@@ -21,6 +21,16 @@ type RouterAIOptions = {
   fetch?: typeof fetch;
 };
 
+// Fixed-recipient HTTP 402, not a text/body heuristic and not proof of a zero
+// bill. Callers must preserve monetary holds until independent reconciliation.
+export class RouterAIInsufficientFundsError extends Error {
+  readonly code = "PROVIDER_BALANCE_EXHAUSTED";
+  constructor() {
+    super("RouterAI generation failed or was interrupted");
+    this.name = "RouterAIInsufficientFundsError";
+  }
+}
+
 export class RouterAIProvider implements StreamingProvider {
   readonly name = "routerai" as const;
   constructor(
@@ -107,6 +117,18 @@ export class RouterAIProvider implements StreamingProvider {
           }),
         },
       );
+      if (
+        response.redirected ||
+        (response.url &&
+          response.url !== "https://routerai.ru/api/v1/chat/completions")
+      ) {
+        await response.body?.cancel().catch(() => {});
+        throw new Error("Invalid RouterAI response recipient");
+      }
+      if (response.status === 402) {
+        await response.body?.cancel().catch(() => {});
+        throw new RouterAIInsufficientFundsError();
+      }
       // Save identity before consuming the stream so a disconnect is auditable.
       const headerId = response.headers.get("x-generation-id");
       if (guard?.billing && headerId) {
@@ -143,8 +165,9 @@ export class RouterAIProvider implements StreamingProvider {
             ? { onGeneration: recordGeneration }
             : undefined,
       );
-    } catch {
+    } catch (error) {
       // Do not leak provider error bodies, credentials, prompts or network URLs.
+      if (error instanceof RouterAIInsufficientFundsError) throw error;
       throw new Error("RouterAI generation failed or was interrupted");
     }
   }

@@ -131,22 +131,37 @@ const businessTables = [
   "ai_credit_charges",
   "generated_artifacts",
 ];
-async function snapshot(db: Database) {
-  const data: Record<string, unknown> = {};
+type BusinessSnapshot = Record<string, { row: Record<string, unknown> }[]>;
+async function snapshot(db: Database): Promise<BusinessSnapshot> {
+  const data: BusinessSnapshot = {};
   // Preserve the complete pre-0013 user projection across upgrade. New access
   // fields are checked separately below, not ignored as migration side effects.
   for (const table of businessTables)
     data[table] = (
-      await db.query(
+      await db.query<{ row: Record<string, unknown> }>(
         `select ${table === "users" ? "to_jsonb(t)-'username'-'role'-'must_change_password'" : table === "ai_credit_accounts" ? "to_jsonb(t)-'billing_review_required'" : "to_jsonb(t)"} as row from ${table} t order by to_jsonb(t)::text`,
       )
     ).rows;
   data.quests = (
-    await db.query(
+    await db.query<{ row: Record<string, unknown> }>(
       "select to_jsonb(t)-'plan_id'-'plan_version' as row from user_quests t order by id",
     )
   ).rows;
   return data;
+}
+function withExplicitFixedBudgetMode(
+  before: BusinessSnapshot,
+): BusinessSnapshot {
+  // This projection is used ONLY across the old-schema -> 0020 boundary.
+  // Compare every old financial field unchanged and assert the one additive
+  // migration default explicitly, rather than stripping it from all snapshots.
+  return {
+    ...before,
+    ai_budget: before.ai_budget!.map(({ row }) => {
+      assert.equal(Object.hasOwn(row, "mode"), false);
+      return { row: { ...row, mode: "fixed" } };
+    }),
+  };
 }
 async function assertLegacyAccountDefaults(db: Database, userId: string) {
   assert.deepEqual(
@@ -174,6 +189,10 @@ async function assertLegacyAccountDefaults(db: Database, userId: string) {
       )
     ).rows,
     [{ id: 1, bootstrap_completed: false }],
+  );
+  assert.deepEqual(
+    (await db.query("select mode from ai_budget where id=1")).rows,
+    [{ mode: "fixed" }],
   );
 }
 async function financialFixture(db: Database, userId: string) {
@@ -208,9 +227,15 @@ for (const status of ["active", "completed"]) {
         [owner, row.id, `quest-complete:${row.id}`],
       );
     const before = await snapshot(db);
-    await migrate(db);
-    await migrate(db);
+    // First isolate CG-009's original 0009 -> 0011 backfill: it must preserve
+    // every old financial/progress field before unrelated newer DDL is applied.
+    await applyThrough(db, "0011_quest_plan_validate.sql");
     assert.deepEqual(await snapshot(db), before);
+    await migrate(db);
+    const expected = withExplicitFixedBudgetMode(before);
+    assert.deepEqual(await snapshot(db), expected);
+    await migrate(db);
+    assert.deepEqual(await snapshot(db), expected);
     await assertLegacyAccountDefaults(db, owner);
     assert.deepEqual(
       (
@@ -232,7 +257,7 @@ for (const status of ["active", "completed"]) {
     assert.equal(board.xp, 120);
     assert.equal(board.quests.length, 2);
     assert.deepEqual(board.quests[0]!.plan, ref);
-    assert.deepEqual(await snapshot(db), before);
+    assert.deepEqual(await snapshot(db), expected);
   });
 }
 
@@ -699,7 +724,7 @@ test("existing least-privilege API grants can start/complete after identity trig
     );
 });
 
-test("container smoke's actual synthetic rewind/seed SQL upgrades from 9 to 18 and preserves populated history", async (t) => {
+test("container smoke's actual synthetic rewind/seed SQL upgrades from 9 to 21 and preserves populated history", async (t) => {
   const db = await fixture(t);
   // Read literal fixture SQL without importing/executing the Docker harness.
   // Fail if its representation changes; never evaluate JavaScript from a file.
@@ -720,11 +745,16 @@ test("container smoke's actual synthetic rewind/seed SQL upgrades from 9 to 18 a
   await db.exec(sql[1]!);
   const before = await snapshot(db);
   await migrate(db);
-  assert.equal(
-    (await db.query("select name from citygo_migrations")).rows.length,
-    18,
+  const expectedNames = (await readdir(directory))
+    .filter((name) => name.endsWith(".sql"))
+    .sort();
+  assert.equal(expectedNames.length, 21);
+  assert.equal(expectedNames.at(-1), "0021_payment_notifications.sql");
+  assert.deepEqual(
+    (await db.query("select name from citygo_migrations order by name")).rows,
+    expectedNames.map((name) => ({ name })),
   );
-  assert.deepEqual(await snapshot(db), before);
+  assert.deepEqual(await snapshot(db), withExplicitFixedBudgetMode(before));
   await assertLegacyAccountDefaults(db, "900009");
   const cleanup = script.match(
     /"(begin; delete from credit_hold_allocations[^"\n]+commit)"/,

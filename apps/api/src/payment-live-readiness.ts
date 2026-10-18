@@ -10,27 +10,19 @@ import {
 // submitted by a client or to the presence of a secret key.
 const implementationGaps = [
   {
-    code: "LIVE_CHECKOUT_NOT_IMPLEMENTED",
-    message: "В runtime поддерживаются только disabled и test, не live.",
-  },
-  {
-    code: "PAID_SOURCE_ALLOCATION_NOT_IMPLEMENTED",
-    message: "Нужны оплаченные лоты и распределение AI-резервов по источникам.",
-  },
-  {
-    code: "REFUND_LEDGER_NOT_IMPLEMENTED",
+    code: "LIVE_MERCHANT_ACCEPTANCE_PENDING",
     message:
-      "Нужны резерв возврата, проводки и обработка неизвестного результата.",
+      "Live transport и денежный журнал реализованы; боевой магазин, реквизиты и приёмка конкретного подключения ещё не подтверждены.",
   },
   {
-    code: "FISCAL_TRACKING_NOT_IMPLEMENTED",
+    code: "FISCAL_WORKFLOW_LIVE_ACCEPTANCE_PENDING",
     message:
       "Реестр ручных чеков не заменяет полный live-путь: нужны сверка поступлений/возвратов, своевременная выдача и контроль приёма оплат.",
   },
   {
-    code: "BACKGROUND_RECONCILIATION_NOT_IMPLEMENTED",
+    code: "BACKGROUND_RECONCILIATION_RELEASE_PENDING",
     message:
-      "Нужны долговечные уведомления и сверка платежей/возвратов после начисления.",
+      "Долговечная очередь и ограниченная GET-сверка реализованы; регулярный drain и контроль его сбоев ещё не выпущены.",
   },
   {
     code: "LIVE_RELEASE_PROFILE_NOT_IMPLEMENTED",

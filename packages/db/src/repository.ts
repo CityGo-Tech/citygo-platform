@@ -198,6 +198,19 @@ export class Repository {
         [input.userId, day],
       );
       const money = await reserveAiMoney(tx, input.execution, input.userId);
+      // The explicit uncapped operator mode is only for the approved paid ×10
+      // flow, never a way for an old/no-charge API process to consume RouterAI
+      // without reserving user credit. Use the mode read under the budget lock;
+      // refusal rolls back every quota and monetary counter in this transaction.
+      if (
+        money.budgetMode === "routerai_balance" &&
+        (!this.creditCharging || this.creditTariff.version !== "citygo-10x-v1")
+      )
+        fail(
+          503,
+          "Для режима баланса RouterAI нужны списания CityGo по тарифу ×10.",
+          "AI_CREDIT_UNAVAILABLE",
+        );
       if (this.creditCharging && money.currency !== "RUB")
         fail(
           503,

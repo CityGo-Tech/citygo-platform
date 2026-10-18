@@ -21,14 +21,14 @@ export type TopupActions = {
 
 const statusLabels: Record<TopupOrder["status"], string> = {
   creating: "Платёж создаётся. Повторите проверку позже.",
-  pending: "Ожидается тестовая оплата.",
-  succeeded: "ЮKassa подтвердила тестовую оплату.",
-  canceled: "Тестовый платёж отменён.",
+  pending: "Ожидается оплата.",
+  succeeded: "ЮKassa подтвердила оплату.",
+  canceled: "Платёж отменён.",
   review_required:
     "Нужна проверка владельцем сервиса. Новый платёж пока не создавайте.",
 };
 
-/** A test-only checkout inside the existing balance card, not a return-URL handler. */
+/** Explicit server-selected mode, never a return-URL settlement handler. */
 export function TestTopupPanel({
   userId,
   actions,
@@ -131,18 +131,18 @@ export function TestTopupPanel({
     order?.status === "canceled" ||
     (order?.status === "succeeded" && order.credited);
   return (
-    <section aria-label="Тестовое пополнение ЮKassa">
-      <h3>Тестовое пополнение ЮKassa</h3>
+    <section aria-label="Пополнение баланса ЮKassa">
+      <h3>Пополнение баланса ЮKassa</h3>
       <p>
-        Это проверка подключения: настоящие деньги не списываются. Тестовый
-        платёж не оплачивает реальные запросы к AI. Реальные пополнения пока
-        недоступны.
+        Оплата 100 ₽ пополняет баланс на 100 ₽ CityGo. Создание платежа ещё не
+        списывает деньги и не подтверждает зачисление. Проверьте сумму и режим
+        ниже перед переходом на страницу ЮKassa.
       </p>
       <form onSubmit={create}>
         <label>
           Сумма, ₽ CityGo{" "}
           <input
-            aria-label="Сумма тестового пополнения"
+            aria-label="Сумма пополнения"
             inputMode="decimal"
             value={amount}
             disabled={locked || !!attempt}
@@ -150,28 +150,30 @@ export function TestTopupPanel({
           />
         </label>
         <p>
-          От 1 до 10 000 ₽. Тестовая оплата 100 ₽ соответствует 100 ₽ CityGo, не
-          1 000 ₽.
+          От 1 до 10 000 ₽. Оплата 100 ₽ соответствует 100 ₽ CityGo, не 1 000 ₽.
         </p>
         {!attempt?.orderId && (
           <Button
             type="submit"
             disabled={locked || !ready || paymentAmountKopeks(amount) === null}
           >
-            {attempt
-              ? "Повторить создание с прежним ID"
-              : "Создать тестовый платёж"}
+            {attempt ? "Повторить создание с прежним ID" : "Создать платёж"}
           </Button>
         )}
       </form>
       {attempt && <p>ID попытки: {attempt.requestId}</p>}
       {order && (
         <div role="status">
+          <p>
+            {order.test
+              ? "Тестовый режим: настоящие деньги не списываются. Тестовый баланс не оплачивает реальные AI-запросы."
+              : "Боевой платёж: на странице ЮKassa будут списаны настоящие деньги."}
+          </p>
           <p>{statusLabels[order.status]}</p>
           <p>
             {formatMoneyMicros(order.creditMicros)} ₽ CityGo ·{" "}
             {order.credited
-              ? "тестовое зачисление подтверждено сервером"
+              ? "зачисление подтверждено сервером"
               : "зачисление не подтверждено"}
           </p>
           <p>ID платежа: {order.orderId}</p>
@@ -184,13 +186,15 @@ export function TestTopupPanel({
             target="_blank"
             rel="noopener noreferrer"
           >
-            Открыть тестовую оплату ЮKassa
+            {order.test
+              ? "Открыть тестовую оплату ЮKassa"
+              : "Перейти к оплате ЮKassa"}
           </a>
         </p>
       )}
       {attempt?.orderId && (
         <Button type="button" disabled={locked} onClick={check}>
-          Проверить тестовый платёж
+          Проверить платёж
         </Button>
       )}
       {terminal && (
@@ -211,7 +215,7 @@ export function TestTopupPanel({
             }
           }}
         >
-          Новый тестовый платёж
+          Новый платёж
         </Button>
       )}
       <p>

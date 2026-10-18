@@ -15,6 +15,7 @@ import {
   seedRestartFixture,
   seedRestartNpdObligation,
   seedRestartRefundHistory,
+  seedRestartPaymentNotification,
 } from "./closed-account-restart-fixture.js";
 
 async function fixture(t: TestContext) {
@@ -289,6 +290,38 @@ test("closed restart rejects malformed or missing attestations without any write
   }
   for (const expectedUserCount of [-1, 1.5, 1001, NaN, Infinity])
     await assert.rejects(restart.plan({ expectedUserCount }));
+});
+
+test("closed restart preserves bound payment/refund notification hints and completion history byte-for-byte", async (t) => {
+  const { db, data, restart } = await fixture(t);
+  await seedRestartPaymentNotification(db, data.user);
+  const refund = await seedRestartRefundHistory(db, data.user, {
+    canceled: true,
+  });
+  await seedRestartPaymentNotification(db, data.user, {
+    refundId: refund.refundId,
+    processed: true,
+  });
+  const before = await captureRestartRows(db, [
+    ...retainedFinancialTables,
+    "payment_topup_orders",
+  ]);
+  const plan = await restart.plan({
+    expectedUserCount: 2,
+    maintenanceConfirmed: true,
+  });
+  assert.equal(plan.counts.payment_notification_inbox, 2);
+  assert.equal(plan.retained.includes("payment_notification_inbox"), true);
+  assert.deepEqual(plan.blockers, []);
+  assert.doesNotMatch(JSON.stringify(plan), /PRIVATE-|@example\.test/);
+  await restart.apply(await prepared(restart));
+  assert.deepEqual(
+    await captureRestartRows(db, [
+      ...retainedFinancialTables,
+      "payment_topup_orders",
+    ]),
+    before,
+  );
 });
 
 test("each unsafe blocker prevents the whole restart without changing accounting", async (t) => {

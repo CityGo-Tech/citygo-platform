@@ -303,3 +303,157 @@ test(
     }
   },
 );
+
+test(
+  "PostgreSQL: simultaneous live/test checkout has exactly one durable mode winner",
+  { skip: !testUrl },
+  async (t) => {
+    const f = await fixture();
+    t.after(f.close);
+    const orders = new PaymentTopupOrders(f.runtime);
+    const results = await Promise.allSettled(
+      [false, true].map((testPayment) =>
+        orders.create(
+          testPayment ? f.user : f.other,
+          randomUUID(),
+          10_000,
+          "synthetic-shop",
+          testPayment,
+          returnUrl,
+        ),
+      ),
+    );
+    assert.equal(results.filter((r) => r.status === "fulfilled").length, 1);
+    assert.equal(results.filter((r) => r.status === "rejected").length, 1);
+    const state = (
+      await f.db.query<{
+        test_payments_seen: boolean;
+        real_ai_admitted: boolean;
+      }>(
+        "select test_payments_seen,real_ai_admitted from account_security_state where id=1",
+      )
+    ).rows[0]!;
+    const saved = (
+      await f.db.query<{ test: boolean }>(
+        "select test from payment_topup_orders",
+      )
+    ).rows;
+    assert.equal(saved.length, 1);
+    assert.equal(state.test_payments_seen, saved[0]!.test);
+    assert.equal(state.real_ai_admitted, !saved[0]!.test);
+  },
+);
+
+test(
+  "PostgreSQL: live checkout works under unchanged narrow role and matching live credit creates one receipt and source",
+  { skip: !testUrl },
+  async (t) => {
+    const f = await fixture();
+    t.after(f.close);
+    const orders = new PaymentTopupOrders(f.runtime);
+    const request = randomUUID();
+    const order = await orders.create(
+      f.user,
+      request,
+      10_000,
+      "synthetic-shop",
+      false,
+      returnUrl,
+    );
+    assert.equal(order.test, false);
+    assert.equal(order.createPayload.description, "Пополнение баланса CityGo");
+    assert.deepEqual(
+      await orders.create(
+        f.user,
+        request,
+        10_000,
+        "synthetic-shop",
+        false,
+        returnUrl,
+      ),
+      order,
+    );
+    const payment = randomUUID();
+    const ledger = new AiCreditLedger(f.db);
+    const proof = {
+      providerPaymentId: payment,
+      paidKopeks: 10_000,
+      merchantId: "synthetic-shop",
+      test: false,
+      verifiedAt: "2026-10-18T00:00:00.000Z",
+      verification: "server_get_succeeded" as const,
+      currency: "RUB" as const,
+    };
+    await orders.recordProvider(f.user, order.id, {
+      providerPaymentId: payment,
+      status: "pending",
+    });
+    await assert.rejects(
+      orders.recordProvider(f.user, order.id, {
+        providerPaymentId: payment,
+        status: "succeeded",
+      }),
+    );
+    await ledger.topUpConfirmed(f.user, order.id, proof);
+    await ledger.topUpConfirmed(f.user, order.id, proof);
+    const result = await orders.recordProvider(f.user, order.id, {
+      providerPaymentId: payment,
+      status: "succeeded",
+    });
+    assert.equal(result.credited, true);
+    assert.equal((await ledger.status(f.user)).availableMicros, 100_000_000);
+    assert.equal(
+      (await f.db.query("select 1 from ai_credit_topups where not test")).rows
+        .length,
+      1,
+    );
+    assert.equal(
+      (
+        await f.db.query(
+          "select 1 from credit_source_lots where kind='paid' and not test",
+        )
+      ).rows.length,
+      1,
+    );
+    assert.equal(
+      (
+        await f.db.query(
+          "select 1 from npd_receipt_tasks where registration_status='pending' and delivery_status='pending'",
+        )
+      ).rows.length,
+      1,
+    );
+    await assert.rejects(
+      f.runtime.query("update payment_topup_orders set test=true where id=$1", [
+        order.id,
+      ]),
+      (error) =>
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        error.code === "42501",
+    );
+    await assert.rejects(
+      f.db.query("update payment_topup_orders set test=true where id=$1", [
+        order.id,
+      ]),
+      /Payment order identity is immutable/,
+    );
+    const isolation = (
+      await f.db.query<{ prosecdef: boolean }>(
+        "select prosecdef from pg_proc where proname='citygo_mark_payment_isolation' and pronamespace=current_schema()::regnamespace",
+      )
+    ).rows[0]!;
+    assert.equal(isolation.prosecdef, false);
+    await assert.rejects(
+      orders.create(
+        f.other,
+        randomUUID(),
+        10_000,
+        "synthetic-shop",
+        true,
+        returnUrl,
+      ),
+    );
+  },
+);

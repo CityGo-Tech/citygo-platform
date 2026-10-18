@@ -38,6 +38,7 @@ const tables = [
   "npd_receipt_evidence",
   "npd_receipt_tasks",
   "npd_refund_observations",
+  "payment_notification_inbox",
   "payment_refund_events",
   "payment_refunds",
   "payment_topup_orders",
@@ -68,7 +69,14 @@ const protectedRefunds = [
   "payment_refund_events",
   "payment_refunds",
 ] as const;
-const protectedEmpty = [...protectedNpd, ...protectedRefunds] as const;
+// Even an untrusted wake-up hint belongs to a bound external payment/refund.
+// Do not erase pending reconciliation or its completion history in this tool.
+const protectedNotifications = ["payment_notification_inbox"] as const;
+const protectedEmpty = [
+  ...protectedNpd,
+  ...protectedRefunds,
+  ...protectedNotifications,
+] as const;
 const preserved = [
   "citygo_migration_lock",
   "citygo_migrations",
@@ -348,6 +356,15 @@ async function inspect(tx: Sql, options: Options) {
     blockers.push({
       code: "REFUND_FINANCIAL_HISTORY_PRESENT",
       count: refundHistoryCount,
+    });
+  const notificationHistoryCount = protectedNotifications.reduce(
+    (count, name) => count + snapshot.counts[name]!,
+    0,
+  );
+  if (notificationHistoryCount)
+    blockers.push({
+      code: "PAYMENT_NOTIFICATION_HISTORY_PRESENT",
+      count: notificationHistoryCount,
     });
   for (const [code, sql] of [
     [

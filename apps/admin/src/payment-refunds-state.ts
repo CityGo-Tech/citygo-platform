@@ -13,10 +13,11 @@ export function sourceRefundable(
   amountKopeks: number | null,
 ) {
   return (
-    source.test &&
+    typeof source.test === "boolean" &&
     amountKopeks !== null &&
     Number.isSafeInteger(amountKopeks) &&
     amountKopeks >= 100 &&
+    amountKopeks <= 1_000_000_000 &&
     Number.isSafeInteger(source.availableMicros) &&
     source.availableMicros >= 0 &&
     BigInt(amountKopeks) * 10_000n <= BigInt(source.availableMicros)
@@ -25,16 +26,31 @@ export function sourceRefundable(
 export function refundCanSubmit(
   refund: Pick<AdminPaymentRefund, "test" | "status">,
 ) {
-  return refund.test && refund.status === "reserved";
+  return typeof refund.test === "boolean" && refund.status === "reserved";
 }
 export function refundCanReconcile(
   refund: Pick<AdminPaymentRefund, "test" | "status" | "attemptCount">,
 ) {
   return (
-    refund.test &&
+    typeof refund.test === "boolean" &&
+    Number.isSafeInteger(refund.attemptCount) &&
     refund.attemptCount > 0 &&
     ["unknown", "pending", "review_required"].includes(refund.status)
   );
+}
+// Independent acknowledgements: reserving local funds does not authorize the
+// external POST, and a successful POST is not the separate GET settlement.
+export function refundConfirmationText(
+  test: boolean,
+  step: "reserve" | "submit",
+) {
+  if (step === "reserve")
+    return test
+      ? "Подтверждаю резервирование выбранной суммы из этого sandbox-платежа, без отправки провайдеру."
+      : "Подтверждаю резервирование выбранной суммы из этого боевого платежа. Запрос ЮKassa не отправляется; это ещё не возврат настоящих денег.";
+  return test
+    ? "Подтверждаю отдельную отправку этого тестового возврата."
+    : "Отдельно подтверждаю отправку этого боевого возврата в ЮKassa: будут возвращаться настоящие деньги покупателю. Резервирование само по себе этого не разрешало.";
 }
 export function refundMicros(value: number) {
   if (!Number.isSafeInteger(value) || value < 0) return "—";

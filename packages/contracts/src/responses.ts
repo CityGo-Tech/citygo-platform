@@ -74,32 +74,50 @@ const execution = z.object({
   maxInputBytes: count,
   maxOutputTokens: count,
 });
-export const aiBudgetSettingsSchema = z.object({
+const budgetSettingsFields = z.object({
   revision,
   enabled: z.boolean(),
+  mode: z.enum(["fixed", "routerai_balance"]),
   currency: currency.nullable(),
-  dailyLimitMicros: money,
-  totalLimitMicros: money,
+  dailyLimitMicros: money.nullable(),
+  totalLimitMicros: money.nullable(),
   userDailyLimitMicros: money.nullable(),
   rules: z.array(execution.extend({ attemptCeilingMicros: money })).max(3),
-}) satisfies z.ZodType<AiBudgetSettings>;
-const budgetAuditSnapshot = aiBudgetSettingsSchema.extend({
-  // Historical snapshots are immutable and predate the personal-cap field.
-  userDailyLimitMicros: money.nullable().optional(),
-}) satisfies z.ZodType<AiBudgetAuditSnapshot>;
+});
+const validBudgetMode = (value: {
+  mode?: "fixed" | "routerai_balance";
+  currency: "RUB" | "USD" | null;
+  dailyLimitMicros: number | null;
+  totalLimitMicros: number | null;
+}) =>
+  value.mode === "routerai_balance"
+    ? value.currency === "RUB" &&
+      value.dailyLimitMicros === null &&
+      value.totalLimitMicros === null
+    : value.dailyLimitMicros !== null && value.totalLimitMicros !== null;
+export const aiBudgetSettingsSchema = budgetSettingsFields.refine(
+  validBudgetMode,
+) satisfies z.ZodType<AiBudgetSettings>;
+const budgetAuditSnapshot = budgetSettingsFields
+  .extend({
+    // Immutable snapshots predate personal caps and explicit operator mode.
+    userDailyLimitMicros: money.nullable().optional(),
+    mode: z.enum(["fixed", "routerai_balance"]).optional(),
+  })
+  .refine(validBudgetMode) satisfies z.ZodType<AiBudgetAuditSnapshot>;
 const userBudget = z.object({
   currency: currency.nullable(),
   day: z.iso.date(),
   resetAt: dateTime,
   limitMicros: money.nullable(),
-  reservedTodayMicros: money,
+  reservedTodayMicros: count,
   remainingMicros: money.nullable(),
 });
 const budget = z.object({
   settings: aiBudgetSettingsSchema,
-  totalReservedMicros: money,
+  totalReservedMicros: count,
   day: z.iso.date(),
-  reservedTodayMicros: money,
+  reservedTodayMicros: count,
   availableExecutions: z.array(execution).max(3),
   audit: z
     .array(

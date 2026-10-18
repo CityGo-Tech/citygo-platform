@@ -10,8 +10,11 @@ export const aiBudgetInputSchema = z
     expectedRevision: z.number().int().min(1).max(2147483646),
     enabled: z.boolean(),
     currency: z.enum(["RUB", "USD"]),
-    dailyLimitMicros: moneySchema,
-    totalLimitMicros: moneySchema,
+    // Absence preserves the stored mode. Switching off CityGo money caps is
+    // always an explicit administrative decision, never an old-client default.
+    mode: z.enum(["fixed", "routerai_balance"]).optional(),
+    dailyLimitMicros: moneySchema.nullable(),
+    totalLimitMicros: moneySchema.nullable(),
     // Omitted preserves the server value; null removes the personal cap.
     // Zero explicitly blocks new reservations for every account.
     userDailyLimitMicros: moneySchema.nullable().optional(),
@@ -24,9 +27,20 @@ export const aiBudgetInputSchema = z
       )
       .max(3),
   })
-  .refine((value) => value.dailyLimitMicros <= value.totalLimitMicros, {
-    message: "Daily budget cannot exceed total budget",
-  })
+  .refine(
+    (value) =>
+      value.mode === "routerai_balance"
+        ? value.currency === "RUB" &&
+          value.dailyLimitMicros === null &&
+          value.totalLimitMicros === null
+        : value.dailyLimitMicros !== null &&
+          value.totalLimitMicros !== null &&
+          value.dailyLimitMicros <= value.totalLimitMicros,
+    {
+      message:
+        "Fixed budgets require finite limits; RouterAI balance mode requires RUB and explicit null limits",
+    },
+  )
   .refine(
     (value) =>
       new Set(value.rules.map((rule) => rule.key)).size === value.rules.length,
@@ -36,7 +50,10 @@ export const aiBudgetInputSchema = z
   )
   .refine(
     (value) =>
-      !value.enabled || (value.dailyLimitMicros > 0 && value.rules.length > 0),
+      !value.enabled ||
+      (value.rules.length > 0 &&
+        (value.mode === "routerai_balance" ||
+          (value.dailyLimitMicros !== null && value.dailyLimitMicros > 0))),
     {
       message:
         "Enabled budget requires positive limits and an approved execution rule",
@@ -53,8 +70,9 @@ export type AiBudgetSettings = {
   revision: number;
   enabled: boolean;
   currency: "RUB" | "USD" | null;
-  dailyLimitMicros: number;
-  totalLimitMicros: number;
+  mode: "fixed" | "routerai_balance";
+  dailyLimitMicros: number | null;
+  totalLimitMicros: number | null;
   userDailyLimitMicros: number | null;
   rules: (AiExecution & { attemptCeilingMicros: number })[];
 };
@@ -66,13 +84,14 @@ export type AiUserBudgetStatus = {
   reservedTodayMicros: number;
   remainingMicros: number | null;
 };
-// Immutable audit JSON written before migration 0007 has no personal cap field.
-// Keep absence distinct from an explicit null; live settings always include it.
+// Immutable audit JSON predates both the personal cap and operator money mode.
+// Keep absence distinct from explicit values; live settings include both fields.
 export type AiBudgetAuditSnapshot = Omit<
   AiBudgetSettings,
-  "userDailyLimitMicros"
+  "userDailyLimitMicros" | "mode"
 > & {
   userDailyLimitMicros?: number | null;
+  mode?: AiBudgetSettings["mode"];
 };
 export type AiBudgetStatus = {
   settings: AiBudgetSettings;
@@ -105,10 +124,17 @@ export function parseMoneyMicros(text: string): number | null {
 export function formatMoneyMicros(amount: number): string {
   if (!Number.isSafeInteger(amount) || amount < 0 || amount > MAX_MONEY_MICROS)
     throw new Error("Invalid money amount");
-  const fraction = String(amount % MONEY_SCALE)
+  return formatMoneyCounterMicros(amount);
+}
+// Cumulative reservation audit can exceed a single bounded money input. Keep
+// that display exact without relaxing parseMoneyMicros or payment ceilings.
+export function formatMoneyCounterMicros(amount: number): string {
+  if (!Number.isSafeInteger(amount) || amount < 0)
+    throw new Error("Invalid money counter");
+  const micros = BigInt(amount);
+  const scale = BigInt(MONEY_SCALE);
+  const fraction = String(micros % scale)
     .padStart(6, "0")
     .replace(/0+$/, "");
-  return (
-    String(Math.floor(amount / MONEY_SCALE)) + (fraction ? "." + fraction : "")
-  );
+  return String(micros / scale) + (fraction ? "." + fraction : "");
 }
