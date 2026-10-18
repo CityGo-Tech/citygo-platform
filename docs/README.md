@@ -43,6 +43,8 @@
   истории по новому решению владельца, тариф ×10 и подключения до открытия пилота.
 - [Подготовка боевой оплаты ЮKassa и чеков НПД](runbooks/yookassa-live-preparation.md):
   проверенный sandbox, принятый порядок списания и условия включения live.
+- [Ручной учёт НПД-чеков](runbooks/manual-npd-receipts.md): текущий выбранный процесс;
+  [Robokassa](implementation/robokassa-npd-assessment.md) — будущая автоматизация.
 - [Разделение окружений и секретов](runbooks/service-environments.md).
 - [Совместимость API, Web и Expo](architecture/api-compatibility.md).
 - [Реальное устройство AI-ролей](agents/README.md).

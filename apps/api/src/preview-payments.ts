@@ -1,5 +1,6 @@
 import { open } from "node:fs/promises";
 import { z } from "zod";
+import { npdReceiptPlanSchema } from "@citygo/contracts";
 import {
   inspectLivePaymentPreparation,
   operatorTaxRegimes,
@@ -13,6 +14,7 @@ const inputSchema = z.strictObject({
   fiscalProfile: z.unknown().optional(),
   sourcePolicy: z.enum(paymentSourcePolicies).optional(),
   merchantReceiptsReportedEnabled: z.boolean().optional(),
+  npdReceiptPlan: npdReceiptPlanSchema.optional(),
 });
 async function readLocalJson(file: string): Promise<unknown> {
   if (

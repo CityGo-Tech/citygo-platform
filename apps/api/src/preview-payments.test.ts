@@ -28,6 +28,12 @@ const profile = {
     workflowReference: "SYNTHETIC_WORKFLOW",
   },
 };
+const manualNpdPlan = {
+  schemaVersion: 1,
+  fiscalFramework: "npd",
+  paymentProvider: "yookassa",
+  receiptProvider: "npd_manual",
+} as const;
 
 async function fixture(t: TestContext) {
   const directory = await mkdtemp(join(tmpdir(), "citygo-payment-preview-"));
@@ -187,4 +193,82 @@ test("file input is regular, bounded, UTF-8 and parseable without exposing conte
   const value = JSON.stringify({ operatorTaxRegime: "npd" });
   await writeFile(boundary, value + " ".repeat(16_384 - value.length));
   assert.equal(f.run(["--input", boundary]).status, 2);
+});
+
+test("CLI accepts a manual NPD plan without requiring an automatic merchant receipt flag", async (t) => {
+  const f = await fixture(t);
+  let baseline: unknown;
+  for (const merchantReceiptsReportedEnabled of [true, false]) {
+    const path = await f.file(
+      `manual-${merchantReceiptsReportedEnabled}.json`,
+      {
+        operatorTaxRegime: "npd",
+        sourcePolicy: "gift_first_paid_fifo",
+        npdReceiptPlan: manualNpdPlan,
+        merchantReceiptsReportedEnabled,
+      },
+    );
+    const result = f.run(["--input", path]);
+    assert.equal(result.status, 2);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.npdReceiptPlanTechnicallyValid, true);
+    assert.deepEqual(report.npdReceiptPlan, manualNpdPlan);
+    assert.equal(report.fiscalProfileTechnicallyValid, false);
+    assert.equal(report.readyForLive, false);
+    assert.ok(
+      report.blockers.some(
+        (gap: { code: string }) =>
+          gap.code === "MANUAL_RECEIPT_QUEUE_NOT_IMPLEMENTED",
+      ),
+    );
+    if (baseline) assert.deepEqual(report, baseline);
+    else baseline = report;
+  }
+});
+
+test("CLI keeps future provider plans blocked without claiming runtime support", async (t) => {
+  const f = await fixture(t);
+  const path = await f.file("future.json", {
+    operatorTaxRegime: "npd",
+    sourcePolicy: "gift_first_paid_fifo",
+    npdReceiptPlan: {
+      ...manualNpdPlan,
+      paymentProvider: "robokassa",
+      receiptProvider: "npd_partner",
+    },
+  });
+  const result = f.run(["--input", path]);
+  assert.equal(result.status, 2);
+  const report = JSON.parse(result.stdout);
+  assert.equal(report.npdReceiptPlanTechnicallyValid, true);
+  assert.equal(report.readyForLive, false);
+  assert.equal(report.activationSupported, false);
+  for (const code of [
+    "ROBOKASSA_PAYMENT_FLOW_NOT_IMPLEMENTED",
+    "NPD_PARTNER_RECEIPT_FLOW_NOT_IMPLEMENTED",
+  ]) {
+    assert.ok(
+      report.blockers.some((gap: { code: string }) => gap.code === code),
+    );
+  }
+});
+
+test("CLI rejects secret/authority/framework additions inside an NPD planning envelope", async (t) => {
+  const f = await fixture(t);
+  let index = 0;
+  for (const npdReceiptPlan of [
+    { ...manualNpdPlan, [secret]: secret },
+    { ...manualNpdPlan, approved: true },
+    { ...manualNpdPlan, readyForLive: true },
+    { ...manualNpdPlan, fiscalFramework: "54fz_non_npd" },
+  ]) {
+    const path = await f.file(`invalid-plan-${index++}.json`, {
+      operatorTaxRegime: "npd",
+      npdReceiptPlan,
+    });
+    const result = f.run(["--input", path]);
+    assert.equal(result.status, 1);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /исходные данные скрыты/);
+  }
 });

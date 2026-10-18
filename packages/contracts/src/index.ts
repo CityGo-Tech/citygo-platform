@@ -7,6 +7,8 @@ export * from "./ai-credit.js";
 export * from "./citygo-tariff.js";
 export * from "./payments.js";
 export * from "./payment-fiscal.js";
+// NPD provider choices for planning only, not runtime or fiscal approval.
+export * from "./npd-receipt-plan.js";
 export * from "./responses.js";
 export * from "./protocol.js";
 export * from "./r1.js";

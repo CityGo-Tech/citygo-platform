@@ -1,4 +1,8 @@
-import { parsePaymentFiscalProfile } from "@citygo/contracts";
+import {
+  parseNpdReceiptPlan,
+  parsePaymentFiscalProfile,
+  type NpdReceiptPlan,
+} from "@citygo/contracts";
 
 // Operator-only preparation report. This is not a runtime approval, an API
 // endpoint, a provider authentication check, or a tax/legal compliance check.
@@ -48,6 +52,7 @@ export function inspectLivePaymentPreparation(
     sourcePolicy?: unknown;
     merchantReceiptsReportedEnabled?: boolean;
     operatorTaxRegime?: unknown;
+    npdReceiptPlan?: unknown;
   } = {},
 ) {
   const checks: { code: string; message: string }[] = [];
@@ -56,12 +61,37 @@ export function inspectLivePaymentPreparation(
       ? input.operatorTaxRegime
       : "unknown";
   let fiscalProfileTechnicallyValid = false;
+  let npdReceiptPlan: NpdReceiptPlan | null = null;
   if (operatorTaxRegime === "npd") {
-    checks.push({
-      code: "NPD_FISCAL_FLOW_NOT_IMPLEMENTED",
-      message:
-        "Для НПД нужен отдельный согласованный сценарий чеков. Профиль 54-ФЗ и его налоговые коды не заменяют чек НПД.",
-    });
+    try {
+      npdReceiptPlan = parseNpdReceiptPlan(input.npdReceiptPlan);
+    } catch {
+      checks.push({
+        code: "NPD_FISCAL_FLOW_NOT_IMPLEMENTED",
+        message:
+          "Нужен отдельный план чеков НПД. Профиль 54-ФЗ и его налоговые коды не заменяют чек НПД.",
+      });
+    }
+    if (npdReceiptPlan?.paymentProvider === "robokassa") {
+      checks.push({
+        code: "ROBOKASSA_PAYMENT_FLOW_NOT_IMPLEMENTED",
+        message:
+          "Robokassa — только будущий вариант плана; приём платежей через неё не реализован.",
+      });
+    }
+    if (npdReceiptPlan?.receiptProvider === "npd_manual") {
+      checks.push({
+        code: "MANUAL_RECEIPT_QUEUE_NOT_IMPLEMENTED",
+        message:
+          "Для ручных чеков НПД нужна долговечная очередь с ответственным оператором, защитой от дублей, коррекциями и отдельным учётом доставки.",
+      });
+    } else if (npdReceiptPlan?.receiptProvider === "npd_partner") {
+      checks.push({
+        code: "NPD_PARTNER_RECEIPT_FLOW_NOT_IMPLEMENTED",
+        message:
+          "Автоматизация чеков НПД через партнёра — будущий вариант; интеграция и сверка не реализованы.",
+      });
+    }
   } else if (operatorTaxRegime === "unknown") {
     checks.push({
       code: "OPERATOR_TAX_REGIME_REQUIRED",
@@ -88,6 +118,13 @@ export function inspectLivePaymentPreparation(
       });
     }
   }
+  if (operatorTaxRegime !== "npd" && input.npdReceiptPlan !== undefined) {
+    checks.push({
+      code: "NPD_RECEIPT_PLAN_REGIME_MISMATCH",
+      message:
+        "План чеков НПД не подтверждает и не заменяет налоговый режим оператора.",
+    });
+  }
   if (!paymentSourcePolicies.some((policy) => policy === input.sourcePolicy)) {
     checks.push({
       code: "SOURCE_POLICY_REQUIRED",
@@ -95,7 +132,12 @@ export function inspectLivePaymentPreparation(
         "Владелец должен утвердить порядок расходования подарочных и оплаченных средств.",
     });
   }
-  if (input.merchantReceiptsReportedEnabled !== true) {
+  // A legacy 54-FZ merchant flag neither configures nor approves manual NPD
+  // receipts. Never require it for the separate NPD planning branch.
+  if (
+    operatorTaxRegime !== "npd" &&
+    input.merchantReceiptsReportedEnabled !== true
+  ) {
     checks.push({
       code: "MERCHANT_RECEIPTS_NOT_CONFIRMED",
       message:
@@ -109,6 +151,8 @@ export function inspectLivePaymentPreparation(
     activationSupported: false as const,
     readyForLive: false as const,
     fiscalProfileTechnicallyValid,
+    npdReceiptPlanTechnicallyValid: npdReceiptPlan !== null,
+    npdReceiptPlan,
     taxComplianceConfirmed: false as const,
     credentialsChecked: false as const,
     blockers: [...checks, ...implementationGaps.map((gap) => ({ ...gap }))],
