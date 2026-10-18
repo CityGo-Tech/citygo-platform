@@ -13,6 +13,8 @@ import {
 import { FreshAccountReset } from "./fresh-account-reset.js";
 import {
   captureRestartRows,
+  migrateLegacyRestartFixture,
+  seedRestartNpdObligation,
   seedRestartFixture,
 } from "./closed-account-restart-fixture.js";
 
@@ -56,7 +58,7 @@ async function fixture(t: TestContext) {
   url.pathname = "/" + name;
   const db = await connectDatabase(url.toString());
   cleanup.db = db;
-  await migrate(db);
+  await migrateLegacyRestartFixture(db);
   const data = await seedRestartFixture(db);
   await db.exec(
     "update account_security_state set bootstrap_completed=true where id=1",
@@ -84,6 +86,7 @@ async function fixture(t: TestContext) {
     "insert into ai_credit_topups(provider_payment_id,operation_id,user_id,paid_kopeks,credited_micros,merchant_id,test,verified_at,verification_receipt) values ('synthetic-payment',$1,$2,10000,100000000,'synthetic-merchant',false,now(),'{\"private\":\"PRIVATE-PAYMENT\"}')",
     [operationId, data.user],
   );
+  await migrate(db);
   t.diagnostic(
     "Independent synthetic PostgreSQL database, no working data or external requests",
   );
@@ -179,6 +182,28 @@ function observed<T>(promise: Promise<T>) {
   void promise.catch(() => {});
   return promise;
 }
+
+test(
+  "PostgreSQL full reset refuses new NPD duties/evidence without deleting any retained row",
+  pgOnly,
+  async (t) => {
+    const { db, data, reset } = await fixture(t);
+    await seedRestartNpdObligation(db, data.user, true);
+    const before = await captureRestartRows(db);
+    const plan = await reset.plan({
+      expectedUserCount: 2,
+      maintenanceConfirmed: true,
+    });
+    assert.ok(
+      plan.blockers.some(
+        (blocker) => blocker.code === "NPD_RECEIPT_HISTORY_PRESENT",
+      ),
+    );
+    assert.doesNotMatch(JSON.stringify(plan), /PRIVATE-|@example\.test/);
+    await assert.rejects(reset.apply(await input(reset)), /заблокирован/);
+    assert.deepEqual(await captureRestartRows(db), before);
+  },
+);
 
 test(
   "PostgreSQL fresh reset truncates full FK-connected history/topups/knowledge and creates only closed first admin",

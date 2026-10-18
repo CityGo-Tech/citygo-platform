@@ -15,6 +15,7 @@ import {
   captureRestartRows,
   retainedFinancialTables,
   seedRestartFixture,
+  seedRestartNpdObligation,
 } from "./closed-account-restart-fixture.js";
 
 const pgOnly = {
@@ -154,6 +155,25 @@ function observe<T>(promise: Promise<T>) {
   void promise.catch(() => {});
   return promise;
 }
+
+test(
+  "PostgreSQL closed restart preserves NPD receipt contact, corrections and delivery evidence unchanged",
+  pgOnly,
+  async (t) => {
+    const { db, data, restart } = await fixture(t);
+    await seedRestartNpdObligation(db, data.user, true);
+    const retained = [...retainedFinancialTables, "ai_credit_topups"];
+    const before = await captureRestartRows(db, retained);
+    const plan = await restart.plan({
+      expectedUserCount: 2,
+      maintenanceConfirmed: true,
+    });
+    assert.deepEqual(plan.blockers, []);
+    assert.doesNotMatch(JSON.stringify(plan), /PRIVATE-|@example\.test/);
+    await restart.apply(await input(restart));
+    assert.deepEqual(await captureRestartRows(db, retained), before);
+  },
+);
 
 test(
   "PostgreSQL closed restart preserves paid-attempt FK history and one-time bootstrap",

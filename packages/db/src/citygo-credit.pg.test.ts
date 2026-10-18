@@ -16,11 +16,17 @@ if (testUrl && !/^postgres(?:ql)?:\/\//.test(testUrl))
   throw new Error("Invalid synthetic PostgreSQL test URL");
 
 async function fixture() {
-  const admin = await connectDatabase(testUrl!);
-  const schema = "citygo_credit_" + randomUUID().replaceAll("-", "");
-  await admin.query(`create schema "${schema}"`);
   const scoped = new URL(testUrl!);
-  scoped.searchParams.set("options", "-c search_path=" + schema);
+  assert.ok(["127.0.0.1", "localhost", "[::1]"].includes(scoped.hostname));
+  assert.ok(["/citygo_test", "/citygo_synthetic"].includes(scoped.pathname));
+  assert.equal(scoped.search, "");
+  const admin = await connectDatabase(testUrl!);
+  // Production trigger sources are deliberately public-qualified. Use a whole
+  // disposable database, not search_path isolation that would test a different
+  // schema contract. The entry database and all connections remain loopback-only.
+  const database = "citygo_credit_" + randomUUID().replaceAll("-", "");
+  await admin.query(`create database "${database}" template template0`);
+  scoped.pathname = "/" + database;
   const db = await connectDatabase(scoped.toString());
   await migrate(db);
   const repo = new Repository(db);
@@ -39,9 +45,9 @@ async function fixture() {
     ledger: new AiCreditLedger(db),
     close: async () => {
       await db.close();
-      // The only drop target is this fresh, generated, validated test schema.
-      assert.match(schema, /^citygo_credit_[a-f0-9]{32}$/);
-      await admin.query(`drop schema "${schema}" cascade`);
+      // The only drop target is this successfully created synthetic database.
+      assert.match(database, /^citygo_credit_[a-f0-9]{32}$/);
+      await admin.query(`drop database "${database}"`);
       await admin.close();
     },
   };

@@ -158,7 +158,7 @@ test("non-NPD requires explicit framework and cannot accept NPD as numeric tax s
   }
 });
 
-test("manual NPD plan removes the partner requirement without enabling payments or claiming a receipt queue", () => {
+test("manual NPD plan removes the partner requirement without approving the live receipt flow", () => {
   const result = inspectLivePaymentPreparation({
     operatorTaxRegime: "npd",
     sourcePolicy: "gift_first_paid_fifo",
@@ -174,7 +174,7 @@ test("manual NPD plan removes the partner requirement without enabling payments 
   assert.deepEqual(
     result.blockers.map((gap) => gap.code),
     [
-      "MANUAL_RECEIPT_QUEUE_NOT_IMPLEMENTED",
+      "MANUAL_RECEIPT_LIVE_ACCEPTANCE_PENDING",
       "LIVE_CHECKOUT_NOT_IMPLEMENTED",
       "PAID_SOURCE_ALLOCATION_NOT_IMPLEMENTED",
       "REFUND_LEDGER_NOT_IMPLEMENTED",

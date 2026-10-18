@@ -11,6 +11,12 @@ import {
   apiErrorResponseSchema,
   authResponseSchema,
   nativeAuthResponseSchema,
+  adminNpdReceiptListSchema,
+  adminNpdReceiptDetailSchema,
+  ownerNpdReceiptListSchema,
+  npdReceiptListQuerySchema,
+  npdReceiptTaskIdSchema,
+  npdReceiptCommandSchema,
   completionResponseSchema,
   dashboardResponseSchema,
   okResponseSchema,
@@ -26,6 +32,8 @@ import {
   type AiCreditGrant,
   type AiCreditReconcile,
   type CreateTopupInput,
+  type NpdReceiptListQuery,
+  type NpdReceiptCommand,
   type Questionnaire,
   type StreamEvent,
 } from "@citygo/contracts";
@@ -188,6 +196,33 @@ export function createClient(
     }
     return order;
   }
+  function receiptInput<T>(schema: ResponseSchema<T>, input: unknown): T {
+    const parsed = schema.safeParse(input);
+    if (!parsed.success)
+      throw new Error("Некорректные параметры операции с чеком НПД");
+    return parsed.data;
+  }
+  async function receiptRequest(taskId: string, command?: NpdReceiptCommand) {
+    const id = receiptInput(npdReceiptTaskIdSchema, taskId);
+    const body =
+      command === undefined
+        ? undefined
+        : receiptInput(npdReceiptCommandSchema, command);
+    const result = await request(
+      "/v1/admin/npd/receipts/" +
+        encodeURIComponent(id) +
+        (body ? "/commands" : ""),
+      adminNpdReceiptDetailSchema,
+      body,
+    );
+    if (result.task.id.toLowerCase() !== id.toLowerCase())
+      throw new ApiError(
+        200,
+        "Ответ сервера не соответствует запрошенному чеку",
+        "invalid_response",
+      );
+    return result;
+  }
   return {
     auth: (mode: "login" | "register", email: string, password: string) =>
       request(
@@ -203,6 +238,21 @@ export function createClient(
         { currentPassword, password },
       ),
     accountUsers: () => request("/v1/admin/accounts", adminUsersResponseSchema),
+    adminNpdReceipts: (input: Partial<NpdReceiptListQuery> = {}) => {
+      const query = receiptInput(npdReceiptListQuerySchema, input);
+      const search = new URLSearchParams({ limit: String(query.limit) });
+      if (query.status) search.set("status", query.status);
+      if (query.after) search.set("after", query.after);
+      return request(
+        "/v1/admin/npd/receipts?" + search.toString(),
+        adminNpdReceiptListSchema,
+      );
+    },
+    adminNpdReceipt: (taskId: string) => receiptRequest(taskId),
+    commandNpdReceipt: (taskId: string, command: NpdReceiptCommand) =>
+      receiptRequest(taskId, command),
+    npdReceipts: () =>
+      request("/v1/payments/receipts", ownerNpdReceiptListSchema),
     setAccountRole: (userId: string, role: AccountRole) =>
       request("/v1/admin/accounts/role", accountUserResponseSchema, {
         userId,

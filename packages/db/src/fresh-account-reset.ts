@@ -31,6 +31,10 @@ const tables = [
   "generated_artifacts",
   "knowledge_sources",
   "messages",
+  "npd_receipt_commands",
+  "npd_receipt_evidence",
+  "npd_receipt_tasks",
+  "npd_refund_observations",
   "payment_topup_orders",
   "questionnaire_answers",
   "quests",
@@ -45,11 +49,21 @@ const tables = [
   "users",
   "xp_events",
 ] as const;
+// These reviewed FK children may participate in the single TRUNCATE only when
+// all are empty under the snapshot's table locks. Any receipt obligation,
+// contact, correction or delivery history blocks this TEST-only eraser.
+const protectedEmpty = [
+  "npd_receipt_commands",
+  "npd_receipt_evidence",
+  "npd_receipt_tasks",
+  "npd_refund_observations",
+] as const;
 const preserved = [
   "citygo_migration_lock",
   "citygo_migrations",
   "quests",
   "ai_routing",
+  ...protectedEmpty,
 ] as const;
 const erased = [
   "agent_handoffs",
@@ -304,6 +318,15 @@ async function inspect(tx: Sql, options: Options) {
     blockers.push({ code: "EXPECTED_USER_COUNT_MISMATCH", count: 1 });
   if (options.maintenanceConfirmed !== true)
     blockers.push({ code: "MAINTENANCE_NOT_CONFIRMED", count: 1 });
+  const npdHistoryCount = protectedEmpty.reduce(
+    (count, name) => count + snapshot.counts[name]!,
+    0,
+  );
+  if (npdHistoryCount)
+    blockers.push({
+      code: "NPD_RECEIPT_HISTORY_PRESENT",
+      count: npdHistoryCount,
+    });
   for (const [code, sql] of [
     [
       "FRESH_RESET_ALREADY_COMPLETED",
@@ -375,7 +398,9 @@ export class FreshAccountReset {
       // All FK-dependent application tables are explicitly listed in ONE command.
       // No CASCADE, schema drop, sequence restart, role changes or migration edits.
       await tx.exec(
-        `truncate table ${erased.map((name) => `public.${name}`).join(",")}`,
+        `truncate table ${[...erased, ...protectedEmpty]
+          .map((name) => `public.${name}`)
+          .join(",")}`,
       );
       await tx.exec(
         "update ai_budget set enabled=false,total_reserved_micros=0,user_daily_limit_micros=null,revision=revision+1 where id=1",

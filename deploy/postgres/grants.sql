@@ -9,6 +9,14 @@ grant select on users, user_credentials, sessions, relocation_profiles,
   chat_requests, ai_model_attempt_daily, ai_user_model_attempt_daily,
   ai_model_attempts, ai_budget, ai_budget_daily, ai_credit_accounts, ai_credit_entries,
   ai_credit_charges, ai_credit_topups, payment_topup_orders, account_security_state, citygo_migrations to citygo_api;
+-- Receipt duties and manual evidence are server-owned. Worker has no access.
+grant select, insert on npd_receipt_tasks, npd_receipt_commands,
+  npd_receipt_evidence, npd_refund_observations to citygo_api;
+-- Source identity/contact are immutable; append-only history has no UPDATE,
+-- DELETE or TRUNCATE grant. Task INSERT is needed by the invoker top-up trigger.
+grant update (cumulative_refunded_kopeks,revision,claimed_by_user_id,
+  registration_status,delivery_status,correction_status,active_evidence_id,
+  review_reason,updated_at) on npd_receipt_tasks to citygo_api;
 grant insert on users, user_credentials, sessions, relocation_profiles,
   questionnaire_answers, relocation_plans, user_quests, xp_events,
   agent_threads, messages, agent_handoffs, consent_events, analytics_events,
@@ -26,6 +34,9 @@ grant update on users, relocation_plans, user_quests, agent_threads,
 grant update (provider_payment_id,status,confirmation_url,updated_at)
   on payment_topup_orders to citygo_api;
 grant delete on sessions to citygo_api;
+-- PostgreSQL requires a column UPDATE privilege for SELECT ... FOR UPDATE.
+-- The receipt command transaction locks the actual session to serialize logout.
+grant update (expires_at) on sessions to citygo_api;
 -- Password rotation and the account-security serialization row only. No DELETE
 -- on accounts or accounting data, and no runtime INSERT into the singleton.
 grant update (password_hash) on user_credentials to citygo_api;

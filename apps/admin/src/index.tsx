@@ -12,6 +12,7 @@ import { AiControls } from "./ai-control.js";
 import { AiBudgetControls } from "./ai-budget.js";
 import { AiCreditControls } from "./ai-credit.js";
 import { AccountsControl } from "./accounts-control.js";
+import { NpdReceiptsControl } from "./npd-receipts.js";
 export function AdminOverview() {
   const [session] = useState(createSessionGuard);
   const api = useMemo(
@@ -231,6 +232,18 @@ export function AdminOverview() {
             администратора не позволяют выдавать роли.
           </p>
         </Card>
+      )}
+      {viewer && (
+        <NpdReceiptsControl
+          key={`npd-${viewer.id}-${refreshVersion}`}
+          viewerId={viewer.id}
+          onAccessLost={() => {
+            invalidate();
+            setError(
+              "Доступ к реестру или сессия изменились. Войдите под администратором и обновите сводку.",
+            );
+          }}
+        />
       )}
       {control && (
         <AiControls

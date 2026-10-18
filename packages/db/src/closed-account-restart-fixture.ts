@@ -1,8 +1,39 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { readFile, readdir } from "node:fs/promises";
 import { Repository, type Database } from "./index.js";
 
 // Synthetic fixtures shared by in-memory correctness and opt-in PostgreSQL tests.
 // Never read an application database URL or provider credentials here.
+// Seed explicitly historical accounting BEFORE the new receipt obligation
+// trigger exists. This does not disable triggers or erase receipt obligations.
+export async function migrateLegacyRestartFixture(db: Database) {
+  const directory = new URL("../migrations/", import.meta.url);
+  await db.exec(
+    "create table citygo_migrations(name text primary key,checksum text not null,applied_at timestamptz not null default now())",
+  );
+  for (const name of (await readdir(directory))
+    .filter(
+      (name) => name.endsWith(".sql") && name <= "0015_yookassa_orders.sql",
+    )
+    .sort()) {
+    const source = await readFile(new URL(name, directory), "utf8");
+    await db.transaction(async (tx) => {
+      await tx.exec(
+        source.replace(/^begin;\s*/i, "").replace(/commit;\s*$/i, ""),
+      );
+      await tx.query(
+        "insert into citygo_migrations(name,checksum) values ($1,$2)",
+        [
+          name,
+          createHash("sha256")
+            .update(source.replaceAll("\r\n", "\n"))
+            .digest("hex"),
+        ],
+      );
+    });
+  }
+}
+
 export async function seedRestartFixture(db: Database) {
   const repo = new Repository(db);
   const ids = [
@@ -164,7 +195,90 @@ export async function seedRestartFixture(db: Database) {
   return { ids, user, thread, request, hold, receipt };
 }
 
+// A NEW live-shaped credit in a synthetic DB after migration 0016. Unlike the
+// pre-migration legacy fixture this must create an NPD obligation, so destructive
+// maintenance must not treat it as permission to erase that obligation.
+export async function seedRestartNpdObligation(
+  db: Database,
+  userId: string,
+  withHistory = false,
+) {
+  const operationId = randomUUID(),
+    paymentId = randomUUID();
+  await db.transaction(async (tx) => {
+    await tx.query(
+      "insert into ai_credit_entries(user_id,operation_id,kind,amount_micros) values ($1,$2,'topup',100000000)",
+      [userId, operationId],
+    );
+    await tx.query(
+      "update ai_credit_accounts set granted_micros=granted_micros+100000000 where user_id=$1",
+      [userId],
+    );
+    await tx.query(
+      "insert into ai_credit_topups(provider_payment_id,operation_id,user_id,paid_kopeks,credited_micros,merchant_id,test,verified_at,verification_receipt) values ($1,$2,$3,10000,100000000,'123456',false,now(),'{\"synthetic\":true}')",
+      [paymentId, operationId, userId],
+    );
+    if (withHistory) {
+      const claimId = randomUUID(),
+        evidenceId = randomUUID(),
+        receiptId = "synthetic-" + evidenceId,
+        receiptUrl = `https://lknpd.nalog.ru/api/v1/receipt/${receiptId}/print`;
+      await tx.query(
+        "insert into npd_receipt_commands(request_id,task_id,actor_user_id,action,payload,result_revision) values ($1,$2,$3,'claim',$4,2)",
+        [
+          claimId,
+          operationId,
+          userId,
+          JSON.stringify({
+            action: "claim",
+            requestId: claimId,
+            expectedRevision: 1,
+          }),
+        ],
+      );
+      await tx.query(
+        "update npd_receipt_tasks set claimed_by_user_id=$2,revision=2 where id=$1",
+        [operationId, userId],
+      );
+      await tx.query(
+        "insert into npd_receipt_commands(request_id,task_id,actor_user_id,action,payload,result_revision) values ($1,$2,$3,'register',$4,3)",
+        [
+          evidenceId,
+          operationId,
+          userId,
+          JSON.stringify({
+            action: "register",
+            requestId: evidenceId,
+            expectedRevision: 2,
+            receiptId,
+            receiptUrl,
+            amountKopeks: 10000,
+            operatorReported: true,
+          }),
+        ],
+      );
+      await tx.query(
+        "insert into npd_receipt_evidence(id,task_id,kind,receipt_id,receipt_url,amount_kopeks,evidence_url,refund_snapshot_kopeks) values ($1,$2,'register',$3,$4,10000,$4,0)",
+        [evidenceId, operationId, receiptId, receiptUrl],
+      );
+      await tx.query(
+        "update npd_receipt_tasks set active_evidence_id=$2,registration_status='operator_reported',revision=3 where id=$1",
+        [operationId, evidenceId],
+      );
+      await tx.query(
+        "insert into npd_refund_observations(id,provider_refund_id,task_id,amount_kopeks,observed_at,result_revision) values ($1,$2,$3,100,now(),4)",
+        [randomUUID(), randomUUID(), operationId],
+      );
+    }
+  });
+  return { operationId, paymentId };
+}
+
 export const retainedFinancialTables = [
+  "npd_receipt_commands",
+  "npd_receipt_evidence",
+  "npd_receipt_tasks",
+  "npd_refund_observations",
   "ai_model_attempts",
   "chat_requests",
   "ai_credit_accounts",
