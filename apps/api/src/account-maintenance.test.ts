@@ -132,6 +132,54 @@ test("reset apply is unavailable even with no valid environment or connection de
   await assert.rejects(accountMaintenance(["--apply"], environment), rejected);
 });
 
+test("destructive fresh-start cannot connect without every exact operator guard", async () => {
+  const required = [
+    ...baseArgs,
+    "--fresh-start",
+    "--apply",
+    "--erase-test-history",
+    "--maintenance-confirmed",
+    "--services-stopped-confirmed",
+    "--expect-users=5",
+    "--expected-snapshot=" + "a".repeat(64),
+    "--backup-receipt-sha256=" + "b".repeat(64),
+  ];
+  for (const missing of required.filter(
+    (item) =>
+      !baseArgs.includes(item) &&
+      item !== "--fresh-start" &&
+      item !== "--apply",
+  )) {
+    await assert.rejects(
+      accountMaintenance(
+        required.filter((item) => item !== missing),
+        {
+          ...environment,
+          CITYGO_ACCOUNT_BOOTSTRAP_CLOSED: "true",
+        },
+      ),
+      rejected,
+    );
+  }
+  await assert.rejects(accountMaintenance(required, environment), rejected);
+  for (const conflicting of [
+    "--restart-accounts",
+    "--bootstrap-admin",
+    "--retained-audits-reviewed",
+  ])
+    await assert.rejects(
+      accountMaintenance([...required, conflicting], {
+        ...environment,
+        CITYGO_ACCOUNT_BOOTSTRAP_CLOSED: "true",
+      }),
+      rejected,
+    );
+  await assert.rejects(
+    accountMaintenance([...baseArgs, "--erase-test-history"], environment),
+    rejected,
+  );
+});
+
 test("bootstrap and environment guards reject incomplete authority before connecting", async () => {
   const cases = [
     ["--unknown"],

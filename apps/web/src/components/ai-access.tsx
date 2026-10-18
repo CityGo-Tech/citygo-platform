@@ -20,6 +20,7 @@ export function AiAccessPanel({
 }) {
   const [checked, setChecked] = useState(false);
   const policy = access.policy;
+  const citygoTariff = access.credit?.chargingStatus === "routerai_citygo_10x";
   const description = policy && (
     <>
       <p>
@@ -36,13 +37,17 @@ export function AiAccessPanel({
   return (
     <Card className="ai-access">
       {access.credit && (
-        <section aria-label="Бесплатный баланс AI">
-          <h2>Бесплатный баланс AI</h2>
+        <section
+          aria-label={citygoTariff ? "Баланс CityGo" : "Бесплатный баланс AI"}
+        >
+          <h2>{citygoTariff ? "Баланс CityGo" : "Бесплатный баланс AI"}</h2>
           {userId && <p>ID аккаунта: {userId}</p>}
           <p>
             {access.credit.bonusGranted
               ? "Разовые 500 ₽ начислены. Ежедневного восстановления нет."
-              : "Разовый бонус 500 ₽ ещё не выдан. Обратитесь к владельцу пилота."}
+              : citygoTariff
+                ? "Подарок 500 ₽ CityGo выдаётся после подтверждения телефона. Подтверждение пока не подключено."
+                : "Разовый бонус 500 ₽ ещё не выдан. Обратитесь к владельцу пилота."}
           </p>
           <p>
             Доступно: {formatMoneyMicros(access.credit.availableMicros)} ₽. В
@@ -50,9 +55,11 @@ export function AiAccessPanel({
             списаний: {formatMoneyMicros(access.credit.spentMicros)} ₽.
           </p>
           <p>
-            {access.credit.chargingStatus === "routerai_at_cost"
-              ? "Ответы RouterAI — по подтверждённой стоимости без наценки. Перед запросом сумма резервируется; при неизвестной стоимости резерв остаётся на сверке. Доли микрорубля округляются вниз."
-              : "Автоматическое списание за ответы пока не подключено."}{" "}
+            {citygoTariff
+              ? "Расход модели 1 ₽ соответствует списанию 10 ₽ CityGo. Оплата 100 ₽ пополняет баланс на 100 ₽ CityGo. Перед запросом резервируется верхняя оценка; неизвестная стоимость остаётся на сверке."
+              : access.credit.chargingStatus === "routerai_at_cost"
+                ? "Ответы RouterAI — по подтверждённой стоимости без наценки. Перед запросом сумма резервируется; при неизвестной стоимости резерв остаётся на сверке. Доли микрорубля округляются вниз."
+                : "Автоматическое списание за ответы пока не подключено."}{" "}
             Пополнение пока недоступно. Бонус не включает ИИ и не заменяет общий
             бюджет сервиса.
           </p>
@@ -80,6 +87,7 @@ export function AiAccessPanel({
                     {
                       {
                         bonus: "Разовый бонус",
+                        topup: "Пополнение",
                         hold: "Резерв",
                         settle: "Списание",
                         release: "Освобождение резерва",

@@ -690,7 +690,7 @@ test("existing least-privilege API grants can start/complete after identity trig
     );
 });
 
-test("container smoke's actual synthetic rewind/seed SQL upgrades from 9 to 13 and preserves populated history", async (t) => {
+test("container smoke's actual synthetic rewind/seed SQL upgrades from 9 to 14 and preserves populated history", async (t) => {
   const db = await fixture(t);
   // Read literal fixture SQL without importing/executing the Docker harness.
   // Fail if its representation changes; never evaluate JavaScript from a file.
@@ -713,7 +713,7 @@ test("container smoke's actual synthetic rewind/seed SQL upgrades from 9 to 13 a
   await migrate(db);
   assert.equal(
     (await db.query("select name from citygo_migrations")).rows.length,
-    13,
+    14,
   );
   assert.deepEqual(await snapshot(db), before);
   await assertLegacyAccountDefaults(db, "900009");

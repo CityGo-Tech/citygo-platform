@@ -8,6 +8,7 @@ import {
   AccountAccess,
   AccountReset,
   ClosedAccountRestart,
+  FreshAccountReset,
   connectDatabase,
   DomainError,
 } from "@citygo/db";
@@ -78,6 +79,8 @@ export async function accountMaintenance(
         "--bootstrap-admin --apply --maintenance-confirmed --expect-users=0; also CITYGO_ACCOUNT_BOOTSTRAP_CLOSED=true after verifying closed ingress",
       restart:
         "--restart-accounts (dry-run); apply additionally requires --apply --expect-users=N --expected-snapshot=SHA256 --backup-receipt-sha256=SHA256 --maintenance-confirmed --services-stopped-confirmed --retained-audits-reviewed and CITYGO_ACCOUNT_BOOTSTRAP_CLOSED=true; declarations do not stop services, verify a backup or prove audits contain no personal data",
+      freshStart:
+        "--fresh-start (dry-run); DESTRUCTIVE apply requires --erase-test-history plus the exact snapshot, backup receipt, user count, stopped-service/closed-maintenance confirmations and CITYGO_ACCOUNT_BOOTSTRAP_CLOSED=true. Deletes test accounts, chats, financial history and knowledge; does not delete backups/external objects or open ingress.",
       reset:
         "--apply-reset is deliberately unavailable; accounting anonymization and erasure require a separately reviewed operator workflow",
     };
@@ -88,6 +91,8 @@ export async function accountMaintenance(
   const allowedFlags = new Set([
     "--bootstrap-admin",
     "--restart-accounts",
+    "--fresh-start",
+    "--erase-test-history",
     "--apply",
     "--maintenance-confirmed",
     "--services-stopped-confirmed",
@@ -117,9 +122,10 @@ export async function accountMaintenance(
   }
   const bootstrap = flags.has("--bootstrap-admin");
   const restart = flags.has("--restart-accounts");
-  if (bootstrap && restart)
+  const fresh = flags.has("--fresh-start");
+  if ([bootstrap, restart, fresh].filter(Boolean).length > 1)
     refuse("Первичный bootstrap и закрытый перезапуск аккаунтов несовместимы");
-  if (flags.has("--apply") && !bootstrap && !restart)
+  if (flags.has("--apply") && !bootstrap && !restart && !fresh)
     refuse(
       "Изменения требуют явно выбранного первичного bootstrap или закрытого перезапуска аккаунтов; прежний сброс недоступен",
     );
@@ -127,12 +133,19 @@ export async function accountMaintenance(
   const backupReceiptSha256 = values.get("--backup-receipt-sha256");
   if (
     !restart &&
+    !fresh &&
     (expectedSnapshotFingerprint !== undefined ||
       backupReceiptSha256 !== undefined ||
       flags.has("--services-stopped-confirmed") ||
       flags.has("--retained-audits-reviewed"))
   )
     refuse("Параметры закрытого перезапуска требуют --restart-accounts");
+  if (flags.has("--erase-test-history") && !fresh)
+    refuse("Удаление тестовой истории требует отдельного --fresh-start");
+  if (fresh && flags.has("--retained-audits-reviewed"))
+    refuse(
+      "Fresh-start удаляет аудит, а не сохраняет его: выберите точную операцию",
+    );
   for (const fingerprint of [expectedSnapshotFingerprint, backupReceiptSha256])
     if (fingerprint !== undefined && !/^[a-f0-9]{64}$/.test(fingerprint))
       refuse("Требуется точный SHA-256 отпечаток из 64 строчных hex-символов");
@@ -181,6 +194,20 @@ export async function accountMaintenance(
     refuse(
       "Закрытый перезапуск требует закрытого maintenance, остановленных сервисов, проверки сохраняемого аудита, точного числа аккаунтов, snapshot и квитанции backup",
     );
+  if (
+    fresh &&
+    flags.has("--apply") &&
+    (!flags.has("--erase-test-history") ||
+      !flags.has("--maintenance-confirmed") ||
+      !flags.has("--services-stopped-confirmed") ||
+      expectedUserCount === undefined ||
+      expectedSnapshotFingerprint === undefined ||
+      backupReceiptSha256 === undefined ||
+      environment.CITYGO_ACCOUNT_BOOTSTRAP_CLOSED !== "true")
+  )
+    refuse(
+      "Fresh-start требует явного удаления тестовой истории, закрытого maintenance, остановленных сервисов, точного числа аккаунтов, снимка и backup",
+    );
   const db = await connectDatabase(connectionString);
   try {
     const identity = (
@@ -211,6 +238,40 @@ export async function accountMaintenance(
     const targetFingerprint = createHash("sha256")
       .update(`${actualEnvironment}|${target}`)
       .digest("hex");
+    if (fresh) {
+      const operation = new FreshAccountReset(db);
+      if (!flags.has("--apply"))
+        return {
+          ...(await operation.plan({
+            expectedUserCount,
+            maintenanceConfirmed: flags.has("--maintenance-confirmed"),
+          })),
+          targetFingerprint,
+        };
+      const receipt = await operation.apply({
+        expectedUserCount: expectedUserCount!,
+        expectedSnapshotFingerprint: expectedSnapshotFingerprint!,
+        backupReceiptSha256: backupReceiptSha256!,
+        maintenanceConfirmed: true,
+        servicesStoppedConfirmed: true,
+        destructiveResetConfirmed: true,
+        passwordHash: await hashPassword("admin"),
+      });
+      return {
+        operation: receipt.operation,
+        dryRun: false,
+        accountsDeleted: receipt.accountsDeleted,
+        username: receipt.admin.username,
+        role: receipt.admin.role,
+        mustChangePassword: true,
+        accountingPreserved: false,
+        knowledgeEmpty: true,
+        operatorBudgetEnabled: false,
+        externalObjectsDeleted: false,
+        publicIngressMayOpen: false,
+        targetFingerprint,
+      };
+    }
     if (restart) {
       const operation = new ClosedAccountRestart(db);
       if (!flags.has("--apply"))

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { aiCreditResponseSchema, aiCreditGrantSchema } from "./ai-credit.js";
 
-test("credit contract keeps exact RUB balances and rejects invented money/payment capabilities", () => {
+test("credit contract keeps exact bounded balances and server payment capabilities", () => {
   const valid = {
     currency: "RUB",
     bonusGranted: true,
@@ -17,18 +17,39 @@ test("credit contract keeps exact RUB balances and rejects invented money/paymen
   assert.ok(aiCreditResponseSchema.safeParse(valid).success);
   for (const patch of [
     { currency: "USD" },
-    { bonusGranted: false },
     { grantedMicros: 600000000 },
     { availableMicros: 150000001 },
     { heldMicros: -1 },
     { spentMicros: 0.5 },
-    { topUpAvailable: true },
     { chargingStatus: "active" },
   ])
     assert.equal(
       aiCreditResponseSchema.safeParse({ ...valid, ...patch }).success,
       false,
     );
+  assert.ok(
+    aiCreditResponseSchema.safeParse({
+      ...valid,
+      bonusGranted: false,
+      topUpAvailable: true,
+      chargingStatus: "routerai_citygo_10x",
+    }).success,
+  );
+  assert.ok(
+    aiCreditResponseSchema.safeParse({
+      ...valid,
+      grantedMicros: 600000000,
+      availableMicros: 250000000,
+      history: [
+        {
+          id: "1",
+          kind: "topup",
+          amountMicros: 100000000,
+          createdAt: "2026-10-18T00:00:00.000Z",
+        },
+      ],
+    }).success,
+  );
   assert.equal(
     aiCreditGrantSchema.safeParse({ userId: "1", confirmOneTime500Rub: true })
       .success,

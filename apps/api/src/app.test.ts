@@ -2856,6 +2856,7 @@ for (const migration of [
   "0010_quest_plan_expand.sql",
   "0011_quest_plan_validate.sql",
   "0013_account_access.sql",
+  "0014_citygo_credit.sql",
 ]) {
   test(`readiness requires ${migration}`, async (t) => {
     const f = await fixture(false);

@@ -47,6 +47,37 @@ test("production RouterAI requires exact independently supplied approval, withou
   assert.equal(network.mock.callCount(), 0);
 });
 
+test("CityGo 10x production mode preserves the exact recipient approval gate without making calls", (t) => {
+  const network = t.mock.method(globalThis, "fetch", async () => {
+    throw new Error("No network allowed");
+  });
+  const config = readConfig({
+    ...approved,
+    AI_CREDIT_MODE: "routerai_citygo_10x",
+  });
+  assert.equal(productionProviderAllowed(config, identity), true);
+  assert.equal(createProvider(config)?.name, "routerai");
+  assert.equal(
+    productionProviderAllowed(
+      { ...config, ROUTERAI_PRODUCTION_POLICY_ID: undefined },
+      identity,
+    ),
+    false,
+  );
+  assert.equal(
+    productionProviderAllowed(
+      { ...config, ROUTERAI_DATA_NOTICE: "changed" },
+      identity,
+    ),
+    false,
+  );
+  assert.equal(
+    productionProviderAllowed(config, { ...identity, model: "another/model" }),
+    false,
+  );
+  assert.equal(network.mock.callCount(), 0);
+});
+
 test("changing recipient, model, country or notice invalidates production approval", () => {
   for (const change of [
     { AI_CREDIT_MODE: "disabled" },

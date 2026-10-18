@@ -24,11 +24,11 @@ export async function releaseMigrationSmoke({
     }));
   assert.equal(
     migrations.length,
-    13,
+    14,
     "Update the disposable upgrade fixture when migrations change",
   );
   const last = migrations.at(-1);
-  assert.equal(last.name, "0013_account_access.sql");
+  assert.equal(last.name, "0014_citygo_credit.sql");
   const plan = {
     version: 1,
     kind: "citygo-release-migration",
@@ -110,6 +110,19 @@ export async function releaseMigrationSmoke({
   );
   psql(
     `begin;
+     drop table ai_credit_topups;
+     drop index ai_credit_entry_topup_identity;
+     alter table ai_credit_charges drop column tariff_snapshot, drop column real_ceiling_micros;
+     alter table ai_credit_accounts drop constraint ai_credit_accounts_granted_micros_check,
+       add constraint ai_credit_accounts_granted_micros_check check (granted_micros in (0,500000000));
+     alter table ai_credit_entries drop constraint ai_credit_entries_kind_check,
+       drop constraint ai_credit_entries_amount_micros_check, drop constraint ai_credit_entries_check;
+     alter table ai_credit_entries add constraint ai_credit_entries_kind_check check (kind in ('bonus','hold','settle','release')),
+       add constraint ai_credit_entries_amount_micros_check check (amount_micros between 0 and 500000000),
+       add constraint ai_credit_entries_check check (
+         (kind='bonus' and amount_micros=500000000 and hold_id is null and actor_user_id is not null)
+         or (kind='hold' and amount_micros>0 and hold_id is null and actor_user_id is null)
+         or (kind in ('settle','release') and hold_id is not null and actor_user_id is null));
      drop table account_security_state;
      alter table users drop column username, drop column role, drop column must_change_password;
      drop table r1_housing_brief_revisions, r1_housing_commands, r1_housing_briefs;
@@ -121,7 +134,7 @@ export async function releaseMigrationSmoke({
      alter table user_quests add constraint user_quests_user_id_quest_id_key unique(user_id,quest_id);
      alter table user_quests drop column plan_id, drop column plan_version;
      alter table relocation_plans drop constraint relocation_plans_owner_version_key;
-     delete from citygo_migrations where name in ('0010_quest_plan_expand.sql','0011_quest_plan_validate.sql','0012_housing_answer_history.sql','0013_account_access.sql');
+     delete from citygo_migrations where name in ('0010_quest_plan_expand.sql','0011_quest_plan_validate.sql','0012_housing_answer_history.sql','0013_account_access.sql','0014_citygo_credit.sql');
      commit`,
   );
   // A populated OLD-schema fixture, not just empty-table DDL. Explicit user ID
@@ -202,7 +215,7 @@ export async function releaseMigrationSmoke({
   ]).trim();
   assert.match(
     migrationPath,
-    /^\/app\/node_modules\/[a-zA-Z0-9_@./+-]+\/migrations\/0013_account_access\.sql$/,
+    /^\/app\/node_modules\/[a-zA-Z0-9_@./+-]+\/migrations\/0014_citygo_credit\.sql$/,
   );
   const sqlFile = join(directory, "synthetic-failing-migration.sql");
   // Sequence increments survive rollback: prove the executor reached the SQL,
@@ -366,7 +379,7 @@ export async function releaseMigrationSmoke({
     );
     docker(["rm", ident]); // Exact disposable fixtures ONLY; runtime retains them.
   }
-  assert.equal(psql("select count(*) from citygo_migrations"), "13");
+  assert.equal(psql("select count(*) from citygo_migrations"), "14");
   assert.equal(
     psql(
       "select username is null and role='user' and not must_change_password from users where id=900009",

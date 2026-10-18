@@ -2,11 +2,29 @@ import { randomUUID } from "node:crypto";
 import {
   creditGenerationIdSchema,
   routerAiChargeSchema,
+  LEGACY_AT_COST_TARIFF,
+  citygoTariffSnapshotSchema,
+  reserveCitygoMicros,
+  citygoDebitFromRealCostRub,
+  type CityGoTariffSnapshot,
   type RouterAiCharge,
 } from "@citygo/contracts";
 import type { Database, Sql } from "./index.js";
 import { AiCreditLedger } from "./ai-credit.js";
 import { DomainError } from "./errors.js";
+
+function decimalWithinCeiling(costRub: string, realCeilingMicros: number) {
+  // The receipt schema has already bounded this grammar and the exponent.
+  const match = /^(\d{1,13})(?:\.(\d{1,30}))?(?:[eE]([+-]?\d{1,2}))?$/.exec(
+    costRub,
+  )!;
+  const fraction = match[2] ?? "";
+  const exponent = Number(match[3] ?? 0) + 6 - fraction.length;
+  const digits = BigInt(match[1]! + fraction);
+  return exponent >= 0
+    ? digits * 10n ** BigInt(exponent) <= BigInt(realCeilingMicros)
+    : digits <= BigInt(realCeilingMicros) * 10n ** BigInt(-exponent);
+}
 
 type Charge = {
   hold_id: string;
@@ -18,11 +36,20 @@ type Charge = {
   response_complete: boolean;
   receipt: RouterAiCharge | null;
   amount_micros: string;
+  tariff_snapshot: CityGoTariffSnapshot;
+  real_ceiling_micros: string;
 };
 export class AiCreditCharges {
   private ledger: AiCreditLedger;
-  constructor(private db: Database) {
+  private tariff: CityGoTariffSnapshot;
+  constructor(
+    private db: Database,
+    tariffSnapshot: CityGoTariffSnapshot = LEGACY_AT_COST_TARIFF,
+  ) {
     this.ledger = new AiCreditLedger(db);
+    this.tariff = Object.freeze(
+      citygoTariffSnapshotSchema.parse(tariffSnapshot),
+    );
   }
 
   async reserve(
@@ -37,10 +64,15 @@ export class AiCreditCharges {
     amount: number,
   ) {
     const id = randomUUID();
-    await this.ledger.hold(input.userId, id, amount, tx);
+    await this.ledger.hold(
+      input.userId,
+      id,
+      reserveCitygoMicros(amount, this.tariff),
+      tx,
+    );
     await tx.query(
-      `insert into ai_credit_charges(hold_id,user_id,thread_id,request_id,attempt_number,model,upstream)
-      values ($1,$2,$3,$4,1,$5,$6)`,
+      `insert into ai_credit_charges(hold_id,user_id,thread_id,request_id,attempt_number,model,upstream,tariff_snapshot,real_ceiling_micros)
+      values ($1,$2,$3,$4,1,$5,$6,$7,$8)`,
       [
         id,
         input.userId,
@@ -48,13 +80,16 @@ export class AiCreditCharges {
         input.requestId,
         input.model,
         input.upstream,
+        JSON.stringify(this.tariff),
+        amount,
       ],
     );
     return id;
   }
   async get(userId: string, id: string, tx: Sql = this.db): Promise<Charge> {
     const result = await tx.query<Charge>(
-      `select c.*,c.user_id::text,e.amount_micros::text
+      `select c.*,c.user_id::text,e.amount_micros::text,
+       coalesce(c.real_ceiling_micros,e.amount_micros)::text as real_ceiling_micros
       from ai_credit_charges c join ai_credit_entries e on e.operation_id=c.hold_id where c.hold_id=$1 and c.user_id=$2`,
       [id, userId],
     );
@@ -150,7 +185,24 @@ export class AiCreditCharges {
           throw new DomainError(409, "Подтверждённая стоимость изменилась");
         return false;
       }
-      if (receipt.amountMicros > Number(row.amount_micros)) {
+      // Replay uses the attempt's durable tariff, never this process's current
+      // default. Scale the original decimal before rounding; provider cost and
+      // receipt remain real RUB, not CityGo balance units.
+      const tariff = citygoTariffSnapshotSchema.parse(row.tariff_snapshot);
+      const { citygoDebitMicros } = citygoDebitFromRealCostRub(
+        receipt.costRub,
+        tariff,
+      );
+      // Compare exact decimals as well: flooring the real receipt could hide a
+      // cost just above the accepted ceiling, even when the debit still fits.
+      const exactWithinCeiling = decimalWithinCeiling(
+        receipt.costRub,
+        Number(row.real_ceiling_micros),
+      );
+      if (
+        !exactWithinCeiling ||
+        citygoDebitMicros > Number(row.amount_micros)
+      ) {
         // Never charge more than the accepted hold. Stop future spend pending
         // operator review; the operator ceiling remains conservative, not billed.
         await tx.query(
@@ -164,6 +216,8 @@ export class AiCreditCharges {
             JSON.stringify({
               amountMicros: receipt.amountMicros,
               reservedMicros: Number(row.amount_micros),
+              citygoDebitMicros,
+              realCeilingMicros: Number(row.real_ceiling_micros),
             }),
           ],
         );
@@ -173,7 +227,7 @@ export class AiCreditCharges {
         userId,
         randomUUID(),
         id,
-        { kind: "settle", amountMicros: receipt.amountMicros },
+        { kind: "settle", amountMicros: citygoDebitMicros },
         tx,
       );
       await tx.query(

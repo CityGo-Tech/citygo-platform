@@ -16,7 +16,9 @@ import type {
   AiBudgetInput,
   ApiErrorCode,
   QuestPlanReference,
+  CityGoTariffSnapshot,
 } from "@citygo/contracts";
+import { LEGACY_AT_COST_TARIFF } from "@citygo/contracts";
 import { randomUUID } from "node:crypto";
 import { canTransitionQuest } from "@citygo/domain";
 import { DomainError } from "./errors.js";
@@ -45,6 +47,7 @@ export class Repository {
   constructor(
     public db: Database,
     private creditCharging = false,
+    private creditTariff: CityGoTariffSnapshot = LEGACY_AT_COST_TARIFF,
   ) {}
   aiBudget(executions: AiExecution[]) {
     return aiBudget(this.db, executions);
@@ -217,7 +220,7 @@ export class Repository {
         ],
       );
       return this.creditCharging
-        ? new AiCreditCharges(this.db).reserve(
+        ? new AiCreditCharges(this.db, this.creditTariff).reserve(
             tx,
             {
               userId: input.userId,
@@ -461,7 +464,11 @@ export class Repository {
         aiAccess: {
           credit: await new AiCreditLedger(
             this.db,
-            this.creditCharging ? "routerai_at_cost" : "not_connected",
+            this.creditCharging
+              ? this.creditTariff.version === "citygo-10x-v1"
+                ? "routerai_citygo_10x"
+                : "routerai_at_cost"
+              : "not_connected",
           ).status(user.id, tx),
           budget: await aiUserBudget(tx, user.id),
           policy,

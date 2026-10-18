@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { CITYGO_MAX_AMOUNT_MICROS } from "./citygo-tariff.js";
 
 export const AI_WELCOME_CREDIT_MICROS = 500_000_000;
 export const creditGenerationIdSchema = z
@@ -46,7 +47,7 @@ export const aiCreditReconcileSchema = z.strictObject({
   confirmReconcile: z.literal(true),
 });
 export type AiCreditReconcile = z.infer<typeof aiCreditReconcileSchema>;
-const amount = z.number().int().min(0).max(AI_WELCOME_CREDIT_MICROS);
+const amount = z.number().int().min(0).max(CITYGO_MAX_AMOUNT_MICROS);
 export const creditUserIdSchema = z.string().regex(/^[1-9][0-9]{0,17}$/);
 export const aiCreditGrantSchema = z.strictObject({
   userId: creditUserIdSchema,
@@ -61,9 +62,13 @@ export const aiCreditResponseSchema = z
     heldMicros: amount,
     spentMicros: amount,
     availableMicros: amount,
-    // Until trusted pricing/settlement is connected, do not market a payable wallet.
-    chargingStatus: z.enum(["not_connected", "routerai_at_cost"]),
-    topUpAvailable: z.literal(false),
+    chargingStatus: z.enum([
+      "not_connected",
+      "routerai_at_cost",
+      "routerai_citygo_10x",
+    ]),
+    // A server capability, not evidence that a return URL or payment succeeded.
+    topUpAvailable: z.boolean(),
     pending: z
       .array(
         z.object({
@@ -78,7 +83,7 @@ export const aiCreditResponseSchema = z
       .array(
         z.object({
           id: creditUserIdSchema,
-          kind: z.enum(["bonus", "hold", "settle", "release"]),
+          kind: z.enum(["bonus", "topup", "hold", "settle", "release"]),
           amountMicros: amount,
           createdAt: z.iso.datetime(),
         }),
@@ -89,6 +94,6 @@ export const aiCreditResponseSchema = z
     (v) => v.availableMicros + v.heldMicros + v.spentMicros === v.grantedMicros,
   )
   .refine(
-    (v) => v.grantedMicros === (v.bonusGranted ? AI_WELCOME_CREDIT_MICROS : 0),
+    (v) => !v.bonusGranted || v.grantedMicros >= AI_WELCOME_CREDIT_MICROS,
   );
 export type AiCredit = z.infer<typeof aiCreditResponseSchema>;

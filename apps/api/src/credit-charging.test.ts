@@ -16,7 +16,10 @@ import { buildApp } from "./app.js";
 import { seedTestBudget } from "./test-budget.js";
 
 const RUB = 1_000_000;
-async function fixture(ceiling = 100 * RUB) {
+async function fixture(
+  ceiling = 100 * RUB,
+  mode: "routerai_at_cost" | "routerai_citygo_10x" = "routerai_at_cost",
+) {
   const base = process.env.TEST_DATABASE_URL;
   if (base && !/^postgres(?:ql)?:\/\//.test(base))
     throw new Error("Invalid test database");
@@ -95,7 +98,7 @@ async function fixture(ceiling = 100 * RUB) {
     ROUTERAI_MODEL: provider.model,
     ROUTERAI_UPSTREAM: "test-upstream",
     ADMIN_USER_IDS: "1",
-    AI_CREDIT_MODE: "routerai_at_cost",
+    AI_CREDIT_MODE: mode,
   });
   await seedTestBudget(db, config, { routerai: provider });
   await db.query(
@@ -235,6 +238,74 @@ test("RouterAI bonus admission, exact at-cost debit, request replay and history"
     100 * RUB,
     "operator cap remains conservative, not refunded as a wallet",
   );
+});
+
+test("CityGo 10x mode credits payment 1:1, debits the exact raw price and never grants an unverified phone gift", async (t) => {
+  const f = await fixture(10 * RUB, "routerai_citygo_10x");
+  t.after(f.close);
+  assert.equal((await f.grant()).statusCode, 503);
+  assert.equal((await f.balance()).bonusGranted, false);
+  assert.match((await f.send()).body, /AI_CREDIT_EXHAUSTED/);
+  assert.equal(f.state.posts, 0);
+  // The trusted payment boundary is synthetic here. No real payment or gift is
+  // invented on the server; the future YooKassa adapter must perform its GET.
+  await new AiCreditLedger(f.db).topUpConfirmed(f.user.id, randomUUID(), {
+    providerPaymentId: "synthetic-payment-" + randomUUID(),
+    paidKopeks: 20000,
+    merchantId: "synthetic-shop",
+    test: true,
+    verifiedAt: new Date().toISOString(),
+    verification: "server_get_succeeded",
+    currency: "RUB",
+  });
+  assert.equal((await f.balance()).availableMicros, 200 * RUB);
+  assert.equal((await f.balance()).bonusGranted, false);
+  const request = randomUUID();
+  assert.match((await f.send(request)).body, /"type":"done"/);
+  let balance = await f.balance();
+  assert.equal(balance.chargingStatus, "routerai_citygo_10x");
+  assert.equal(balance.spentMicros, 12345678);
+  assert.equal(balance.heldMicros, 0);
+  const saved = (
+    await f.db.query<{
+      receipt: { amountMicros: number; costRub: string };
+      real_ceiling_micros: string;
+      tariff_snapshot: { version: string };
+    }>(
+      "select receipt,real_ceiling_micros::text,tariff_snapshot from ai_credit_charges where user_id=$1",
+      [f.user.id],
+    )
+  ).rows[0]!;
+  assert.equal(saved.receipt.costRub, "1.23456789");
+  assert.equal(saved.receipt.amountMicros, 1234567);
+  assert.equal(saved.real_ceiling_micros, String(10 * RUB));
+  assert.equal(saved.tariff_snapshot.version, "citygo-10x-v1");
+  await f.send(request);
+  assert.equal(f.state.posts, 1);
+  assert.equal((await f.balance()).spentMicros, 12345678);
+  f.state.costDown = true;
+  assert.match((await f.send()).body, /"type":"done"/);
+  balance = await f.balance();
+  assert.equal(balance.heldMicros, 100 * RUB);
+  assert.equal(balance.spentMicros, 12345678);
+  f.state.costDown = false;
+  const pending = balance.pending![0]!;
+  const settled = await f.call(
+    "POST",
+    "/v1/admin/ai/credit/reconcile",
+    f.admin.token,
+    {
+      userId: f.user.id,
+      holdId: pending.holdId,
+      confirmReconcile: true,
+    },
+  );
+  assert.equal(settled.statusCode, 200, settled.body);
+  assert.equal((await f.balance()).spentMicros, 24691356);
+  const board = (
+    await f.call("GET", "/v1/dashboard", f.user.token)
+  ).json<Dashboard>();
+  assert.equal(board.aiAccess.credit!.chargingStatus, "routerai_citygo_10x");
 });
 
 test("lost cost lookup keeps hold; owner-only reconciliation survives object recreation and is idempotent", async (t) => {

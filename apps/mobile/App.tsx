@@ -569,12 +569,19 @@ export default function App() {
                   {board.aiAccess?.credit && (
                     <View>
                       <Text style={styles.title}>
-                        Бесплатный баланс AI · аккаунт {board.user.id}
+                        {board.aiAccess.credit.chargingStatus ===
+                        "routerai_citygo_10x"
+                          ? "Баланс CityGo"
+                          : "Бесплатный баланс AI"}{" "}
+                        · аккаунт {board.user.id}
                       </Text>
                       <Text>
                         {board.aiAccess.credit.bonusGranted
                           ? "Разовые 500 ₽ начислены. Ежедневного восстановления нет."
-                          : "Разовый бонус 500 ₽ ещё не выдан. Обратитесь к владельцу пилота."}
+                          : board.aiAccess.credit.chargingStatus ===
+                              "routerai_citygo_10x"
+                            ? "Подарок 500 ₽ CityGo выдаётся после подтверждения телефона. Подтверждение пока не подключено."
+                            : "Разовый бонус 500 ₽ ещё не выдан. Обратитесь к владельцу пилота."}
                       </Text>
                       <Text>
                         Доступно:{" "}
@@ -589,9 +596,12 @@ export default function App() {
                       </Text>
                       <Text>
                         {board.aiAccess.credit.chargingStatus ===
-                        "routerai_at_cost"
-                          ? "Ответы RouterAI — по подтверждённой стоимости без наценки. Неизвестная стоимость остаётся в резерве до сверки. Доли микрорубля округляются вниз."
-                          : "Автоматическое списание за ответы пока не подключено."}{" "}
+                        "routerai_citygo_10x"
+                          ? "Расход модели 1 ₽ соответствует списанию 10 ₽ CityGo. Оплата 100 ₽ пополняет баланс на 100 ₽ CityGo. Неизвестная стоимость остаётся в резерве до сверки."
+                          : board.aiAccess.credit.chargingStatus ===
+                              "routerai_at_cost"
+                            ? "Ответы RouterAI — по подтверждённой стоимости без наценки. Неизвестная стоимость остаётся в резерве до сверки. Доли микрорубля округляются вниз."
+                            : "Автоматическое списание за ответы пока не подключено."}{" "}
                         Пополнение пока недоступно. Баланс не включает ИИ.
                       </Text>
                       {board.aiAccess.credit.pending?.map((item) => (

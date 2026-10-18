@@ -18,6 +18,8 @@ import {
   aiBudgetInputSchema,
   aiCreditGrantSchema,
   aiCreditReconcileSchema,
+  CITYGO_10X_TARIFF,
+  LEGACY_AT_COST_TARIFF,
   CONTRACT_VERSION,
   CONTRACT_VERSION_HEADER,
   REQUEST_ID_HEADER,
@@ -84,14 +86,19 @@ export async function buildApp(options: {
     throw new Error(
       "R1 housing API is synthetic-only; production activation is not implemented",
     );
-  const creditCharging = config.AI_CREDIT_MODE === "routerai_at_cost";
-  const repo = new Repository(options.db, creditCharging);
+  const creditCharging = config.AI_CREDIT_MODE !== "disabled";
+  const tariff =
+    config.AI_CREDIT_MODE === "routerai_citygo_10x"
+      ? CITYGO_10X_TARIFF
+      : LEGACY_AT_COST_TARIFF;
+  const chargingStatus =
+    config.AI_CREDIT_MODE === "disabled"
+      ? "not_connected"
+      : config.AI_CREDIT_MODE;
+  const repo = new Repository(options.db, creditCharging, tariff);
   const accounts = new AccountAccess(options.db);
-  const credit = new AiCreditLedger(
-    options.db,
-    creditCharging ? "routerai_at_cost" : "not_connected",
-  );
-  const charges = new AiCreditCharges(options.db);
+  const credit = new AiCreditLedger(options.db, chargingStatus);
+  const charges = new AiCreditCharges(options.db, tariff);
   const providers: ProviderMap = { ...options.providers };
   if (options.provider) providers[options.provider.name] = options.provider;
   async function reconcileCharge(userId: string, holdId: string) {
@@ -285,9 +292,9 @@ export async function buildApp(options: {
   app.get("/ready", async () => {
     try {
       const result = await options.db.query(
-        "select name from citygo_migrations where name in ('0006_ai_budget.sql','0007_ai_user_daily_budget.sql','0008_ai_credit.sql','0009_ai_credit_charges.sql','0010_quest_plan_expand.sql','0011_quest_plan_validate.sql','0013_account_access.sql')",
+        "select name from citygo_migrations where name in ('0006_ai_budget.sql','0007_ai_user_daily_budget.sql','0008_ai_credit.sql','0009_ai_credit_charges.sql','0010_quest_plan_expand.sql','0011_quest_plan_validate.sql','0013_account_access.sql','0014_citygo_credit.sql')",
       );
-      if (result.rows.length !== 7) throw new Error("Pending migration");
+      if (result.rows.length !== 8) throw new Error("Pending migration");
       if (config.R1_HOUSING_API_MODE === "synthetic")
         await verifyHousingReadiness(options.db);
     } catch {
@@ -765,6 +772,11 @@ export async function buildApp(options: {
   });
   app.post("/v1/admin/ai/credit/welcome", async (request) => {
     const actor = await authenticateAdmin(request);
+    if (config.AI_CREDIT_MODE === "routerai_citygo_10x")
+      throw new DomainError(
+        503,
+        "Подарок доступен только после подтверждения телефона. Сервис подтверждения ещё не подключён.",
+      );
     const input = aiCreditGrantSchema.parse(request.body);
     return credit.grantWelcome(input.userId, actor.id);
   });

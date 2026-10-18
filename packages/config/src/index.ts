@@ -118,7 +118,9 @@ export const serverConfigSchema = z.object({
   GIGACHAT_SCOPE: optionalSetting,
   GIGACHAT_CA_BUNDLE_FILE: optionalSetting,
   ADMIN_USER_IDS: z.string().default(""),
-  AI_CREDIT_MODE: z.enum(["disabled", "routerai_at_cost"]).default("disabled"),
+  AI_CREDIT_MODE: z
+    .enum(["disabled", "routerai_at_cost", "routerai_citygo_10x"])
+    .default("disabled"),
   // Development rehearsal only. This flag is not a production approval.
   R1_HOUSING_API_MODE: z.enum(["disabled", "synthetic"]).default("disabled"),
   TRUSTED_PROXY_CIDRS: trustedProxySchema,

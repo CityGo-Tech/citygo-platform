@@ -25,6 +25,12 @@ export {
   type ClosedAccountRestartReceipt,
 } from "./closed-account-restart.js";
 export {
+  FreshAccountReset,
+  type FreshAccountResetPlan,
+  type FreshAccountResetInput,
+  type FreshAccountResetReceipt,
+} from "./fresh-account-reset.js";
+export {
   HousingAnswers,
   type HousingBriefSnapshot,
   type HousingBriefSummary,
