@@ -1,11 +1,13 @@
-// Operator-only source CLI. Never import this module from server.ts/dev.ts or
-// expose it as HTTP. It deliberately loads no .env files and has no reset apply.
+// Operator-only CLI. Never import this module from server.ts/dev.ts or
+// expose it as HTTP. It deliberately loads no .env files. The legacy reset flag
+// is unavailable; closed account retirement is a distinct, explicit operation.
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
 import {
   AccountAccess,
   AccountReset,
+  ClosedAccountRestart,
   connectDatabase,
   DomainError,
 } from "@citygo/db";
@@ -74,6 +76,8 @@ export async function accountMaintenance(
         "Default: --expected-target=postgresql://HOST:PORT/DATABASE --expected-environment=production --expect-users=5",
       bootstrap:
         "--bootstrap-admin --apply --maintenance-confirmed --expect-users=0; also CITYGO_ACCOUNT_BOOTSTRAP_CLOSED=true after verifying closed ingress",
+      restart:
+        "--restart-accounts (dry-run); apply additionally requires --apply --expect-users=N --expected-snapshot=SHA256 --backup-receipt-sha256=SHA256 --maintenance-confirmed --services-stopped-confirmed --retained-audits-reviewed and CITYGO_ACCOUNT_BOOTSTRAP_CLOSED=true; declarations do not stop services, verify a backup or prove audits contain no personal data",
       reset:
         "--apply-reset is deliberately unavailable; accounting anonymization and erasure require a separately reviewed operator workflow",
     };
@@ -83,13 +87,18 @@ export async function accountMaintenance(
     );
   const allowedFlags = new Set([
     "--bootstrap-admin",
+    "--restart-accounts",
     "--apply",
     "--maintenance-confirmed",
+    "--services-stopped-confirmed",
+    "--retained-audits-reviewed",
   ]);
   const allowedValues = new Set([
     "--expected-target",
     "--expected-environment",
     "--expect-users",
+    "--expected-snapshot",
+    "--backup-receipt-sha256",
   ]);
   const flags = new Set<string>();
   const values = new Map<string, string>();
@@ -107,10 +116,26 @@ export async function accountMaintenance(
     }
   }
   const bootstrap = flags.has("--bootstrap-admin");
-  if (flags.has("--apply") && !bootstrap)
+  const restart = flags.has("--restart-accounts");
+  if (bootstrap && restart)
+    refuse("Первичный bootstrap и закрытый перезапуск аккаунтов несовместимы");
+  if (flags.has("--apply") && !bootstrap && !restart)
     refuse(
-      "Изменения доступны только для явно выбранного первичного bootstrap; сброс недоступен",
+      "Изменения требуют явно выбранного первичного bootstrap или закрытого перезапуска аккаунтов; прежний сброс недоступен",
     );
+  const expectedSnapshotFingerprint = values.get("--expected-snapshot");
+  const backupReceiptSha256 = values.get("--backup-receipt-sha256");
+  if (
+    !restart &&
+    (expectedSnapshotFingerprint !== undefined ||
+      backupReceiptSha256 !== undefined ||
+      flags.has("--services-stopped-confirmed") ||
+      flags.has("--retained-audits-reviewed"))
+  )
+    refuse("Параметры закрытого перезапуска требуют --restart-accounts");
+  for (const fingerprint of [expectedSnapshotFingerprint, backupReceiptSha256])
+    if (fingerprint !== undefined && !/^[a-f0-9]{64}$/.test(fingerprint))
+      refuse("Требуется точный SHA-256 отпечаток из 64 строчных hex-символов");
   const actualEnvironment = environment.NODE_ENV;
   if (
     !["development", "test", "production"].includes(actualEnvironment ?? "") ||
@@ -142,6 +167,20 @@ export async function accountMaintenance(
     refuse(
       "Bootstrap требует подтверждённого закрытого maintenance и ожидаемого числа аккаунтов 0",
     );
+  if (
+    restart &&
+    flags.has("--apply") &&
+    (!flags.has("--maintenance-confirmed") ||
+      !flags.has("--services-stopped-confirmed") ||
+      !flags.has("--retained-audits-reviewed") ||
+      expectedUserCount === undefined ||
+      expectedSnapshotFingerprint === undefined ||
+      backupReceiptSha256 === undefined ||
+      environment.CITYGO_ACCOUNT_BOOTSTRAP_CLOSED !== "true")
+  )
+    refuse(
+      "Закрытый перезапуск требует закрытого maintenance, остановленных сервисов, проверки сохраняемого аудита, точного числа аккаунтов, snapshot и квитанции backup",
+    );
   const db = await connectDatabase(connectionString);
   try {
     const identity = (
@@ -169,13 +208,49 @@ export async function accountMaintenance(
       refuse(
         "Требуется точная БД и её ограниченный владелец citygo_migrator, не runtime API и не superuser",
       );
+    const targetFingerprint = createHash("sha256")
+      .update(`${actualEnvironment}|${target}`)
+      .digest("hex");
+    if (restart) {
+      const operation = new ClosedAccountRestart(db);
+      if (!flags.has("--apply"))
+        return {
+          ...(await operation.plan({
+            expectedUserCount,
+            maintenanceConfirmed: flags.has("--maintenance-confirmed"),
+          })),
+          targetFingerprint,
+        };
+      // The expensive hash is prepared outside every DB transaction. The apply
+      // method must recheck the pinned snapshot and all guards atomically.
+      const receipt = await operation.apply({
+        expectedUserCount: expectedUserCount!,
+        expectedSnapshotFingerprint: expectedSnapshotFingerprint!,
+        backupReceiptSha256: backupReceiptSha256!,
+        maintenanceConfirmed: true,
+        servicesStoppedConfirmed: true,
+        retainedAuditsReviewed: true,
+        passwordHash: await hashPassword("admin"),
+      });
+      // Whitelist the public operator receipt: no account IDs, credentials,
+      // message data, connection descriptions or internal audit payloads.
+      return {
+        operation: "closed-account-restart",
+        dryRun: false,
+        accountsRetired: receipt.accountsRetired,
+        accountsDeleted: 0,
+        username: receipt.admin.username,
+        role: receipt.admin.role,
+        mustChangePassword: receipt.admin.mustChangePassword,
+        accountingPreserved: receipt.accountingPreserved,
+        publicIngressMayOpen: false,
+        targetFingerprint,
+      };
+    }
     const plan = await new AccountReset(db).plan({
       expectedUserCount,
       maintenanceConfirmed: flags.has("--maintenance-confirmed"),
     });
-    const targetFingerprint = createHash("sha256")
-      .update(`${actualEnvironment}|${target}`)
-      .digest("hex");
     if (!bootstrap) return { ...plan, targetFingerprint };
     if (
       expectedUserCount !== 0 ||

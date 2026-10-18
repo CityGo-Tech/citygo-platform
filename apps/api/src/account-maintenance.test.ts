@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { DomainError } from "@citygo/db";
 import {
@@ -164,12 +165,110 @@ test("bootstrap and environment guards reject incomplete authority before connec
   assert.equal(JSON.stringify(help).includes(secretMarker), false);
 });
 
+test("closed restart requires every explicit apply guard before opening a connection", async () => {
+  const args = [
+    ...baseArgs,
+    "--restart-accounts",
+    "--apply",
+    "--expect-users=5",
+    `--expected-snapshot=${"a".repeat(64)}`,
+    `--backup-receipt-sha256=${"b".repeat(64)}`,
+    "--maintenance-confirmed",
+    "--services-stopped-confirmed",
+    "--retained-audits-reviewed",
+  ];
+  const closedEnvironment = {
+    ...environment,
+    CITYGO_ACCOUNT_BOOTSTRAP_CLOSED: "true",
+  };
+  for (const required of args.slice(baseArgs.length + 2))
+    await assert.rejects(
+      accountMaintenance(
+        args.filter((arg) => arg !== required),
+        closedEnvironment,
+      ),
+      rejected,
+      `Missing ${required} must fail before connecting`,
+    );
+  for (const value of [undefined, "", "false", "1", "TRUE"])
+    await assert.rejects(
+      accountMaintenance(args, {
+        ...closedEnvironment,
+        CITYGO_ACCOUNT_BOOTSTRAP_CLOSED: value,
+      }),
+      rejected,
+    );
+  const help = await accountMaintenance(["--help"], {});
+  assert.match(help.restart!, /--restart-accounts \(dry-run\)/);
+  assert.match(help.restart!, /--retained-audits-reviewed/);
+  assert.match(help.restart!, /do not stop services/);
+});
+
+test("restart cannot be confused with bootstrap, the legacy reset or unrelated receipt flags", async () => {
+  for (const args of [
+    [...baseArgs, "--restart-accounts", "--bootstrap-admin"],
+    [...baseArgs, "--restart-accounts", "--apply-reset"],
+    [...baseArgs, "--bootstrap-admin", "--services-stopped-confirmed"],
+    [...baseArgs, "--bootstrap-admin", "--retained-audits-reviewed"],
+    [...baseArgs, `--expected-snapshot=${"a".repeat(64)}`],
+    [...baseArgs, `--backup-receipt-sha256=${"b".repeat(64)}`],
+    [...baseArgs, "--restart-accounts", "--restart-accounts"],
+  ])
+    await assert.rejects(accountMaintenance(args, environment), rejected);
+  for (const flag of ["--expected-snapshot", "--backup-receipt-sha256"])
+    for (const value of [
+      "",
+      "a".repeat(63),
+      "a".repeat(65),
+      "A".repeat(64),
+      secretMarker,
+    ])
+      await assert.rejects(
+        accountMaintenance(
+          [...baseArgs, "--restart-accounts", `${flag}=${value}`],
+          environment,
+        ),
+        (error: unknown) => {
+          assert.ok(rejected(error));
+          assert.equal((error as Error).message.includes(secretMarker), false);
+          return true;
+        },
+      );
+});
+
+test("operator maintenance has a separate dist entry without becoming API startup", () => {
+  const source = new URL("./", import.meta.url);
+  const manifest = JSON.parse(
+    readFileSync(new URL("../package.json", source), "utf8"),
+  ) as {
+    files: string[];
+    scripts: { build: string; start: string; dev: string };
+  };
+  assert.deepEqual(manifest.files, ["dist"]);
+  assert.match(
+    manifest.scripts.build,
+    /(?:^|\s)\.\/src\/account-maintenance\.ts(?:\s|$)/,
+  );
+  assert.doesNotMatch(manifest.scripts.start, /account-maintenance/);
+  assert.doesNotMatch(manifest.scripts.dev, /account-maintenance/);
+  for (const entry of ["server.ts", "dev.ts"])
+    assert.doesNotMatch(
+      readFileSync(new URL(entry, source), "utf8"),
+      /account-maintenance/,
+    );
+});
+
 test("CLI entrypoint prints safe failures without URLs, credentials or driver stacks", () => {
   const entry = fileURLToPath(
     new URL("./account-maintenance.ts", import.meta.url),
   );
   const cwd = fileURLToPath(new URL("../../../", import.meta.url));
-  for (const args of [["--apply-reset"], baseArgs]) {
+  for (const args of [
+    ["--apply-reset"],
+    baseArgs,
+    [...baseArgs, "--restart-accounts", "--apply"],
+    [...baseArgs, "--restart-accounts", `--expected-snapshot=${secretMarker}`],
+  ]) {
     const child = spawnSync(
       process.execPath,
       ["--import", "tsx", entry, ...args],

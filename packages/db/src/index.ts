@@ -19,6 +19,12 @@ export {
   type AccountResetBlocker,
 } from "./account-reset.js";
 export {
+  ClosedAccountRestart,
+  type ClosedAccountRestartPlan,
+  type ClosedAccountRestartInput,
+  type ClosedAccountRestartReceipt,
+} from "./closed-account-restart.js";
+export {
   HousingAnswers,
   type HousingBriefSnapshot,
   type HousingBriefSummary,
