@@ -15,6 +15,8 @@ export * from "./housing-api.js";
 export * from "./r1-permissions.js";
 // Test harness protocol only, never real consent or AI admission.
 export * from "./r1-permission-synthetic.js";
+// Offline public knowledge candidates and retrieval policy; no live research.
+export * from "./knowledge.js";
 
 export const relocationStages = [
   "profile",
