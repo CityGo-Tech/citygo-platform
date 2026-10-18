@@ -1,7 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { connectDatabase, migrate, Repository } from "@citygo/db";
+import {
+  connectDatabase,
+  migrate,
+  Repository,
+  type Database,
+} from "@citygo/db";
 import { readConfig } from "@citygo/config";
 import { testProfile } from "@citygo/testkit";
 import type {
@@ -24,7 +29,7 @@ type ChatUser = {
 };
 
 // Default: memory-only PGlite. CI's TEST_DATABASE_URL uses a unique PostgreSQL
-// schema per fixture, so these same tests exercise real concurrent row locks.
+// disposable database/public schema per fixture to exercise real row locks.
 // Prices are artificial reservation amounts, never model tariffs or live budgets.
 async function fixture({
   cost = 250 * RUB,
@@ -36,183 +41,220 @@ async function fixture({
   retry?: boolean;
 } = {}) {
   const base = process.env.TEST_DATABASE_URL;
-  if (base && !/^postgres(?:ql)?:\/\//.test(base))
-    throw new Error(
-      "TEST_DATABASE_URL must point to the PostgreSQL test service",
-    );
-  const schema = "user_budget_test_" + randomUUID().replaceAll("-", "");
-  assert.match(schema, /^user_budget_test_[a-f0-9]{32}$/);
-  const schemaAdmin = base ? await connectDatabase(base) : null;
-  let url = "pglite://:memory:";
-  if (schemaAdmin && base) {
-    await schemaAdmin.query('create schema "' + schema + '"');
-    const scoped = new URL(base);
-    scoped.searchParams.set("options", "-c search_path=" + schema);
-    url = scoped.toString();
-  }
-  const db = await connectDatabase(url);
-  await migrate(db);
-  await migrate(db);
-  const config = readConfig({
-    NODE_ENV: "test",
-    ADMIN_USER_IDS: "1",
-    LLM_USER_DAILY_REQUEST_LIMIT: "100",
-    LLM_GLOBAL_DAILY_REQUEST_LIMIT: "1000",
-    LLM_USER_DAILY_ATTEMPT_LIMIT: "100",
-    LLM_GLOBAL_DAILY_ATTEMPT_LIMIT: "1000",
-  });
-  let dispatches = 0;
-  const provider: StreamingProvider = {
-    name: "routerai",
-    model: "test/user-budget",
-    async *stream(_instructions, _messages, _signal, retryGuard) {
-      dispatches++;
-      if (retry) {
-        await retryGuard!.beforeRetry();
-        dispatches++;
-      }
-      yield { type: "delta", text: "Синтетический ответ о квартире" };
-      yield { type: "complete", model: "test/user-budget" };
-    },
-  };
-  const apps: Api[] = [];
-  const replica = async () => {
-    const app = await buildApp({ db, config, provider, testing: true });
-    apps.push(app);
-    return app;
-  };
-  const app = await replica();
-  const call = (
-    target: Api,
-    method: "GET" | "POST",
-    url: string,
-    token = "",
-    payload?: object,
-  ) =>
-    target.inject({
-      method,
-      url,
-      headers: {
-        origin: "http://localhost:3000",
-        ...(token ? { cookie: "citygo=" + token } : {}),
-      },
-      ...(payload ? { payload } : {}),
-    });
-  const board = async (user: Pick<ChatUser, "token">, target = app) => {
-    const response = await call(target, "GET", "/v1/dashboard", user.token);
-    assert.equal(response.statusCode, 200, response.body);
-    return response.json<Dashboard>();
-  };
-  const chatUser = async (): Promise<ChatUser> => {
-    const email = randomUUID() + "@example.test";
-    const registered = await call(app, "POST", "/v1/auth/register", "", {
-      email,
-      password,
-    });
-    assert.equal(registered.statusCode, 200, registered.body);
-    const token = registered.cookies[0]!.value;
-    const id = registered.json().user.id as string;
-    assert.equal(
-      (await call(app, "POST", "/v1/questionnaire", token, testProfile))
-        .statusCode,
-      200,
-    );
-    const dashboard = await board({ token });
-    const policyId = dashboard.aiAccess.policy!.id;
-    const started = await call(
-      app,
-      "POST",
-      `/v1/quests/${dashboard.quests[0]!.id}/start`,
-      token,
-      {},
-    );
-    assert.equal(started.statusCode, 200, started.body);
-    const thread = started.json().id as string;
-    assert.equal(
-      (
-        await call(app, "POST", "/v1/ai/consent", token, {
-          action: "granted",
-          policyId,
-        })
-      ).statusCode,
-      200,
-    );
-    return { id, email, token, thread, policyId };
-  };
-  const admin = await chatUser();
-  // Explicit test fixture setup, not runtime ADMIN_USER_IDS authorization.
-  await db.query("update users set role='admin' where id=$1", [admin.id]);
-  const status = async (target = app) => {
-    const response = await call(target, "GET", "/v1/admin/ai", admin.token);
-    assert.equal(response.statusCode, 200, response.body);
-    return response.json<AiControlStatus>();
-  };
-  const save = async (changes: Partial<AiBudgetInput> = {}, target = app) => {
-    const budget = (await status(target)).budget!;
-    const input = {
-      expectedRevision: budget.settings.revision,
-      enabled: true,
-      currency: "RUB",
-      dailyLimitMicros: 10000 * RUB,
-      totalLimitMicros: 100000 * RUB,
-      rules: budget.availableExecutions.map((item) => ({
-        key: item.key,
-        attemptCeilingMicros: cost,
-      })),
-      ...changes,
-    };
-    const response = await call(
-      target,
-      "POST",
-      "/v1/admin/ai/budget",
-      admin.token,
-      input,
-    );
-    assert.equal(response.statusCode, 200, response.body);
-    return response.json();
-  };
-  const before = (await status()).budget!;
-  assert.equal(before.settings.userDailyLimitMicros, null);
-  await save({ userDailyLimitMicros: cap });
-  const send = (user: ChatUser, target = app, extra: object = {}) =>
-    call(target, "POST", `/v1/threads/${user.thread}/messages`, user.token, {
-      text: "Помоги выбрать квартиру",
-      requestId: randomUUID(),
-      policyId: user.policyId,
-      ...extra,
-    });
-  const close = async () => {
+  let scoped: URL | undefined;
+  if (base) {
     try {
-      for (const target of apps) await target.close();
+      scoped = new URL(base);
+      assert.ok(["postgres:", "postgresql:"].includes(scoped.protocol));
+      assert.ok(["127.0.0.1", "localhost"].includes(scoped.hostname));
+      assert.ok(["5432", "55438"].includes(scoped.port || "5432"));
+      assert.ok(
+        ["/citygo_test", "/citygo_synthetic"].includes(scoped.pathname),
+      );
+      assert.equal(scoped.search, "");
+      assert.equal(scoped.hash, "");
+    } catch {
+      throw new Error(
+        "TEST_DATABASE_URL must point to the isolated localhost PostgreSQL test service",
+      );
+    }
+  }
+  const databaseName = "user_budget_test_" + randomUUID().replaceAll("-", "");
+  assert.match(databaseName, /^user_budget_test_[a-f0-9]{32}$/);
+  let adminDb: Database | undefined, database: Database | undefined;
+  const apps: Api[] = [];
+  let created = false,
+    closed = false;
+  const close = async () => {
+    if (closed) return;
+    closed = true;
+    try {
+      const results = await Promise.allSettled(
+        apps.map(async (target) => target.close()),
+      );
+      const failure = results.find((result) => result.status === "rejected");
+      if (failure?.status === "rejected") throw failure.reason;
     } finally {
       try {
-        await db.close();
+        await database?.close();
       } finally {
-        if (schemaAdmin) {
+        if (adminDb) {
           try {
-            // The exact, generated schema is the only cleanup target.
-            await schemaAdmin.query('drop schema "' + schema + '" cascade');
+            if (created) await adminDb.query(`drop database "${databaseName}"`);
           } finally {
-            await schemaAdmin.close();
+            await adminDb.close();
           }
         }
       }
     }
   };
-  return {
-    app,
-    db,
-    admin,
-    board,
-    chatUser,
-    status,
-    save,
-    send,
-    replica,
-    call,
-    close,
-    dispatches: () => dispatches,
-  };
+  try {
+    let url = "pglite://:memory:";
+    if (scoped && base) {
+      adminDb = await connectDatabase(base);
+      await adminDb.query(
+        `create database "${databaseName}" template template0`,
+      );
+      created = true;
+      scoped.pathname = "/" + databaseName;
+      url = scoped.toString();
+    }
+    const db = await connectDatabase(url);
+    database = db;
+    await migrate(db);
+    await migrate(db);
+    const config = readConfig({
+      NODE_ENV: "test",
+      ADMIN_USER_IDS: "1",
+      LLM_USER_DAILY_REQUEST_LIMIT: "100",
+      LLM_GLOBAL_DAILY_REQUEST_LIMIT: "1000",
+      LLM_USER_DAILY_ATTEMPT_LIMIT: "100",
+      LLM_GLOBAL_DAILY_ATTEMPT_LIMIT: "1000",
+    });
+    let dispatches = 0;
+    const provider: StreamingProvider = {
+      name: "routerai",
+      model: "test/user-budget",
+      async *stream(_instructions, _messages, _signal, retryGuard) {
+        dispatches++;
+        if (retry) {
+          await retryGuard!.beforeRetry();
+          dispatches++;
+        }
+        yield { type: "delta", text: "Синтетический ответ о квартире" };
+        yield { type: "complete", model: "test/user-budget" };
+      },
+    };
+    const replica = async () => {
+      const app = await buildApp({ db, config, provider, testing: true });
+      apps.push(app);
+      return app;
+    };
+    const app = await replica();
+    const call = (
+      target: Api,
+      method: "GET" | "POST",
+      url: string,
+      token = "",
+      payload?: object,
+    ) =>
+      target.inject({
+        method,
+        url,
+        headers: {
+          origin: "http://localhost:3000",
+          ...(token ? { cookie: "citygo=" + token } : {}),
+        },
+        ...(payload ? { payload } : {}),
+      });
+    const board = async (user: Pick<ChatUser, "token">, target = app) => {
+      const response = await call(target, "GET", "/v1/dashboard", user.token);
+      assert.equal(response.statusCode, 200, response.body);
+      return response.json<Dashboard>();
+    };
+    const chatUser = async (): Promise<ChatUser> => {
+      const email = randomUUID() + "@example.test";
+      const registered = await call(app, "POST", "/v1/auth/register", "", {
+        email,
+        password,
+      });
+      assert.equal(registered.statusCode, 200, registered.body);
+      const token = registered.cookies[0]!.value;
+      const id = registered.json().user.id as string;
+      assert.equal(
+        (await call(app, "POST", "/v1/questionnaire", token, testProfile))
+          .statusCode,
+        200,
+      );
+      const dashboard = await board({ token });
+      const policyId = dashboard.aiAccess.policy!.id;
+      const started = await call(
+        app,
+        "POST",
+        `/v1/quests/${dashboard.quests[0]!.id}/start`,
+        token,
+        {},
+      );
+      assert.equal(started.statusCode, 200, started.body);
+      const thread = started.json().id as string;
+      assert.equal(
+        (
+          await call(app, "POST", "/v1/ai/consent", token, {
+            action: "granted",
+            policyId,
+          })
+        ).statusCode,
+        200,
+      );
+      return { id, email, token, thread, policyId };
+    };
+    const admin = await chatUser();
+    // Explicit test fixture setup, not runtime ADMIN_USER_IDS authorization.
+    await db.query("update users set role='admin' where id=$1", [admin.id]);
+    const status = async (target = app) => {
+      const response = await call(target, "GET", "/v1/admin/ai", admin.token);
+      assert.equal(response.statusCode, 200, response.body);
+      return response.json<AiControlStatus>();
+    };
+    const save = async (changes: Partial<AiBudgetInput> = {}, target = app) => {
+      const budget = (await status(target)).budget!;
+      const input = {
+        expectedRevision: budget.settings.revision,
+        enabled: true,
+        currency: "RUB",
+        dailyLimitMicros: 10000 * RUB,
+        totalLimitMicros: 100000 * RUB,
+        rules: budget.availableExecutions.map((item) => ({
+          key: item.key,
+          attemptCeilingMicros: cost,
+        })),
+        ...changes,
+      };
+      const response = await call(
+        target,
+        "POST",
+        "/v1/admin/ai/budget",
+        admin.token,
+        input,
+      );
+      assert.equal(response.statusCode, 200, response.body);
+      return response.json();
+    };
+    const before = (await status()).budget!;
+    assert.equal(before.settings.userDailyLimitMicros, null);
+    await save({ userDailyLimitMicros: cap });
+    const send = (user: ChatUser, target = app, extra: object = {}) =>
+      call(target, "POST", `/v1/threads/${user.thread}/messages`, user.token, {
+        text: "Помоги выбрать квартиру",
+        requestId: randomUUID(),
+        policyId: user.policyId,
+        ...extra,
+      });
+    return {
+      app,
+      db,
+      admin,
+      board,
+      chatUser,
+      status,
+      save,
+      send,
+      replica,
+      call,
+      close,
+      dispatches: () => dispatches,
+    };
+  } catch (error) {
+    try {
+      await close();
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [error, cleanupError],
+        "Synthetic user-budget fixture setup and cleanup failed",
+      );
+    }
+    throw error;
+  }
 }
 
 const completed = (response: { body: string }) =>

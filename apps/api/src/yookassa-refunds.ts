@@ -2,6 +2,7 @@
 // The caller must persist this identity/payload and reserve refundable paid
 // funds before calling. This module neither reserves nor finalizes any balance.
 // API schema: https://yookassa.ru/developers/api/yookassa-openapi-specification.yaml
+import { isDeepStrictEqual } from "node:util";
 const ENDPOINT = "https://api.yookassa.ru/v3";
 const MAX_RESPONSE_BYTES = 64 * 1024;
 const TIMEOUT_MS = 10_000;
@@ -20,6 +21,9 @@ export type YooKassaTestRefundInput = {
   // Immutable observation accepted when the refund reservation was created.
   refundedBeforeKopeks: number;
   createdAt: string;
+  // Runtime journal supplies the exact immutable POST body. Older standalone
+  // transport fixtures may omit it; runtime endpoints never construct it here.
+  createPayload?: unknown;
 };
 
 export type YooKassaTestRefund = {
@@ -122,6 +126,21 @@ export class YooKassaTestRefundClient {
     input = Object.freeze({ ...input });
     this.validate(input);
     this.createWindow(input);
+    const amount = BigInt(input.amountKopeks);
+    const body = {
+      payment_id: input.paymentId,
+      amount: {
+        value: `${amount / 100n}.${(amount % 100n).toString().padStart(2, "0")}`,
+        currency: "RUB",
+      },
+      description: "Тестовый возврат CityGo",
+      metadata: { citygo_refund_id: input.refundRequestId },
+    };
+    if (
+      input.createPayload !== undefined &&
+      !isDeepStrictEqual(input.createPayload, body)
+    )
+      throw new YooKassaTestRefundError("invalid_input");
     return this.operation(false, async (request) => {
       const refunded = this.payment(
         await request("GET", "/payments/" + input.paymentId),
@@ -133,19 +152,10 @@ export class YooKassaTestRefundClient {
       if (refunded !== input.refundedBeforeKopeks)
         throw new YooKassaTestRefundError("payment_mismatch");
       this.createWindow(input);
-      const amount = BigInt(input.amountKopeks);
       const raw = await request(
         "POST",
         "/refunds",
-        {
-          payment_id: input.paymentId,
-          amount: {
-            value: `${amount / 100n}.${(amount % 100n).toString().padStart(2, "0")}`,
-            currency: "RUB",
-          },
-          description: "Тестовый возврат CityGo",
-          metadata: { citygo_refund_id: input.refundRequestId },
-        },
+        body,
         input.refundRequestId,
       );
       // Even status=succeeded here is only a create observation, never a ledger

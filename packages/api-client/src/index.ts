@@ -17,6 +17,16 @@ import {
   npdReceiptListQuerySchema,
   npdReceiptTaskIdSchema,
   npdReceiptCommandSchema,
+  adminPaymentRefundListSchema,
+  adminPaymentRefundDetailSchema,
+  ownerPaymentRefundListSchema,
+  ownerPaymentSourceListSchema,
+  adminPaymentSourceListSchema,
+  adminPaymentSourceQuerySchema,
+  paymentRefundListQuerySchema,
+  paymentRefundIdSchema,
+  createPaymentRefundSchema,
+  reconcilePaymentRefundSchema,
   completionResponseSchema,
   dashboardResponseSchema,
   okResponseSchema,
@@ -34,6 +44,9 @@ import {
   type CreateTopupInput,
   type NpdReceiptListQuery,
   type NpdReceiptCommand,
+  type PaymentRefundListQuery,
+  type CreatePaymentRefundInput,
+  type ReconcilePaymentRefundInput,
   type Questionnaire,
   type StreamEvent,
 } from "@citygo/contracts";
@@ -223,6 +236,42 @@ export function createClient(
       );
     return result;
   }
+  function refundInput<T>(schema: ResponseSchema<T>, input: unknown): T {
+    const parsed = schema.safeParse(input);
+    if (!parsed.success)
+      throw new Error("Некорректные параметры операции возврата");
+    return parsed.data;
+  }
+  async function refundRequest(
+    path: string,
+    expected: {
+      id?: string;
+      requestId?: string;
+      paymentOperationId?: string;
+      amountKopeks?: number;
+    },
+    body?: unknown,
+  ) {
+    const result = await request(path, adminPaymentRefundDetailSchema, body);
+    const refund = result.refund;
+    if (
+      (expected.id !== undefined &&
+        refund.id.toLowerCase() !== expected.id.toLowerCase()) ||
+      (expected.requestId !== undefined &&
+        refund.requestId.toLowerCase() !== expected.requestId.toLowerCase()) ||
+      (expected.paymentOperationId !== undefined &&
+        refund.paymentOperationId.toLowerCase() !==
+          expected.paymentOperationId.toLowerCase()) ||
+      (expected.amountKopeks !== undefined &&
+        refund.amountKopeks !== expected.amountKopeks)
+    )
+      throw new ApiError(
+        200,
+        "Ответ сервера не соответствует запрошенному возврату",
+        "invalid_response",
+      );
+    return result;
+  }
   return {
     auth: (mode: "login" | "register", email: string, password: string) =>
       request(
@@ -253,6 +302,65 @@ export function createClient(
       receiptRequest(taskId, command),
     npdReceipts: () =>
       request("/v1/payments/receipts", ownerNpdReceiptListSchema),
+    adminPaymentRefunds: (input: Partial<PaymentRefundListQuery> = {}) => {
+      const query = refundInput(paymentRefundListQuerySchema, input);
+      const search = new URLSearchParams({ limit: String(query.limit) });
+      if (query.status) search.set("status", query.status);
+      if (query.after) search.set("after", query.after);
+      return request(
+        "/v1/admin/payments/refunds?" + search.toString(),
+        adminPaymentRefundListSchema,
+      );
+    },
+    adminPaymentRefund: (refundId: string) => {
+      const id = refundInput(paymentRefundIdSchema, refundId);
+      return refundRequest(
+        "/v1/admin/payments/refunds/" + encodeURIComponent(id),
+        { id },
+      );
+    },
+    createPaymentRefund: (input: CreatePaymentRefundInput) => {
+      const parsed = refundInput(createPaymentRefundSchema, input);
+      return refundRequest("/v1/admin/payments/refunds", parsed, parsed);
+    },
+    submitPaymentRefund: (refundId: string) => {
+      const id = refundInput(paymentRefundIdSchema, refundId);
+      return refundRequest(
+        "/v1/admin/payments/refunds/" + encodeURIComponent(id) + "/submit",
+        { id },
+        {},
+      );
+    },
+    reconcilePaymentRefund: (
+      refundId: string,
+      input: ReconcilePaymentRefundInput = {},
+    ) => {
+      const id = refundInput(paymentRefundIdSchema, refundId);
+      const parsed = refundInput(reconcilePaymentRefundSchema, input);
+      return refundRequest(
+        "/v1/admin/payments/refunds/" + encodeURIComponent(id) + "/reconcile",
+        { id },
+        parsed,
+      );
+    },
+    paymentRefunds: () =>
+      request("/v1/payments/refunds", ownerPaymentRefundListSchema),
+    paymentSources: () =>
+      request("/v1/payments/sources", ownerPaymentSourceListSchema),
+    adminPaymentSources: async (userId: string) => {
+      const parsed = refundInput(adminPaymentSourceQuerySchema, { userId });
+      const result = await request(
+        "/v1/admin/payments/sources?" + new URLSearchParams(parsed).toString(),
+        adminPaymentSourceListSchema,
+      );
+      if (result.sources.some((source) => source.userId !== parsed.userId))
+        throw new ApiError(
+          200,
+          "Ответ сервера не соответствует запрошенному аккаунту",
+          "invalid_response",
+        );
+      return result;
+    },
     setAccountRole: (userId: string, role: AccountRole) =>
       request("/v1/admin/accounts/role", accountUserResponseSchema, {
         userId,

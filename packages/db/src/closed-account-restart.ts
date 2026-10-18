@@ -28,6 +28,9 @@ const tables = [
   "citygo_migration_lock",
   "citygo_migrations",
   "consent_events",
+  "credit_hold_allocations",
+  "credit_refund_allocations",
+  "credit_source_lots",
   "generated_artifacts",
   "knowledge_sources",
   "messages",
@@ -35,6 +38,8 @@ const tables = [
   "npd_receipt_evidence",
   "npd_receipt_tasks",
   "npd_refund_observations",
+  "payment_refund_events",
+  "payment_refunds",
   "payment_topup_orders",
   "questionnaire_answers",
   "quests",
@@ -51,6 +56,11 @@ const tables = [
 ] as const;
 // No money, attempt, receipt, policy, migration, catalog or usage row is rewritten.
 const retainedTables = [
+  "credit_hold_allocations",
+  "credit_refund_allocations",
+  "credit_source_lots",
+  "payment_refund_events",
+  "payment_refunds",
   "ai_budget",
   "ai_budget_daily",
   "ai_credit_accounts",

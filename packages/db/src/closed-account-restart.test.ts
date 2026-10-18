@@ -14,6 +14,7 @@ import {
   retainedFinancialTables,
   seedRestartFixture,
   seedRestartNpdObligation,
+  seedRestartRefundHistory,
 } from "./closed-account-restart-fixture.js";
 
 async function fixture(t: TestContext) {
@@ -244,6 +245,27 @@ test("closed restart retains new NPD obligations and their delivery data byte-fo
   assert.doesNotMatch(JSON.stringify(plan), /PRIVATE-|@example\.test/);
   await restart.apply(await prepared(restart));
   assert.deepEqual(await captureRestartRows(db, names), before);
+});
+
+test("closed restart preserves source lots, resolved allocations and monetary refund journal byte-for-byte", async (t) => {
+  const { db, data, restart } = await fixture(t);
+  await seedRestartRefundHistory(db, data.user, { canceled: true });
+  const before = await captureRestartRows(db, retainedFinancialTables);
+  const plan = await restart.plan({
+    expectedUserCount: 2,
+    maintenanceConfirmed: true,
+  });
+  assert.deepEqual(plan.blockers, []);
+  assert.equal(plan.counts.credit_source_lots, 2);
+  assert.equal(plan.counts.credit_hold_allocations, 1);
+  assert.equal(plan.counts.credit_refund_allocations, 1);
+  assert.equal(plan.counts.payment_refunds, 1);
+  assert.equal(plan.counts.payment_refund_events, 2);
+  await restart.apply(await prepared(restart));
+  assert.deepEqual(
+    await captureRestartRows(db, retainedFinancialTables),
+    before,
+  );
 });
 
 test("closed restart rejects malformed or missing attestations without any write", async (t) => {

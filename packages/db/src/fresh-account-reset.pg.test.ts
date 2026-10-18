@@ -16,6 +16,7 @@ import {
   migrateLegacyRestartFixture,
   seedRestartNpdObligation,
   seedRestartFixture,
+  seedRestartRefundHistory,
 } from "./closed-account-restart-fixture.js";
 
 const pgOnly = {
@@ -200,6 +201,30 @@ test(
       ),
     );
     assert.doesNotMatch(JSON.stringify(plan), /PRIVATE-|@example\.test/);
+    await assert.rejects(reset.apply(await input(reset)), /заблокирован/);
+    assert.deepEqual(await captureRestartRows(db), before);
+  },
+);
+
+test(
+  "PostgreSQL full reset refuses monetary refund history even under destructive authority",
+  pgOnly,
+  async (t) => {
+    const { db, data, reset } = await fixture(t);
+    await seedRestartRefundHistory(db, data.user);
+    const before = await captureRestartRows(db);
+    const plan = await reset.plan({
+      expectedUserCount: 2,
+      maintenanceConfirmed: true,
+    });
+    assert.ok(
+      plan.blockers.some(
+        (blocker) => blocker.code === "REFUND_FINANCIAL_HISTORY_PRESENT",
+      ),
+    );
+    assert.equal(plan.counts.credit_refund_allocations, 1);
+    assert.equal(plan.counts.payment_refunds, 1);
+    assert.equal(plan.counts.payment_refund_events, 1);
     await assert.rejects(reset.apply(await input(reset)), /заблокирован/);
     assert.deepEqual(await captureRestartRows(db), before);
   },

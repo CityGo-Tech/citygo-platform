@@ -14,75 +14,127 @@ import { buildApp } from "./app.js";
 const RUB = 1_000_000;
 async function fixture() {
   const base = process.env.TEST_DATABASE_URL;
-  if (base && !/^postgres(?:ql)?:\/\//.test(base))
-    throw new Error("Invalid test database");
-  const schema = "credit_test_" + randomUUID().replaceAll("-", "");
-  assert.match(schema, /^credit_test_[a-f0-9]{32}$/);
-  const adminDb = base ? await connectDatabase(base) : null;
-  let url = "pglite://:memory:";
-  if (adminDb && base) {
-    await adminDb.query('create schema "' + schema + '"');
-    const scoped = new URL(base);
-    scoped.searchParams.set("options", "-c search_path=" + schema);
-    url = scoped.toString();
+  const database = "credit_test_" + randomUUID().replaceAll("-", "");
+  assert.match(database, /^credit_test_[a-f0-9]{32}$/);
+  const scoped = base ? new URL(base) : null;
+  if (scoped) {
+    assert.ok(["postgres:", "postgresql:"].includes(scoped.protocol));
+    assert.ok(["127.0.0.1", "localhost", "[::1]"].includes(scoped.hostname));
+    assert.ok(["5432", "55438"].includes(scoped.port || "5432"));
+    assert.ok(["/citygo_test", "/citygo_synthetic"].includes(scoped.pathname));
+    assert.equal(scoped.search, "");
+    assert.equal(scoped.hash, "");
   }
-  const db = await connectDatabase(url);
-  await migrate(db);
-  await migrate(db);
-  const config = readConfig({
-    NODE_ENV: "test",
-    ADMIN_USER_IDS: "1",
-    LLM_PROVIDER: "disabled",
-  });
-  const app = await buildApp({ db, config, testing: true });
-  const call = (
-    method: "GET" | "POST",
-    path: string,
-    token = "",
-    body?: object,
-    origin = "http://localhost:3000",
-  ) =>
-    app.inject({
-      method,
-      url: path,
-      headers: { origin, cookie: "citygo=" + token },
-      ...(body ? { payload: body } : {}),
-    });
-  const signup = async () => {
-    const reply = await call("POST", "/v1/auth/register", "", {
-      email: randomUUID() + "@example.test",
-      password: "Synthetic-credit-password-123",
-    });
-    assert.equal(reply.statusCode, 200, reply.body);
-    const token = reply.cookies[0]!.value;
-    const board = (await call("GET", "/v1/dashboard", token)).json<Dashboard>();
-    return { id: board.user.id, token };
-  };
-  const admin = await signup(),
-    user = await signup(),
-    other = await signup();
-  // Persist only this test actor's application role. ADMIN_USER_IDS is no
-  // longer runtime authority, and the other signups remain ordinary users.
-  await db.query("update users set role='admin' where id=$1", [admin.id]);
-  const ledger = new AiCreditLedger(db);
-  return {
-    db,
-    config,
-    app,
-    call,
-    admin,
-    user,
-    other,
-    ledger,
-    async close() {
-      await app.close();
-      await db.close();
-      if (adminDb) {
-        await adminDb.query('drop schema "' + schema + '" cascade');
-        await adminDb.close();
+  const resources: {
+    admin?: Database;
+    db?: Database;
+    app?: Awaited<ReturnType<typeof buildApp>>;
+  } = {};
+  let created = false,
+    closing: Promise<void> | undefined;
+  const close = () =>
+    (closing ??= (async () => {
+      const failures: unknown[] = [];
+      for (const action of [
+        async () => resources.app?.close(),
+        async () => resources.db?.close(),
+        async () => {
+          if (created)
+            await resources.admin!.query(`drop database "${database}"`);
+        },
+        async () => resources.admin?.close(),
+      ]) {
+        try {
+          await action();
+        } catch (error) {
+          failures.push(error);
+        }
       }
-    },
+      if (failures.length)
+        throw new AggregateError(
+          failures,
+          "Synthetic credit fixture cleanup failed",
+        );
+    })());
+  const failed = async (error: unknown): Promise<never> => {
+    try {
+      await close();
+    } catch (cleanup) {
+      throw new AggregateError(
+        [error, cleanup],
+        "Synthetic credit fixture setup and cleanup failed",
+      );
+    }
+    throw error;
   };
+  try {
+    let url = "pglite://:memory:";
+    if (scoped && base) {
+      resources.admin = await connectDatabase(base);
+      await resources.admin.query(
+        `create database "${database}" template template0`,
+      );
+      created = true;
+      scoped.pathname = "/" + database;
+      url = scoped.toString();
+    }
+    const db = await connectDatabase(url);
+    resources.db = db;
+    await migrate(db);
+    await migrate(db);
+    const config = readConfig({
+      NODE_ENV: "test",
+      ADMIN_USER_IDS: "1",
+      LLM_PROVIDER: "disabled",
+    });
+    const app = await buildApp({ db, config, testing: true });
+    resources.app = app;
+    const call = (
+      method: "GET" | "POST",
+      path: string,
+      token = "",
+      body?: object,
+      origin = "http://localhost:3000",
+    ) =>
+      app.inject({
+        method,
+        url: path,
+        headers: { origin, cookie: "citygo=" + token },
+        ...(body ? { payload: body } : {}),
+      });
+    const signup = async () => {
+      const reply = await call("POST", "/v1/auth/register", "", {
+        email: randomUUID() + "@example.test",
+        password: "Synthetic-credit-password-123",
+      });
+      assert.equal(reply.statusCode, 200, reply.body);
+      const token = reply.cookies[0]!.value;
+      const board = (
+        await call("GET", "/v1/dashboard", token)
+      ).json<Dashboard>();
+      return { id: board.user.id, token };
+    };
+    const admin = await signup(),
+      user = await signup(),
+      other = await signup();
+    // Persist only this test actor's application role. ADMIN_USER_IDS is no
+    // longer runtime authority, and the other signups remain ordinary users.
+    await db.query("update users set role='admin' where id=$1", [admin.id]);
+    const ledger = new AiCreditLedger(db);
+    return {
+      db,
+      config,
+      app,
+      call,
+      admin,
+      user,
+      other,
+      ledger,
+      close,
+    };
+  } catch (error) {
+    return failed(error);
+  }
 }
 
 test("welcome credit is owner-authorized, exactly 500 RUB once and independent of AI activation", async (t) => {

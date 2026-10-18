@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { randomUUID } from "node:crypto";
-import { connectDatabase, migrate, Repository } from "@citygo/db";
+import {
+  connectDatabase,
+  migrate,
+  Repository,
+  type Database,
+} from "@citygo/db";
 import { readConfig } from "@citygo/config";
 import { testProfile, TestProvider } from "@citygo/testkit";
 import type { Dashboard } from "@citygo/contracts";
@@ -11,49 +16,93 @@ import { ApiDrain, createShutdown } from "./shutdown.js";
 import { seedTestBudget } from "./test-budget.js";
 
 // A separate test process bounds WASM resource usage for fault-injection fixtures.
-// CI still uses an isolated PostgreSQL schema per test.
+// CI uses an isolated disposable PostgreSQL database with the public schema.
 async function fixture(provider: StreamingProvider = new TestProvider()) {
   const base = process.env.TEST_DATABASE_URL;
-  if (base && !/^postgres(?:ql)?:\/\//.test(base))
-    throw new Error(
-      "TEST_DATABASE_URL must point to the PostgreSQL test service",
-    );
-  const schema = "settlement_test_" + randomUUID().replaceAll("-", "");
-  const admin = base ? await connectDatabase(base) : null;
-  let url = "pglite://:memory:";
-  if (admin && base) {
-    await admin.query('create schema "' + schema + '"');
-    const scoped = new URL(base);
-    scoped.searchParams.set("options", "-c search_path=" + schema);
-    url = scoped.toString();
-  }
-  const db = await connectDatabase(url);
-  await migrate(db);
-  const config = readConfig({ NODE_ENV: "test" });
-  await seedTestBudget(db, config, { [provider.name]: provider });
-  const drain = new ApiDrain();
-  const app = await buildApp({ db, provider, drain, config, testing: true });
-  const call = (
-    method: "GET" | "POST",
-    path: string,
-    token = "",
-    body?: object,
-  ) =>
-    app.inject({
-      method,
-      url: path,
-      headers: { origin: "http://localhost:3000", cookie: "citygo=" + token },
-      ...(body ? { payload: body } : {}),
-    });
-  async function close() {
-    await app.close();
-    await db.close();
-    if (admin) {
-      await admin.query('drop schema "' + schema + '" cascade');
-      await admin.close();
+  let scoped: URL | undefined;
+  if (base) {
+    try {
+      scoped = new URL(base);
+      assert.ok(["postgres:", "postgresql:"].includes(scoped.protocol));
+      assert.ok(["127.0.0.1", "localhost"].includes(scoped.hostname));
+      assert.ok(["5432", "55438"].includes(scoped.port || "5432"));
+      assert.ok(
+        ["/citygo_test", "/citygo_synthetic"].includes(scoped.pathname),
+      );
+      assert.equal(scoped.search, "");
+      assert.equal(scoped.hash, "");
+    } catch {
+      throw new Error(
+        "TEST_DATABASE_URL must point to the isolated localhost PostgreSQL test service",
+      );
     }
   }
-  return { app, db, drain, call, close };
+  const databaseName = "settlement_test_" + randomUUID().replaceAll("-", "");
+  assert.match(databaseName, /^settlement_test_[a-f0-9]{32}$/);
+  let admin: Database | undefined, database: Database | undefined;
+  let application: Awaited<ReturnType<typeof buildApp>> | undefined;
+  let created = false,
+    closed = false;
+  async function close() {
+    if (closed) return;
+    closed = true;
+    try {
+      await application?.close();
+    } finally {
+      try {
+        await database?.close();
+      } finally {
+        if (admin) {
+          try {
+            if (created) await admin.query(`drop database "${databaseName}"`);
+          } finally {
+            await admin.close();
+          }
+        }
+      }
+    }
+  }
+  try {
+    let url = "pglite://:memory:";
+    if (scoped && base) {
+      admin = await connectDatabase(base);
+      await admin.query(`create database "${databaseName}" template template0`);
+      created = true;
+      scoped.pathname = "/" + databaseName;
+      url = scoped.toString();
+    }
+    const db = await connectDatabase(url);
+    database = db;
+    await migrate(db);
+    const config = readConfig({ NODE_ENV: "test" });
+    await seedTestBudget(db, config, { [provider.name]: provider });
+    const drain = new ApiDrain();
+    const app = await buildApp({ db, provider, drain, config, testing: true });
+    application = app;
+    const call = (
+      method: "GET" | "POST",
+      path: string,
+      token = "",
+      body?: object,
+    ) =>
+      app.inject({
+        method,
+        url: path,
+        headers: { origin: "http://localhost:3000", cookie: "citygo=" + token },
+        ...(body ? { payload: body } : {}),
+      });
+    return { app, db, drain, call, close };
+  } catch (error) {
+    try {
+      await close();
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [error, cleanupError],
+        "Synthetic chat fixture setup and cleanup failed",
+      );
+    }
+    throw error;
+  }
 }
 
 async function chatUser(f: Awaited<ReturnType<typeof fixture>>) {

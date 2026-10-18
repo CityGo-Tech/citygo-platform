@@ -4,6 +4,20 @@ export { Repository, DomainError } from "./repository.js";
 export { AiCreditLedger } from "./ai-credit.js";
 export { AiCreditCharges } from "./ai-credit-charges.js";
 export {
+  PaymentRefunds,
+  type PaymentRefundContext,
+  type PaymentRefundObservation,
+  type PaymentRefundDispatchInput,
+} from "./payment-refunds.js";
+export {
+  listPaidSourceLots,
+  reservePaidRefund,
+  settlePaidRefund,
+  releasePaidRefund,
+  type PaidSourceLot,
+  type PaidRefundAllocation,
+} from "./credit-source-lots.js";
+export {
   NpdReceipts,
   type NpdReceiptContext,
   type NpdConfirmedRefundObservation,

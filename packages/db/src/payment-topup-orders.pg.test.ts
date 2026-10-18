@@ -21,68 +21,110 @@ if (testUrl && !/^postgres(?:ql)?:\/\//.test(testUrl))
   throw new Error("Invalid synthetic PostgreSQL URL");
 const returnUrl = "https://citygo.example.test/test-balance";
 async function fixture() {
-  const admin = await connectDatabase(testUrl!);
-  const token = randomUUID().replaceAll("-", "");
-  const schema = "checkout_" + token,
-    role = "checkout_role_" + token;
-  await admin.query(`create schema "${schema}"`);
   const scoped = new URL(testUrl!);
-  scoped.searchParams.set("options", "-c search_path=" + schema);
-  const db = await connectDatabase(scoped.toString());
-  await migrate(db);
-  const repo = new Repository(db);
-  const user = await repo.register(
-    "synthetic-checkout@example.test",
-    "SYNTHETIC-HASH",
-  );
-  const other = await repo.register(
-    "synthetic-other@example.test",
-    "SYNTHETIC-HASH",
-  );
-  await admin.query(`create role "${role}"`);
-  await admin.query(`grant usage on schema "${schema}" to "${role}"`);
-  await admin.query(`grant select,update on "${schema}".users to "${role}"`);
-  await admin.query(
-    `grant select on "${schema}".ai_credit_topups to "${role}"`,
-  );
-  await admin.query(
-    `grant select on "${schema}".account_security_state to "${role}"`,
-  );
-  await admin.query(
-    `grant update(test_payments_seen,real_ai_admitted) on "${schema}".account_security_state to "${role}"`,
-  );
-  await admin.query(
-    `grant select,insert on "${schema}".payment_topup_orders to "${role}"`,
-  );
-  await admin.query(
-    `grant update(provider_payment_id,status,confirmation_url,updated_at) on "${schema}".payment_topup_orders to "${role}"`,
-  );
-  const roleTransaction = <T>(work: (sql: Sql) => Promise<T>) =>
-    db.transaction(async (tx) => {
-      await tx.query(`set local role "${role}"`);
-      return work(tx);
-    });
-  const runtime: Database = {
-    query: (sql, params) => roleTransaction((tx) => tx.query(sql, params)),
-    exec: (sql) => roleTransaction((tx) => tx.exec(sql)),
-    transaction: roleTransaction,
-    close: async () => {},
-  };
-  return {
-    db,
-    runtime,
-    user,
-    other,
-    orders: new PaymentTopupOrders(db),
-    close: async () => {
-      await db.close();
-      assert.match(schema, /^checkout_[a-f0-9]{32}$/);
-      assert.match(role, /^checkout_role_[a-f0-9]{32}$/);
-      await admin.query(`drop schema "${schema}" cascade`);
-      await admin.query(`drop role "${role}"`);
-      await admin.close();
-    },
-  };
+  assert.ok(["postgres:", "postgresql:"].includes(scoped.protocol));
+  assert.ok(["127.0.0.1", "localhost", "[::1]"].includes(scoped.hostname));
+  assert.ok(["5432", "55438"].includes(scoped.port || "5432"));
+  assert.ok(["/citygo_test", "/citygo_synthetic"].includes(scoped.pathname));
+  assert.equal(scoped.search, "");
+  assert.equal(scoped.hash, "");
+  const token = randomUUID().replaceAll("-", "");
+  const database = "checkout_" + token,
+    role = "checkout_role_" + token;
+  assert.match(database, /^checkout_[a-f0-9]{32}$/);
+  assert.match(role, /^checkout_role_[a-f0-9]{32}$/);
+  const resources: { admin?: Database; db?: Database } = {};
+  let created = false,
+    roleCreated = false,
+    closing: Promise<void> | undefined;
+  const close = () =>
+    (closing ??= (async () => {
+      const failures: unknown[] = [];
+      for (const action of [
+        async () => resources.db?.close(),
+        async () => {
+          if (created)
+            await resources.admin!.query(`drop database "${database}"`);
+        },
+        async () => {
+          if (roleCreated) await resources.admin!.query(`drop role "${role}"`);
+        },
+        async () => resources.admin?.close(),
+      ]) {
+        try {
+          await action();
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+      if (failures.length)
+        throw new AggregateError(failures, "Synthetic checkout cleanup failed");
+    })());
+  try {
+    const admin = await connectDatabase(testUrl!);
+    resources.admin = admin;
+    await admin.query(`create database "${database}" template template0`);
+    created = true;
+    scoped.pathname = "/" + database;
+    const db = await connectDatabase(scoped.toString());
+    resources.db = db;
+    await migrate(db);
+    const repo = new Repository(db);
+    const user = await repo.register(
+      "synthetic-checkout@example.test",
+      "SYNTHETIC-HASH",
+    );
+    const other = await repo.register(
+      "synthetic-other@example.test",
+      "SYNTHETIC-HASH",
+    );
+    await admin.query(`create role "${role}"`);
+    roleCreated = true;
+    await db.query(`grant usage on schema public to "${role}"`);
+    await db.query(`grant select,update on public.users to "${role}"`);
+    await db.query(`grant select on public.ai_credit_topups to "${role}"`);
+    await db.query(
+      `grant select on public.account_security_state to "${role}"`,
+    );
+    await db.query(
+      `grant update(test_payments_seen,real_ai_admitted) on public.account_security_state to "${role}"`,
+    );
+    await db.query(
+      `grant select,insert on public.payment_topup_orders to "${role}"`,
+    );
+    await db.query(
+      `grant update(provider_payment_id,status,confirmation_url,updated_at) on public.payment_topup_orders to "${role}"`,
+    );
+    const roleTransaction = <T>(work: (sql: Sql) => Promise<T>) =>
+      db.transaction(async (tx) => {
+        await tx.query(`set local role "${role}"`);
+        return work(tx);
+      });
+    const runtime: Database = {
+      query: (sql, params) => roleTransaction((tx) => tx.query(sql, params)),
+      exec: (sql) => roleTransaction((tx) => tx.exec(sql)),
+      transaction: roleTransaction,
+      close: async () => {},
+    };
+    return {
+      db,
+      runtime,
+      user,
+      other,
+      orders: new PaymentTopupOrders(db),
+      close,
+    };
+  } catch (error) {
+    try {
+      await close();
+    } catch (cleanup) {
+      throw new AggregateError(
+        [error, cleanup],
+        "Synthetic checkout setup and cleanup failed",
+      );
+    }
+    throw error;
+  }
 }
 
 test(
