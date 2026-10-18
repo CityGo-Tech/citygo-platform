@@ -1,3 +1,5 @@
+export * from "./knowledge.js";
+
 export const housingChecklist = [
   "Определите район и время в пути",
   "Согласуйте бюджет аренды и залога",
