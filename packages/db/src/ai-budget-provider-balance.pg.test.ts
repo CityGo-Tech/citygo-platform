@@ -64,8 +64,15 @@ async function fixture(t: TestContext) {
   const scoped = new URL(base);
   assert.ok(["postgres:", "postgresql:"].includes(scoped.protocol));
   assert.ok(["127.0.0.1", "localhost", "[::1]"].includes(scoped.hostname));
-  assert.equal(scoped.port, "55438");
-  assert.equal(scoped.pathname, "/citygo_synthetic");
+  // The checked-in CI service and the explicitly owned local fixture are the
+  // only admitted base targets. Tests still create/drop only their UUID DB,
+  // never migrate or erase the supplied base database.
+  assert.ok(
+    ((scoped.port || "5432") === "5432" &&
+      scoped.pathname === "/citygo_test") ||
+      (scoped.port === "55438" && scoped.pathname === "/citygo_synthetic"),
+    "Requires the disposable CI or local synthetic PostgreSQL target",
+  );
   assert.equal(scoped.search, "");
   assert.equal(scoped.hash, "");
   const name = "cg_budget_mode_" + randomUUID().replaceAll("-", "");
