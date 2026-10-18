@@ -120,89 +120,116 @@ test("mounted service config is explicit, closed, secret-safe and never availabl
   );
 });
 
-test("RouterAI release profile requires a complete pinned API-only mounted config", (t) => {
-  const directory = fixture(t);
-  const value = JSON.parse(
-    readFileSync(
-      join(root, "deploy/fixtures/routerai-profile.fixture.json"),
-      "utf8",
-    ),
-  );
-  const inherited = {
-    CITYGO_MOUNTED_CONFIG: "1",
-    CITYGO_AI_PROFILE: "routerai-credit-v1",
-    LLM_PROVIDER: "routerai",
-  };
-  const write = (data) =>
-    writeFileSync(join(directory, "api.json"), JSON.stringify(data));
-  const spec = (extra = {}, mode = "api") =>
-    containerSpec(mode, { ...inherited, ...extra }, directory, directory);
-  write(value);
-  const env = spec().env;
-  for (const [key, setting] of Object.entries(value))
-    assert.equal(env[key], setting);
-  assert.equal(env.NODE_ENV, "production");
-  assert.equal(env.CITYGO_AI_PROFILE, undefined);
-  assert.equal(env.OPENAI_API_KEY, undefined);
-  assert.equal(env.GIGACHAT_CREDENTIALS, undefined);
-  for (const mode of ["web", "worker", "migrate", "migrate-release"])
-    assert.throws(() => spec({}, mode), /Invalid container AI profile/);
-  for (const extra of [
-    { CITYGO_MOUNTED_CONFIG: undefined },
-    { CITYGO_AI_PROFILE: "unknown" },
-    { LLM_PROVIDER: "disabled" },
-    { OPENAI_API_KEY: "ambient-hidden" },
-    { GIGACHAT_CREDENTIALS: "ambient-hidden" },
-    { ROUTERAI_MODEL: value.ROUTERAI_MODEL },
-    { LLM_USER_DAILY_REQUEST_LIMIT: "999" },
-    { AI_CREDIT_MODE: "disabled" },
-  ])
-    assert.throws(() => spec(extra), /Invalid container AI profile/);
-  // The ordinary disabled profile cannot silently interpret the richer secret.
-  assert.throws(
-    () => spec({ CITYGO_AI_PROFILE: undefined, LLM_PROVIDER: "disabled" }),
-    /Invalid mounted/,
-  );
-  for (const key of Object.keys(value)) {
-    const missing = { ...value };
-    delete missing[key];
-    write(missing);
-    assert.throws(() => spec(), /Invalid mounted/);
-  }
-  for (const patch of [
-    { AI_CREDIT_MODE: "disabled" },
-    { ROUTERAI_UPSTREAM: "other" },
-    { ROUTERAI_COUNTRY: "ru" },
-    { ROUTERAI_MODEL: "https://untrusted.test" },
-    { ROUTERAI_REQUEST_TIMEOUT_MS: "240001" },
-    { ROUTERAI_MAX_OUTPUT_TOKENS: "32769" },
-    { ROUTERAI_REASONING_EFFORT: "low" },
-    { ROUTERAI_PRODUCTION_POLICY_ID: "true" },
-    { ROUTERAI_DATA_NOTICE: " " },
-    { ROUTERAI_DATA_NOTICE: "x".repeat(4001) },
-    { ROUTERAI_API_KEY: "hidden\nvalue" },
-    { ADMIN_USER_IDS: "1,1" },
-    { ADMIN_USER_IDS: "0001" },
-    { ADMIN_USER_IDS: "00000000-0000-4000-8000-000000000001" },
-    { LLM_USER_DAILY_ATTEMPT_LIMIT: "10001" },
-    { LLM_GLOBAL_DAILY_REQUEST_LIMIT: "1e6" },
-    { OPENAI_API_KEY: "hidden-value" },
-    { ROUTERAI_BASE_URL: "https://untrusted.test" },
-  ]) {
-    write({ ...value, ...patch });
-    assert.throws(
-      () => spec(),
-      (error) => {
-        assert.match(error.message, /Invalid mounted/);
-        assert.doesNotMatch(
-          error.message,
-          /hidden-value|synthetic-not-live|postgresql/,
-        );
-        return true;
-      },
+for (const [marker, file] of [
+  ["routerai-credit-v1", "routerai-profile.fixture.json"],
+  ["routerai-citygo-10x-v1", "routerai-citygo-10x-profile.fixture.json"],
+])
+  test(`RouterAI ${marker} requires a complete pinned API-only mounted config`, (t) => {
+    const directory = fixture(t);
+    const value = JSON.parse(
+      readFileSync(join(root, "deploy/fixtures", file), "utf8"),
     );
-  }
-});
+    const inherited = {
+      CITYGO_MOUNTED_CONFIG: "1",
+      CITYGO_AI_PROFILE: marker,
+      LLM_PROVIDER: "routerai",
+    };
+    const write = (data) =>
+      writeFileSync(join(directory, "api.json"), JSON.stringify(data));
+    const spec = (extra = {}, mode = "api") =>
+      containerSpec(mode, { ...inherited, ...extra }, directory, directory);
+    write(value);
+    const env = spec().env;
+    for (const [key, setting] of Object.entries(value))
+      assert.equal(env[key], setting);
+    assert.equal(env.NODE_ENV, "production");
+    assert.equal(env.CITYGO_AI_PROFILE, undefined);
+    assert.equal(env.OPENAI_API_KEY, undefined);
+    assert.equal(env.GIGACHAT_CREDENTIALS, undefined);
+    for (const mode of ["web", "worker", "migrate", "migrate-release"])
+      assert.throws(() => spec({}, mode), /Invalid container AI profile/);
+    for (const extra of [
+      { CITYGO_MOUNTED_CONFIG: undefined },
+      { CITYGO_AI_PROFILE: "unknown" },
+      { LLM_PROVIDER: "disabled" },
+      { OPENAI_API_KEY: "ambient-hidden" },
+      { GIGACHAT_CREDENTIALS: "ambient-hidden" },
+      { ROUTERAI_MODEL: value.ROUTERAI_MODEL },
+      { LLM_USER_DAILY_REQUEST_LIMIT: "999" },
+      { AI_CREDIT_MODE: "disabled" },
+      { YOOKASSA_MODE: "disabled" },
+      { YOOKASSA_SHOP_ID: "123456" },
+      { YOOKASSA_SECRET_KEY: "test_ambient-hidden" },
+    ])
+      assert.throws(() => spec(extra), /Invalid container AI profile/);
+    // The ordinary disabled profile cannot silently interpret the richer secret.
+    assert.throws(
+      () => spec({ CITYGO_AI_PROFILE: undefined, LLM_PROVIDER: "disabled" }),
+      /Invalid mounted/,
+    );
+    for (const key of Object.keys(value)) {
+      const missing = { ...value };
+      delete missing[key];
+      write(missing);
+      assert.throws(() => spec(), /Invalid mounted/);
+    }
+    for (const patch of [
+      { AI_CREDIT_MODE: "disabled" },
+      {
+        AI_CREDIT_MODE:
+          marker === "routerai-credit-v1"
+            ? "routerai_citygo_10x"
+            : "routerai_at_cost",
+      },
+      { YOOKASSA_MODE: "test" },
+      { YOOKASSA_MODE: "live" },
+      { YOOKASSA_SHOP_ID: "123456" },
+      { YOOKASSA_SECRET_KEY: "test_hidden-value" },
+      { YOOKASSA_SECRET_KEY: "live_hidden-value" },
+      { ROUTERAI_UPSTREAM: "other" },
+      { ROUTERAI_COUNTRY: "ru" },
+      { ROUTERAI_MODEL: "https://untrusted.test" },
+      { ROUTERAI_REQUEST_TIMEOUT_MS: "240001" },
+      { ROUTERAI_MAX_OUTPUT_TOKENS: "32769" },
+      { ROUTERAI_REASONING_EFFORT: "low" },
+      { ROUTERAI_PRODUCTION_POLICY_ID: "true" },
+      { ROUTERAI_DATA_NOTICE: " " },
+      { ROUTERAI_DATA_NOTICE: "x".repeat(4001) },
+      { ROUTERAI_API_KEY: "hidden\nvalue" },
+      { ADMIN_USER_IDS: "1,1" },
+      { ADMIN_USER_IDS: "0001" },
+      { ADMIN_USER_IDS: "00000000-0000-4000-8000-000000000001" },
+      { LLM_USER_DAILY_ATTEMPT_LIMIT: "10001" },
+      { LLM_GLOBAL_DAILY_REQUEST_LIMIT: "1e6" },
+      { OPENAI_API_KEY: "hidden-value" },
+      { ROUTERAI_BASE_URL: "https://untrusted.test" },
+    ]) {
+      write({ ...value, ...patch });
+      assert.throws(
+        () => spec(),
+        (error) => {
+          assert.match(error.message, /Invalid mounted/);
+          assert.doesNotMatch(
+            error.message,
+            /hidden-value|synthetic-not-live|postgresql/,
+          );
+          return true;
+        },
+      );
+    }
+    write(value);
+    // A valid secret under one tariff cannot be selected using the other marker.
+    assert.throws(
+      () =>
+        spec({
+          CITYGO_AI_PROFILE:
+            marker === "routerai-credit-v1"
+              ? "routerai-citygo-10x-v1"
+              : "routerai-credit-v1",
+        }),
+      /Invalid mounted/,
+    );
+  });
 
 test("Nginx rendering rejects directives and sets bounded streaming/header rules", () => {
   for (const host of [

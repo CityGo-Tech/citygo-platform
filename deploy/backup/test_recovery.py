@@ -47,7 +47,10 @@ class Validation(unittest.TestCase):
 @unittest.skipUnless(sys.platform.startswith("linux"), "Linux real barrier recovery")
 class Recovery(unittest.TestCase):
     def setUp(self):
-        (fixture.RouterAiCutover if getattr(self, "routerai_profile", False) else fixture.Cutover).setUp(self)
+        setup = (fixture.CityGo10xCutover if getattr(self, "citygo_10x_profile", False) else
+                 fixture.RouterAiCutover if getattr(self, "routerai_profile", False) else fixture.Cutover)
+        if setup is not fixture.Cutover: self.profile = setup.profile
+        setup.setUp(self)
         self.request = synthetic_request(self)
         # Interrupt only the FINAL barrier removal, after real in-process startup
         # gates and configuration/active writes. No production monkeypatch exists.
@@ -186,6 +189,11 @@ class Recovery(unittest.TestCase):
 @unittest.skipUnless(sys.platform.startswith("linux"), "Linux real barrier recovery")
 class RouterAiRecovery(Recovery):
     routerai_profile = True
+
+
+@unittest.skipUnless(sys.platform.startswith("linux"), "Linux real barrier recovery")
+class CityGo10xRecovery(Recovery):
+    citygo_10x_profile = True
 
 
 if __name__ == "__main__": unittest.main()

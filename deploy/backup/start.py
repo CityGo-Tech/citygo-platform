@@ -23,6 +23,8 @@ import worker as w
 
 PROFILE = "citygo-api-web-disabled-v1"
 ROUTERAI_PROFILE = "citygo-api-web-routerai-credit-v1"
+CITYGO_10X_PROFILE = "citygo-api-web-routerai-citygo-10x-v1"
+PROFILE_VERSIONS = {PROFILE: 1, ROUTERAI_PROFILE: 2, CITYGO_10X_PROFILE: 3}
 # Public configuration is pinned together with the private key by startup approval.
 # No live budget, user bonus, consent or payment authorization is encoded here.
 ROUTERAI_FIXED = {
@@ -32,6 +34,10 @@ ROUTERAI_FIXED = {
     "ROUTERAI_REASONING_EFFORT": "high", "ROUTERAI_MAX_OUTPUT_TOKENS": "32768",
     "ROUTERAI_REQUEST_TIMEOUT_MS": "240000", "LLM_MAX_INPUT_BYTES": "64000",
 }
+# Production payment transport is not implemented. This profile prepares the
+# reviewed tariff without allowing sandbox credentials or claiming live checkout.
+CITYGO_10X_FIXED = {**ROUTERAI_FIXED, "AI_CREDIT_MODE": "routerai_citygo_10x",
+                   "YOOKASSA_MODE": "disabled"}
 ROUTERAI_LIMITS = {
     "LLM_USER_DAILY_REQUEST_LIMIT": 10000, "LLM_GLOBAL_DAILY_REQUEST_LIMIT": 1000000,
     "LLM_USER_DAILY_ATTEMPT_LIMIT": 10000, "LLM_GLOBAL_DAILY_ATTEMPT_LIMIT": 1000000,
@@ -47,15 +53,16 @@ def api_secret(path, profile=PROFILE):
     data = t.read_file(path)
     b.require(len(data) <= 16384, "start-secret")
     value = t.strict_json(data)
-    b.require(profile in (PROFILE, ROUTERAI_PROFILE) and type(value) is dict, "start-secret")
+    b.require(type(profile) is str and profile in PROFILE_VERSIONS and type(value) is dict, "start-secret")
     if profile == PROFILE:
         b.require({"DATABASE_URL"} <= set(value) <= {"DATABASE_URL", "ADMIN_USER_IDS"}, "start-secret")
     else:
+        fixed = CITYGO_10X_FIXED if profile == CITYGO_10X_PROFILE else ROUTERAI_FIXED
         t.keys(value, {"DATABASE_URL", "ADMIN_USER_IDS", "ROUTERAI_API_KEY", "ROUTERAI_DATA_NOTICE",
-                       "ROUTERAI_PRODUCTION_POLICY_ID"} | set(ROUTERAI_FIXED) | set(ROUTERAI_LIMITS), "start-secret")
+                       "ROUTERAI_PRODUCTION_POLICY_ID"} | set(fixed) | set(ROUTERAI_LIMITS), "start-secret")
         b.require(all(type(v) is str and v.strip() == v and v and not any(ord(c) < 32 for c in v)
                       for v in value.values()), "start-secret")
-        b.require(all(value[k] == v for k, v in ROUTERAI_FIXED.items()), "start-secret")
+        b.require(all(value[k] == v for k, v in fixed.items()), "start-secret")
         b.require(all(t.matches(value[k], r"0|[1-9][0-9]{0,6}") and int(value[k]) <= maximum
                       for k, maximum in ROUTERAI_LIMITS.items()), "start-secret")
         b.require(t.matches(value["ROUTERAI_PRODUCTION_POLICY_ID"], t.HASH)
@@ -83,7 +90,7 @@ def approval(data, now):
     t.keys(value, {"version", "purpose", "profile", "migration_approval_sha256", "api_secret_sha256",
                    "web_network_id", "approved_at", "expires_at", "allow_start", "allow_traffic"}, "start-approval")
     b.require(type(value["version"]) is int
-              and (value["version"], value["profile"]) in ((1, PROFILE), (2, ROUTERAI_PROFILE))
+              and (value["version"], value["profile"]) in tuple((version, profile) for profile, version in PROFILE_VERSIONS.items())
               and value["purpose"] == "citygo-release-start"
               and value["allow_start"] is True and value["allow_traffic"] is False, "start-approval")
     for key in ("migration_approval_sha256", "api_secret_sha256", "web_network_id"):
@@ -123,9 +130,10 @@ class Approval:
 
 
 def profile_environment(profile):
-    b.require(profile in (PROFILE, ROUTERAI_PROFILE), "start-profile")
+    b.require(type(profile) is str and profile in PROFILE_VERSIONS, "start-profile")
     return ({"LLM_PROVIDER": "disabled"} if profile == PROFILE else
-            {"LLM_PROVIDER": "routerai", "CITYGO_AI_PROFILE": "routerai-credit-v1"})
+            {"LLM_PROVIDER": "routerai", "CITYGO_AI_PROFILE":
+             "routerai-citygo-10x-v1" if profile == CITYGO_10X_PROFILE else "routerai-credit-v1"})
 
 
 def compose_spec(project, origin, images, secret_file, profile=PROFILE):

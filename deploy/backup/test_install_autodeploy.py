@@ -8,6 +8,27 @@ import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+import start as s
+
+
+@unittest.skipUnless(sys.platform.startswith("linux"), "Linux enrollment imports pwd")
+class ProfileSelection(unittest.TestCase):
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location("citygo_install_profile_fixture", Path(__file__).resolve().parents[1] / "install-autodeploy.py")
+        self.installer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.installer)
+
+    def test_exact_modes_never_silently_downgrade_new_profile_to_legacy(self):
+        self.assertEqual(self.installer.api_profile({"DATABASE_URL": "synthetic"}, s), s.PROFILE)
+        for mode, expected in (("routerai_at_cost", s.ROUTERAI_PROFILE), ("routerai_citygo_10x", s.CITYGO_10X_PROFILE)):
+            self.assertEqual(self.installer.api_profile({"ROUTERAI_API_KEY": "synthetic-not-live", "AI_CREDIT_MODE": mode}, s), expected)
+        for value in (None, [], {"AI_CREDIT_MODE": "routerai_citygo_10x"}, {"YOOKASSA_MODE": "test"},
+                      {"ROUTERAI_API_KEY": "synthetic-not-live"},
+                      {"ROUTERAI_API_KEY": "synthetic-not-live", "AI_CREDIT_MODE": []},
+                      {"ROUTERAI_API_KEY": "synthetic-not-live", "AI_CREDIT_MODE": "disabled"},
+                      {"ROUTERAI_API_KEY": "synthetic-not-live", "AI_CREDIT_MODE": "unknown"}):
+            with self.subTest(value=value), self.assertRaisesRegex(RuntimeError, "ai-profile-mismatch"):
+                self.installer.api_profile(value, s)
 
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "Linux enrollment permissions")

@@ -70,7 +70,9 @@ class Validation(unittest.TestCase):
 @unittest.skipUnless(sys.platform.startswith("linux"), "Linux protected operator requests")
 class Operator(unittest.TestCase):
     def setUp(self):
-        setup = fixture.RouterAiCutover if getattr(self, "routerai_profile", False) else fixture.Cutover
+        setup = (fixture.CityGo10xCutover if getattr(self, "citygo_10x_profile", False) else
+                 fixture.RouterAiCutover if getattr(self, "routerai_profile", False) else fixture.Cutover)
+        if setup is not fixture.Cutover: self.profile = setup.profile
         setup.setUp(self)
         self.request = synthetic_request(self)
 
@@ -81,7 +83,9 @@ class Operator(unittest.TestCase):
         result = ctl.preflight(value, image_store_factory=lambda _: self.image_store)
         self.assertEqual(result["status"], "planned-not-approved")
         self.assertEqual(result["generation_sha256"], self.plan["sha256"])
-        self.assertEqual(result["profile"], ctl.s.ROUTERAI_PROFILE if getattr(self, "routerai_profile", False) else ctl.s.PROFILE)
+        expected_profile = (ctl.s.CITYGO_10X_PROFILE if getattr(self, "citygo_10x_profile", False) else
+                            ctl.s.ROUTERAI_PROFILE if getattr(self, "routerai_profile", False) else ctl.s.PROFILE)
+        self.assertEqual(result["profile"], expected_profile)
         self.assertFalse(result["runtime_checked"])
         with self.assertRaises(OSError): ctl.preflight(value, verify_finish=True, image_store_factory=lambda _: self.image_store)
         self.finish_approval.path.write_bytes(saved); self.finish_approval.path.chmod(0o600)
@@ -133,6 +137,11 @@ class Operator(unittest.TestCase):
 @unittest.skipUnless(sys.platform.startswith("linux"), "Linux protected operator requests")
 class RouterAiOperator(Operator):
     routerai_profile = True
+
+
+@unittest.skipUnless(sys.platform.startswith("linux"), "Linux protected operator requests")
+class CityGo10xOperator(Operator):
+    citygo_10x_profile = True
 
 
 if __name__ == "__main__": unittest.main()
