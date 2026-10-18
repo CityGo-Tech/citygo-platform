@@ -21,7 +21,9 @@ import {
   type SessionTicket,
 } from "@citygo/api-client";
 import {
-  questionnaireSchema,
+  changePasswordSchema,
+  credentialsSchema,
+  loginSchema,
   formatMoneyMicros,
   type Dashboard,
 } from "@citygo/contracts";
@@ -75,14 +77,10 @@ export default function App() {
   const [email, setEmail] = useState(""),
     [password, setPassword] = useState(""),
     [mode, setMode] = useState<"login" | "register">("login");
-  const [household, setHousehold] = useState<"solo" | "couple" | "family">(
-    "solo",
-  );
-  const [origin, setOrigin] = useState(""),
-    [target, setTarget] = useState(""),
-    [budget, setBudget] = useState(""),
-    [date, setDate] = useState(""),
-    [consent, setConsent] = useState(false);
+  const [showPasswordChange, setShowPasswordChange] = useState(false),
+    [currentPassword, setCurrentPassword] = useState(""),
+    [newPassword, setNewPassword] = useState(""),
+    [changingPassword, setChangingPassword] = useState(false);
   const [text, setText] = useState(""),
     [draft, setDraft] = useState(""),
     [confirmed, setConfirmed] = useState(false),
@@ -95,12 +93,10 @@ export default function App() {
     setBoard(null);
     setEmail("");
     setPassword("");
-    setOrigin("");
-    setTarget("");
-    setBudget("");
-    setDate("");
-    setHousehold("solo");
-    setConsent(false);
+    setShowPasswordChange(false);
+    setCurrentPassword("");
+    setNewPassword("");
+    setChangingPassword(false);
     setConfirmed(false);
     setText("");
     setDraft("");
@@ -176,7 +172,18 @@ export default function App() {
   }
   function authenticate() {
     if (operations.current() || storageBlocked) return;
-    const input = { mode, email, password };
+    const parsed = (
+      mode === "login" ? loginSchema : credentialsSchema
+    ).safeParse({ email, password });
+    if (!parsed.success) {
+      setError(
+        mode === "login"
+          ? "Введите логин или электронную почту и пароль."
+          : "Укажите электронную почту и пароль от 6 до 128 любых символов.",
+      );
+      return;
+    }
+    const input = { mode, ...parsed.data };
     session.current = null;
     clearUserState();
     void act("auth", async (ticket) => {
@@ -197,6 +204,61 @@ export default function App() {
       ticket.check();
       session.current = result.token;
       await refresh(ticket);
+    });
+  }
+  function changePassword() {
+    if (operations.current() || storageBlocked || !board) return;
+    const input = changePasswordSchema.safeParse({
+      currentPassword,
+      password: newPassword,
+    });
+    if (!input.success) {
+      setError(
+        "Введите текущий пароль и новый пароль от 6 до 128 любых символов.",
+      );
+      return;
+    }
+    const owner = board.user.id;
+    void act("auth", async (ticket) => {
+      setChangingPassword(true);
+      try {
+        const result = await api.changePassword(
+          input.data.currentPassword,
+          input.data.password,
+        );
+        ticket.check();
+        if (!result.token || result.user.id !== owner) {
+          await endSession(false);
+          return;
+        }
+        try {
+          // The server rotated this credential. Serialize its write with logout;
+          // a stale ticket must never publish or restore another account's token.
+          await tokenStore.save(result.token, ticket);
+          ticket.check();
+        } catch {
+          if (!ticket.active()) return;
+          await endSession(false);
+          setError(
+            "Пароль изменён, но не удалось сохранить новую сессию. После очистки устройства войдите с новым паролем.",
+          );
+          return;
+        }
+        session.current = result.token;
+        setBoard((current) =>
+          current?.user.id === owner
+            ? { ...current, user: result.user }
+            : current,
+        );
+        setCurrentPassword("");
+        setNewPassword("");
+        setShowPasswordChange(false);
+        await refresh(ticket);
+        ticket.check();
+        setNotice("Пароль изменён. Остальные сессии аккаунта завершены.");
+      } finally {
+        if (ticket.active()) setChangingPassword(false);
+      }
     });
   }
   useEffect(() => {
@@ -270,7 +332,11 @@ export default function App() {
             )}
             {pending && (
               <Text accessibilityLiveRegion="polite">
-                {operationLabel(pending)}
+                {changingPassword
+                  ? "Меняем пароль…"
+                  : pending.kind === "start" && !board?.thread
+                    ? "Открываем диалог…"
+                    : operationLabel(pending)}
               </Text>
             )}
             {storageBlocked && (
@@ -288,18 +354,28 @@ export default function App() {
                   {mode === "login" ? "С возвращением" : "Начнём переезд"}
                 </Text>
                 <Field
-                  label="Электронная почта"
+                  label={
+                    mode === "login"
+                      ? "Логин или электронная почта"
+                      : "Электронная почта"
+                  }
                   value={email}
                   onChangeText={setEmail}
                   autoCapitalize="none"
-                  keyboardType="email-address"
-                  autoComplete="email"
+                  keyboardType={mode === "login" ? "default" : "email-address"}
+                  autoComplete={mode === "login" ? "username" : "email"}
+                  maxLength={254}
+                  editable={!busy && !storageBlocked}
                 />
                 <Field
-                  label="Пароль · от 12 символов"
+                  label={
+                    mode === "login" ? "Пароль" : "Пароль · от 6 любых символов"
+                  }
                   value={password}
                   onChangeText={setPassword}
                   secureTextEntry
+                  maxLength={128}
+                  editable={!busy && !storageBlocked}
                   autoComplete={
                     mode === "login" ? "current-password" : "new-password"
                   }
@@ -315,97 +391,82 @@ export default function App() {
                       ? "Создать новый аккаунт"
                       : "Уже есть аккаунт"
                   }
+                  disabled={busy || storageBlocked}
                   onPress={() =>
                     setMode(mode === "login" ? "register" : "login")
                   }
                 />
               </Card>
-            ) : !board.profile ? (
+            ) : board.user.mustChangePassword || showPasswordChange ? (
               <Card>
-                <Text style={styles.title}>Куда отправимся?</Text>
-                <Field label="Откуда" value={origin} onChangeText={setOrigin} />
+                <Text style={styles.title}>Смена пароля</Text>
+                <Text>
+                  {board.user.mustChangePassword
+                    ? "Перед продолжением замените временный пароль. Пока он не изменён, чат и администрирование недоступны."
+                    : "После смены пароля остальные сессии аккаунта завершатся."}
+                </Text>
                 <Field
-                  label="Город назначения"
-                  value={target}
-                  onChangeText={setTarget}
+                  label="Текущий пароль"
+                  value={currentPassword}
+                  onChangeText={setCurrentPassword}
+                  secureTextEntry
+                  autoComplete="current-password"
+                  maxLength={128}
+                  editable={!busy}
                 />
                 <Field
-                  label="Бюджет аренды, ₽"
-                  value={budget}
-                  onChangeText={setBudget}
-                  keyboardType="number-pad"
+                  label="Новый пароль · от 6 любых символов"
+                  value={newPassword}
+                  onChangeText={setNewPassword}
+                  secureTextEntry
+                  autoComplete="new-password"
+                  maxLength={128}
+                  editable={!busy}
                 />
-                <Field
-                  label="Дата переезда · ГГГГ-ММ-ДД"
-                  value={date}
-                  onChangeText={setDate}
-                />
-                <Text>Кто переезжает</Text>
-                {(["solo", "couple", "family"] as const).map((value) => (
-                  <Button
-                    key={value}
-                    title={
-                      (household === value ? "✓ " : "") +
-                      {
-                        solo: "Один / одна",
-                        couple: "Вдвоём",
-                        family: "С семьёй",
-                      }[value]
-                    }
-                    onPress={() => setHousehold(value)}
-                  />
-                ))}
-                <View style={styles.row}>
-                  <Switch
-                    accessibilityLabel="Использование анкеты для плана"
-                    value={consent}
-                    onValueChange={setConsent}
-                  />
-                  <Text style={styles.flex}>
-                    Разрешаю CityGo использовать анкету для плана. Передача
-                    AI-получателю подтверждается отдельно перед чатом.
-                  </Text>
-                </View>
                 <Button
-                  title="Получить план"
-                  disabled={busy || !consent}
-                  onPress={() =>
-                    void act("questionnaire", async (ticket) => {
-                      const parsed = questionnaireSchema.safeParse({
-                        originCity: origin,
-                        targetCity: target,
-                        monthlyBudget: Number(budget),
-                        moveTargetDate: date,
-                        household,
-                        aiConsent: consent,
-                      });
-                      if (!parsed.success)
-                        throw new Error(
-                          "Проверьте города, бюджет от 5000 ₽ и будущую дату ГГГГ-ММ-ДД",
-                        );
-                      await api.questionnaire(parsed.data);
-                      await refresh(ticket);
-                    })
-                  }
+                  title="Сохранить новый пароль"
+                  disabled={busy || storageBlocked}
+                  onPress={changePassword}
                 />
+                {!board.user.mustChangePassword && (
+                  <Button
+                    title="Отмена"
+                    disabled={busy}
+                    onPress={() => {
+                      setShowPasswordChange(false);
+                      setCurrentPassword("");
+                      setNewPassword("");
+                    }}
+                  />
+                )}
               </Card>
             ) : (
               <>
                 <Card>
                   <Text style={styles.title}>
-                    Ваш переезд в {board.profile.targetCity}
+                    {board.profile
+                      ? `Ваш переезд в ${board.profile.targetCity}`
+                      : "Начните с разговора"}
                   </Text>
-                  <Text>
-                    {board.profile.monthlyBudget.toLocaleString("ru-RU")} ₽ /
-                    месяц · {board.profile.moveTargetDate}
-                  </Text>
+                  {board.profile ? (
+                    <Text>
+                      {board.profile.monthlyBudget.toLocaleString("ru-RU")} ₽ /
+                      месяц · {board.profile.moveTargetDate}
+                    </Text>
+                  ) : (
+                    <Text>
+                      Помощник уточнит вашу ситуацию постепенно и поможет с
+                      первым шагом. Если бюджет, дата или район пока неизвестны
+                      — это нормально. Обязательной анкеты нет.
+                    </Text>
+                  )}
                   {board.quests.map((q) => (
                     <Text key={q.id}>
                       {q.state === "completed" ? "✓" : "○"} {q.title}
                     </Text>
                   ))}
                   <Button
-                    title="Обновить план"
+                    title="Обновить состояние"
                     disabled={busy}
                     onPress={() =>
                       void act("refresh", async (ticket) => {
@@ -413,6 +474,18 @@ export default function App() {
                       })
                     }
                   />
+                  {!board.thread && (
+                    <Button
+                      title="Начать диалог"
+                      disabled={busy}
+                      onPress={() =>
+                        void act("start", async (ticket) => {
+                          await api.startConversation();
+                          await refresh(ticket);
+                        })
+                      }
+                    />
+                  )}
                 </Card>
                 {allQuestsCompleted(board.quests) && (
                   <Card>
@@ -483,7 +556,7 @@ export default function App() {
                 )}
                 <Card>
                   <Text style={styles.title}>
-                    {board.thread?.agentKey ?? "Housing Navigator"} · AI
+                    {board.thread?.agentKey ?? "Помощник CityGo"} · AI
                   </Text>
                   <Text>
                     Не отправляйте документы и платёжные данные. Ответы AI нужно
@@ -496,12 +569,19 @@ export default function App() {
                   {board.aiAccess?.credit && (
                     <View>
                       <Text style={styles.title}>
-                        Бесплатный баланс AI · аккаунт {board.user.id}
+                        {board.aiAccess.credit.chargingStatus ===
+                        "routerai_citygo_10x"
+                          ? "Баланс CityGo"
+                          : "Бесплатный баланс AI"}{" "}
+                        · аккаунт {board.user.id}
                       </Text>
                       <Text>
                         {board.aiAccess.credit.bonusGranted
                           ? "Разовые 500 ₽ начислены. Ежедневного восстановления нет."
-                          : "Разовый бонус 500 ₽ ещё не выдан. Обратитесь к владельцу пилота."}
+                          : board.aiAccess.credit.chargingStatus ===
+                              "routerai_citygo_10x"
+                            ? "Подарок 500 ₽ CityGo выдаётся после подтверждения телефона. Подтверждение пока не подключено."
+                            : "Разовый бонус 500 ₽ ещё не выдан. Обратитесь к владельцу пилота."}
                       </Text>
                       <Text>
                         Доступно:{" "}
@@ -516,9 +596,12 @@ export default function App() {
                       </Text>
                       <Text>
                         {board.aiAccess.credit.chargingStatus ===
-                        "routerai_at_cost"
-                          ? "Ответы RouterAI — по подтверждённой стоимости без наценки. Неизвестная стоимость остаётся в резерве до сверки. Доли микрорубля округляются вниз."
-                          : "Автоматическое списание за ответы пока не подключено."}{" "}
+                        "routerai_citygo_10x"
+                          ? "Расход модели 1 ₽ соответствует списанию 10 ₽ CityGo. Оплата 100 ₽ пополняет баланс на 100 ₽ CityGo. Неизвестная стоимость остаётся в резерве до сверки."
+                          : board.aiAccess.credit.chargingStatus ===
+                              "routerai_at_cost"
+                            ? "Ответы RouterAI — по подтверждённой стоимости без наценки. Неизвестная стоимость остаётся в резерве до сверки. Доли микрорубля округляются вниз."
+                            : "Автоматическое списание за ответы пока не подключено."}{" "}
                         Пополнение пока недоступно. Баланс не включает ИИ.
                       </Text>
                       {board.aiAccess.credit.pending?.map((item) => (
@@ -667,6 +750,20 @@ export default function App() {
                       }
                     />
                   )}
+                </Card>
+                <Card>
+                  <Text style={styles.title}>Профиль</Text>
+                  <Text>{board.user.username ?? board.user.email}</Text>
+                  <Text>Роль: {board.user.role ?? "не указана сервером"}</Text>
+                  <Button
+                    title="Изменить пароль"
+                    disabled={busy}
+                    onPress={() => {
+                      setShowPasswordChange(true);
+                      setCurrentPassword("");
+                      setNewPassword("");
+                    }}
+                  />
                 </Card>
               </>
             )}

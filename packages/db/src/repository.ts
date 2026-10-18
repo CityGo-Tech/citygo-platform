@@ -16,13 +16,16 @@ import type {
   AiBudgetInput,
   ApiErrorCode,
   QuestPlanReference,
+  CityGoTariffSnapshot,
 } from "@citygo/contracts";
+import { LEGACY_AT_COST_TARIFF } from "@citygo/contracts";
 import { randomUUID } from "node:crypto";
 import { canTransitionQuest } from "@citygo/domain";
 import { DomainError } from "./errors.js";
 import { currentQuestPlan, lockQuestPlan } from "./quest-plans.js";
 import { AiCreditLedger } from "./ai-credit.js";
 import { AiCreditCharges } from "./ai-credit-charges.js";
+import { lockPaymentMode } from "./payment-isolation.js";
 import {
   aiBudget,
   aiUserBudget,
@@ -45,6 +48,8 @@ export class Repository {
   constructor(
     public db: Database,
     private creditCharging = false,
+    private creditTariff: CityGoTariffSnapshot = LEGACY_AT_COST_TARIFF,
+    private topUpAvailable = false,
   ) {}
   aiBudget(executions: AiExecution[]) {
     return aiBudget(this.db, executions);
@@ -95,8 +100,9 @@ export class Repository {
     if (input.userDailyLimit === 0 || input.globalDailyLimit === 0)
       fail(503, "Обращения к AI временно отключены администратором.");
     return this.db.transaction(async (tx) => {
-      // Same user -> thread -> daily-counter order as chat admission. Do not
-      // lock current routing: an admitted answer keeps its pinned recipient.
+      // Isolation security -> user -> thread -> daily-counter order. Do not lock
+      // current routing: an admitted answer keeps its pinned recipient.
+      await lockPaymentMode(tx, "real");
       await tx.query("select id from users where id=$1 for update", [
         input.userId,
       ]);
@@ -217,7 +223,7 @@ export class Repository {
         ],
       );
       return this.creditCharging
-        ? new AiCreditCharges(this.db).reserve(
+        ? new AiCreditCharges(this.db, this.creditTariff).reserve(
             tx,
             {
               userId: input.userId,
@@ -461,7 +467,12 @@ export class Repository {
         aiAccess: {
           credit: await new AiCreditLedger(
             this.db,
-            this.creditCharging ? "routerai_at_cost" : "not_connected",
+            this.creditCharging
+              ? this.creditTariff.version === "citygo-10x-v1"
+                ? "routerai_citygo_10x"
+                : "routerai_at_cost"
+              : "not_connected",
+            this.topUpAvailable,
           ).status(user.id, tx),
           budget: await aiUserBudget(tx, user.id),
           policy,
@@ -744,12 +755,13 @@ export class Repository {
           JSON.stringify({ agentKey: thread.agent_key, status: "complete" }),
         ],
       );
-      const profile = (
-        await tx.query<{ preferences: Questionnaire }>(
-          "select preferences from relocation_profiles where user_id=$1",
-          [userId],
-        )
-      ).rows[0]!.preferences;
+      const profile =
+        (
+          await tx.query<{ preferences: Questionnaire }>(
+            "select preferences from relocation_profiles where user_id=$1",
+            [userId],
+          )
+        ).rows[0]?.preferences ?? null;
       return {
         thread,
         lease,

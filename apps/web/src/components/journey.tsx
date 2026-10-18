@@ -16,6 +16,7 @@ import {
 } from "@citygo/ui-web";
 import { questChecklist } from "@citygo/content";
 import { AiAccessPanel } from "./ai-access";
+import type { TopupActions } from "./test-topup";
 
 export const agentNames: Record<AgentKey, string> = {
   housing: "Housing Navigator",
@@ -30,7 +31,7 @@ const stateLabels: Record<Quest["state"], string> = {
   in_progress: "В работе",
   completed: "Завершено",
 };
-type JourneyProps = {
+export type JourneyProps = {
   board: Dashboard;
   busy: boolean;
   sending: boolean;
@@ -44,6 +45,9 @@ type JourneyProps = {
   onConsent: (input: AiConsentInput) => void;
   onStart: (id: string) => Promise<boolean>;
   onComplete: (id: string) => Promise<boolean>;
+  onBegin?: () => void;
+  onPassword?: () => void;
+  topups?: TopupActions;
 };
 
 function Avatar({
@@ -364,7 +368,7 @@ export function Journey(props: JourneyProps) {
             )}
             <AiAccessPanel
               userId={board.user.id}
-              key={`${board.aiAccess?.policy?.id}:${board.aiAccess?.granted}`}
+              key={`${board.user.id}:${board.aiAccess?.policy?.id}:${board.aiAccess?.granted}`}
               access={
                 board.aiAccess ?? {
                   policy: null,
@@ -374,6 +378,7 @@ export function Journey(props: JourneyProps) {
               }
               busy={busy}
               onConsent={props.onConsent}
+              topups={props.topups}
             />
             {!board.thread && (
               <Card>

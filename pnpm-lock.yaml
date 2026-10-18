@@ -260,6 +260,10 @@ importers:
         version: 4.23.13
 
   packages/content:
+    dependencies:
+      '@citygo/contracts':
+        specifier: workspace:*
+        version: link:../contracts
     devDependencies:
       tsup:
         specifier: ^8.5.0

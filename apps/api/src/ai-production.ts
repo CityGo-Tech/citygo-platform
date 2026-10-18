@@ -13,7 +13,8 @@ export function productionProviderAllowed(
     return true;
   if (provider.name !== "routerai") return false;
   return Boolean(
-    config.AI_CREDIT_MODE === "routerai_at_cost" &&
+    (config.AI_CREDIT_MODE === "routerai_at_cost" ||
+      config.AI_CREDIT_MODE === "routerai_citygo_10x") &&
     config.ROUTERAI_MODEL &&
     provider.model === config.ROUTERAI_MODEL &&
     config.ROUTERAI_UPSTREAM &&

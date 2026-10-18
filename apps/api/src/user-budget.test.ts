@@ -140,6 +140,8 @@ async function fixture({
     return { id, email, token, thread, policyId };
   };
   const admin = await chatUser();
+  // Explicit test fixture setup, not runtime ADMIN_USER_IDS authorization.
+  await db.query("update users set role='admin' where id=$1", [admin.id]);
   const status = async (target = app) => {
     const response = await call(target, "GET", "/v1/admin/ai", admin.token);
     assert.equal(response.statusCode, 200, response.body);

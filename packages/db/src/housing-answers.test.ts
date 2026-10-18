@@ -1215,7 +1215,7 @@ test("SQL prevents changing permanent identity, content or provenance event", as
   );
 });
 
-test("upgrade 0011 → 0012 preserves populated records and is replay-safe", async (t) => {
+test("upgrade 0011 → current preserves populated records and is replay-safe", async (t) => {
   const db = await fixture(t, true);
   const { user, plan } = await owner(db);
   await db.query(
@@ -1230,6 +1230,23 @@ test("upgrade 0011 → 0012 preserves populated records and is replay-safe", asy
   ).rows;
   await migrate(db);
   await migrate(db);
+  assert.deepEqual(
+    (
+      await db.query(
+        "select username,role,must_change_password from users where id=$1",
+        [user],
+      )
+    ).rows,
+    [{ username: null, role: "user", must_change_password: false }],
+  );
+  assert.deepEqual(
+    (
+      await db.query(
+        "select id,bootstrap_completed from account_security_state",
+      )
+    ).rows,
+    [{ id: 1, bootstrap_completed: false }],
+  );
   assert.deepEqual(
     (
       await db.query(
@@ -1260,7 +1277,7 @@ test("upgrade 0011 → 0012 preserves populated records and is replay-safe", asy
         "select count(*)::int as n from citygo_migrations",
       )
     ).rows[0]!.n,
-    12,
+    15,
   );
   const store = new HousingAnswers(db);
   assert.equal(

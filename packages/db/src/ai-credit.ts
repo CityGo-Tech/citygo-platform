@@ -2,14 +2,27 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import {
   AI_WELCOME_CREDIT_MICROS,
+  CITYGO_MAX_AMOUNT_MICROS,
+  citygoTopUpMicrosFromPaidKopeks,
   creditUserIdSchema,
   type AiCredit,
 } from "@citygo/contracts";
 import type { Database, Sql } from "./index.js";
 import { DomainError } from "./errors.js";
+import { lockPaymentMode } from "./payment-isolation.js";
 
-const amountSchema = z.number().int().min(0).max(AI_WELCOME_CREDIT_MICROS);
+const amountSchema = z.number().int().min(0).max(CITYGO_MAX_AMOUNT_MICROS);
 const operationSchema = z.uuid();
+const confirmedTopUpSchema = z.strictObject({
+  providerPaymentId: z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/),
+  paidKopeks: z.number().int().min(1).max(1_000_000_000),
+  merchantId: z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/),
+  test: z.boolean(),
+  verifiedAt: z.iso.datetime(),
+  verification: z.literal("server_get_succeeded"),
+  currency: z.literal("RUB"),
+});
+type ConfirmedTopUp = z.infer<typeof confirmedTopUpSchema>;
 type Entry = {
   user_id: string;
   kind: string;
@@ -18,11 +31,13 @@ type Entry = {
 };
 
 // Trusted server ledger primitive. Not a payment endpoint or provider billing API.
-// Every operation locks users -> credit account. No network while locks are held.
+// Isolation-aware holds/top-ups lock security -> users -> credit account; other
+// resolutions keep users -> credit account. No network while locks are held.
 export class AiCreditLedger {
   constructor(
     private db: Database,
     private chargingStatus: AiCredit["chargingStatus"] = "not_connected",
+    private topUpAvailable = false,
   ) {}
 
   private async lock(tx: Sql, userId: string, actorId?: string) {
@@ -65,11 +80,13 @@ export class AiCreditLedger {
         granted: string;
         held: string;
         spent: string;
+        bonus_granted: boolean;
         history: AiCredit["history"];
         pending: NonNullable<AiCredit["pending"]>;
       }>(
         `select coalesce(a.granted_micros,0)::text as granted,
       coalesce(a.held_micros,0)::text as held,coalesce(a.spent_micros,0)::text as spent,
+      exists(select 1 from ai_credit_entries b where b.user_id=$1 and b.kind='bonus') as bonus_granted,
       coalesce((select jsonb_agg(jsonb_build_object('id',e.id::text,'kind',e.kind,
         'amountMicros',e.amount_micros,'createdAt',to_char(e.created_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')) order by e.id desc)
         from (select id,kind,amount_micros,created_at from ai_credit_entries where user_id=$1 order by id desc limit 20) e),'[]'::jsonb) as history,
@@ -88,7 +105,7 @@ export class AiCreditLedger {
       spent = Number(row.spent);
     return {
       currency: "RUB",
-      bonusGranted: granted > 0,
+      bonusGranted: row.bonus_granted,
       grantedMicros: granted,
       heldMicros: held,
       spentMicros: spent,
@@ -96,7 +113,7 @@ export class AiCreditLedger {
       history: row.history,
       chargingStatus: this.chargingStatus,
       pending: row.pending,
-      topUpAvailable: false,
+      topUpAvailable: this.topUpAvailable,
     };
   }
 
@@ -113,10 +130,12 @@ export class AiCreditLedger {
         "insert into ai_credit_entries(user_id,operation_id,kind,amount_micros,actor_user_id) values ($1,$2,'bonus',$3,$4)",
         [userId, randomUUID(), AI_WELCOME_CREDIT_MICROS, actorId],
       );
-      await tx.query(
-        "update ai_credit_accounts set granted_micros=$2 where user_id=$1",
-        [userId, AI_WELCOME_CREDIT_MICROS],
+      const result = await tx.query(
+        "update ai_credit_accounts set granted_micros=granted_micros+$2::bigint where user_id=$1 and granted_micros <= $3::bigint-$2::bigint returning user_id",
+        [userId, AI_WELCOME_CREDIT_MICROS, CITYGO_MAX_AMOUNT_MICROS],
       );
+      if (!result.rows.length)
+        throw new DomainError(409, "Достигнут технический предел баланса");
       await tx.query(
         "insert into audit_log(actor_user_id,action,entity_type,entity_id,payload) values ($1,'ai-credit-welcome-granted','ai-credit',$2,$3)",
         [
@@ -132,6 +151,105 @@ export class AiCreditLedger {
     return this.status(userId);
   }
 
+  // TRUSTED SERVER ONLY. This primitive validates a verified payment identity;
+  // it does NOT authenticate a webhook, fetch YooKassa, or accept client proof.
+  // The caller must perform an authenticated server GET and verify succeeded,
+  // paid, exact amount/currency/merchant/order ownership and test/live mode first.
+  // Never expose this method as an endpoint accepting the same shape verbatim.
+  async topUpConfirmed(
+    userId: string,
+    operationId: string,
+    raw: ConfirmedTopUp,
+  ) {
+    creditUserIdSchema.parse(userId);
+    operationSchema.parse(operationId);
+    const input = confirmedTopUpSchema.parse(raw);
+    const credited = citygoTopUpMicrosFromPaidKopeks(input.paidKopeks);
+    try {
+      await this.db.transaction(async (tx) => {
+        await lockPaymentMode(tx, input.test ? "test" : "real");
+        await this.lock(tx, userId);
+        const priorOperation = await this.entry(tx, operationId);
+        const priorPayment = (
+          await tx.query<{
+            user_id: string;
+            operation_id: string;
+            paid_kopeks: string;
+            merchant_id: string;
+            test: boolean;
+          }>(
+            `select user_id::text,operation_id,paid_kopeks::text,merchant_id,test
+             from ai_credit_topups where provider_payment_id=$1`,
+            [input.providerPaymentId],
+          )
+        ).rows[0];
+        if (
+          priorOperation &&
+          (!priorPayment ||
+            priorPayment.operation_id !== operationId ||
+            priorOperation.user_id !== userId ||
+            priorOperation.kind !== "topup" ||
+            Number(priorOperation.amount_micros) !== credited)
+        )
+          throw new DomainError(
+            409,
+            "Операция баланса уже использована с другими параметрами",
+          );
+        if (priorPayment) {
+          if (
+            priorPayment.user_id !== userId ||
+            Number(priorPayment.paid_kopeks) !== input.paidKopeks ||
+            priorPayment.merchant_id !== input.merchantId ||
+            priorPayment.test !== input.test
+          )
+            throw new DomainError(409, "Платёж уже связан с другой операцией");
+          // A repeated notification may have a new verification time or request
+          // UUID. The original payment/posting remains authoritative and intact.
+          return;
+        }
+        const result = await tx.query(
+          `update ai_credit_accounts set granted_micros=granted_micros+$2::bigint
+           where user_id=$1 and granted_micros <= $3::bigint-$2::bigint returning user_id`,
+          [userId, credited, CITYGO_MAX_AMOUNT_MICROS],
+        );
+        if (!result.rows.length)
+          throw new DomainError(409, "Достигнут технический предел баланса");
+        await tx.query(
+          "insert into ai_credit_entries(user_id,operation_id,kind,amount_micros) values ($1,$2,'topup',$3)",
+          [userId, operationId, credited],
+        );
+        await tx.query(
+          `insert into ai_credit_topups(provider_payment_id,operation_id,user_id,paid_kopeks,
+           credited_micros,merchant_id,test,verified_at,verification_receipt)
+           values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+          [
+            input.providerPaymentId,
+            operationId,
+            userId,
+            input.paidKopeks,
+            credited,
+            input.merchantId,
+            input.test,
+            input.verifiedAt,
+            JSON.stringify(input),
+          ],
+        );
+      });
+    } catch (error) {
+      // Different users can race for one globally unique payment/operation ID.
+      // A losing transaction rolls back the account update and its entry.
+      if (
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        error.code === "23505"
+      )
+        throw new DomainError(409, "Платёж или операция уже учтены");
+      throw error;
+    }
+    return this.status(userId);
+  }
+
   // Supplied transaction joins the attempt + operator-budget reservation atomically.
   async hold(
     userId: string,
@@ -142,6 +260,7 @@ export class AiCreditLedger {
     operationSchema.parse(operationId);
     amountSchema.positive().parse(amountMicros);
     const work = async (tx: Sql) => {
+      await lockPaymentMode(tx, "real");
       await this.lock(tx, userId);
       const previous = await this.entry(tx, operationId);
       if (previous) {
@@ -163,7 +282,7 @@ export class AiCreditLedger {
       if (!result.rows.length)
         throw new DomainError(
           409,
-          "Недостаточно доступного баланса AI. Бонус выдаётся один раз; пополнение пока недоступно.",
+          "Недостаточно доступного баланса CityGo для резерва этого ответа.",
           "AI_CREDIT_EXHAUSTED",
         );
       await tx.query(

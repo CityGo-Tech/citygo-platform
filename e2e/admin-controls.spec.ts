@@ -1,5 +1,29 @@
 import { test, expect } from "@playwright/test";
-import type { AiControlStatus } from "@citygo/contracts";
+import type { AiControlStatus, Dashboard } from "@citygo/contracts";
+
+test.beforeEach(async ({ page }) => {
+  // Admin refresh now verifies the session's persisted application role using
+  // dashboard as well as the existing overview/control endpoints. Individual
+  // permission tests can register a later route to override this fixture.
+  const dashboard: Dashboard = {
+    user: {
+      id: "synthetic-admin",
+      email: "admin@example.test",
+      role: "admin",
+      username: null,
+      mustChangePassword: false,
+    },
+    profile: null,
+    xp: 0,
+    quests: [],
+    thread: null,
+    provider: "unconfigured",
+    aiAccess: { policy: null, granted: false, dailyLimit: 20 },
+  };
+  await page.route("**/api/v1/dashboard", (route) =>
+    route.fulfill({ json: dashboard }),
+  );
+});
 
 test("admin confirms one-time credit for the displayed account and never replays a stale response", async ({
   page,

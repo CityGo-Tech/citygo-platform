@@ -9,12 +9,17 @@ import {
   completionSchema,
   questStartSchema,
   credentialsSchema,
+  loginSchema,
+  changePasswordSchema,
+  changeRoleSchema,
   questionnaireSchema,
   aiConsentSchema,
   aiRoutingInputSchema,
   aiBudgetInputSchema,
   aiCreditGrantSchema,
   aiCreditReconcileSchema,
+  CITYGO_10X_TARIFF,
+  LEGACY_AT_COST_TARIFF,
   CONTRACT_VERSION,
   CONTRACT_VERSION_HEADER,
   REQUEST_ID_HEADER,
@@ -28,9 +33,13 @@ import {
 } from "@citygo/contracts";
 import {
   Repository,
+  AccountAccess,
+  ensureConversation,
   DomainError,
   AiCreditLedger,
   AiCreditCharges,
+  assertRealAiDatabaseSafety,
+  assertTestPaymentsDatabaseSafety,
   type Database,
   HousingStoredDataError,
   verifyHousingReadiness,
@@ -46,6 +55,11 @@ import { createAiExecution } from "./ai-execution.js";
 import { ApiDrain, registerDrain } from "./shutdown.js";
 import { registerSyntheticHousingApi } from "./housing.js";
 import {
+  prepareTestPayments,
+  registerPaymentTopups,
+  type TestPaymentClient,
+} from "./payments.js";
+import {
   registerR1SyntheticPermissionHttp,
   type R1SyntheticPermissionHttpOptions,
 } from "./r1-permission-http.js";
@@ -59,9 +73,22 @@ export async function buildApp(options: {
   drain?: ApiDrain;
   housingLimits?: Partial<HousingStorageLimits>;
   syntheticPermissions?: R1SyntheticPermissionHttpOptions;
+  paymentClient?: TestPaymentClient;
 }) {
   const drain = options.drain ?? new ApiDrain();
   const config = options.config ?? readConfig();
+  const paymentClient = prepareTestPayments(config, {
+    testing: options.testing,
+    client: options.paymentClient,
+  });
+  if (
+    paymentClient &&
+    (options.provider || Object.values(options.providers ?? {}).some(Boolean))
+  )
+    throw new Error(
+      "Test checkout cannot be combined with injected AI providers",
+    );
+  if (paymentClient) await assertTestPaymentsDatabaseSafety(options.db);
   // No environment activation or server/deploy wiring. Even an injected
   // config must have BOTH test mode and the explicit test harness flag.
   if (
@@ -79,15 +106,37 @@ export async function buildApp(options: {
     throw new Error(
       "R1 housing API is synthetic-only; production activation is not implemented",
     );
-  const creditCharging = config.AI_CREDIT_MODE === "routerai_at_cost";
-  const repo = new Repository(options.db, creditCharging);
+  const creditCharging = config.AI_CREDIT_MODE !== "disabled";
+  const tariff =
+    config.AI_CREDIT_MODE === "routerai_citygo_10x"
+      ? CITYGO_10X_TARIFF
+      : LEGACY_AT_COST_TARIFF;
+  const chargingStatus =
+    config.AI_CREDIT_MODE === "disabled"
+      ? "not_connected"
+      : config.AI_CREDIT_MODE;
+  const repo = new Repository(
+    options.db,
+    creditCharging,
+    tariff,
+    !!paymentClient,
+  );
+  const accounts = new AccountAccess(options.db);
   const credit = new AiCreditLedger(
     options.db,
-    creditCharging ? "routerai_at_cost" : "not_connected",
+    chargingStatus,
+    !!paymentClient,
   );
-  const charges = new AiCreditCharges(options.db);
+  const charges = new AiCreditCharges(options.db, tariff);
   const providers: ProviderMap = { ...options.providers };
   if (options.provider) providers[options.provider.name] = options.provider;
+  // Quarantine survives process restarts and changing YOOKASSA_MODE back to
+  // disabled. A per-admission DB guard also protects already running replicas.
+  if (
+    config.LLM_PROVIDER !== "disabled" ||
+    Object.values(providers).some(Boolean)
+  )
+    await assertRealAiDatabaseSafety(options.db);
   async function reconcileCharge(userId: string, holdId: string) {
     const charge = await charges.get(userId, holdId);
     if (charge.receipt) return credit.status(userId);
@@ -173,25 +222,31 @@ export async function buildApp(options: {
   const dummyHash = hashPassword(randomUUID());
   const bearer = (authorization?: string) =>
     authorization?.startsWith("Bearer ") ? authorization.slice(7) : undefined;
-  async function authenticate(request: {
-    headers: { authorization?: string };
-    cookies: Record<string, string | undefined>;
-  }) {
+  async function authenticate(
+    request: {
+      headers: { authorization?: string };
+      cookies: Record<string, string | undefined>;
+    },
+    allowPasswordChange = false,
+  ) {
     const token =
       bearer(request.headers.authorization) ?? request.cookies[sessionName];
     const user = token ? await repo.session(tokenHash(token)) : undefined;
     if (!user) throw new DomainError(401, "Войдите в аккаунт");
-    return user;
+    const account = await accounts.info(user.id);
+    if (!account) throw new DomainError(401, "Войдите в аккаунт");
+    if (account.mustChangePassword && !allowPasswordChange)
+      throw new DomainError(
+        403,
+        "Сначала измените временный пароль в личном кабинете",
+      );
+    return account;
   }
   async function authenticateAdmin(
     request: Parameters<typeof authenticate>[0],
   ) {
     const user = await authenticate(request);
-    if (
-      !config.ADMIN_USER_IDS.split(",")
-        .map((value) => value.trim())
-        .includes(user.id)
-    )
+    if (user.role !== "admin" && user.role !== "super_admin")
       throw new DomainError(403, "Доступ только для администратора");
     return user;
   }
@@ -273,9 +328,9 @@ export async function buildApp(options: {
   app.get("/ready", async () => {
     try {
       const result = await options.db.query(
-        "select name from citygo_migrations where name in ('0006_ai_budget.sql','0007_ai_user_daily_budget.sql','0008_ai_credit.sql','0009_ai_credit_charges.sql','0010_quest_plan_expand.sql','0011_quest_plan_validate.sql')",
+        "select name from citygo_migrations where name in ('0006_ai_budget.sql','0007_ai_user_daily_budget.sql','0008_ai_credit.sql','0009_ai_credit_charges.sql','0010_quest_plan_expand.sql','0011_quest_plan_validate.sql','0013_account_access.sql','0014_citygo_credit.sql','0015_yookassa_orders.sql')",
       );
-      if (result.rows.length !== 6) throw new Error("Pending migration");
+      if (result.rows.length !== 9) throw new Error("Pending migration");
       if (config.R1_HOUSING_API_MODE === "synthetic")
         await verifyHousingReadiness(options.db);
     } catch {
@@ -296,6 +351,12 @@ export async function buildApp(options: {
       authenticate,
       limits: options.syntheticPermissions,
     });
+  registerPaymentTopups(app, {
+    db: options.db,
+    config,
+    client: paymentClient,
+    authenticate,
+  });
   for (const action of ["register", "login"] as const) {
     app.post(
       "/v1/auth/" + action,
@@ -308,34 +369,86 @@ export async function buildApp(options: {
         },
       },
       async (request, reply) => {
-        const input = credentialsSchema.parse(request.body);
+        const input = (
+          action === "register" ? credentialsSchema : loginSchema
+        ).parse(request.body);
         let id: string;
-        if (action === "register")
-          id = await repo.register(
-            input.email,
-            await hashPassword(input.password),
-          );
-        else {
-          const candidate = await repo.credentials(input.email);
+        let expectedHash: string;
+        if (action === "register") {
+          expectedHash = await hashPassword(input.password);
+          id = await repo.register(input.email, expectedHash);
+        } else {
+          const candidate = await accounts.credentials(input.email);
           const valid = await verifyPassword(
             input.password,
             candidate?.password_hash ?? (await dummyHash),
           );
           if (!candidate || !valid)
-            throw new DomainError(401, "Неверная почта или пароль");
+            throw new DomainError(401, "Неверный логин или пароль");
           id = candidate.id;
+          expectedHash = candidate.password_hash;
         }
         const token = newToken();
-        await repo.createSession(id, tokenHash(token));
+        // Recheck the verified hash under the same lock as password rotation.
+        // A pending login with an old password cannot mint a fresh session.
+        const user = await accounts.createVerifiedSession(
+          id,
+          expectedHash,
+          tokenHash(token),
+        );
         reply.setCookie(sessionName, token, cookieOptions);
         // Native mode is explicit; browser sessions remain HttpOnly.
         return {
-          user: { id, email: input.email },
+          user,
           ...(request.headers["x-citygo-client"] === "native" ? { token } : {}),
         };
       },
     );
   }
+  app.post(
+    "/v1/auth/password",
+    { config: { rateLimit: { max: 10, timeWindow: "15 minutes" } } },
+    async (request, reply) => {
+      const user = await authenticate(request, true);
+      const input = changePasswordSchema.parse(request.body);
+      const current = await accounts.credentials(user.email);
+      if (
+        !current ||
+        !(await verifyPassword(input.currentPassword, current.password_hash))
+      )
+        throw new DomainError(401, "Текущий пароль неверен");
+      if (input.password === input.currentPassword)
+        throw new DomainError(
+          400,
+          "Новый пароль должен отличаться от временного или текущего",
+        );
+      const token = newToken();
+      const account = await accounts.changePassword(
+        user.id,
+        current.password_hash,
+        await hashPassword(input.password),
+        tokenHash(token),
+      );
+      reply.setCookie(sessionName, token, cookieOptions);
+      return {
+        user: account,
+        ...(request.headers["x-citygo-client"] === "native" ? { token } : {}),
+      };
+    },
+  );
+  app.get("/v1/admin/accounts", async (request) => {
+    const actor = await authenticateAdmin(request);
+    return { users: await accounts.list(actor.id) };
+  });
+  app.post("/v1/admin/accounts/role", async (request) => {
+    const actor = await authenticateAdmin(request);
+    const input = changeRoleSchema.parse(request.body);
+    return { user: await accounts.setRole(actor.id, input.userId, input.role) };
+  });
+  app.post("/v1/conversations/start", async (request) => {
+    const user = await authenticate(request);
+    return ensureConversation(options.db, user.id);
+  });
   app.post("/v1/auth/logout", async (request, reply) => {
     const token =
       bearer(request.headers.authorization) ?? request.cookies[sessionName];
@@ -349,7 +462,7 @@ export async function buildApp(options: {
     return { ok: true };
   });
   app.get("/v1/dashboard", async (request) => {
-    const user = await authenticate(request);
+    const user = await authenticate(request, true);
     const active = await currentAi();
     return repo.dashboard(
       user,
@@ -701,6 +814,11 @@ export async function buildApp(options: {
   });
   app.post("/v1/admin/ai/credit/welcome", async (request) => {
     const actor = await authenticateAdmin(request);
+    if (config.AI_CREDIT_MODE === "routerai_citygo_10x")
+      throw new DomainError(
+        503,
+        "Подарок доступен только после подтверждения телефона. Сервис подтверждения ещё не подключён.",
+      );
     const input = aiCreditGrantSchema.parse(request.body);
     return credit.grantWelcome(input.userId, actor.id);
   });

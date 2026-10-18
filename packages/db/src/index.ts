@@ -4,6 +4,41 @@ export { Repository, DomainError } from "./repository.js";
 export { AiCreditLedger } from "./ai-credit.js";
 export { AiCreditCharges } from "./ai-credit-charges.js";
 export {
+  ensureConversation,
+  type ConversationThread,
+} from "./conversation-start.js";
+export {
+  AccountAccess,
+  type AccountRole,
+  type AccountInfo,
+  type AccountCredentials,
+} from "./account-access.js";
+export {
+  AccountReset,
+  type AccountResetPlan,
+  type AccountResetBlocker,
+} from "./account-reset.js";
+export {
+  ClosedAccountRestart,
+  type ClosedAccountRestartPlan,
+  type ClosedAccountRestartInput,
+  type ClosedAccountRestartReceipt,
+} from "./closed-account-restart.js";
+export {
+  FreshAccountReset,
+  type FreshAccountResetPlan,
+  type FreshAccountResetInput,
+  type FreshAccountResetReceipt,
+} from "./fresh-account-reset.js";
+export {
+  PaymentTopupOrders,
+  type PaymentTopupOrder,
+} from "./payment-topup-orders.js";
+export {
+  assertRealAiDatabaseSafety,
+  assertTestPaymentsDatabaseSafety,
+} from "./payment-isolation.js";
+export {
   HousingAnswers,
   type HousingBriefSnapshot,
   type HousingBriefSummary,

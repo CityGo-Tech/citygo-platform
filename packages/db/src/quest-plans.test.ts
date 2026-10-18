@@ -133,10 +133,12 @@ const businessTables = [
 ];
 async function snapshot(db: Database) {
   const data: Record<string, unknown> = {};
+  // Preserve the complete pre-0013 user projection across upgrade. New access
+  // fields are checked separately below, not ignored as migration side effects.
   for (const table of businessTables)
     data[table] = (
       await db.query(
-        `select to_jsonb(t) as row from ${table} t order by to_jsonb(t)::text`,
+        `select ${table === "users" ? "to_jsonb(t)-'username'-'role'-'must_change_password'" : "to_jsonb(t)"} as row from ${table} t order by to_jsonb(t)::text`,
       )
     ).rows;
   data.quests = (
@@ -145,6 +147,25 @@ async function snapshot(db: Database) {
     )
   ).rows;
   return data;
+}
+async function assertLegacyAccountDefaults(db: Database, userId: string) {
+  assert.deepEqual(
+    (
+      await db.query(
+        "select username,role,must_change_password from users where id=$1",
+        [userId],
+      )
+    ).rows,
+    [{ username: null, role: "user", must_change_password: false }],
+  );
+  assert.deepEqual(
+    (
+      await db.query(
+        "select id,bootstrap_completed from account_security_state",
+      )
+    ).rows,
+    [{ id: 1, bootstrap_completed: false }],
+  );
 }
 async function financialFixture(db: Database, userId: string) {
   await db.query(
@@ -181,6 +202,7 @@ for (const status of ["active", "completed"]) {
     await migrate(db);
     await migrate(db);
     assert.deepEqual(await snapshot(db), before);
+    await assertLegacyAccountDefaults(db, owner);
     assert.deepEqual(
       (
         await db.query(
@@ -668,7 +690,7 @@ test("existing least-privilege API grants can start/complete after identity trig
     );
 });
 
-test("container smoke's actual synthetic rewind/seed SQL upgrades from 9 to 12 and preserves populated history", async (t) => {
+test("container smoke's actual synthetic rewind/seed SQL upgrades from 9 to 15 and preserves populated history", async (t) => {
   const db = await fixture(t);
   // Read literal fixture SQL without importing/executing the Docker harness.
   // Fail if its representation changes; never evaluate JavaScript from a file.
@@ -691,9 +713,10 @@ test("container smoke's actual synthetic rewind/seed SQL upgrades from 9 to 12 a
   await migrate(db);
   assert.equal(
     (await db.query("select name from citygo_migrations")).rows.length,
-    12,
+    15,
   );
   assert.deepEqual(await snapshot(db), before);
+  await assertLegacyAccountDefaults(db, "900009");
   const cleanup = script.match(
     /"(begin; delete from ai_credit_entries[^"\n]+commit)"/,
   )?.[1];

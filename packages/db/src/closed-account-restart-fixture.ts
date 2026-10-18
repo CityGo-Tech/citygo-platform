@@ -1,0 +1,204 @@
+import { randomUUID } from "node:crypto";
+import { Repository, type Database } from "./index.js";
+
+// Synthetic fixtures shared by in-memory correctness and opt-in PostgreSQL tests.
+// Never read an application database URL or provider credentials here.
+export async function seedRestartFixture(db: Database) {
+  const repo = new Repository(db);
+  const ids = [
+    await repo.register("restart-owner@example.test", "PRIVATE-OLD-HASH"),
+    await repo.register("restart-other@example.test", "PRIVATE-OTHER-HASH"),
+  ];
+  const user = ids[0]!;
+  await db.query("update users set username='admin',role='admin' where id=$1", [
+    user,
+  ]);
+  await db.query(
+    "insert into sessions(token_hash,user_id,expires_at) values ('PRIVATE-OLD-SESSION',$1,now()+interval '1 day')",
+    [user],
+  );
+  await db.query(
+    "insert into relocation_profiles(user_id,origin_city,target_city,preferences) values ($1,'PRIVATE-ORIGIN','Москва','{\"private\":\"PRIVATE-PROFILE\"}')",
+    [user],
+  );
+  await db.query(
+    "insert into questionnaire_answers(user_id,question_key,answer) values ($1,'private','\"PRIVATE-ANSWER\"')",
+    [user],
+  );
+  const plan = (
+    await db.query<{ id: string }>(
+      'insert into relocation_plans(user_id,status,plan) values ($1,\'active\',\'{"stages":["housing-brief"],"private":"PRIVATE-PLAN"}\') returning id::text',
+      [user],
+    )
+  ).rows[0]!.id;
+  const quest = (
+    await db.query<{ id: string }>(
+      "insert into user_quests(user_id,quest_id,plan_id,plan_version,state) select $1,id,$2,1,'available' from quests where slug='housing-brief' returning id::text",
+      [user, plan],
+    )
+  ).rows[0]!.id;
+  await db.query(
+    "insert into xp_events(user_id,user_quest_id,event_key,points,metadata) values ($1,$2,'synthetic-private',1,'{\"private\":\"PRIVATE-XP\"}')",
+    [user, quest],
+  );
+  const thread = (
+    await db.query<{ id: string }>(
+      "insert into agent_threads(user_id,agent_key,context) values ($1,'housing','{\"private\":\"PRIVATE-CONTEXT\"}') returning id::text",
+      [user],
+    )
+  ).rows[0]!.id;
+  await db.query(
+    "insert into messages(thread_id,role,content,metadata) values ($1,'user','PRIVATE-CHAT','{\"private\":\"PRIVATE-METADATA\"}')",
+    [thread],
+  );
+  await db.query(
+    "insert into agent_handoffs(thread_id,from_agent_key,to_agent_key,reason,context) values ($1,'housing','support','PRIVATE-HANDOFF','{\"private\":\"PRIVATE-HANDOFF-CONTEXT\"}')",
+    [thread],
+  );
+  await db.query(
+    "insert into consent_events(user_id,consent_key,action,policy_version,details) values ($1,'synthetic','granted','synthetic','{\"private\":\"PRIVATE-CONSENT\"}')",
+    [user],
+  );
+  await db.query(
+    "insert into ai_consents(user_id,policy_id,granted) values ($1,$2,true)",
+    [user, "a".repeat(64)],
+  );
+  await db.query(
+    "insert into analytics_events(user_id,name) values ($1,'PRIVATE-ANALYTICS')",
+    [user],
+  );
+  const brief = (
+    await db.query<{ id: string }>(
+      "insert into r1_housing_briefs(user_id,plan_id,plan_version) values ($1,$2,1) returning id::text",
+      [user, plan],
+    )
+  ).rows[0]!.id;
+  await db.transaction(async (tx) => {
+    const event = randomUUID();
+    await tx.query(
+      "insert into r1_housing_commands(user_id,command_id,event_id,action,actor,source,request,brief_id,result_revision) values ($1,$2,$3,'create_brief','user','explicit_command','{\"private\":\"PRIVATE-BRIEF-REQUEST\"}',$4,1)",
+      [user, randomUUID(), event, brief],
+    );
+    await tx.query(
+      'insert into r1_housing_brief_revisions(brief_id,revision,event_id,content) values ($1,1,$2,\'{"private":"PRIVATE-BRIEF-CONTENT"}\')',
+      [brief, event],
+    );
+  });
+  const request = randomUUID();
+  await db.query(
+    "insert into chat_requests(thread_id,request_id,status,ai_policy_id,ai_routing_revision) values ($1,$2,'complete',$3,1)",
+    [thread, request, "a".repeat(64)],
+  );
+  await db.query(
+    "insert into ai_model_attempts(thread_id,request_id,attempt_number,user_id,provider,model,policy_id,routing_revision,money_currency,money_reserved_micros,money_budget_revision,money_rule_key) values ($1,$2,1,$3,'routerai','synthetic-model',$4,1,'RUB',1000000,1,$4)",
+    [thread, request, user, "a".repeat(64)],
+  );
+  await db.query(
+    "insert into ai_credit_accounts(user_id,granted_micros,spent_micros) values ($1,500000000,120000)",
+    [user],
+  );
+  await db.query(
+    "insert into ai_credit_entries(user_id,operation_id,kind,amount_micros,actor_user_id) values ($1,$2,'bonus',500000000,$3)",
+    [user, randomUUID(), ids[1]],
+  );
+  const hold = randomUUID();
+  await db.query(
+    "insert into ai_credit_entries(user_id,operation_id,kind,amount_micros) values ($1,$2,'hold',1000000)",
+    [user, hold],
+  );
+  await db.query(
+    "insert into ai_credit_entries(user_id,operation_id,kind,amount_micros,hold_id) values ($1,$2,'settle',120000,$3)",
+    [user, randomUUID(), hold],
+  );
+  const receipt = {
+    generationId: "synthetic-generation",
+    reference: hold,
+    model: "synthetic-model",
+    upstream: "synthetic",
+    currency: "RUB",
+    costRub: "0.120000",
+    amountMicros: 120000,
+  };
+  await db.query(
+    "insert into ai_credit_charges(hold_id,user_id,thread_id,request_id,attempt_number,model,upstream,dispatched,generation_id,response_complete,receipt) values ($1,$2,$3,$4,1,'synthetic-model','synthetic',true,'synthetic-generation',true,$5)",
+    [hold, user, thread, request, JSON.stringify(receipt)],
+  );
+  await db.query(
+    "update ai_budget set currency='RUB',total_limit_micros=900000000,total_reserved_micros=1000000 where id=1",
+  );
+  await db.query(
+    "insert into ai_budget_daily(usage_day,reserved_micros) values (current_date,1000000)",
+  );
+  await db.query(
+    "insert into ai_usage_daily(usage_day,accepted_requests) values (current_date,1)",
+  );
+  await db.query(
+    "insert into ai_user_usage_daily(user_id,usage_day,accepted_requests) values ($1,current_date,1)",
+    [user],
+  );
+  await db.query(
+    "insert into ai_model_attempt_daily(usage_day,reserved_attempts,user_limit,global_limit) values (current_date,1,100,1000)",
+  );
+  await db.query(
+    "insert into ai_user_model_attempt_daily(user_id,usage_day,reserved_attempts) values ($1,current_date,1)",
+    [user],
+  );
+  await db.query(
+    "insert into ai_routing(id,provider,policy_id,revision) values (1,'routerai',$1,1)",
+    ["a".repeat(64)],
+  );
+  for (const [action, type, entity, payload] of [
+    ["ai-routing-initialized", "ai-routing", "1", { provider: "routerai" }],
+    ["ai-budget-changed", "ai-budget", "1", { revision: 1 }],
+    [
+      "ai-credit-welcome-granted",
+      "ai-credit",
+      user,
+      { amountMicros: 500000000 },
+    ],
+  ] as const)
+    await db.query(
+      "insert into audit_log(actor_user_id,action,entity_type,entity_id,payload) values ($1,$2,$3,$4,$5)",
+      [user, action, type, entity, JSON.stringify(payload)],
+    );
+  return { ids, user, thread, request, hold, receipt };
+}
+
+export const retainedFinancialTables = [
+  "ai_model_attempts",
+  "chat_requests",
+  "ai_credit_accounts",
+  "ai_credit_entries",
+  "ai_credit_charges",
+  "ai_budget",
+  "ai_budget_daily",
+  "ai_usage_daily",
+  "ai_model_attempt_daily",
+  "ai_routing",
+  "citygo_migrations",
+  "quests",
+] as const;
+
+export async function captureRestartRows(
+  db: Database,
+  names?: readonly string[],
+) {
+  const tables =
+    names ??
+    (
+      await db.query<{ tablename: string }>(
+        "select tablename from pg_tables where schemaname='public' order by tablename",
+      )
+    ).rows.map((row) => row.tablename);
+  const result: Record<string, unknown[]> = {};
+  for (const table of tables) {
+    if (!/^[a-z_][a-z0-9_]*$/.test(table))
+      throw new Error("Unexpected synthetic table name");
+    result[table] = (
+      await db.query(
+        `select row_to_json(x) as value from ${table} x order by row_to_json(x)::text`,
+      )
+    ).rows;
+  }
+  return result;
+}

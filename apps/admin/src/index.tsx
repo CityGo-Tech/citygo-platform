@@ -1,14 +1,17 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  ApiError,
   createClient,
   createSessionGuard,
   subscribeBrowserSessionChange,
 } from "@citygo/api-client";
+import type { AccountRole, AccountUser } from "@citygo/contracts";
 import { Button, Card } from "@citygo/ui-web";
 import { AiControls } from "./ai-control.js";
 import { AiBudgetControls } from "./ai-budget.js";
 import { AiCreditControls } from "./ai-credit.js";
+import { AccountsControl } from "./accounts-control.js";
 export function AdminOverview() {
   const [session] = useState(createSessionGuard);
   const api = useMemo(
@@ -29,10 +32,16 @@ export function AdminOverview() {
   > | null>(null);
   const [refreshVersion, setRefreshVersion] = useState(0);
   const [notice, setNotice] = useState("");
+  const [viewer, setViewer] = useState<AccountUser | null>(null);
+  const [users, setUsers] = useState<AccountUser[] | null>(null);
+  const roleMutation = useRef<object | null>(null);
   function invalidate() {
     session.reset();
     setData(null);
     setControl(null);
+    setViewer(null);
+    setUsers(null);
+    roleMutation.current = null;
     setError("");
     setNotice("");
     setBusy(false);
@@ -83,18 +92,72 @@ export function AdminOverview() {
   async function refresh(ticket = session.capture()) {
     try {
       ticket.check();
-      const [overview, ai] = await Promise.all([api.admin(), api.aiControl()]);
+      const [overview, ai, dashboard] = await Promise.all([
+        api.admin(),
+        api.aiControl(),
+        api.dashboard(),
+      ]);
+      ticket.check();
+      if (session.ownerChanged(dashboard.user.id)) {
+        invalidate();
+        throw new Error(
+          "Аккаунт изменился. Обновите сводку под текущим аккаунтом.",
+        );
+      }
+      const accounts =
+        dashboard.user.role === "super_admin" ? await api.accountUsers() : null;
       ticket.check();
       setData(overview);
       setControl(ai);
+      setViewer(dashboard.user);
+      setUsers(accounts?.users ?? null);
       setRefreshVersion((value) => value + 1);
     } catch (error) {
       if (ticket.active()) {
         setData(null);
         setControl(null);
+        setViewer(null);
+        setUsers(null);
         setNotice("");
       }
       throw error;
+    }
+  }
+  async function saveRole(userId: string, role: AccountRole) {
+    if (roleMutation.current || busy || viewer?.role !== "super_admin") return;
+    const mutation = {};
+    roleMutation.current = mutation;
+    const ticket = session.capture();
+    setBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      await api.setAccountRole(userId, role);
+      ticket.check();
+      if (userId === viewer.id && role === "user") {
+        invalidate();
+        setNotice(
+          "Ваша роль изменена на пользователя. Доступ к админке закрыт.",
+        );
+        return;
+      }
+      setNotice(`Роль аккаунта ${userId} сохранена.`);
+      await refresh(ticket);
+    } catch (error) {
+      if (ticket.active()) {
+        if (error instanceof ApiError && error.status === 403) {
+          setUsers(null);
+          setViewer(null);
+        }
+        setError(
+          error instanceof Error
+            ? error.message
+            : "Не удалось изменить роль. Обновите сводку перед повтором.",
+        );
+      }
+    } finally {
+      if (roleMutation.current === mutation) roleMutation.current = null;
+      if (ticket.active()) setBusy(false);
     }
   }
   return (
@@ -102,8 +165,9 @@ export function AdminOverview() {
       <Card>
         <h1>CityGo · Администрирование</h1>
         <p>
-          Войдите в Web под аккаунтом, чей внутренний ID включён в серверный
-          ADMIN_USER_IDS.
+          Войдите в Web под аккаунтом администратора или super admin и обновите
+          сводку. Управление ролями доступно только super admin. Временный
+          пароль нужно сменить до открытия админки.
         </p>
         <Button
           disabled={busy}
@@ -150,6 +214,24 @@ export function AdminOverview() {
           </>
         )}
       </Card>
+      {viewer?.role === "super_admin" && users && (
+        <AccountsControl
+          key={`accounts-${refreshVersion}`}
+          users={users}
+          viewerId={viewer.id}
+          busy={busy}
+          onSave={(userId, role) => void saveRole(userId, role)}
+        />
+      )}
+      {viewer && viewer.role !== "super_admin" && (
+        <Card>
+          <h2>Аккаунты и роли</h2>
+          <p>
+            Управление ролями доступно только super admin. Ваши права
+            администратора не позволяют выдавать роли.
+          </p>
+        </Card>
+      )}
       {control && (
         <AiControls
           key={refreshVersion}
