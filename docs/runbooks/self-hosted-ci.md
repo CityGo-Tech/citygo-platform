@@ -124,6 +124,55 @@ guest**; sudo нужен сохранённым apt/Playwright steps и не д�
 размеру/SHA-256. Он не исполнялся на Windows и не устанавливался в base/guest.
 Это готовность одного входного артефакта, не успешный native provisioning.
 
+### Полный guest job: подготовлен код, ещё нет native допуска
+
+`job-lease.py` проверяет тот же flat plan, что host JS и PowerShell: CI 60 минут,
+Container smoke 40 минут, bootstrap 10 минут и отдельный резерв cleanup 3 минуты.
+Абсолютный срок, raw plan hash, operation IDs, источник, ресурсы и label нельзя
+продлить heartbeat-ом. UTC и monotonic time независимо могут только сократить
+оставшееся время; откат любого из них останавливает работу.
+
+`job-gateway.py` использует прежние закреплённые initializer, firewall, counter
+и L2 witness без изменения short-canary файлов или их пределов 180/900 секунд.
+Сначала проверяются все восемь физических NoCloud records и точная команда;
+затем адаптер передаёт старому initializer только его исходные пять проверенных
+records. Job witness работает до срока плана и при любом выходе закрывает
+forwarding. Проверка окна дольше 900 секунд выполнена **только с синтетическими
+часами**, не как настоящий часовой native прогон.
+
+`job-runner.py` и два pure renderers подготавливают свежего Ubuntu guest для
+одного CI/Container job. Публичный ISO содержит только три NoCloud файла и два
+официальных SHA/size-pinned архива: runner 2.338.0 и PowerShell 7.6.7. Сначала
+проверяются seed/instance identity и network probes, устанавливаются инструменты
+и guest-only sudo; до JIT нет checkout или listener. `Watch-CityGoJobClient.ps1`
+делегирует неизменённому lifecycle guard, сохраняя все ACL/hash/stop/cleanup
+проверки. Только отдельный полный locked job plan разрешает его job-only ISO
+до 320 МиБ; предел прежнего canary runner ISO остаётся 256 МиБ.
+
+`job-jit-transport.mjs`/`job-jit.py` передают только one-agent конфиг через
+ограниченные KVP fragments, с operation/plan/runner/group/hash/expiry binding и
+последним commit record. Частичные, повторные, просроченные и изменённые записи
+не принимаются. Декодер разрешает только `.runner`, `.credentials` и
+`.credentials_rsaparams`; проверяет фактические ephemeral/disableUpdate settings.
+Конфиг не передаётся в argv, env или seed. После записи проверяется readback;
+listener требует отсутствия всех JIT fragments и отдельного короткого host GO
+после detach/admission. Это подготовленный код, **настоящий JIT POST ещё не
+вызывался**. Формат map проверен по
+[исходникам закреплённого runner](https://github.com/actions/runner/blob/v2.338.0/src/Runner.Listener/Runner.cs);
+реальная совместимость всего конфига ещё требует native приёмки.
+
+`New-CityGoJobPublicIso.ps1` реально собрал отдельный публичный установочный ISO
+303 724 544 байта с проверкой всех пяти входных файлов и exclusive output.
+Он не запускает ВМ. Подготовлен одноразовый `offline-job-tools.py` rehearsal:
+новый private-only guest без default route, регистрации, checkout и listener;
+установка архивов и наблюдение версий от non-root, затем внешний stop/cleanup.
+Ручной запуск закреплённого административного harness пока ожидается. Sealed
+base не изменялась; private seed и admin paths не публикуются.
+
+После этой дельты полный `test:ci-host` — **446 PASS, 0 FAIL, 0 SKIP**;
+release/deploy guards — **23/23 PASS**. Новые проверки включают реальные
+синтетические UTF-8/KVP/plan bytes, но не заменяют Linux provisioning/CI.
+
 Добавлены установочные host primitives: `New-CityGoJobVm.ps1` создаёт ровно один
 новый выключенный и отключённый client/gateway из неизменённой sealed base;
 `Remove-CityGoJobGateway.ps1` применяет прежний OFF-only cleanup с дополнительной
@@ -170,6 +219,9 @@ workflows, менять Default или открывать publisher/deploy. За
 установить закреплённый native adapter/host lease и scheduler вне
 checkout (сейчас их нет), проверить оба watchdog на длинном lease и провести два
 полных GitHub задания на свежих ВМ. Только после этого применять preview маршрутов.
+Перед listener также требуется подготовить HTTPS-only APT sources в disposable
+guest: штатные HTTP mirrors несовместимы с HTTPS/DNS-only gateway. Открытие порта
+80, пропуск apt/Playwright steps или ослабление firewall этим не разрешаются.
 Unit/mock PASS **не означает** native factory PASS или зелёные основные checks.
 Publisher/deploy остаются hosted. Рабочий сервер, его ключи, main, Windows policy,
 существующие WSL/Docker/NAT/firewall на этом этапе не менялись.
