@@ -27,6 +27,8 @@ JIT = "/usr/local/lib/citygo-ci/job-jit.py"
 JIT_SHA = "55bdd58ea5b1216c190f9e85c7b1015f4dd8cc5dfa6d79999a50de6c652cbda4"
 TOOLS = "/usr/local/lib/citygo-ci/prepare-job-toolchain.py"
 TOOLS_SHA = "ec30af76c82b1350a909053d6a43dec21fec18ce3293792c967aa4873b182b57"
+APT = "/usr/local/lib/citygo-ci/job-apt-https.py"
+APT_SHA = "357d8d9b3384a442f5164ca423f3cc1adb168d4139dadca2d5dddd86d52b6579"
 PLAN = "/var/lib/citygo-ci-runner/job-plan.json"
 UUID = r"[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}"
 
@@ -69,7 +71,7 @@ def validate_seed(guest, canary, plan, sha):
     seed = guest.seed()
     require(type(seed) is dict and set(seed) == {"write_files", "runcmd"}, "seed")
     paths = [(SCRIPT, "0700"), (CANARY, "0600"), (canary.NETWORK, "0600"), (canary.HELPER, "0600"),
-             (canary.CONFIG, "0600"), (TOOLS, "0600"), (LEASE, "0600"), (JIT, "0600"), (PLAN, "0600")]
+             (canary.CONFIG, "0600"), (TOOLS, "0600"), (LEASE, "0600"), (JIT, "0600"), (APT, "0600"), (PLAN, "0600")]
     require(type(seed["write_files"]) is list and len(seed["write_files"]) == len(paths), "seed_files")
     for item, (path, mode) in zip(seed["write_files"], paths):
         require(type(item) is dict and set(item) == {"path", "owner", "permissions", "encoding", "content"} and
@@ -197,6 +199,7 @@ def main(args):
         lease_lib = load(LEASE, LEASE_SHA, "job_runner_lease")
         jit = load(JIT, JIT_SHA, "job_runner_jit")
         tools = load(TOOLS, TOOLS_SHA, "job_runner_tools")
+        apt = load(APT, APT_SHA, "job_runner_apt")
         plan = lease_lib.parse_plan(read_root(PLAN, 16384), args[4], args[2], "client")
         lease = lease_lib.Lease(plan, args[2], "client")
         bootstrap_end = lease_lib.timestamp(plan["createdAt"]) + datetime.timedelta(seconds=600)
@@ -231,6 +234,10 @@ def main(args):
             done = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                   timeout=20, env=canary.ENV, cwd=canary.ROOT, user=uid, group=gid, extra_groups=groups, check=False)
             require(done.returncode == 0 and len(done.stdout) < 4096 and re.fullmatch(pattern, done.stdout.decode("ascii").strip()), "toolchain")
+        phase = "prepare_guest_apt_https"
+        live_bootstrap()
+        require(apt.prepare(args[2]) is True, "apt_https_unverified")
+        live_bootstrap()
         report = dict(version=1, scope="ephemeral_ci_job_runner", operationId=args[2], gatewayOperationId=plan["gatewayOperationId"],
                       jobPlanSha256=args[4], hostSnapshotSha256=value["hostSnapshotSha256"], stage="waiting_host_jit", ciJobsAdmitted=False,
                       **{key: proof[key] for key in ("negativeProbeCount", "gatewayProbeCount", "dnsOk", "httpsOk", "sourceSpoofSent", "ipv6DefaultRouteAbsent", "linkProbeFramesSent", "observedGatewayMac")})

@@ -16,7 +16,7 @@ import types
 
 SCRIPT = "/usr/local/sbin/citygo-offline-job-tools.py"
 RUNNER = "/usr/local/sbin/citygo-job-runner.py"
-RUNNER_SHA = "149df29764e0a96776d491b055f2722459bc70234a507e17017ab066db72cc8c"
+RUNNER_SHA = "7fba07e4d5632f7b34327da328f9b899e63545c5c0c6dc7e86ead0ce16832945"
 UUID = r"[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}"
 
 

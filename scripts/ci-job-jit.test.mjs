@@ -214,12 +214,13 @@ test("public job seed pins every executable and contains no JIT or management cr
     toolsSourceLF: read("prepare-job-toolchain.py"),
     leaseSourceLF: read("job-lease.py"),
     jitSourceLF: read("job-jit.py"),
+    aptSourceLF: read("job-apt-https.py"),
   };
   for (const [key, pin] of Object.entries(JOB_RUNNER_PINS))
     assert.equal(hash(data[key]), pin);
   const seed = renderJobRunnerSeed(data);
   const payload = JSON.parse(seed.userData.slice("#cloud-config\n".length));
-  assert.equal(payload.write_files.length, 9);
+  assert.equal(payload.write_files.length, 10);
   assert.equal(seed.jobPlanSha256, planSha);
   assert.equal(
     payload.runcmd[0].at(-1),

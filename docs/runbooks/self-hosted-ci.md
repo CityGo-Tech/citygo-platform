@@ -169,9 +169,13 @@ listener требует отсутствия всех JIT fragments и отде�
 Ручной запуск закреплённого административного harness пока ожидается. Sealed
 base не изменялась; private seed и admin paths не публикуются.
 
-После этой дельты полный `test:ci-host` — **446 PASS, 0 FAIL, 0 SKIP**;
-release/deploy guards — **23/23 PASS**. Новые проверки включают реальные
-синтетические UTF-8/KVP/plan bytes, но не заменяют Linux provisioning/CI.
+После APT-дополнения полный `test:ci-host` — **453 PASS, 0 FAIL, 0 SKIP**;
+release/deploy guards — **23/23 PASS**. Набор повторён закреплённым pnpm 10.15.0
+в обычном пользовательском процессе: sandbox первоначально отказал на создании
+тестовой Windows junction/symlink. Assertions и состав проверок не менялись.
+Targeted ESLint, Prettier, Python AST parse и `git diff --check` прошли.
+Новые проверки используют синтетические UTF-8/KVP/plan bytes и mock-транзакцию
+APT; они не заменяют Linux provisioning/CI.
 
 Добавлены установочные host primitives: `New-CityGoJobVm.ps1` создаёт ровно один
 новый выключенный и отключённый client/gateway из неизменённой sealed base;
@@ -219,9 +223,20 @@ workflows, менять Default или открывать publisher/deploy. За
 установить закреплённый native adapter/host lease и scheduler вне
 checkout (сейчас их нет), проверить оба watchdog на длинном lease и провести два
 полных GitHub задания на свежих ВМ. Только после этого применять preview маршрутов.
-Перед listener также требуется подготовить HTTPS-only APT sources в disposable
-guest: штатные HTTP mirrors несовместимы с HTTPS/DNS-only gateway. Открытие порта
-80, пропуск apt/Playwright steps или ослабление firewall этим не разрешаются.
+Перед listener `job-apt-https.py` готовит HTTPS-only Ubuntu sources в disposable
+guest: штатные HTTP mirrors несовместимы с HTTPS/DNS-only gateway. Принимаются
+только Ubuntu Noble suites, исходный Ubuntu archive keyring и официальные origins;
+неизвестные/небезопасные options, credentials, дубликаты и конкурентное изменение
+файла отказаны. Intent предшествует атомарной замене, затем проверяется readback;
+повтор попытки запрещён. Изменяются только guest sources, не keyring, Windows,
+sealed base или рабочий сервер. Официальные индексы
+[archive](https://archive.ubuntu.com/ubuntu/dists/noble/Release) и
+[security](https://security.ubuntu.com/ubuntu/dists/noble-security/Release)
+проверены по HTTPS вне guest; это не native apt/Playwright PASS. Нужна гостевая
+проверка. Открытие порта 80, пропуск шагов или ослабление firewall не разрешаются.
+Замороженный offline rehearsal относится к snapshot `0486f96` до этого
+APT-дополнения: его ISO/admin script не переписаны. В нём проверяется неизменённая
+установка публичных инструментов, не новый APT-путь и не вся актуальная factory.
 Unit/mock PASS **не означает** native factory PASS или зелёные основные checks.
 Publisher/deploy остаются hosted. Рабочий сервер, его ключи, main, Windows policy,
 существующие WSL/Docker/NAT/firewall на этом этапе не менялись.

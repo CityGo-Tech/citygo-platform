@@ -6,7 +6,7 @@ import { renderEphemeralRunnerCanarySeed } from "./render-ephemeral-runner-seed.
 
 export const JOB_RUNNER_PINS = Object.freeze({
   runnerSourceLF:
-    "149df29764e0a96776d491b055f2722459bc70234a507e17017ab066db72cc8c",
+    "7fba07e4d5632f7b34327da328f9b899e63545c5c0c6dc7e86ead0ce16832945",
   canarySourceLF:
     "951198c8648128fc2a48ae4e7dd0bd374eda05449f1d9d346fcc441982cfbaeb",
   toolsSourceLF:
@@ -15,6 +15,8 @@ export const JOB_RUNNER_PINS = Object.freeze({
     "5e410154ff5eec081b07f22c5288e5299a4ea5756ec02711409f741455cbbdd0",
   jitSourceLF:
     "55bdd58ea5b1216c190f9e85c7b1015f4dd8cc5dfa6d79999a50de6c652cbda4",
+  aptSourceLF:
+    "357d8d9b3384a442f5164ca423f3cc1adb168d4139dadca2d5dddd86d52b6579",
 });
 const hash = (raw) => createHash("sha256").update(raw).digest("hex");
 const script = "/usr/local/sbin/citygo-job-runner.py";
@@ -87,6 +89,7 @@ export function renderJobRunnerSeed(input) {
     ["/usr/local/lib/citygo-ci/prepare-job-toolchain.py", data.toolsSourceLF],
     ["/usr/local/lib/citygo-ci/job-lease.py", data.leaseSourceLF],
     ["/usr/local/lib/citygo-ci/job-jit.py", data.jitSourceLF],
+    ["/usr/local/lib/citygo-ci/job-apt-https.py", data.aptSourceLF],
     ["/var/lib/citygo-ci-runner/job-plan.json", data.jobPlanJson],
   ])
     payload.write_files.push({
