@@ -152,18 +152,30 @@ function Import-CityGoCanaryStopReadOnlyGuards {
     } catch { $stream.Dispose();throw }
 }
 
+function Get-CityGoCanaryExpectedVmSid {
+    param([string]$VmId)
+    Assert-CityGoCanaryStopGuid $VmId
+    # MS-DTYP 2.4.2.4: S-1-5-83-1 + four DWORDs of the VM container ID.
+    # Derive the exact VM SID, not a broad virtual-machines group/prefix.
+    Assert-CityGoCanaryStop ([BitConverter]::IsLittleEndian) 'unsupported_sid_byte_order'
+    $bytes=([guid]$VmId).ToByteArray();$parts=@()
+    foreach($offset in @(0,4,8,12)){$parts+=([BitConverter]::ToUInt32($bytes,$offset)).ToString([Globalization.CultureInfo]::InvariantCulture)}
+    return ('S-1-5-83-1-'+($parts-join'-'))
+}
+
 function Get-CityGoCanaryStopVmSid {
     param([Collections.IDictionary]$Plan)
     $account=[Security.Principal.NTAccount]::new('NT VIRTUAL MACHINE',$Plan.vmId)
     $sid=$account.Translate([Security.Principal.SecurityIdentifier]).Value
-    Assert-CityGoCanaryStop ($sid -cmatch '^S-1-5-83-[0-9]+(?:-[0-9]+){3}$' -and $sid -cne 'S-1-5-83-0') 'seed_vm_sid_invalid'
+    Assert-CityGoCanaryStop ($sid -ceq (Get-CityGoCanaryExpectedVmSid $Plan.vmId)) 'seed_vm_sid_invalid'
     return $sid
 }
 
 function Get-CityGoCanaryStopNative {
     param([Collections.IDictionary]$Plan,[switch]$ObserveStopping)
-    # Stopping is permitted only for bounded, read-only wait observations.
-    # Initial admission and every shutdown dispatch still require Running/Off.
+    # Stopping is permitted only for bounded read-only observations, including
+    # the grace/fallback boundary. No shutdown may be dispatched in that state.
+    # Initial admission still requires Running/Off.
     $allowedStates=@('Running','Off')
     if ($ObserveStopping) { $allowedStates+=@('Stopping') }
     $owned=$null
@@ -416,7 +428,10 @@ function Invoke-CityGoOwnedCanaryStop {
         $off=Wait-CityGoCanaryStopped $plan $graceDeadline
         if (-not $off) {
             $phase='recheck_before_authorized_turnoff'
-            $vm=Get-CityGoCanaryStopNative $plan
+            # Graceful shutdown may cross its grace deadline in Stopping.
+            # Observe it within the original final deadline, never hard-stop
+            # it or reset the window merely because shutdown is in progress.
+            $vm=Get-CityGoCanaryStopNative $plan -ObserveStopping
             if ([string]$vm.State -ceq 'Running') {
                 if ($turnOffRecorded) {
                     # A controller interruption after dispatch is ambiguous:
@@ -427,7 +442,7 @@ function Invoke-CityGoOwnedCanaryStop {
                     $phase='write_turnoff_dispatch_intent'
                     Write-CityGoCanaryStopReceipt $plan.turnOffIntentPath (New-CityGoCanaryStopReceipt $plan 'turnoff_dispatch_intent_recorded') $plan $owner
                     $phase='final_identity_recheck_before_turnoff'
-                    $vm=Get-CityGoCanaryStopNative $plan
+                    $vm=Get-CityGoCanaryStopNative $plan -ObserveStopping
                     if ([string]$vm.State -ceq 'Running') {
                         $phase='submit_authorized_turnoff_once'
                         $jobs+=,(Stop-VM -VM $vm -TurnOff -AsJob -Confirm:$false -ErrorAction Stop)

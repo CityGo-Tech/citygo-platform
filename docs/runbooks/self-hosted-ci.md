@@ -5,7 +5,7 @@ CityGo планирует выполнять проверки GitHub Actions в 
 выпуска. Этот путь не требует покупки GitHub-hosted compute. Настройка не должна
 давать коду из PR доступ к личным файлам, ключам или рабочему серверу.
 
-## Текущее состояние: база подготовлена, offline-клон проверен, CI ещё не принят
+## Текущее состояние: IPv4-canary проверен, полный lifecycle CI ещё не принят
 
 На 19 октября 2026 года Hyper-V включён владельцем. Read-only preflight
 **успешно выполнен в отдельно подтверждённом административном процессе**.
@@ -82,8 +82,36 @@ report сохранён. После очистки таблиц только в�
 host snapshot и включение forwarding после проверок. Затем штатный контроллер
 подтвердил `Off`, отключение обоих NIC и пустой DVD. Все три тестовых шлюза
 выключены; диски и закрытые failure/control evidence сохранены для продолжения.
-Это **не** connected CI canary, сетевой watchdog или зарегистрированный runner.
+Сам по себе этот прогон — **не** connected CI canary, сетевой watchdog или
+зарегистрированный runner.
 Старые NAT, firewall, WSL, Docker и production не перенастраивались.
+
+Следующий native-прогон подключил один синтетический CI-клон **только** к Private
+switch, а отдельную четвёртую gateway-копию — к Private и Default Switch.
+На клиенте прошли публичные DNS и TLS/HTTPS к `api.github.com` без credentials.
+Все 12 прямых TCP-проб к захваченным адресам хоста, production и metadata
+отказали; это подтверждено не одним timeout, а ростом kernel DROP-счётчиков
+шлюза на 12. Отдельно зафиксированы один DROP пакета с подменённым IPv4-источником,
+два DROP обращения к портам шлюза и рост разрешённых DNS/HTTPS-счётчиков.
+Полные readback IPv4/IPv6 policy и их SHA не изменились между измерениями.
+Это **ограниченное положительное свидетельство IPv4**, не доказательство
+L2/ARP/NDP/IPv6 bypass resistance, всех возможных destination/protocol или
+запрета косвенных прокси через разрешённый публичный HTTPS.
+
+Полный connected lifecycle остался **failed**: первая остановка клиента отказала
+до durable stop intent из-за неверной проверки native VM SID при открытии seed.
+Шлюз после отказа независимо выключен, оба NIC отключены, DVD пустой.
+Отдельная reconciliation отсоединила только точный публичный ISO и инициировала
+graceful shutdown с пустым DVD, но сохранила второй отказ на
+`recheck_before_authorized_turnoff`. Причина этого второго native-отказа не
+устанавливается по generic failure code. Повторный TurnOff не отправлялся.
+Следующее независимое native-чтение подтвердило клиент `Off`; только после
+полной проверки владения удалены его ВМ, диск и пустые owned-каталоги.
+Финальное чтение подтвердило отсутствие клиента/диска, прежний SHA исходной
+выключенной базы и закрытый шлюз. Исходные отчёты отказов не перезаписаны;
+ручная reconciliation не превращает первоначальный lifecycle в PASS.
+Все четыре diagnostic gateway-копии сейчас Off/disconnected, их материалы
+сохранены. Jobs не допущены, GitHub runner не зарегистрирован.
 
 - Компьютер: Windows 11 Pro, 32 ГБ оперативной памяти. Подтверждены состояние
   компонента Hyper-V `Enabled` и службы `vmms` `Running`; это не проверка гостевой
@@ -329,6 +357,19 @@ WSL с доступом к дискам Windows и общий Docker Desktop д�
   на реальном клоне read-only запросом; исправленный полный stop workflow на новом
   госте ещё не воспроизведён. Отсутствующая/чужая/множественная связь запрещает
   dispatch, а не разрешает мгновенный poweroff.
+  После connected canary исправлена также проверка
+  [native VM SID](https://learn.microsoft.com/en-en/openspecs/windows_protocols/ms-dtyp/81d92bba-d22b-4a8c-908a-554ab29148ab):
+  SID должен точно совпадать с `S-1-5-83-1` и четырьмя DWORD конкретного VM GUID,
+  а не только подходить под широкий prefix/regex. Это не разрешение generic
+  capability ACE: неизвестные platform capabilities по-прежнему запрещены
+  на control/helper/evidence. Подключённый seed с такими ACE не объявлен
+  принятым; native reconciliation сначала отсоединила exact public ISO,
+  затем использовала empty-DVD stop contract, не меняя ACL.
+  Regression tests отдельно покрывают `Stopping` на границе grace/fallback и
+  между fallback intent и dispatch: только bounded readback до прежнего
+  deadline, без второго graceful, продления окна или TurnOff в `Stopping`.
+  Эти новые гонки воспроизведены mocks, а не объявлены установленной причиной
+  второго native-отказа. Новый stop helper ещё нужно испытать на свежем клоне.
 - `deploy/ci/New-CityGoPrivateSwitch.ps1` создаёт только новый Private switch из
   operation-scoped имени. До native write записывает intent, повторно сверяет
   исходные switches/NIC/NAT, после — точный type/ID/notes и отсутствие любых
@@ -354,6 +395,11 @@ WSL с доступом к дискам Windows и общий Docker Desktop д�
   разными exact MAC; только WAN получает DHCP, LAN — отдельный static `/30`.
   DHCPv6, RA и link-local отключены. Seed связан с SHA исходников и свежего
   host snapshot, а не с предполагаемым адресом DHCP server.
+  Для отдельного synthetic test поддерживает opt-in пятый hash-pinned файл
+  witness; обычный четырёхфайловый seed по-прежнему запрещает дополнительные
+  файлы/argv. `renderPrivateClientSeed` создаёт отдельный трёхфайловый публичный
+  seed с exact MAC, static IPv4 `/30` и единственным маршрутом через gateway;
+  без SSH, credentials или checkout.
 - `deploy/ci/private-gateway-init.py` — one-shot root-only initializer отдельного
   доверенного Ubuntu 24.04 guest, не job installer. Сверяет NoCloud/seed, пишет
   durable intent, выключает forwarding, останавливает и маскирует Docker/SSH,
@@ -368,6 +414,17 @@ WSL с доступом к дискам Windows и общий Docker Desktop д�
   не скрываются нормализацией. Повторный запуск existing intent запрещён.
   Даже успешный report оставляет `guestIsolationVerified=false` и
   `ciJobsAdmitted=false`: это не connected canary и не внешний watchdog.
+- `deploy/ci/private-network-canary.py` — синтетический client и opt-in witness
+  доверенного gateway. Клиент проверяет NoCloud identity, exact seed bytes,
+  отсутствие shared mounts/checkout, MAC/адрес/маршрут; делает фиксированный
+  публичный DNS/TLS-запрос, ограниченные direct-IP отрицательные пробы и один
+  source-spoof пакет. Временный `/32` удаляется в `finally`. Witness связывает
+  native `iptables-save -c` со всей строгой policy, публикует bounded KVP без
+  вложенных объектов и не допускает смены правил/сети. Через максимум 180 секунд
+  своего monotonic observation window закрывает forwarding; initializer также
+  закрывает его при ошибках. Это **in-guest ограничение**, а не внешний watchdog
+  остановки/удаления ВМ при падении процесса Windows. Поля admission/isolation
+  остаются false даже при положительных network probes.
 - Для самого первого доверенного boot возможен явно помеченный DHCP candidate:
   единственный `/32` адрес gateway из HNS ICS, **не** утверждение, что DHCP server
   уже наблюдался в lease. Это не широкое разрешение subnet и не допуск CI jobs.
@@ -600,8 +657,10 @@ Release harness создаёт `.local/release-candidate` и доказател�
 - [x] Создан отдельный Private switch без host/guest attachments; прежние switch/NIC/NAT не изменены. Поддержка native management-NIC null VMId ограничена явным host-признаком.
 - [x] Неудачный реальный early-startup stop адресно завершён отдельной reconciliation: один TurnOff, подтверждённый Off, удалены только второй клон и диск. Исходный тест остаётся failed; база Off/unchanged и закрытые отчёты сохранены.
 - [x] Подготовлен dedicated gateway profile 2 CPU / 2 ГБ / два отдельных guarded NIC. Native-прогон на свежей копии подтвердил Linux policy/readback, forwarding после проверок и финальный Off/disconnected; первые два отказа сохранены.
+- [x] На отдельном подключённом synthetic client прошли DNS/TLS и 12 direct-IP отрицательных проб с native DROP deltas; также подтверждены source-IP DROP и закрытые порты шлюза. Это ограниченная проверка IPv4, не полный допуск CI.
+- [x] Неудачный connected lifecycle сохранён как failed. Отдельная Off-only cleanup удалила exact клиент/диск без повторного shutdown; база Off/unchanged, gateway Off/disconnected.
 - [ ] Проверены смена внешней сети, свежесть host snapshot на каждом job и внешний fail-closed watchdog. Успешный первый boot не закрывает этот пункт.
-- [ ] Проверены подключённые сетевые ограничения, включая LAN/host/metadata/production и stateful replies. Отключённый canary не заменяет эту проверку.
+- [ ] Завершена независимая connected-приёмка, включая L2/ARP/NDP/IPv6 и обходы; один IPv4-canary с DROP deltas не закрывает весь этот пункт.
 - [ ] Создание и адресное удаление одноразовой ВМ испытаны на успехе, ошибке, отмене и обрыве.
 - [ ] Базовый образ не содержит checkout, runner registration, shared mounts или credentials.
 - [ ] GitHub CI canary прошёл без привилегированных секретов; repo остался private.
@@ -614,10 +673,14 @@ Release harness создаёт `.local/release-candidate` и доказател�
 успешный offline-тест первого клона и его адресное удаление; второй клон после
 неудачного startup-stop теста адресно остановлен и удалён отдельной процедурой.
 Private switch создан; доверенный Linux gateway прошёл native policy/readback
-на свежей копии и затем выключен с отключением обоих NIC/DVD. Первые два failed
-gateway attempts и все закрытые материалы сохранены, три шлюза сейчас Off.
+на свежей копии. Затем отдельный synthetic client прошёл ограниченный connected
+IPv4-тест с kernel DROP evidence. Полный lifecycle failed; клиент адресно удалён
+после отдельного native Off-readback. Первые failed gateway/stop attempts и все
+закрытые материалы сохранены, четыре шлюза сейчас Off/disconnected.
 Это не работающий self-hosted CI или принятый для jobs golden image. Локальный набор
-`pnpm test:ci-host` прошёл 225/225 проверок без skip; AST/mock tests не выполняют
+`pnpm test:ci-host` прошёл **236/236 проверок без skip**, включая новые regression
+tests гонки grace/fallback. Targeted ESLint, Prettier и `git diff --check` чистые.
+AST/mock tests не выполняют
 Hyper-V операции и не заменяют реальные clone/network canaries. Полный
 монорепозиторный `pnpm check` в этой рабочей копии на этом этапе не воспроизводился.
 Первый запуск в sandbox не смог запустить Git Bash из-за отказа Windows

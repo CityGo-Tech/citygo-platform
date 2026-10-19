@@ -27,6 +27,8 @@ INTENT = "/var/lib/citygo-ci-gateway/initialization-intent.json"
 FAILURE = "/var/lib/citygo-ci-gateway/failure.json"
 POLICY_SHA = "980c8195e5cb8a01fc86997758d380daa919a2d2ca0bed9df28e05a0766083f3"
 HELPER_SHA = "c10465066ce2908fa72d6416811a6bc426c96aef90584b8c0639e9a45a97e0b4"
+WITNESS = "/usr/local/sbin/citygo-private-network-canary.py"
+WITNESS_SHA = "4acb5eb963cabaa6dd0f49600c066557dbccf12a98fb480486b7f9eb871bb53d"
 UNITS = ("docker.socket", "docker.service", "containerd.service", "ssh.socket", "ssh.service")
 FIELDS = {"schemaVersion", "operationId", "capturedAt", "hostSnapshotSha256", "wanMac", "lanMac",
           "expectedWanPrefix", "expectedWanGatewayIPv4", "hostIPv4", "productionIPv4", "additionalDeniedPrefixes"}
@@ -252,11 +254,14 @@ def observed_policy(guest, value, policy):
                           "additionalDeniedPrefixes": value["additionalDeniedPrefixes"]}), wan["local"], servers[0]
 
 
-def validate_seed(seed, value, guest):
+def validate_seed(seed, value, guest, canary_observation=False):
     require(type(seed) is dict and set(seed) == {"write_files", "runcmd", "bootcmd"}, "seed_fields_invalid")
     paths = ((SCRIPT, "0700"), (POLICY, "0600"), (HELPER, "0600"), (CONFIG, "0600"))
+    require(type(canary_observation) is bool, "seed_mode_invalid")
+    if canary_observation:
+        paths += ((WITNESS, "0700"),)
     files = seed["write_files"]
-    require(type(files) is list and len(files) == 4, "seed_files_invalid")
+    require(type(files) is list and len(files) == len(paths), "seed_files_invalid")
     for item, (path, mode) in zip(files, paths):
         require(type(item) is dict and set(item) == {"path", "owner", "permissions", "encoding", "content"} and
                 item["path"] == path and item["owner"] == "root:root" and item["permissions"] == mode and item["encoding"] == "b64", "seed_files_invalid")
@@ -266,11 +271,14 @@ def validate_seed(seed, value, guest):
             raise Refused("seed_content_invalid") from None
         require(embedded == guest.read(path, 131072), "seed_content_mismatch")
     require(seed["bootcmd"] == [["/usr/sbin/sysctl", "-w", "net.ipv4.ip_forward=0"]], "seed_bootcmd_invalid")
-    require(seed["runcmd"] == [["/usr/bin/python3", "-I", "-B", SCRIPT, "--apply", "--operation-id", value["operationId"],
-                                 "--acknowledge", "INITIALIZE_PRIVATE_GATEWAY:" + value["operationId"]]], "seed_command_invalid")
+    command = ["/usr/bin/python3", "-I", "-B", SCRIPT, "--apply", "--operation-id", value["operationId"],
+               "--acknowledge", "INITIALIZE_PRIVATE_GATEWAY:" + value["operationId"]]
+    if canary_observation:
+        command += ["--observe-canary"]
+    require(seed["runcmd"] == [command], "seed_command_invalid")
 
 
-def initialize(guest, policy, value, now, do_apply):
+def initialize(guest, policy, value, now, do_apply, canary_observation=False):
     config(value, now)
     report = {"version": 1, "scope": "private_ci_gateway_initialization", "operationId": value["operationId"],
               "stage": "plan_only_unverified", "policyApplied": False, "guestIsolationVerified": False, "ciJobsAdmitted": False}
@@ -280,7 +288,7 @@ def initialize(guest, policy, value, now, do_apply):
     require(uid == 0 and architecture == "x86_64" and release.get("ID") == "ubuntu" and release.get("VERSION_ID") == "24.04", "trusted_ubuntu_root_required")
     require(guest.command(["/usr/bin/cloud-id"]).strip() == b"nocloud" and
             guest.command(["/usr/bin/cloud-init", "query", "v1.instance_id"]).strip() == ("citygo-gateway-" + value["operationId"]).encode("ascii"), "instance_identity_invalid")
-    validate_seed(guest.seed(), value, guest)
+    validate_seed(guest.seed(), value, guest, canary_observation)
     require(guest.info(RESULT) is None and guest.info(INTENT) is None, "attempt_already_exists")
     mutation_started = False
     try:
@@ -341,8 +349,9 @@ def main(arguments):
         print(json.dumps({"scope": "private_ci_gateway_initialization", "operationId": arguments[2], "stage": "plan_only_unverified",
                           "policyApplied": False, "guestIsolationVerified": False, "ciJobsAdmitted": False}, separators=(",", ":")))
         return 0
-    if not (len(arguments) == 5 and arguments[:2] == ["--apply", "--operation-id"] and re.fullmatch(UUID, arguments[2]) and
-            arguments[3:] == ["--acknowledge", "INITIALIZE_PRIVATE_GATEWAY:" + arguments[2]]):
+    observation = len(arguments) == 6 and arguments[5] == "--observe-canary"
+    if not ((len(arguments) == 5 or observation) and arguments[:2] == ["--apply", "--operation-id"] and re.fullmatch(UUID, arguments[2]) and
+            arguments[3:5] == ["--acknowledge", "INITIALIZE_PRIVATE_GATEWAY:" + arguments[2]]):
         print('{"stage":"refused","policyApplied":false,"ciJobsAdmitted":false}')
         return 2
     guest = None
@@ -350,6 +359,7 @@ def main(arguments):
         require(sys.platform == "linux" and os.geteuid() == 0, "linux_root_required")
         policy = load_pinned(POLICY, POLICY_SHA, "citygo_gateway_policy")
         helper = load_pinned(HELPER, HELPER_SHA, "citygo_gateway_kvp")
+        witness = load_pinned(WITNESS, WITNESS_SHA, "citygo_gateway_witness") if observation else None
         class Gateway(helper.Guest):
             mutation_permitted = False
 
@@ -380,10 +390,13 @@ def main(arguments):
         guest = Gateway()
         value = policy.unique_json(read_root_file(CONFIG, 32768).decode("ascii"))
         require(value.get("operationId") == arguments[2], "config_operation_mismatch")
-        result = initialize(guest, policy, value, guest.now(), True)
+        result = initialize(guest, policy, value, guest.now(), True, observation)
         guest.phase = "publish_result"
         guest.record(RESULT, result)
         guest.publish(arguments[2], helper.report_bytes(result))
+        if witness is not None:
+            guest.phase = "observe_synthetic_client"
+            witness.observe_gateway(guest, policy, value, result, observed_policy, verify_rules, normalize_tables)
         print(json.dumps(result, separators=(",", ":")))
         return 0
     except Exception as error:

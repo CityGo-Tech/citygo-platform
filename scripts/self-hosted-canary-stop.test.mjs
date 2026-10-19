@@ -78,10 +78,10 @@ function Open-CityGoCanaryCleanupEvidence {param($Path,$OwnerSid,$ExpectedHash)
  $s.Dispose();throw 'evidence_hash_mismatch'
 }
 function Open-CityGoCanaryStopRaw {param($Path,$OwnerSid,$ExpectedHash,$MaximumBytes,$SeedVmSid)
- Track 'lock-seed';if($Path-cne$request.seedPath -or $ExpectedHash-cne$request.seedSha256 -or $MaximumBytes-ne32MB -or $SeedVmSid-cne'S-1-5-83-1-2-3-4'){throw 'wrong-seed-binding'}
+ Track 'lock-seed';if($Path-cne$request.seedPath -or $ExpectedHash-cne$request.seedSha256 -or $MaximumBytes-ne32MB -or $SeedVmSid-cne(Get-CityGoCanaryExpectedVmSid $vmId)){throw 'wrong-seed-binding'}
  $s=[IO.MemoryStream]::new();$script:held.Add($s);return $s
 }
-function Get-CityGoCanaryStopVmSid {param($Plan);Track 'vm-sid';return 'S-1-5-83-1-2-3-4'}
+function Get-CityGoCanaryStopVmSid {param($Plan);Track 'vm-sid';return (Get-CityGoCanaryExpectedVmSid $Plan.vmId)}
 function Write-CityGoCanaryStopReceipt {param($Path,$Receipt,$Plan,$OwnerSid)
  Track 'write-receipt';if($script:receipts.ContainsKey($Path)){throw 'overwrite-forbidden'}
  $script:receipts[$Path]=($Receipt|ConvertTo-Json -Compress|ConvertFrom-Json)
@@ -152,6 +152,30 @@ test("stop source permits only exact graceful CIM and deadline TurnOff; no Force
     /70f036f9b6c9885f6cfd15f5a362883b7bf72803dddf5d6fe28fc17c29bea098/,
   );
 });
+
+test(
+  "VM seed SID is derived exactly from four GUID DWORDs, never a prefix or all-VM group",
+  { skip: !available },
+  () => {
+    const result = run(String.raw`
+$expected=Get-CityGoCanaryExpectedVmSid '00112233-4455-6677-8899-aabbccddeeff'
+$other=Get-CityGoCanaryExpectedVmSid '00112234-4455-6677-8899-aabbccddeeff'
+$denied=@();foreach($id in @('00000000-0000-0000-0000-000000000000','00112233-4455-6677-8899-AABBCCDDEEFF','not-a-guid')){
+ try{$null=Get-CityGoCanaryExpectedVmSid $id;$denied+=$false}catch{$denied+=$true}
+}
+[ordered]@{expected=$expected;other=$other;denied=$denied}|ConvertTo-Json -Compress`);
+    assert.equal(
+      result.expected,
+      "S-1-5-83-1-1122867-1719092309-3148519816-4293844428",
+    );
+    assert.notEqual(result.other, result.expected);
+    assert.deepEqual(result.denied, [true, true, true]);
+    assert.match(
+      source,
+      /\$sid -ceq \(Get-CityGoCanaryExpectedVmSid \$Plan\.vmId\)/,
+    );
+  },
+);
 
 test(
   "pure default plan performs no filesystem/admin/native/shutdown reads",
@@ -303,6 +327,64 @@ ${invoke}`);
         fallback ? 5 : 1,
       );
     }
+  },
+);
+
+test(
+  "grace-boundary Stopping waits within the existing deadline without any poweroff dispatch",
+  { skip: !available },
+  () => {
+    for (const completes of [false, true]) {
+      const out = run(`${fixture}${mocks}
+function Invoke-CimMethod {param($InputObject,$MethodName,$Arguments,$OperationTimeoutSec,$ErrorAction)
+ Track 'graceful';$script:vm.State='Stopping';return [pscustomobject]@{ReturnValue=[uint32]0}
+}
+function Start-Sleep {param($Milliseconds)
+ Track 'sleep';if($Milliseconds-ne250){throw 'unbounded-wait'};$script:now=$script:now.AddMilliseconds($Milliseconds)
+ if(${completes ? "$true" : "$false"}-and$script:now-ge[DateTimeOffset]::Parse('2026-10-19T00:00:01.5Z')){SetOff}
+}
+${invoke}`);
+      assert.equal(
+        out.result.stage,
+        completes
+          ? "stopped_off_verified"
+          : "failed_preserved_requires_inspection",
+      );
+      assert.equal(out.calls.filter((x) => x === "graceful").length, 1);
+      assert.equal(out.calls.filter((x) => x === "turnoff").length, 0);
+      assert.equal(out.receipts, completes ? 2 : 1);
+      assert.equal(
+        out.now,
+        completes
+          ? "2026-10-19T00:00:01.5000000+00:00"
+          : "2026-10-19T00:00:02.0000000+00:00",
+      );
+      assert.equal(out.closed, true);
+    }
+  },
+);
+
+test(
+  "Stopping between fallback intent and native recheck never submits a poweroff or repeats grace",
+  { skip: !available },
+  () => {
+    const out = run(`${fixture}${mocks}
+$script:gracefulWorks=$false
+function Write-CityGoCanaryStopReceipt {param($Path,$Receipt,$Plan,$OwnerSid)
+ Track 'write-receipt';if($script:receipts.ContainsKey($Path)){throw 'overwrite-forbidden'}
+ $script:receipts[$Path]=($Receipt|ConvertTo-Json -Compress|ConvertFrom-Json)
+ if($Path-ceq$Plan.turnOffIntentPath){$script:vm.State='Stopping'}
+}
+function Start-Sleep {param($Milliseconds)
+ Track 'sleep';$script:now=$script:now.AddMilliseconds($Milliseconds)
+ if($script:vm.State-ceq'Stopping'){SetOff}
+}
+${invoke}`);
+    assert.equal(out.result.stage, "stopped_off_verified");
+    assert.equal(out.calls.filter((x) => x === "graceful").length, 1);
+    assert.ok(!out.calls.includes("turnoff"));
+    assert.equal(out.receipts, 3);
+    assert.equal(out.closed, true);
   },
 );
 

@@ -366,3 +366,26 @@ print(json.dumps(dict(denied=denied,failed=failed,forward=g.forward,phase=g.phas
     ]);
   },
 );
+
+test(
+  "five-file witness seed is opt-in only and retains exact mode/argv checks",
+  { skip: !available },
+  () => {
+    const result = run(String.raw`
+g.files[init.WITNESS]=b'public witness'
+seed=g.seed();seed['write_files'].append(dict(path=init.WITNESS,owner='root:root',permissions='0700',encoding='b64',content=base64.b64encode(g.files[init.WITNESS]).decode('ascii')))
+seed['runcmd'][0].append('--observe-canary')
+init.validate_seed(seed,value,g,True);denied=[]
+try:init.validate_seed(seed,value,g,False);denied.append(False)
+except init.Refused:denied.append(True)
+seed['write_files'][-1]['permissions']='0600'
+try:init.validate_seed(seed,value,g,True);denied.append(False)
+except init.Refused:denied.append(True)
+seed['write_files'][-1]['permissions']='0700';seed['runcmd'][0][-1]='--other-mode'
+try:init.validate_seed(seed,value,g,True);denied.append(False)
+except init.Refused:denied.append(True)
+print(json.dumps(dict(denied=denied,calls=g.calls)))`);
+    assert.deepEqual(result.denied, [true, true, true]);
+    assert.deepEqual(result.calls, []);
+  },
+);
