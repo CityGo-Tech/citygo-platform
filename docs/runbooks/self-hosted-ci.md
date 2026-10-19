@@ -9,7 +9,80 @@ CityGo планирует выполнять проверки GitHub Actions в 
 Квоты хранения artifacts/cache/Packages от этого не исчезают; платные лимиты и
 платёжные настройки организации в этом этапе не менялись.
 
-## Текущее состояние: один GitHub job и внешний cleanup прошли; перенос CI ещё впереди
+## Текущее состояние: ядро фабрики проверено; автоматический перенос ещё не включён
+
+19 октября добавлено **ядро автоматического контроллера очереди**, а не установленная
+служба Hyper-V. `runner-job-policy.mjs` допускает только `CI / verify` и
+`Container smoke / production-images`: точный репозиторий, workflow/ref/SHA,
+текущий head, run attempt, ещё не назначенный job и независимо прочитанная
+ограниченная org runner group. `pull_request_target`, forks, publisher и deploy
+не допускаются. Метка включает run/attempt/job, но **не является защитой доступа**.
+
+`runner-job-factory.mjs` выполняет задания последовательно. На каждое нужны новые
+operation ID, ВМ клиента, standalone-диск и шлюз. Контроллер повторно проверяет
+допуск перед регистрацией и listener; независимые watchdog должны быть вооружены
+до boot. Ошибка закрывает сеть, затем требует подтверждения Off и отсутствия
+обоих disposable guests/disks, регистрации и задач. Неполная очистка блокирует
+следующее задание; повтор неоднозначной native-команды и кража stale lock запрещены.
+`runner-job-journal.mjs` сохраняет CreateNew/flush-план и цепочку этапов вне гостя,
+без tokens, raw API responses и exception text. Резервация GitHub job не используется
+повторно даже после сбоя. Новый запуск — новый GitHub attempt и новые ресурсы.
+
+Временные границы полного задания отделены от короткого canary: bootstrap 10 минут,
+CI 60 минут / Container smoke 40 минут, cleanup 3 минуты. Это требования к будущему
+native adapter, **не расширение действующих canary lease**. Истечение абсолютного
+срока, отмена и откат часов проверены на подставном adapter; native испытания полного
+lease, suspend/reboot и собственного сбоя watchdog ещё не выполнены.
+
+`render-job-workflows.mjs` готовит только preview: меняет runner route, добавляет
+конечный CI timeout и `checkout.persist-credentials: false`. Обратное сравнение
+проверяет побайтовое сохранение остальных шагов, events, service PostgreSQL,
+env-canaries, browser/e2e, mobile export, production-images, registry rehearsal и
+failure artifacts. **Файлы `.github/workflows` пока не переключены**. Проверки
+выпуска не менялись: нужны настоящие успешные CI и Container smoke для exact main
+SHA, никакого искусственного green status, пропуска проверок или hosted fallback.
+
+`prepare-job-toolchain.py` — отдельно проверяемая подготовка PowerShell 7.6.7 и
+guest-only sudo до listener. Официальные размер/SHA архива закреплены по
+[release Microsoft](https://github.com/PowerShell/PowerShell/releases/tag/v7.6.7).
+Исходная sealed base не менялась. Apply этой подготовки на ВМ ещё не выполнялся;
+native adapter должен доставить проверенный public archive на новый клон и
+подтвердить результат. Docker membership уже равносилен root **внутри disposable
+guest**; sudo нужен сохранённым apt/Playwright steps и не даёт доступа к Windows.
+
+### Что мешает активации
+
+Read-only preflight GitHub: repository runners API — `200`, активных runner нет;
+organization runner-groups API — `403`. В авторизованном кабинете GitHub есть
+форма Selected repositories / Selected workflows, но новая группа и credential
+не создавались. Без серверного readback ограничения группы фабрика не регистрирует
+runner. Обычная репозиторная регистрация из прежнего diagnostic canary этот допуск
+не заменяет. Группы доступны и на Free по
+[документации GitHub](https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/manage-access).
+
+Для завершения нужен отдельный ограниченный GitHub App/доступ организации:
+Self-hosted runners — read/write; для одного репозитория Metadata, Contents и
+Actions — read. Ключ остаётся в закрытом host config, не в checkout/guest/ISO.
+Не нужны доступ к production, secrets, packages write, check/status write или
+изменение billing. Новый credential не следует присылать в чат. API endpoints и
+требования permissions описаны в
+[справочнике runner groups](https://docs.github.com/en/rest/actions/self-hosted-runner-groups).
+
+Затем требуется установить закреплённый native adapter/host lease и scheduler вне
+checkout (сейчас их нет), проверить оба watchdog на длинном lease и провести два
+полных GitHub задания на свежих ВМ. Только после этого применять preview маршрутов.
+Unit/mock PASS **не означает** native factory PASS или зелёные основные checks.
+Publisher/deploy остаются hosted. Рабочий сервер, его ключи, main, Windows policy,
+существующие WSL/Docker/NAT/firewall на этом этапе не менялись.
+
+Проверки нового ядра: 69 тестов, включая настоящие временные файловые журналы,
+CreateNew-гонку, junction/symlink, повреждение цепочки и отказ при повторном operation ID.
+Всего `pnpm test:ci-host` — 327 тестов; отдельно release/deploy guards — 23 теста.
+Это локальные проверки, не запуск полного `pnpm check`, e2e/mobile или Container
+smoke в GitHub. Проверка junction в sandbox первоначально получила EPERM; повтор
+в обычном пользовательском процессе прошёл без пропуска проверки и без admin/ВМ.
+
+## Пройденный предыдущий этап: один GitHub job и внешний cleanup
 
 **19 октября 2026: первый полный одноразовый GitHub canary PASS.**
 [Job источника `29bd5d5`](https://github.com/CityGo-Tech/citygo-platform/actions/runs/39245108127/job/118035019819)
