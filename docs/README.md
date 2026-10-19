@@ -58,7 +58,7 @@
   отдельный approval v4, только API mount, ручные НПД-чеки;
   [подготовка перехода 18 → 21](operations/closed-upgrade-18-to-21.md) без открытия доступа.
 - [DeepSeek Pro / CN: новый профиль](runbooks/routerai-pro-cn-profile.md):
-  отдельный approval v5, без Flash, новый кандидат уведомления и оценка резерва ×10.
+  отдельный approval v5, без Flash, согласованное уведомление и оценка резерва ×10.
   Подготовлен в ветке, не установлен на сервер.
 - [Разделение окружений и секретов](runbooks/service-environments.md).
 - [Совместимость API, Web и Expo](architecture/api-compatibility.md).
