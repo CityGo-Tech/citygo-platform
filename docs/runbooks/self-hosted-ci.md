@@ -113,6 +113,24 @@ graceful shutdown с пустым DVD, но сохранила второй от
 Все четыре diagnostic gateway-копии сейчас Off/disconnected, их материалы
 сохранены. Jobs не допущены, GitHub runner не зарегистрирован.
 
+Следующий отдельный этап добавил **host watchdog в независимой задаче Windows**.
+Он был запущен и подтвердил ready до boot каждой новой тестовой ВМ. На четырёх
+свежих клонах прошли реальные fault tests: завершение синтетического управляющего
+процесса, typed cancel, отключение единственного Private NIC клиента и истечение
+deadline. Во всех четырёх случаях watchdog без ручной reconciliation отключил
+сеть клиента, выполнил guarded stop с grace 30 секунд, подтвердил Off и адресно
+удалил ВМ/диск. Host-контроллер затем независимо подтвердил отсутствие ресурсов
+и удалил только exact завершённую задачу; private evidence оставлен. Исходная
+база осталась Off с прежним SHA. Это также native replay обновлённого stop helper
+на empty-DVD клонах, но не тест GitHub job или клиента с подключённым seed.
+
+**Граница сетевого fault test:** изменялось только подключение CI-ВМ. Wi-Fi/VPN
+Windows не переключались; нативный тест обнаружения потери CI-порта и unit tests
+изменений host IPv4/IPv6/routes не объявляются испытанием реального роуминга.
+Падение самого watchdog/Task Scheduler, sleep/logoff/reboot, полная L2/IPv6
+приёмка и удаление runner registration ещё не проверены. Read-only GitHub API
+доступен и вернул ноль repository runners; ни одного runner не зарегистрировано.
+
 - Компьютер: Windows 11 Pro, 32 ГБ оперативной памяти. Подтверждены состояние
   компонента Hyper-V `Enabled` и службы `vmms` `Running`; это не проверка гостевой
   изоляции и не подтверждение отсутствия всех ожидающих перезагрузку изменений.
@@ -355,7 +373,8 @@ WSL с доступом к дискам Windows и общий Docker Desktop д�
   [CIM-связь Msvm_SystemDevice](https://learn.microsoft.com/en-us/windows/win32/hyperv_v2/msvm-systemdevice)
   с `Msvm_ComputerSystem.Name`, равным exact VM ID. Эта связь отдельно подтверждена
   на реальном клоне read-only запросом; исправленный полный stop workflow на новом
-  госте ещё не воспроизведён. Отсутствующая/чужая/множественная связь запрещает
+  госте затем воспроизведён в четырёх watchdog fault tests с empty DVD.
+  Отсутствующая/чужая/множественная связь запрещает
   dispatch, а не разрешает мгновенный poweroff.
   После connected canary исправлена также проверка
   [native VM SID](https://learn.microsoft.com/en-en/openspecs/windows_protocols/ms-dtyp/81d92bba-d22b-4a8c-908a-554ab29148ab):
@@ -369,7 +388,26 @@ WSL с доступом к дискам Windows и общий Docker Desktop д�
   между fallback intent и dispatch: только bounded readback до прежнего
   deadline, без второго graceful, продления окна или TurnOff в `Stopping`.
   Эти новые гонки воспроизведены mocks, а не объявлены установленной причиной
-  второго native-отказа. Новый stop helper ещё нужно испытать на свежем клоне.
+  второго native-отказа. Последующие четыре native watchdog case подтвердили
+  guarded stop/Off/cleanup свежих empty-DVD клонов, не переписывая старые отказы.
+- `deploy/ci/Watch-CityGoOwnedCanary.ps1` — watchdog **только одного** полного
+  manifest-owned CI-клиента, не gateway. По умолчанию pure plan; apply требует
+  exact VM/manifest/network SHA, Private switch, PID и birth time доверенного
+  контроллера, канонический UTC deadline и typed acknowledgement. Пинит и держит
+  read locks reviewed stop/cleanup helpers и manifest; control остаётся private.
+  Армируется лишь на Off-клиенте с пустым DVD и уже проверенным Private NIC.
+  Его запускают отдельной highest-privilege задачей Windows до guest boot;
+  задача не является частью PR job или его отменяемого терминала.
+  Проверяет обе IP-family адресов/маршрутов и private ports; смена snapshot,
+  ошибка наблюдения, исчезновение/повторное использование PID, cancel/complete
+  или deadline приводят к отключению exact NIC, затем stop и Off-only cleanup.
+  Есть UTC, monotonic и iteration bounds; окно не продлевается. Polling не даёт
+  гарантии нулевой задержки после физической смены сети. Failed/ambiguous stop
+  сохраняет отказ при уже закрытой сети, не разрешая повторный shutdown/удаление.
+  Четыре native tests использовали временные owner-interactive задачи Windows;
+  после успешной cleanup контроллер сверил action/arguments и удалил только их.
+  Это не постоянная служба, autostart, tested logoff/reboot recovery или допуск
+  untrusted jobs. Сам watchdog не регистрирует runner и не читает GitHub keys.
 - `deploy/ci/New-CityGoPrivateSwitch.ps1` создаёт только новый Private switch из
   operation-scoped имени. До native write записывает intent, повторно сверяет
   исходные switches/NIC/NAT, после — точный type/ID/notes и отсутствие любых
@@ -659,6 +697,7 @@ Release harness создаёт `.local/release-candidate` и доказател�
 - [x] Подготовлен dedicated gateway profile 2 CPU / 2 ГБ / два отдельных guarded NIC. Native-прогон на свежей копии подтвердил Linux policy/readback, forwarding после проверок и финальный Off/disconnected; первые два отказа сохранены.
 - [x] На отдельном подключённом synthetic client прошли DNS/TLS и 12 direct-IP отрицательных проб с native DROP deltas; также подтверждены source-IP DROP и закрытые порты шлюза. Это ограниченная проверка IPv4, не полный допуск CI.
 - [x] Неудачный connected lifecycle сохранён как failed. Отдельная Off-only cleanup удалила exact клиент/диск без повторного shutdown; база Off/unchanged, gateway Off/disconnected.
+- [x] Независимый task watchdog прошёл четыре native case на свежих empty-DVD клонах: controller crash, cancel, CI-port disconnect и deadline. ВМ/диски/свои завершённые задачи удалены автоматически, исходная база Off/unchanged.
 - [ ] Проверены смена внешней сети, свежесть host snapshot на каждом job и внешний fail-closed watchdog. Успешный первый boot не закрывает этот пункт.
 - [ ] Завершена независимая connected-приёмка, включая L2/ARP/NDP/IPv6 и обходы; один IPv4-canary с DROP deltas не закрывает весь этот пункт.
 - [ ] Создание и адресное удаление одноразовой ВМ испытаны на успехе, ошибке, отмене и обрыве.
@@ -678,8 +717,10 @@ IPv4-тест с kernel DROP evidence. Полный lifecycle failed; клиен
 после отдельного native Off-readback. Первые failed gateway/stop attempts и все
 закрытые материалы сохранены, четыре шлюза сейчас Off/disconnected.
 Это не работающий self-hosted CI или принятый для jobs golden image. Локальный набор
-`pnpm test:ci-host` прошёл **236/236 проверок без skip**, включая новые regression
-tests гонки grace/fallback. Targeted ESLint, Prettier и `git diff --check` чистые.
+`pnpm test:ci-host` прошёл **243/243 проверок без skip**, включая regression
+tests гонки grace/fallback, решения watchdog и fingerprint обеих IP-family.
+Четыре отдельные native watchdog case также прошли; это не GitHub CI.
+Targeted ESLint, Prettier и `git diff --check` чистые.
 AST/mock tests не выполняют
 Hyper-V операции и не заменяют реальные clone/network canaries. Полный
 монорепозиторный `pnpm check` в этой рабочей копии на этом этапе не воспроизводился.
