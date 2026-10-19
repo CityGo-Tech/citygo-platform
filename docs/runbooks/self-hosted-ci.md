@@ -44,7 +44,16 @@ bootstrap-входа, новые machine-id/host key и версии Node/pnpm. 
 Следующий отдельный тестовый клон создан штатным creator и независимо проверен
 в состоянии **Off / disconnected**. Для него сохранены полный creation manifest
 и свежий закрытый снимок адресов, маршрутов, HNS и DNS production. Сетевые ACL
-на этот клон ещё не применялись, seed не подключался, загрузки не было.
+на этот клон не применялись, seed не подключался. Затем на нём начат реальный
+offline early-startup stop: проверка graceful component отказала из-за отличия
+native DeviceID от ожидаемого формата. Клон остался Running без сети; первоначальный
+тест сохранён как **failed**, не объявлен пройденным после исправления кода.
+Отдельная разовая reconciliation заново проверила immutable manifest и полный
+native identity, закрепила исходные failure/intent по SHA и после истёкшего grace
+выполнила один TurnOff. После независимого Off-readback удалены только этот клон,
+его диск и пустые owned-папки. Подтверждены отсутствие ВМ/диска и прежний SHA
+выключенной исходной базы. Это проверка адресного восстановления после сбоя,
+а не прошедший без вмешательства timeout/watchdog сценарий.
 Инвентарь хоста содержит VPN/туннельные маршруты: их нельзя автоматически
 считать ни безопасным интернетом, ни целиком запрещённой LAN.
 
@@ -55,8 +64,12 @@ stateful replies. Само наличие Hyper-V IP ACL не закрывает
 Это **не утверждение об обнаруженной уязвимости Hyper-V**: Microsoft описывает
 защиту виртуального коммутатора, но её действие в конкретной схеме ещё нужно
 проверить. Владелец отдельно разрешил схему Private switch + доверенная ВМ-шлюз
-с учётом смены внешних сетей. На этом checkpoint сеть/шлюз ещё не созданы;
-старые NAT, firewall, WSL, Docker и production не перенастраиваются.
+с учётом смены внешних сетей. **Private-коммутатор создан**: native readback
+подтвердил `Private`, ноль подключённых host/guest NIC и неизменность прежних
+switch/NIC/NAT. Первый pre-creation отказ сохранён: у native management-NIC
+VMId оказался null. Он допускается только при явном `IsManagementOs=true`;
+пустой VMId гостя по-прежнему запрещён. ВМ-шлюз ещё не создана, IP forwarding
+не включён; старые NAT, firewall, WSL, Docker и production не перенастраивались.
 
 - Компьютер: Windows 11 Pro, 32 ГБ оперативной памяти. Подтверждены состояние
   компонента Hyper-V `Enabled` и службы `vmms` `Running`; это не проверка гостевой
@@ -294,6 +307,28 @@ WSL с доступом к дискам Windows и общий Docker Desktop д�
   Удаление выполняет другой helper только после независимого Off-readback.
   Реальные сценарии зависшего гостя, отмены job и обрыва host-контроллера ещё
   не пройдены; mocks не заменяют эти испытания.
+  После native-отказа поддержаны оба ограниченных формата shutdown DeviceID:
+  reference `Microsoft:VMGUID\GUID` и наблюдённый `Microsoft:GUID`. Ни один не
+  считается доказательством владения: требуется ровно одна системная
+  [CIM-связь Msvm_SystemDevice](https://learn.microsoft.com/en-us/windows/win32/hyperv_v2/msvm-systemdevice)
+  с `Msvm_ComputerSystem.Name`, равным exact VM ID. Эта связь отдельно подтверждена
+  на реальном клоне read-only запросом; исправленный полный stop workflow на новом
+  госте ещё не воспроизведён. Отсутствующая/чужая/множественная связь запрещает
+  dispatch, а не разрешает мгновенный poweroff.
+- `deploy/ci/New-CityGoPrivateSwitch.ps1` создаёт только новый Private switch из
+  operation-scoped имени. До native write записывает intent, повторно сверяет
+  исходные switches/NIC/NAT, после — точный type/ID/notes и отсутствие любых
+  подключений к новой сети. Нет host adapter, VM attach, NAT/firewall setters,
+  удаления или автоматического adoption существующего коммутатора. Plan — без IO.
+- `deploy/ci/private-gateway-policy.py` — **чистый генератор**, не installer.
+  Готовит IPv4 default-drop filter/NAT и IPv6 drop для будущего доверенного шлюза;
+  exact один CI IPv4, только публичный HTTPS и фиксированные DNS, узкий WAN DHCP.
+  Special/LAN/host/production deny идут до established permits. Требуются hash
+  host snapshot, фактические WAN/lease сведения, явная классификация префиксов;
+  недопустимы широкий VPN `/0`, совпадение DNS с запретом или DHCP с production.
+  Сейчас правила не применялись в Linux, forwarding не включался. Нужны installer,
+  независимый readback, реальные canary и fail-closed контроль смены Wi-Fi/VPN.
+  Свободный внешний HTTPS не является доказанным запретом всех косвенных прокси.
 - Для самого первого доверенного boot возможен явно помеченный DHCP candidate:
   единственный `/32` адрес gateway из HNS ICS, **не** утверждение, что DHCP server
   уже наблюдался в lease. Это не широкое разрешение subnet и не допуск CI jobs.
@@ -523,6 +558,9 @@ Release harness создаёт `.local/release-candidate` и доказател�
 - [x] Пройден реальный offline scratch-контейнер на одном отключённом клоне; получен отчёт, клон адресно удалён, исходная база осталась неизменной и выключенной. Закрытые control/evidence и исходная база сохранены.
 - [x] Создан следующий тестовый клон без загрузки/сети; сохранены отдельный полный manifest и свежий приватный сетевой инвентарь. Это не connected isolation.
 - [x] Direct-IP enforcement и bounded stop helpers покрыты AST/mock-проверками, включая отказы и повторы intent. Их реальное применение и внешний watchdog ещё не приняты.
+- [x] Создан отдельный Private switch без host/guest attachments; прежние switch/NIC/NAT не изменены. Поддержка native management-NIC null VMId ограничена явным host-признаком.
+- [x] Неудачный реальный early-startup stop адресно завершён отдельной reconciliation: один TurnOff, подтверждённый Off, удалены только второй клон и диск. Исходный тест остаётся failed; база Off/unchanged и закрытые отчёты сохранены.
+- [ ] Создан и проверен доверенный Linux-шлюз; Linux policy/readback, смена внешней сети и connected isolation испытаны фактически. Pure policy renderer не закрывает этот пункт.
 - [ ] Проверены подключённые сетевые ограничения, включая LAN/host/metadata/production и stateful replies. Отключённый canary не заменяет эту проверку.
 - [ ] Создание и адресное удаление одноразовой ВМ испытаны на успехе, ошибке, отмене и обрыве.
 - [ ] Базовый образ не содержит checkout, runner registration, shared mounts или credentials.
@@ -533,10 +571,11 @@ Release harness создаёт `.local/release-candidate` и доказател�
 - [ ] Не совершались покупки, оплаты GitHub, изменения production или открытия доступа.
 
 Текущий результат — проверенные инструменты, очищенная выключенная bootstrap-ВМ,
-успешный offline-тест первого клона и его адресное удаление; следующий клон
-подготовлен выключенным без сети для дальнейших испытаний. Это не
+успешный offline-тест первого клона и его адресное удаление; второй клон после
+неудачного startup-stop теста адресно остановлен и удалён отдельной процедурой.
+Private switch создан, пока без ВМ-шлюза и без подключённых интерфейсов. Это не
 работающий self-hosted CI или принятый для jobs golden image. Локальный набор
-`pnpm test:ci-host` прошёл 182/182 проверки без skip; AST/mock tests не выполняют
+`pnpm test:ci-host` прошёл 201/201 проверку без skip; AST/mock tests не выполняют
 Hyper-V операции и не заменяют реальные clone/network canaries. Полный
 монорепозиторный `pnpm check` в этой рабочей копии на этом этапе не воспроизводился.
 Первый запуск в sandbox не смог запустить Git Bash из-за отказа Windows

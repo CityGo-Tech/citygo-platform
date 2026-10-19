@@ -99,6 +99,10 @@ function Get-CimInstance {param($Namespace,$ClassName,$Filter,$OperationTimeoutS
  Track 'cim-read';if($Namespace-cne'root/virtualization/v2' -or $ClassName-cne'Msvm_ShutdownComponent' -or $Filter-cne("SystemName = '"+$vmId+"'") -or $OperationTimeoutSec-lt1 -or $OperationTimeoutSec-gt5){throw 'unbound-cim'}
  return $script:component
 }
+function Get-CimAssociatedInstance {param($InputObject,$Association,$ResultClassName,$OperationTimeoutSec,$ErrorAction)
+ Track 'cim-association';if($InputObject-ne$script:component -or $Association-cne'Msvm_SystemDevice' -or $ResultClassName-cne'Msvm_ComputerSystem' -or $OperationTimeoutSec-lt1 -or $OperationTimeoutSec-gt5){throw 'unbound-association'}
+ return [pscustomobject]@{CimClass=[pscustomobject]@{CimClassName='Msvm_ComputerSystem'};Name=$vmId}
+}
 function Invoke-CimMethod {param($InputObject,$MethodName,$Arguments,$OperationTimeoutSec,$ErrorAction)
  Track 'graceful';if($InputObject-ne$script:component -or $MethodName-cne'InitiateShutdown' -or $Arguments.Force-ne$false -or $OperationTimeoutSec-lt1 -or $OperationTimeoutSec-gt5){throw 'unsafe-graceful'}
  if($script:gracefulWorks){SetOff};return [pscustomobject]@{ReturnValue=[uint32]0}
@@ -353,6 +357,37 @@ ${invoke}`);
       assert.equal(out.result.stage, "stopped_off_verified", change);
       assert.equal(out.calls.filter((x) => x === "turnoff").length, 1, change);
       assert.equal(out.calls.filter((x) => x === "sleep").length, 4, change);
+    }
+  },
+);
+
+test(
+  "native compact DeviceID requires exact system association, not an invented embedded VM GUID",
+  { skip: !available },
+  () => {
+    const out = run(`${fixture}${mocks}
+$script:component.DeviceID='Microsoft:33333333-4444-4555-8666-777777777777'
+${invoke}`);
+    assert.equal(out.result.stage, "stopped_off_verified");
+    assert.ok(
+      out.calls.indexOf("cim-association") < out.calls.indexOf("graceful"),
+    );
+  },
+);
+
+test(
+  "missing/foreign/duplicate system association never authorizes CIM or TurnOff dispatch",
+  { skip: !available },
+  () => {
+    for (const change of [
+      "function Get-CimAssociatedInstance {param($InputObject,$Association,$ResultClassName,$OperationTimeoutSec,$ErrorAction)}",
+      "function Get-CimAssociatedInstance {param($InputObject,$Association,$ResultClassName,$OperationTimeoutSec,$ErrorAction);[pscustomobject]@{CimClass=[pscustomobject]@{CimClassName='Msvm_ComputerSystem'};Name='aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'}}",
+      "function Get-CimAssociatedInstance {param($InputObject,$Association,$ResultClassName,$OperationTimeoutSec,$ErrorAction);1,2}",
+    ]) {
+      const out = run(`${fixture}${mocks}${change}\n${invoke}`);
+      assert.equal(out.result.stage, "failed_preserved_requires_inspection");
+      assert.ok(!out.calls.includes("graceful"));
+      assert.ok(!out.calls.includes("turnoff"));
     }
   },
 );

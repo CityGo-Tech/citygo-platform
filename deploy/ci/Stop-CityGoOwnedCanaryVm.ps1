@@ -240,11 +240,20 @@ function Request-CityGoCanaryGracefulShutdown {
     Assert-CityGoCanaryStop ($components.Count -le 1) 'shutdown_component_not_unique'
     if ($components.Count -eq 0) { return }
     $component=$components[0];$status=@($component.OperationalStatus)
-    $devicePattern='^Microsoft:'+([regex]::Escape($Plan.vmId))+'\\[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$'
+    $guidPattern='[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}'
+    # Microsoft's reference describes Microsoft:VMGUID\GUID; this Windows
+    # build also returned Microsoft:GUID. Do not infer VM ownership from
+    # either string: require the native system-device association below.
+    $devicePattern='^Microsoft:(?:'+([regex]::Escape($Plan.vmId))+'\\)?'+$guidPattern+'$'
     Assert-CityGoCanaryStop ([string]$component.CimClass.CimClassName -ceq 'Msvm_ShutdownComponent' -and
         [string]$component.SystemCreationClassName -ceq 'Msvm_ComputerSystem' -and
         [string]$component.SystemName -ieq $Plan.vmId -and [string]$component.DeviceID -imatch $devicePattern) 'shutdown_component_binding_invalid'
-    Assert-CityGoCanaryStopGuid ([string]$component.DeviceID).Split('\')[-1].ToLowerInvariant()
+    $componentGuid=([string]$component.DeviceID).Substring('Microsoft:'.Length).Split('\')[-1].ToLowerInvariant()
+    Assert-CityGoCanaryStopGuid $componentGuid
+    $systems=@(Get-CimAssociatedInstance -InputObject $component -Association 'Msvm_SystemDevice' -ResultClassName 'Msvm_ComputerSystem' -OperationTimeoutSec $timeout -ErrorAction Stop)
+    Assert-CityGoCanaryStop ($systems.Count -eq 1 -and
+        [string]$systems[0].CimClass.CimClassName -ceq 'Msvm_ComputerSystem' -and
+        [string]$systems[0].Name -ieq $Plan.vmId) 'shutdown_system_association_invalid'
     # Missing/degraded integration cannot authorize an immediate hard stop.
     # Simply wait out the same durable grace period before permitted fallback.
     if (($component.EnabledState -isnot [uint16] -and $component.EnabledState -isnot [int]) -or
