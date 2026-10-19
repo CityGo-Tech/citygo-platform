@@ -9,7 +9,36 @@ CityGo планирует выполнять проверки GitHub Actions в 
 Квоты хранения artifacts/cache/Packages от этого не исчезают; платные лимиты и
 платёжные настройки организации в этом этапе не менялись.
 
-## Текущее состояние: ядро фабрики проверено; автоматический перенос ещё не включён
+## Текущее состояние: GitHub App подключён; автоматический перенос ещё не включён
+
+19 октября создан и установлен **CityGo-Tech Isolated CI**. Установка выбрана
+только для приватного `CityGo-Tech/citygo-platform`; другие репозитории не выбраны.
+Actions, Contents, Metadata — read; organization Self-hosted runners — write.
+Последнее право действует на уровне организации, а не одной группы: поэтому
+App key остаётся исключительно в защищённом host config вне checkout и guest.
+У App нет webhook, пользовательского OAuth, client secret, secrets/Packages/deploy
+или прав записи checks/status. Закрытый API probe подтвердил installation scope,
+выпуск ограниченного installation token и чтение runner groups. Сам token не
+сохраняется в receipt, argv/env, seed или журнале.
+
+Через App создана группа **CityGo-isolated-checks**: Selected repositories —
+только CityGo, Allow public repositories — false, Selected workflows — только
+`ci.yml@refs/heads/main` и `container-smoke.yml@refs/heads/main`. Независимые
+GET group + GET repositories подтвердили ограничения; UI также показывает
+1 repository, 2 workflows, 0 runners. Попытка включить `refs/pull/99/merge`
+получила HTTP 400. После отказа отдельно подтверждалось отсутствие группы;
+успешный более узкий main-only вариант не выдаётся за проверенный PR-допуск.
+Группа Default не менялась, новые runners не регистрировались.
+
+`github-runner-app.mjs` — ограниченный host-only клиент RS256 JWT и installation
+token с проверкой exact permissions/repository. `probe-runner-app.mjs` по
+умолчанию выполняет только plan, а закрытый конфиг получает через anonymous stdin.
+Есть read-only `--probe`/`--inspect-main-group`; создание main-only группы требует
+отдельного точного acknowledgement и никогда не перезаписывает существующую
+группу. JIT-метод готовит конфигурацию **одного runner**, а не общий org
+registration token: до POST проверяются группа, срок lease и queued job/run/SHA.
+Неоднозначный POST не повторяется. JIT пока покрыт синтетическими тестами,
+**не вызывался в реальном GitHub** и ещё не доставляется в guest.
 
 19 октября добавлено **ядро автоматического контроллера очереди**, а не установленная
 служба Hyper-V. `runner-job-policy.mjs` допускает только `CI / verify` и
@@ -50,25 +79,27 @@ native adapter должен доставить проверенный public arc
 подтвердить результат. Docker membership уже равносилен root **внутри disposable
 guest**; sudo нужен сохранённым apt/Playwright steps и не даёт доступа к Windows.
 
+Официальный публичный архив PowerShell уже скачан и сверён по закреплённым
+размеру/SHA-256. Он не исполнялся на Windows и не устанавливался в base/guest.
+Это готовность одного входного артефакта, не успешный native provisioning.
+
 ### Что мешает активации
 
-Read-only preflight GitHub: repository runners API — `200`, активных runner нет;
-organization runner-groups API — `403`. В авторизованном кабинете GitHub есть
-форма Selected repositories / Selected workflows, но новая группа и credential
-не создавались. Без серверного readback ограничения группы фабрика не регистрирует
-runner. Обычная репозиторная регистрация из прежнего diagnostic canary этот допуск
-не заменяет. Группы доступны и на Free по
-[документации GitHub](https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/manage-access).
-
-Для завершения нужен отдельный ограниченный GitHub App/доступ организации:
-Self-hosted runners — read/write; для одного репозитория Metadata, Contents и
-Actions — read. Ключ остаётся в закрытом host config, не в checkout/guest/ISO.
-Не нужны доступ к production, secrets, packages write, check/status write или
-изменение billing. Новый credential не следует присылать в чат. API endpoints и
-требования permissions описаны в
+Прежний HTTP 403 organization runner-groups API для пользовательского credential
+не обходился расширением GCM/PAT: вместо этого подключён отдельный App с
+утверждёнными правами. Ключ, созданный владельцем, перемещён из OneDrive в
+закрытый каталог CI-хоста с protected ACL (владелец, SYSTEM, Administrators);
+исходного файла на прежнем пути больше нет. Это не доказывает отсутствие копии
+в облачной истории OneDrive: перед постоянным использованием следует создать
+новый ключ сразу вне синхронизируемых папок и отозвать прежний после проверки.
+Ключи, их содержимое и локальные пути не публикуются в репозитории или PR.
+API endpoints и требования permissions описаны в
 [справочнике runner groups](https://docs.github.com/en/rest/actions/self-hosted-runner-groups).
 
-Затем требуется установить закреплённый native adapter/host lease и scheduler вне
+Остаётся подобрать и сквозным тестом подтвердить поддерживаемый GitHub способ
+ограничить **PR workflows**. Нельзя считать main-only группу разрешением для PR,
+использовать метку вместо access boundary, разрешать все workflows, менять Default
+или открывать publisher/deploy. Затем требуется установить закреплённый native adapter/host lease и scheduler вне
 checkout (сейчас их нет), проверить оба watchdog на длинном lease и провести два
 полных GitHub задания на свежих ВМ. Только после этого применять preview маршрутов.
 Unit/mock PASS **не означает** native factory PASS или зелёные основные checks.
@@ -77,7 +108,20 @@ Publisher/deploy остаются hosted. Рабочий сервер, его к
 
 Проверки нового ядра: 69 тестов, включая настоящие временные файловые журналы,
 CreateNew-гонку, junction/symlink, повреждение цепочки и отказ при повторном operation ID.
-Всего `pnpm test:ci-host` — 327 тестов; отдельно release/deploy guards — 23 теста.
+Клиент App дополнительно покрыт 38 синтетическими тестами: scopes/JWT, отдельный
+readback группы, отсутствие POST при неправильном допуске, истечение lease,
+неожиданный JIT response и отсутствие повторного POST/вывода секретов.
+Результат прошлого ядра: `pnpm test:ci-host` — 327 тестов; отдельно release/deploy
+guards — 23 теста. Новый файл App-тестов включён в `test:ci-host`.
+После подключения App повторный полный `test:ci-host` прошёл **365/365**,
+без skip. Первая sandbox-попытка получила два ограничения среды (Git Bash
+`NtCreateDirectoryObject` и junction `EPERM`); обычный пользовательский процесс
+прошёл те же тесты без изменения assertions и без административных прав.
+Отдельно повторены release-candidate/deploy-main guards — **23/23**.
+Полный `test:release` здесь **не прошёл**: два upgrade smoke test files не
+загрузились из-за отсутствующей `@electric-sql/pglite` в этой рабочей копии.
+Это не ошибка новых App-тестов и не разрешение пропустить миграционные проверки
+в основном CI; монорепозиторные зависимости этой копии ещё не установлены.
 Это локальные проверки, не запуск полного `pnpm check`, e2e/mobile или Container
 smoke в GitHub. Проверка junction в sandbox первоначально получила EPERM; повтор
 в обычном пользовательском процессе прошёл без пропуска проверки и без admin/ВМ.
