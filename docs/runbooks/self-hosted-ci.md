@@ -5,7 +5,7 @@ CityGo планирует выполнять проверки GitHub Actions в 
 выпуска. Этот путь не требует покупки GitHub-hosted compute. Настройка не должна
 давать коду из PR доступ к личным файлам, ключам или рабочему серверу.
 
-## Текущее состояние: IPv4-canary проверен, полный lifecycle CI ещё не принят
+## Текущее состояние: сетевые canary и watchdog проверены, GitHub canary подготовлен
 
 На 19 октября 2026 года Hyper-V включён владельцем. Read-only preflight
 **успешно выполнен в отдельно подтверждённом административном процессе**.
@@ -127,9 +127,37 @@ deadline. Во всех четырёх случаях watchdog без ручно
 **Граница сетевого fault test:** изменялось только подключение CI-ВМ. Wi-Fi/VPN
 Windows не переключались; нативный тест обнаружения потери CI-порта и unit tests
 изменений host IPv4/IPv6/routes не объявляются испытанием реального роуминга.
-Падение самого watchdog/Task Scheduler, sleep/logoff/reboot, полная L2/IPv6
-приёмка и удаление runner registration ещё не проверены. Read-only GitHub API
-доступен и вернул ноль repository runners; ни одного runner не зарегистрировано.
+Владелец исключил настоящую смену Wi-Fi/VPN из текущего этапа. Она остаётся
+**непроведённой**, а не PASS; смена адресов/маршрутов обеих IP-family должна
+закрывать клиент и требовать нового снимка для следующего запуска.
+Падение самого watchdog/Task Scheduler, sleep/logoff/reboot и исчерпывающая
+проверка всех L2/IPv6 обходов ещё не приняты.
+
+Следующий native canary на свежих шлюзе и клиенте подтвердил два контрольных
+Ethernet-кадра, отсутствие кадра с подменённым MAC на LAN шлюза, приход
+синтетического IPv6-пакета на LAN и отсутствие его на WAN. Назначение IPv6 —
+документационный адрес, не внешний сервис. Потеря пакетов capture вызывает отказ,
+а не PASS. Независимо проверены отсутствие моста LAN/WAN, IPv6 forwarding=0,
+неизменность kernel policy и счётчики IPv4 DROP. Это ограниченное положительное
+свидетельство, не универсальное доказательство отсутствия ARP/NDP/proxy-обходов.
+Watchdog с подключённым **публичным** ISO сначала закрыл NIC, затем отсоединил
+только закреплённый ISO, подтвердил пустой DVD и удалил ВМ/диск. Шлюз Off/disconnected;
+его диагностический диск сохранён. Созданная задача адресно удалена.
+
+Для ISO допускается native read-only storage capability ACE только на самом
+публичном файле, в строгом owner-private каталоге с read-only правом exact VM.
+Это не исключение для управляющих скриптов/каталогов или ключей и не выдача новых
+ACL. Hash и read-lock удерживаются; чужой DVD останавливает cleanup.
+
+Подготовлен отдельный **Isolated runner canary**: уникальная метка, `permissions: {}`,
+без checkout, secrets, внешних actions и изменений существующих CI/release jobs.
+Публичный bootstrap проверяет официальный runner 2.338.0 по SHA-256, запускает
+его от отдельного Linux-пользователя с `--ephemeral --no-default-labels --disableupdate`.
+Регистрационного материала в ISO/базовом образе нет: scoped token передаётся
+через exact host KVP только после внешнего сетевого readback. Управляющий GitHub
+credential в гостя не передаётся. Отдельный opt-in gateway mode закрывает forwarding
+через 900 секунд; обычный synthetic mode остаётся 180 секунд. Этот подготовленный
+код пока не означает, что runner зарегистрирован или GitHub job прошёл.
 
 - Компьютер: Windows 11 Pro, 32 ГБ оперативной памяти. Подтверждены состояние
   компонента Hyper-V `Enabled` и службы `vmms` `Running`; это не проверка гостевой
@@ -698,7 +726,8 @@ Release harness создаёт `.local/release-candidate` и доказател�
 - [x] На отдельном подключённом synthetic client прошли DNS/TLS и 12 direct-IP отрицательных проб с native DROP deltas; также подтверждены source-IP DROP и закрытые порты шлюза. Это ограниченная проверка IPv4, не полный допуск CI.
 - [x] Неудачный connected lifecycle сохранён как failed. Отдельная Off-only cleanup удалила exact клиент/диск без повторного shutdown; база Off/unchanged, gateway Off/disconnected.
 - [x] Независимый task watchdog прошёл четыре native case на свежих empty-DVD клонах: controller crash, cancel, CI-port disconnect и deadline. ВМ/диски/свои завершённые задачи удалены автоматически, исходная база Off/unchanged.
-- [ ] Проверены смена внешней сети, свежесть host snapshot на каждом job и внешний fail-closed watchdog. Успешный первый boot не закрывает этот пункт.
+- [x] Внешний client watchdog проверен native fault tests; настоящий Wi-Fi/VPN roaming исключён владельцем и не объявлен PASS. Для нового допуска нужен свежий host snapshot; при изменении fingerprint текущий клиент закрывается.
+- [x] Ограниченные MAC/IPv6 и public-seed cleanup canary прошли; исчерпывающая приёмка всех L2/ARP/NDP/proxy обходов не заявляется.
 - [ ] Завершена независимая connected-приёмка, включая L2/ARP/NDP/IPv6 и обходы; один IPv4-canary с DROP deltas не закрывает весь этот пункт.
 - [ ] Создание и адресное удаление одноразовой ВМ испытаны на успехе, ошибке, отмене и обрыве.
 - [ ] Базовый образ не содержит checkout, runner registration, shared mounts или credentials.
@@ -717,7 +746,7 @@ IPv4-тест с kernel DROP evidence. Полный lifecycle failed; клиен
 после отдельного native Off-readback. Первые failed gateway/stop attempts и все
 закрытые материалы сохранены, четыре шлюза сейчас Off/disconnected.
 Это не работающий self-hosted CI или принятый для jobs golden image. Локальный набор
-`pnpm test:ci-host` прошёл **243/243 проверок без skip**, включая regression
+`pnpm test:ci-host` прошёл **254/254 проверок без skip**, включая regression
 tests гонки grace/fallback, решения watchdog и fingerprint обеих IP-family.
 Четыре отдельные native watchdog case также прошли; это не GitHub CI.
 Targeted ESLint, Prettier и `git diff --check` чистые.

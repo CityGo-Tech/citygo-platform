@@ -28,7 +28,7 @@ FAILURE = "/var/lib/citygo-ci-gateway/failure.json"
 POLICY_SHA = "980c8195e5cb8a01fc86997758d380daa919a2d2ca0bed9df28e05a0766083f3"
 HELPER_SHA = "c10465066ce2908fa72d6416811a6bc426c96aef90584b8c0639e9a45a97e0b4"
 WITNESS = "/usr/local/sbin/citygo-private-network-canary.py"
-WITNESS_SHA = "4acb5eb963cabaa6dd0f49600c066557dbccf12a98fb480486b7f9eb871bb53d"
+WITNESS_SHA = "e8422c658bb08c456db75b248d74c74a911a0dedf0b2019da842d5e6d85ae1ef"
 UNITS = ("docker.socket", "docker.service", "containerd.service", "ssh.socket", "ssh.service")
 FIELDS = {"schemaVersion", "operationId", "capturedAt", "hostSnapshotSha256", "wanMac", "lanMac",
           "expectedWanPrefix", "expectedWanGatewayIPv4", "hostIPv4", "productionIPv4", "additionalDeniedPrefixes"}
@@ -254,10 +254,11 @@ def observed_policy(guest, value, policy):
                           "additionalDeniedPrefixes": value["additionalDeniedPrefixes"]}), wan["local"], servers[0]
 
 
-def validate_seed(seed, value, guest, canary_observation=False):
+def validate_seed(seed, value, guest, canary_observation=False, runner_observation=False):
     require(type(seed) is dict and set(seed) == {"write_files", "runcmd", "bootcmd"}, "seed_fields_invalid")
     paths = ((SCRIPT, "0700"), (POLICY, "0600"), (HELPER, "0600"), (CONFIG, "0600"))
     require(type(canary_observation) is bool, "seed_mode_invalid")
+    require(type(runner_observation) is bool and (not runner_observation or canary_observation), "seed_mode_invalid")
     if canary_observation:
         paths += ((WITNESS, "0700"),)
     files = seed["write_files"]
@@ -274,11 +275,11 @@ def validate_seed(seed, value, guest, canary_observation=False):
     command = ["/usr/bin/python3", "-I", "-B", SCRIPT, "--apply", "--operation-id", value["operationId"],
                "--acknowledge", "INITIALIZE_PRIVATE_GATEWAY:" + value["operationId"]]
     if canary_observation:
-        command += ["--observe-canary"]
+        command += ["--observe-runner-canary" if runner_observation else "--observe-canary"]
     require(seed["runcmd"] == [command], "seed_command_invalid")
 
 
-def initialize(guest, policy, value, now, do_apply, canary_observation=False):
+def initialize(guest, policy, value, now, do_apply, canary_observation=False, runner_observation=False):
     config(value, now)
     report = {"version": 1, "scope": "private_ci_gateway_initialization", "operationId": value["operationId"],
               "stage": "plan_only_unverified", "policyApplied": False, "guestIsolationVerified": False, "ciJobsAdmitted": False}
@@ -288,7 +289,7 @@ def initialize(guest, policy, value, now, do_apply, canary_observation=False):
     require(uid == 0 and architecture == "x86_64" and release.get("ID") == "ubuntu" and release.get("VERSION_ID") == "24.04", "trusted_ubuntu_root_required")
     require(guest.command(["/usr/bin/cloud-id"]).strip() == b"nocloud" and
             guest.command(["/usr/bin/cloud-init", "query", "v1.instance_id"]).strip() == ("citygo-gateway-" + value["operationId"]).encode("ascii"), "instance_identity_invalid")
-    validate_seed(guest.seed(), value, guest, canary_observation)
+    validate_seed(guest.seed(), value, guest, canary_observation, runner_observation)
     require(guest.info(RESULT) is None and guest.info(INTENT) is None, "attempt_already_exists")
     mutation_started = False
     try:
@@ -349,7 +350,8 @@ def main(arguments):
         print(json.dumps({"scope": "private_ci_gateway_initialization", "operationId": arguments[2], "stage": "plan_only_unverified",
                           "policyApplied": False, "guestIsolationVerified": False, "ciJobsAdmitted": False}, separators=(",", ":")))
         return 0
-    observation = len(arguments) == 6 and arguments[5] == "--observe-canary"
+    observation = len(arguments) == 6 and arguments[5] in ("--observe-canary", "--observe-runner-canary")
+    runner_observation = observation and arguments[5] == "--observe-runner-canary"
     if not ((len(arguments) == 5 or observation) and arguments[:2] == ["--apply", "--operation-id"] and re.fullmatch(UUID, arguments[2]) and
             arguments[3:5] == ["--acknowledge", "INITIALIZE_PRIVATE_GATEWAY:" + arguments[2]]):
         print('{"stage":"refused","policyApplied":false,"ciJobsAdmitted":false}')
@@ -390,13 +392,15 @@ def main(arguments):
         guest = Gateway()
         value = policy.unique_json(read_root_file(CONFIG, 32768).decode("ascii"))
         require(value.get("operationId") == arguments[2], "config_operation_mismatch")
-        result = initialize(guest, policy, value, guest.now(), True, observation)
+        result = initialize(guest, policy, value, guest.now(), True, observation, runner_observation)
         guest.phase = "publish_result"
         guest.record(RESULT, result)
         guest.publish(arguments[2], helper.report_bytes(result))
         if witness is not None:
             guest.phase = "observe_synthetic_client"
-            witness.observe_gateway(guest, policy, value, result, observed_policy, verify_rules, normalize_tables)
+            capture = witness.PacketWitness(guest, value)
+            witness.observe_gateway(guest, policy, value, result, observed_policy, verify_rules, normalize_tables, link=capture,
+                                    window_seconds=900 if runner_observation else 180)
         print(json.dumps(result, separators=(",", ":")))
         return 0
     except Exception as error:

@@ -7,6 +7,7 @@ param(
     [string]$ExpectedManifestSha256='', [string]$ExpectedNetworkSha256='',
     [string]$PrivateSwitchId='', [int]$ControllerPid=0,
     [string]$ControllerStartedAt='', [string]$DeadlineUtc='',
+    [string]$PublicSeedPath='', [string]$ExpectedPublicSeedSha256='',
     [switch]$Apply, [string]$Acknowledge=''
 )
 $ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue'
@@ -33,17 +34,25 @@ function Get-CityGoWatchdogPlan {
             [Globalization.DateTimeStyles]::AssumeUniversal,[ref]$parsed)) 'time_invalid'
     }
     $dir='D:\CityGo-CI\control\'+$Request.operationId
+    $seed='';$seedSha=''
+    if($Request.publicSeedPath-or$Request.publicSeedSha256){
+        $seedDir='D:\CityGo-CI\seeds\'+$Request.operationId+'\'
+        Assert-CityGoWatchdog ($Request.publicSeedPath-is[string]-and$Request.publicSeedSha256-is[string]-and
+            $Request.publicSeedSha256-cmatch'^[a-f0-9]{64}$'-and$Request.publicSeedPath-cin@(($seedDir+'network-cidata.iso'),($seedDir+'runner-cidata.iso'))) 'public_seed_invalid'
+        $seed=$Request.publicSeedPath;$seedSha=$Request.publicSeedSha256
+    }
     return [ordered]@{
         operationId=$Request.operationId;vmId=$Request.vmId;manifestSha256=$Request.manifestSha256;
         networkSha256=$Request.networkSha256;privateSwitchId=$Request.privateSwitchId;
         controllerPid=$Request.controllerPid;controllerStartedAt=$Request.controllerStartedAt;deadlineUtc=$Request.deadlineUtc;
+        publicSeedPath=$seed;publicSeedSha256=$seedSha;
         controlDirectory=$dir;manifestPath=($dir+'\canary-creation.json');
         stopHelperPath=($dir+'\Stop-CityGoOwnedCanaryVm.ps1');
         stopHelperSha256='ce0117bb7e94af9a7610af3534bd16adc69e9e08b915a78af8072e546abe4f56';
         cleanupHelperPath=($dir+'\Remove-CityGoCanaryVm.ps1');
         cleanupHelperSha256='70f036f9b6c9885f6cfd15f5a362883b7bf72803dddf5d6fe28fc17c29bea098';
         requestPath=($dir+'\watchdog-request.json');
-        requiredAcknowledgement=('WATCH_OWNED_CANARY:'+$Request.vmId+':'+$Request.manifestSha256)
+        requiredAcknowledgement=('WATCH_OWNED_CANARY:'+$Request.vmId+':'+$Request.manifestSha256+$(if($seed){':PUBLIC_SEED:'+$seedSha}else{''}))
     }
 }
 
@@ -94,7 +103,8 @@ function Open-CityGoWatchdogLibrary {
 function Write-CityGoWatchdogRecord {
     param([Collections.IDictionary]$Plan,[string]$Name,$Value,[string]$Owner)
     Assert-CityGoWatchdog ($Name-cin@('watchdog-ready.json','watchdog-network-close-intent.json','watchdog-network-closed.json',
-        'watchdog-stop-observation.json','watchdog-cleanup-observation.json','watchdog-result.json','watchdog-failure.json')) 'record_name_invalid'
+        'watchdog-stop-observation.json','watchdog-cleanup-observation.json','watchdog-result.json','watchdog-failure.json',
+        'watchdog-seed-detach-intent.json','watchdog-seed-detached.json')) 'record_name_invalid'
     Assert-CityGoCanaryStopPlainPath $Plan.controlDirectory $true
     Assert-CityGoCanaryStopAcl $Plan.controlDirectory $Owner $true
     $bytes=[Text.UTF8Encoding]::new($false).GetBytes(($Value|ConvertTo-Json -Depth 5 -Compress))
@@ -177,6 +187,56 @@ function Disconnect-CityGoWatchdogClient {
 function Get-CityGoWatchdogNow {return [DateTimeOffset]::UtcNow}
 function Get-CityGoWatchdogTicks {return [Diagnostics.Stopwatch]::GetTimestamp()}
 
+function Open-CityGoWatchdogPublicSeed {
+    param([Collections.IDictionary]$Plan,[string]$Owner)
+    # ONLY the explicitly PUBLIC, hash-bound ISO may carry native Hyper-V
+    # storage read capabilities. No credentials may be put in these seeds.
+    # This grants no ACE and does not weaken private helper/control guards.
+    $path=$Plan.publicSeedPath;Assert-CityGoCanaryStopPlainPath $path $false
+    $sid=Get-CityGoCanaryExpectedVmSid $Plan.vmId
+    Assert-CityGoCanaryStopAcl ([IO.Path]::GetDirectoryName($path)) $Owner $true $sid
+    $acl=Get-Acl -LiteralPath $path -ErrorAction Stop;$owners=@($Owner,'S-1-5-18','S-1-5-32-544')
+    Assert-CityGoWatchdog ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value-cin$owners) 'public_seed_owner_invalid'
+    $mask=[long][Security.AccessControl.FileSystemRights]::ReadAndExecute-bor[long][Security.AccessControl.FileSystemRights]::Synchronize
+    foreach($rule in $acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])){
+        if($rule.AccessControlType-ne[Security.AccessControl.AccessControlType]::Allow-or$rule.IdentityReference.Value-cin$owners){continue}
+        Assert-CityGoWatchdog (($rule.IdentityReference.Value-ceq$sid-or$rule.IdentityReference.Value-cmatch'^S-1-15-3-1024-(?:[0-9]+-){7}[0-9]+$')-and
+            ([long]$rule.FileSystemRights-band(-bnot$mask))-eq0) 'public_seed_write_or_foreign_ace'
+    }
+    $stream=[IO.File]::Open($path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+    try{
+        Assert-CityGoWatchdog ($stream.Length-ge32768-and$stream.Length-le4MB) 'public_seed_size_invalid'
+        $sha=[Security.Cryptography.SHA256]::Create()
+        try{$actual=([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-','').ToLowerInvariant()}finally{$sha.Dispose()}
+        Assert-CityGoWatchdog ($actual-ceq$Plan.publicSeedSha256) 'public_seed_hash_invalid'
+        return $stream
+    }catch{$stream.Dispose();throw}
+}
+
+function Disconnect-CityGoWatchdogPublicSeed {
+    param([Collections.IDictionary]$Plan,[Collections.IDictionary]$StopPlan,[string]$Owner)
+    if(-not$Plan.publicSeedPath){return}
+    $vm=Get-CityGoCanaryStopNative $StopPlan -ObserveStopping
+    $dvd=@(Get-VMDvdDrive -VM $vm -ErrorAction Stop)
+    Assert-CityGoWatchdog ($dvd.Count-eq1-and[string]$dvd[0].Path-ieq$Plan.publicSeedPath) 'public_seed_changed'
+    Write-CityGoWatchdogRecord $Plan 'watchdog-seed-detach-intent.json' ([ordered]@{operationId=$Plan.operationId;vmId=$Plan.vmId;publicSeedSha256=$Plan.publicSeedSha256}) $Owner
+    Set-VMDvdDrive -VMDvdDrive $dvd[0] -Path $null -ErrorAction Stop
+    for($attempt=0;$attempt-lt10;$attempt++){
+        $fresh=Get-VM -Id ([guid]$Plan.vmId) -ErrorAction Stop
+        Assert-CityGoWatchdog ($fresh.Name-ceq$Plan.vmName-and[string]$fresh.Path-ieq$Plan.vmPath) 'seed_readback_vm_changed'
+        $current=@(Get-VMDvdDrive -VM $fresh -ErrorAction Stop)
+        Assert-CityGoWatchdog ($current.Count-eq1-and(-not$current[0].Path-or[string]$current[0].Path-ieq$Plan.publicSeedPath)) 'foreign_seed_readback'
+        if(-not$current[0].Path){
+            $StopPlan.seedPath=$null;$StopPlan.seedSha256=$null
+            $null=Get-CityGoCanaryStopNative $StopPlan -ObserveStopping
+            Write-CityGoWatchdogRecord $Plan 'watchdog-seed-detached.json' ([ordered]@{operationId=$Plan.operationId;vmId=$Plan.vmId;dvdEmpty=$true}) $Owner
+            return
+        }
+        Start-Sleep -Milliseconds 250
+    }
+    throw 'ci_watchdog_seed_detach_not_verified'
+}
+
 function Invoke-CityGoOwnedWatchdog {
     param([Collections.IDictionary]$Request)
     $plan=Get-CityGoWatchdogPlan $Request
@@ -196,7 +256,11 @@ function Invoke-CityGoOwnedWatchdog {
             resumedCreation=$false;seedPath='';seedSha256='';graceSeconds=30;turnOffSeconds=30;apply=$true;acknowledge=''}
         $stopPlan=Get-CityGoCanaryStopPlan $stopRequest
         foreach($key in @('vmName','nicId','nicName','targetDirectory','targetVhdx','vmPath','diskIdentifier','diskType')){$stopPlan[$key]=$binding[$key]}
-        $phase='arm_only_off_empty_dvd_private_client'
+        if($plan.publicSeedPath){
+            $held+=,(Open-CityGoWatchdogPublicSeed $plan $owner)
+            $stopPlan.seedPath=$plan.publicSeedPath;$stopPlan.seedSha256=$plan.publicSeedSha256
+        }
+        $phase='arm_only_off_pinned_dvd_private_client'
         $vm=Get-CityGoCanaryStopNative $stopPlan
         Assert-CityGoWatchdog ([string]$vm.State-ceq'Off') 'arm_requires_off'
         $nic=@(Get-VMNetworkAdapter -VM $vm -ErrorAction Stop)
@@ -226,6 +290,7 @@ function Invoke-CityGoOwnedWatchdog {
             if(-not$reason){$reason='iteration_limit'}
         }catch{$reason='observation_failed'}
         $phase='close_exact_client_network';Disconnect-CityGoWatchdogClient $plan $owner
+        $phase='detach_exact_public_seed';Disconnect-CityGoWatchdogPublicSeed $plan $stopPlan $owner
         $phase='stop_exact_client'
         $stopRequest.acknowledge=$stopPlan.requiredAcknowledgement
         $stopped=Invoke-CityGoOwnedCanaryStop $stopRequest
@@ -253,7 +318,8 @@ function Invoke-CityGoOwnedWatchdog {
 
 try{
     $request=[ordered]@{operationId=$OperationId;vmId=$VmId;manifestSha256=$ExpectedManifestSha256;networkSha256=$ExpectedNetworkSha256;
-        privateSwitchId=$PrivateSwitchId;controllerPid=$ControllerPid;controllerStartedAt=$ControllerStartedAt;deadlineUtc=$DeadlineUtc;apply=[bool]$Apply;acknowledge=$Acknowledge}
+        privateSwitchId=$PrivateSwitchId;controllerPid=$ControllerPid;controllerStartedAt=$ControllerStartedAt;deadlineUtc=$DeadlineUtc;
+        publicSeedPath=$PublicSeedPath;publicSeedSha256=$ExpectedPublicSeedSha256;apply=[bool]$Apply;acknowledge=$Acknowledge}
     $result=Invoke-CityGoOwnedWatchdog $request;$result|ConvertTo-Json -Depth 5 -Compress
     if($result.stage-like'failed_*'){exit 1}
 }catch{Write-Output '{"stage":"preconditions_not_met","ciJobsAdmitted":false}';exit 2}

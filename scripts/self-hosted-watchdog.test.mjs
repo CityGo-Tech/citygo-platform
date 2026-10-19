@@ -94,6 +94,69 @@ $out=Invoke-CityGoOwnedWatchdog $request
 [ordered]@{result=$out;calls=@($script:calls.ToArray());removed=$script:removed;closed=(@($script:held|Where-Object{$_.CanRead}).Count-eq0)}|ConvertTo-Json -Depth 6 -Compress
 `;
 
+test(
+  "public seed is explicit, paired, operation-bound and included in the acknowledgement",
+  { skip: !available },
+  () => {
+    const out = run(`${request}
+$request.publicSeedPath='D:\\CityGo-CI\\seeds\\'+$op+'\\runner-cidata.iso';$request.publicSeedSha256='a'*64
+$accepted=Get-CityGoWatchdogPlan $request;$denied=@()
+foreach($kind in @('unpaired','other-op','arbitrary-name','upper-hash')){
+ $r=[ordered]@{};foreach($key in $request.Keys){$r[$key]=$request[$key]}
+ if($kind-ceq'unpaired'){$r.publicSeedSha256=''}
+ if($kind-ceq'other-op'){$r.publicSeedPath='D:\\CityGo-CI\\seeds\\00000000-0000-4000-8000-000000000001\\runner-cidata.iso'}
+ if($kind-ceq'arbitrary-name'){$r.publicSeedPath='D:\\CityGo-CI\\seeds\\'+$op+'\\private.iso'}
+ if($kind-ceq'upper-hash'){$r.publicSeedSha256='A'*64}
+ try{$null=Get-CityGoWatchdogPlan $r;$denied+=$false}catch{$denied+=$true}
+}
+[ordered]@{seed=$accepted.publicSeedPath;ack=$accepted.requiredAcknowledgement;denied=$denied}|ConvertTo-Json -Compress`);
+    assert.ok(out.seed.endsWith("runner-cidata.iso"));
+    assert.ok(out.ack.endsWith(":PUBLIC_SEED:" + "a".repeat(64)));
+    assert.deepEqual(out.denied, [true, true, true, true]);
+  },
+);
+
+test(
+  "known public seed is locked then detached only after network closure; foreign media never authorizes stop or cleanup",
+  { skip: !available },
+  () => {
+    for (const foreign of [false, true]) {
+      const out = run(`${request}${mocks}
+$request.publicSeedPath='D:\\CityGo-CI\\seeds\\'+$op+'\\runner-cidata.iso';$request.publicSeedSha256='a'*64;$script:dvd.Path=$request.publicSeedPath
+function Open-CityGoWatchdogPublicSeed {param($Plan,$Owner);Track 'lock-public-seed';$s=[IO.MemoryStream]::new();$script:held.Add($s);return $s}
+function Read-CityGoWatchdogRequest {param($Plan,$Owner);if(${foreign ? "$true" : "$false"}){$script:dvd.Path='D:\\foreign.iso'};return 'cancel'}
+function Set-VMDvdDrive {param($VMDvdDrive,$Path,$ErrorAction);Track 'detach-public-seed';if($VMDvdDrive.Path-cne$request.publicSeedPath-or$null-ne$Path){throw 'foreign-media'};$script:dvd.Path=$null}
+${invoke}`);
+      assert.equal(
+        out.result.stage,
+        foreign
+          ? "failed_preserved_requires_inspection"
+          : "watchdog_cleanup_completed",
+      );
+      assert.equal(out.closed, true);
+      assert.ok(
+        out.calls.indexOf("lock-public-seed") <
+          out.calls.indexOf("watchdog-ready.json"),
+      );
+      if (foreign) {
+        assert.ok(!out.calls.includes("detach-public-seed"));
+        assert.ok(!out.calls.includes("graceful"));
+        assert.ok(!out.calls.includes("cleanup"));
+      } else {
+        assert.ok(
+          out.calls.indexOf("disconnect") <
+            out.calls.indexOf("detach-public-seed"),
+        );
+        assert.ok(
+          out.calls.indexOf("detach-public-seed") <
+            out.calls.indexOf("graceful"),
+        );
+        assert.equal(out.removed, true);
+      }
+    }
+  },
+);
+
 test("watchdog has pinned helpers and no boot/registration/global mutations or arbitrary native output", () => {
   for (const path of paths.slice(0, 2))
     assert.ok(

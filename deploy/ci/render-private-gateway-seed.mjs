@@ -8,7 +8,7 @@ const policySha =
 const helperSha =
   "c10465066ce2908fa72d6416811a6bc426c96aef90584b8c0639e9a45a97e0b4";
 const witnessSha =
-  "4acb5eb963cabaa6dd0f49600c066557dbccf12a98fb480486b7f9eb871bb53d";
+  "e8422c658bb08c456db75b248d74c74a911a0dedf0b2019da842d5e6d85ae1ef";
 const script = "/usr/local/sbin/citygo-private-gateway-init.py";
 const fields = [
   "configJson",
@@ -46,7 +46,13 @@ function inputs(value, expectedFields = fields) {
   const descriptors = Object.getOwnPropertyDescriptors(value);
   const allowedFields =
     expectedFields === fields && Object.hasOwn(descriptors, "witnessSourceLF")
-      ? [...fields, "witnessSourceLF"]
+      ? [
+          ...fields,
+          "witnessSourceLF",
+          ...(Object.hasOwn(descriptors, "observationMode")
+            ? ["observationMode"]
+            : []),
+        ]
       : expectedFields;
   const keys = Reflect.ownKeys(descriptors);
   require(keys.length === allowedFields.length &&
@@ -161,12 +167,18 @@ export function renderPrivateGatewaySeed(input) {
     `INITIALIZE_PRIVATE_GATEWAY:${config.operationId}`,
   ];
   if (Object.hasOwn(data, "witnessSourceLF")) {
+    require(!Object.hasOwn(data, "observationMode") ||
+      data.observationMode === "runner-canary", "observation_mode_invalid");
     records.push([
       "/usr/local/sbin/citygo-private-network-canary.py",
       "0700",
       source(data.witnessSourceLF, witnessSha),
     ]);
-    command.push("--observe-canary");
+    command.push(
+      data.observationMode === "runner-canary"
+        ? "--observe-runner-canary"
+        : "--observe-canary",
+    );
   }
   const userData = `#cloud-config\n${JSON.stringify({
     write_files: records.map(([path, permissions, content]) => ({

@@ -278,3 +278,64 @@ test("pure client and opt-in gateway seeds contain only exact pinned public arti
     }),
   );
 });
+
+test(
+  "private-link frames bracket spoof and valid IPv6 with two controls, no real IPv6 destination",
+  { skip: !available },
+  () => {
+    const out = run(String.raw`
+frames=c.link_frames(v['gatewayOperationId'],v['mac'],'02:11:22:33:44:66')
+packet=frames[2][14:];udp=packet[40:];pseudo=packet[8:40]+c.struct.pack('!I3xB',len(udp),17)
+print(json.dumps(dict(count=len(frames),markers=[x[-2:].decode('ascii') for x in frames],source=frames[1][6:12].hex(),checksum=c.internet_checksum(pseudo+udp),target=str(c.ipaddress.IPv6Address(packet[24:40])),maximum=max(map(len,frames)))))`);
+    assert.equal(out.count, 4);
+    assert.deepEqual(out.markers, ["C0", "S1", "V6", "C1"]);
+    assert.equal(out.source, "024347dead01");
+    assert.equal(out.checksum, 0);
+    assert.equal(out.target, "2001:db8::1");
+    assert.ok(out.maximum < 256);
+  },
+);
+
+test(
+  "trusted link witness distinguishes controls, source-MAC spoof and LAN/WAN IPv6 without dumping payloads",
+  { skip: !available },
+  () => {
+    const out = run(String.raw`
+w=c.PacketWitness.__new__(c.PacketWitness);w.prefix=c.link_prefix(v['gatewayOperationId']);w.counts=dict(linkControls=0,spoofMacSeen=0,ipv6LanSeen=0,ipv6WanSeen=0);w.controls=set();w.client_mac=None;w.channels=[]
+frames=c.link_frames(v['gatewayOperationId'],v['mac'],'02:11:22:33:44:66')
+for x in [frames[0],frames[2],frames[3]]:w.accept('lan0',x)
+safe=w.snapshot();w.accept('lan0',frames[1]);w.accept('wan0',frames[2]);unsafe=w.snapshot()
+print(json.dumps(dict(safe=safe,unsafe=unsafe)))`);
+    assert.equal(out.safe.linkControls, 2);
+    assert.equal(out.safe.spoofMacSeen, 0);
+    assert.equal(out.safe.ipv6LanSeen, 1);
+    assert.equal(out.safe.ipv6WanSeen, 0);
+    assert.equal(out.safe.observedClientMac, config().mac);
+    assert.equal(out.unsafe.spoofMacSeen, 1);
+    assert.equal(out.unsafe.ipv6WanSeen, 1);
+  },
+);
+
+test(
+  "link capture reports fit native KVP bound and close even on initial network refusal",
+  { skip: !available },
+  () => {
+    const out = run(String.raw`
+class Link:
+ def __init__(self):self.closed=False
+ def snapshot(self):return dict(linkControls=2,spoofMacSeen=0,ipv6LanSeen=1,ipv6WanSeen=0,observedClientMac=v['mac'],lanWanUnbridged=True,ipv6ForwardingOff=True)
+ def close(self):self.closed=True
+l=Link();c.observe_gateway(g,p,dict(v,operationId=v['gatewayOperationId']),initial,lambda *a:(generated,'wan','dhcp'),i.verify_rules,i.normalize_tables,g.clock,g.pause,link=l)
+maximum=max(len(c.report_bytes(r)) for r in g.reports)
+other=G();second=Link();failed=False
+def refuse(*a):raise RuntimeError('fixed synthetic refusal')
+try:c.observe_gateway(other,p,v,initial,refuse,i.verify_rules,i.normalize_tables,other.clock,other.pause,link=second)
+except RuntimeError:failed=True
+print(json.dumps(dict(maximum=maximum,closed=l.closed,failed=failed,refusedClosed=second.closed,forward=other.forward)))`);
+    assert.ok(out.maximum <= 1022);
+    assert.equal(out.closed, true);
+    assert.equal(out.failed, true);
+    assert.equal(out.refusedClosed, true);
+    assert.equal(out.forward, 0);
+  },
+);

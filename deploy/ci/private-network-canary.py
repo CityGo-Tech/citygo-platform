@@ -2,7 +2,7 @@
 """Synthetic connected client + bounded trusted-gateway counter witness.
 
 No checkout, registration, credentials, shell, host mounts or paid APIs. This
-does NOT admit jobs or prove L2/IPv6 bypass resistance. A timeout alone is not
+does NOT admit jobs or prove exhaustive L2/IPv6 bypass resistance. A timeout alone is not
 proof of filtering: host acceptance also requires gateway DROP counter deltas.
 """
 import base64
@@ -14,6 +14,7 @@ import re
 import socket
 import ssl
 import stat
+import struct
 import sys
 import time
 import types
@@ -28,6 +29,104 @@ HOSTNAME = "api.github.com"
 CLIENT = "10.203.0.2"
 GATEWAY = "10.203.0.1"
 SPOOF = "10.203.0.6"
+
+
+def link_prefix(operation):
+    require(type(operation) is str and re.fullmatch(UUID, operation), "link_operation_invalid")
+    return ("CityGoLink/" + operation + "/").encode("ascii")
+
+
+def internet_checksum(raw):
+    if len(raw) % 2:
+        raw += b"\0"
+    total = sum(struct.unpack("!" + "H" * (len(raw) // 2), raw))
+    while total >> 16:
+        total = (total & 65535) + (total >> 16)
+    return (~total) & 65535
+
+
+def link_frames(operation, source_mac, gateway_mac):
+    """Four bounded Ethernet frames, only on the synthetic private link."""
+    prefix = link_prefix(operation)
+    require(all(type(x) is str and re.fullmatch(r"02(?::[a-f0-9]{2}){5}", x) for x in (source_mac, gateway_mac)), "link_mac_invalid")
+    src, dst = bytes.fromhex(source_mac.replace(":", "")), bytes.fromhex(gateway_mac.replace(":", ""))
+    spoof = bytes.fromhex("024347dead01")
+    require(src != dst and src != spoof and dst != spoof, "link_mac_reused")
+    control0 = dst + src + b"\x88\xb5" + prefix + b"C0"
+    control1 = dst + src + b"\x88\xb5" + prefix + b"C1"
+    changed = dst + spoof + b"\x88\xb5" + prefix + b"S1"
+    # Documentation-only IPv6 destination, no internet target or real data.
+    source6 = ipaddress.IPv6Address("fd00:203::2").packed
+    target6 = ipaddress.IPv6Address("2001:db8::1").packed
+    payload = prefix + b"V6"
+    udp = struct.pack("!HHHH", 49152, 443, len(payload) + 8, 0) + payload
+    pseudo = source6 + target6 + struct.pack("!I3xB", len(udp), 17)
+    checksum = internet_checksum(pseudo + udp) or 65535
+    udp = udp[:6] + struct.pack("!H", checksum) + udp[8:]
+    header = struct.pack("!IHBB16s16s", 6 << 28, len(udp), 17, 64, source6, target6)
+    ipv6 = dst + src + b"\x86\xdd" + header + udp
+    return (control0, changed, ipv6, control1)
+
+
+class PacketWitness:
+    """Trusted gateway sees LAN control frames; no credentials/packet dumps."""
+    def __init__(self, guest, value):
+        self.prefix = link_prefix(value["operationId"])
+        self.counts = dict(linkControls=0, spoofMacSeen=0, ipv6LanSeen=0, ipv6WanSeen=0)
+        self.controls = set()
+        self.client_mac = None
+        self.channels = []
+        require(guest.command(["/usr/sbin/sysctl", "-n", "net.ipv6.conf.all.forwarding"]).strip() == b"0", "ipv6_forwarding_open")
+        for interface in ("lan0", "wan0"):
+            links = json.loads(guest.command(["/usr/sbin/ip", "-j", "link", "show", "dev", interface]))
+            require(type(links) is list and len(links) == 1 and not links[0].get("master") and
+                    links[0].get("link_type") == "ether", "gateway_bridge_or_link_unknown")
+        try:
+            # Separate EtherTypes avoid buffering unrelated HTTPS/downloads.
+            for interface in ("lan0", "wan0"):
+                for protocol in (0x88B5, 0x86DD):
+                    channel = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(protocol))
+                    self.channels.append((interface, channel))
+                    channel.bind((interface, protocol))
+                    channel.setblocking(False)
+        except Exception:
+            self.close()
+            raise
+
+    def accept(self, interface, raw):
+        if len(raw) < 14 or self.prefix not in raw:
+            return
+        source = ":".join(f"{x:02x}" for x in raw[6:12])
+        if raw[12:14] == b"\x88\xb5" and interface == "lan0":
+            marker = raw[14:].rstrip(b"\0")
+            if marker == self.prefix + b"S1":
+                self.counts["spoofMacSeen"] += 1
+            elif marker in (self.prefix + b"C0", self.prefix + b"C1"):
+                require(self.client_mac in (None, source), "link_control_source_changed")
+                self.client_mac = source
+                self.controls.add(marker[-2:])
+                self.counts["linkControls"] = len(self.controls)
+        elif raw[12:14] == b"\x86\xdd" and self.prefix + b"V6" in raw:
+            self.counts["ipv6LanSeen" if interface == "lan0" else "ipv6WanSeen"] += 1
+
+    def snapshot(self):
+        for interface, channel in self.channels:
+            for _ in range(64):
+                try:
+                    raw = channel.recv(4096)
+                except BlockingIOError:
+                    break
+                self.accept(interface, raw)
+            # Native packet statistics are reset by this read; dropped capture
+            # frames must NEVER turn a missing spoof/WAN observation into PASS.
+            statistics = channel.getsockopt(263, 6, 8)
+            require(len(statistics) == 8 and struct.unpack("II", statistics)[1] == 0, "link_capture_dropped_packets")
+        return dict(self.counts, observedClientMac=self.client_mac or "", lanWanUnbridged=True, ipv6ForwardingOff=True)
+
+    def close(self):
+        for _, channel in self.channels:
+            channel.close()
+        self.channels = []
 
 
 class Refused(Exception):
@@ -104,17 +203,20 @@ def counter_metrics(raw, expected, verify, normalize):
     return result
 
 
-def observe_gateway(guest, policy, value, initial, observe, verify, normalize, clock=time.monotonic, pause=time.sleep):
+def observe_gateway(guest, policy, value, initial, observe, verify, normalize, clock=time.monotonic, pause=time.sleep, link=None, window_seconds=180):
     require(initial.get("policyApplied") is True and guest.mutation_permitted is True, "verified_gateway_required")
-    generated, _, _ = observe(guest, value, policy)
-    require(generated["ipv4Sha256"] == initial["ipv4Sha256"] and generated["ipv6Sha256"] == initial["ipv6Sha256"], "witness_policy_changed")
+    require(type(window_seconds) is int and window_seconds in (180, 900), "observation_window_invalid")
     started, tick = clock(), 0
     try:
-        while clock() - started < 180:
+        generated, _, _ = observe(guest, value, policy)
+        require(generated["ipv4Sha256"] == initial["ipv4Sha256"] and generated["ipv6Sha256"] == initial["ipv6Sha256"], "witness_policy_changed")
+        while clock() - started < window_seconds:
             again, _, _ = observe(guest, value, policy)
             require(again == generated and guest.command(["/usr/sbin/sysctl", "-n", "net.ipv4.ip_forward"]).strip() == b"1", "witness_network_changed")
             raw = guest.command(["/usr/sbin/iptables-save", "-c"]).decode("ascii")
             metrics = counter_metrics(raw, generated["ipv4Restore"], verify, normalize)
+            if link is not None:
+                metrics.update(link.snapshot())
             verify(guest.command(["/usr/sbin/ip6tables-save"]).decode("ascii"), generated["ipv6Restore"])
             report = dict(version=1, scope="private_ci_gateway_counter_witness", operationId=value["operationId"],
                           stage="observing_synthetic_client", hostSnapshotSha256=value["hostSnapshotSha256"],
@@ -125,7 +227,11 @@ def observe_gateway(guest, policy, value, initial, observe, verify, normalize, c
             pause(2)
     finally:
         # In-guest bounded fail-closed window, NOT external VM cleanup/watchdog.
-        guest.command(["/usr/sbin/sysctl", "-w", "net.ipv4.ip_forward=0"])
+        try:
+            guest.command(["/usr/sbin/sysctl", "-w", "net.ipv4.ip_forward=0"])
+        finally:
+            if link is not None:
+                link.close()
     require(guest.command(["/usr/sbin/sysctl", "-n", "net.ipv4.ip_forward"]).strip() == b"0", "witness_close_readback_failed")
     guest.publish(value["operationId"], report_bytes(dict(version=1, scope="private_ci_gateway_counter_witness",
         operationId=value["operationId"], stage="observation_window_closed", tick=tick,
@@ -174,13 +280,19 @@ def validate_client_seed(guest, value):
                                   "--acknowledge", "RUN_CONNECTED_CLIENT:" + value["operationId"]]], "seed_command_invalid")
 
 
-def run_client(guest, value):
-    targets = client_config(value)
-    uid, architecture, release = guest.facts()
-    require(uid == 0 and architecture == "x86_64" and release.get("ID") == "ubuntu" and release.get("VERSION_ID") == "24.04", "trusted_client_required")
+def run_client(guest, value, include_link=False):
+    client_config(value)
     require(guest.command(["/usr/bin/cloud-id"]).strip() == b"nocloud" and
             guest.command(["/usr/bin/cloud-init", "query", "v1.instance_id"]).strip() == ("citygo-network-client-" + value["operationId"]).encode("ascii"), "client_identity_invalid")
     validate_client_seed(guest, value)
+    return probe_client(guest, value, include_link)
+
+
+def probe_client(guest, value, include_link=False):
+    """Trusted callers must verify their own identity + exact public seed first."""
+    targets = client_config(value)
+    uid, architecture, release = guest.facts()
+    require(uid == 0 and architecture == "x86_64" and release.get("ID") == "ubuntu" and release.get("VERSION_ID") == "24.04", "trusted_client_required")
     guest.validate_bounds()
     addresses = json.loads(guest.command(["/usr/sbin/ip", "-j", "address", "show", "dev", "ci0"]))
     require(type(addresses) is list and len(addresses) == 1 and addresses[0].get("address") == value["mac"], "client_interface_changed")
@@ -207,10 +319,13 @@ def run_client(guest, value):
     finally:
         if spoof_added:
             guest.command(["/usr/sbin/ip", "address", "del", SPOOF + "/32", "dev", "ci0"])
-    return dict(version=1, scope="private_ci_connected_client", operationId=value["operationId"], gatewayOperationId=value["gatewayOperationId"],
+    report = dict(version=1, scope="private_ci_connected_client", operationId=value["operationId"], gatewayOperationId=value["gatewayOperationId"],
                 hostSnapshotSha256=value["hostSnapshotSha256"], stage="synthetic_client_completed", dnsOk=True, httpsOk=True,
                 negativeProbeCount=len(targets), gatewayProbeCount=2, sourceSpoofSent=True, ipv6DefaultRouteAbsent=True,
                 guestIsolationVerified=False, ciJobsAdmitted=False)
+    if include_link:
+        report.update(guest.link_probes(value))
+    return report
 
 
 def load_helper():
@@ -227,6 +342,52 @@ def load_helper():
     return module
 
 
+def connected_client_type(helper):
+    class Client(helper.Guest):
+        def validate_bounds(self):
+            helper.validate_mounts(self.read("/proc/self/mountinfo", 262144))
+            self.workspace_absent()
+
+        def resolve_public(self):
+            raw = self.command(["/usr/bin/getent", "ahostsv4", HOSTNAME], timeout=12).decode("ascii")
+            return sorted(set(line.split()[0] for line in raw.splitlines() if line.split()))
+
+        def public_https(self, address):
+            with socket.create_connection((address, 443), timeout=8) as raw:
+                with ssl.create_default_context().wrap_socket(raw, server_hostname=HOSTNAME) as tls:
+                    tls.sendall(("GET /meta HTTP/1.1\r\nHost: " + HOSTNAME + "\r\nUser-Agent: CityGo-synthetic-network-canary\r\nConnection: close\r\n\r\n").encode("ascii"))
+                    status = tls.recv(4096).split(b"\r\n", 1)[0]
+                    require(re.fullmatch(rb"HTTP/1\.[01] [234][0-9]{2} [\x20-\x7e]{0,100}", status), "public_https_failed")
+
+        def tcp_connect(self, address, port):
+            try:
+                with socket.create_connection((address, port), timeout=1):
+                    return True
+            except OSError:
+                return False
+
+        def send_spoof(self):
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as channel:
+                channel.settimeout(1)
+                channel.bind((SPOOF, 0))
+                channel.sendto(b"CityGo synthetic source-filter canary", ("1.1.1.1", 53))
+
+        def link_probes(self, value):
+            neighbors = json.loads(self.command(["/usr/sbin/ip", "-j", "neighbor", "show", "to", GATEWAY, "dev", "ci0"]))
+            require(type(neighbors) is list and len(neighbors) == 1 and neighbors[0].get("dst") == GATEWAY,
+                    "gateway_neighbor_invalid")
+            mac = neighbors[0].get("lladdr")
+            frames = link_frames(value["gatewayOperationId"], value["mac"], mac)
+            with socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(0x0003)) as channel:
+                channel.bind(("ci0", 0))
+                channel.settimeout(1)
+                for frame in frames:
+                    require(channel.send(frame) == len(frame), "link_frame_not_sent")
+                    time.sleep(0.25)
+            return dict(linkProbeFramesSent=4, observedGatewayMac=mac)
+    return Client
+
+
 def main(arguments):
     if len(arguments) == 3 and arguments[:2] == ["--plan", "--operation-id"] and re.fullmatch(UUID, arguments[2]):
         print(json.dumps(dict(stage="plan_only_unverified", operationId=arguments[2], ciJobsAdmitted=False), separators=(",", ":")))
@@ -239,38 +400,11 @@ def main(arguments):
     try:
         require(sys.platform == "linux" and os.geteuid() == 0, "linux_root_required")
         helper = load_helper()
-        class Client(helper.Guest):
-            def validate_bounds(self):
-                helper.validate_mounts(self.read("/proc/self/mountinfo", 262144))
-                self.workspace_absent()
-
-            def resolve_public(self):
-                raw = self.command(["/usr/bin/getent", "ahostsv4", HOSTNAME], timeout=12).decode("ascii")
-                return sorted(set(line.split()[0] for line in raw.splitlines() if line.split()))
-
-            def public_https(self, address):
-                with socket.create_connection((address, 443), timeout=8) as raw:
-                    with ssl.create_default_context().wrap_socket(raw, server_hostname=HOSTNAME) as tls:
-                        tls.sendall(("GET /meta HTTP/1.1\r\nHost: " + HOSTNAME + "\r\nUser-Agent: CityGo-synthetic-network-canary\r\nConnection: close\r\n\r\n").encode("ascii"))
-                        status = tls.recv(4096).split(b"\r\n", 1)[0]
-                        require(re.fullmatch(rb"HTTP/1\.[01] [234][0-9]{2} [\x20-\x7e]{0,100}", status), "public_https_failed")
-
-            def tcp_connect(self, address, port):
-                try:
-                    with socket.create_connection((address, port), timeout=1):
-                        return True
-                except OSError:
-                    return False
-
-            def send_spoof(self):
-                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as channel:
-                    channel.settimeout(1)
-                    channel.bind((SPOOF, 0))
-                    channel.sendto(b"CityGo synthetic source-filter canary", ("1.1.1.1", 53))
+        Client = connected_client_type(helper)
         guest = Client()
         value = helper.unique_json(guest.read(CONFIG, 32768).decode("ascii"))
         require(value.get("operationId") == arguments[2], "config_operation_changed")
-        report = run_client(guest, value)
+        report = run_client(guest, value, True)
         guest.publish(arguments[2], helper.report_bytes(report))
         print(json.dumps(report, separators=(",", ":")))
         return 0
