@@ -145,7 +145,9 @@ test("registration fixes repo, unique label, ephemeral/update flags; no root run
     source,
     /shell=True|RUNNER_ALLOW_RUNASROOT|GITHUB_TOKEN|install.*dependencies\.sh|verify=False/,
   );
-  assert.match(source, /--proto-redir.*=https/);
+  assert.doesNotMatch(source, /native\(\["\/usr\/bin\/curl"/);
+  assert.match(source, /"ro,nodev,nosuid,noexec", "\/dev\/sr0", BUNDLE/);
+  assert.match(source, /native\(\["\/usr\/bin\/umount", "--", BUNDLE\]/);
   assert.match(source, /hashlib\.file_digest\(stream, "sha256"\).*ARCHIVE_SHA/);
   assert.match(source, /extractall\(ROOT, members=members, filter="data"\)/);
   assert.match(
@@ -162,7 +164,9 @@ test("registration fixes repo, unique label, ephemeral/update flags; no root run
   );
   assert.ok(
     source.indexOf("proof = network.probe_client") <
-      source.indexOf("uid, gid, groups = install_runner()"),
+      source.indexOf(
+        "uid, gid, groups = install_runner(operation, guest, helper)",
+      ),
   );
 });
 
@@ -213,7 +217,7 @@ test("unique diagnostic workflow grants no permissions and cannot replace releas
     "utf8",
   );
   assert.match(workflow, /permissions: \{\}/);
-  assert.match(workflow, /runs-on: \[citygo-ci-canary-4bb4f9ba2799bda6\]/);
+  assert.match(workflow, /runs-on: \[citygo-ci-canary-47a6f940dc442649\]/);
   assert.match(workflow, /timeout-minutes: 3/);
   assert.match(workflow, /cancel-in-progress: false/);
   assert.doesNotMatch(
@@ -247,6 +251,31 @@ print('settings_ok')`),
       source.indexOf('phase = "run_one_job"'),
   );
   assert.match(source, /host_registration_not_removed/);
+});
+
+test("public archive bundle is operation-bound and verified before extraction, with no guest download fallback", () => {
+  assert.equal(
+    run(`
+op='${operation}'
+v={'instance-id':'citygo-runner-canary-'+op,'local-hostname':'citygo-ci-canary-'+op}
+r.bundle_identity(json.dumps(v).encode(),op,json.loads)
+for changed in [dict(v,extra='foreign'),dict(v,**{'instance-id':'foreign'})]:
+ try:r.bundle_identity(json.dumps(changed).encode(),op,json.loads);raise AssertionError('accepted')
+ except r.Refused:pass
+print('bundle_ok')`),
+    "bundle_ok",
+  );
+  assert.ok(
+    source.indexOf('hashlib.file_digest(stream, "sha256")') <
+      source.indexOf("source.extractall(ROOT"),
+  );
+  assert.match(source, /stat\.S_ISBLK\(os\.lstat\("\/dev\/sr0"\)/);
+  assert.match(source, /set\(os\.listdir\(BUNDLE\)\).*ARCHIVE_NAME/);
+  assert.doesNotMatch(source, /curl.*--location|requests\.|urlopen\(/);
+  assert.match(
+    source,
+    /native\(\["\/usr\/local\/bin\/pnpm", "--version"\].*account\.pw_uid/,
+  );
 });
 
 test("real repository REST shape with os=unknown and omitted ephemeral stays observation, not fabricated readiness", () => {

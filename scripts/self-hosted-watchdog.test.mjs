@@ -184,7 +184,7 @@ ${invoke}`);
       if (permanent) {
         assert.equal(
           out.calls.filter((x) => x === "readback-refused").length,
-          10,
+          80,
         );
         assert.ok(!out.calls.includes("graceful"));
         assert.ok(!out.calls.includes("cleanup"));

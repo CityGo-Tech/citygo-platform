@@ -32,6 +32,8 @@ ARCHIVE_SIZE = 227660598
 ARCHIVE_SHA = "af4b794c1bc41d73d40535e3fe092a39f9679cd8d965954c2aca25a05ca41d32"
 DOWNLOAD = "https://github.com/actions/runner/releases/download/v" + VERSION + "/actions-runner-linux-x64-" + VERSION + ".tar.gz"
 ROOT = "/opt/citygo-actions-runner"
+BUNDLE = "/run/citygo-ci-public-bundle"
+ARCHIVE_NAME = "actions-runner-linux-x64-" + VERSION + ".tar.gz"
 POOL = "/var/lib/hyperv/.kvp_pool_0"
 UUID = r"[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}"
 ENV = {"PATH": "/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C", "HOME": "/home/ci-runner"}
@@ -173,37 +175,56 @@ def native(args, timeout, uid=None, gid=None, groups=None, cwd="/"):
     require(done.returncode == 0, "runner_command_failed")
 
 
-def install_runner():
+def bundle_identity(raw, operation, unique_json):
+    value = unique_json(raw.decode("ascii"))
+    require(value == {"instance-id": "citygo-runner-canary-" + operation,
+                      "local-hostname": "citygo-ci-canary-" + operation}, "bundle_instance_invalid")
+
+
+def install_runner(operation, guest, helper):
     require(not os.path.lexists(ROOT) and not os.path.lexists("/home/ci-runner"), "runner_namespace_exists")
+    require(not os.path.lexists(BUNDLE) and stat.S_ISBLK(os.lstat("/dev/sr0").st_mode), "public_cdrom_required")
     os.mkdir(ROOT, 0o700)
-    archive = ROOT + "/runner.tar.gz"
-    native(["/usr/bin/curl", "--disable", "--silent", "--fail", "--location", "--max-redirs", "3", "--proto", "=https",
-            "--proto-redir", "=https", "--noproxy", "*", "--connect-timeout", "15", "--max-time", "240",
-            "--max-filesize", str(ARCHIVE_SIZE), "--output", archive, DOWNLOAD], 245)
-    fd = os.open(archive, os.O_RDONLY | os.O_NOFOLLOW)
+    os.mkdir(BUNDLE, 0o700)
+    native(["/usr/bin/mount", "--types", "iso9660", "--options", "ro,nodev,nosuid,noexec", "/dev/sr0", BUNDLE], 15)
     try:
-        item = os.fstat(fd)
-        require(stat.S_ISREG(item.st_mode) and item.st_size == ARCHIVE_SIZE, "runner_archive_size_invalid")
-        with os.fdopen(fd, "rb", closefd=False) as stream:
-            require(hashlib.file_digest(stream, "sha256").hexdigest() == ARCHIVE_SHA, "runner_archive_hash_invalid")
-            stream.seek(0)
-            with tarfile.open(fileobj=stream, mode="r:gz") as source:
-                members = source.getmembers()
-                require(len(members) <= 30000 and sum(x.size for x in members) <= 2 * 1024**3, "runner_archive_bounds")
-                # Python 3.12 data filter also rejects traversal, device nodes,
-                # escaping links and unsafe attributes in the hash-pinned tar.
-                source.extractall(ROOT, members=members, filter="data")
+        require(set(os.listdir(BUNDLE)) == {"user-data", "meta-data", "network-config", ARCHIVE_NAME}, "bundle_files_invalid")
+        bundle_identity(guest.read(BUNDLE + "/meta-data", 4096), operation, helper.unique_json)
+        fd = os.open(BUNDLE + "/" + ARCHIVE_NAME, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            item = os.fstat(fd)
+            require(stat.S_ISREG(item.st_mode) and item.st_size == ARCHIVE_SIZE, "runner_archive_size_invalid")
+            with os.fdopen(fd, "rb", closefd=False) as stream:
+                require(hashlib.file_digest(stream, "sha256").hexdigest() == ARCHIVE_SHA, "runner_archive_hash_invalid")
+                stream.seek(0)
+                with tarfile.open(fileobj=stream, mode="r:gz") as source:
+                    members = source.getmembers()
+                    require(len(members) <= 30000 and sum(x.size for x in members) <= 2 * 1024**3, "runner_archive_bounds")
+                    # Python 3.12 data filter rejects traversal, device nodes,
+                    # escaping links and unsafe attributes in the pinned tar.
+                    source.extractall(ROOT, members=members, filter="data")
+        finally:
+            os.close(fd)
     finally:
-        os.close(fd)
-    os.unlink(archive)
+        native(["/usr/bin/umount", "--", BUNDLE], 15)
+    os.rmdir(BUNDLE)
     native(["/usr/sbin/useradd", "--create-home", "--shell", "/usr/sbin/nologin", "--groups", "docker", "ci-runner"], 10)
     import grp
     import pwd
     account = pwd.getpwnam("ci-runner")
     require(account.pw_uid >= 1000 and account.pw_uid != 0 and account.pw_dir == "/home/ci-runner", "runner_uid_invalid")
+    # This dedicated prefix contains only the verified public bootstrap
+    # toolchain, never home/config/keys. Keep root ownership and remove
+    # group/world writes while admitting the non-root CI user's reads.
+    tools = os.lstat("/opt/citygo-toolchain")
+    require(stat.S_ISDIR(tools.st_mode) and tools.st_uid == 0, "public_toolchain_directory_required")
+    native(["/usr/bin/chmod", "--recursive", "a+rX,go-w", "--", "/opt/citygo-toolchain"], 20)
     native(["/usr/bin/chown", "--recursive", "--no-dereference", "ci-runner:ci-runner", ROOT], 20)
     os.chmod(ROOT, 0o700)
-    return account.pw_uid, account.pw_gid, [grp.getgrnam("docker").gr_gid]
+    groups = [grp.getgrnam("docker").gr_gid]
+    native(["/usr/local/bin/node", "--version"], 10, account.pw_uid, account.pw_gid, groups)
+    native(["/usr/local/bin/pnpm", "--version"], 10, account.pw_uid, account.pw_gid, groups)
+    return account.pw_uid, account.pw_gid, groups
 
 
 def main(arguments):
@@ -228,7 +249,7 @@ def main(arguments):
         # A waiting report is not permission to register: only the external
         # controller can supply the operation-scoped token after its witness.
         phase = "install_public_runner"
-        uid, gid, groups = install_runner()
+        uid, gid, groups = install_runner(operation, guest, helper)
         report = dict(version=1, scope="ephemeral_ci_runner_canary", operationId=operation, stage="waiting_host_registration",
                       gatewayOperationId=value["gatewayOperationId"], hostSnapshotSha256=value["hostSnapshotSha256"],
                       versionInstalled=VERSION, archiveSha256=ARCHIVE_SHA, runnerRegistered=False, ciJobsAdmitted=False,

@@ -205,7 +205,9 @@ function Open-CityGoWatchdogPublicSeed {
     }
     $stream=[IO.File]::Open($path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
     try{
-        Assert-CityGoWatchdog ($stream.Length-ge32768-and$stream.Length-le4MB) 'public_seed_size_invalid'
+        $maximum=4MB
+        if([IO.Path]::GetFileName($path)-ceq'runner-cidata.iso'){$maximum=256MB}
+        Assert-CityGoWatchdog ($stream.Length-ge32768-and$stream.Length-le$maximum) 'public_seed_size_invalid'
         $sha=[Security.Cryptography.SHA256]::Create()
         try{$actual=([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-','').ToLowerInvariant()}finally{$sha.Dispose()}
         Assert-CityGoWatchdog ($actual-ceq$Plan.publicSeedSha256) 'public_seed_hash_invalid'
@@ -221,7 +223,8 @@ function Disconnect-CityGoWatchdogPublicSeed {
     Assert-CityGoWatchdog ($dvd.Count-eq1-and[string]$dvd[0].Path-ieq$Plan.publicSeedPath) 'public_seed_changed'
     Write-CityGoWatchdogRecord $Plan 'watchdog-seed-detach-intent.json' ([ordered]@{operationId=$Plan.operationId;vmId=$Plan.vmId;publicSeedSha256=$Plan.publicSeedSha256}) $Owner
     Set-VMDvdDrive -VMDvdDrive $dvd[0] -Path $null -ErrorAction Stop
-    for($attempt=0;$attempt-lt10;$attempt++){
+    $readbackEnd=[DateTimeOffset]::UtcNow.AddSeconds(20)
+    for($attempt=0;$attempt-lt80-and[DateTimeOffset]::UtcNow-lt$readbackEnd;$attempt++){
         $fresh=Get-VM -Id ([guid]$Plan.vmId) -ErrorAction Stop
         Assert-CityGoWatchdog ($fresh.Name-ceq$Plan.vmName-and[string]$fresh.Path-ieq$Plan.vmPath) 'seed_readback_vm_changed'
         $current=@(Get-VMDvdDrive -VM $fresh -ErrorAction Stop)
@@ -232,7 +235,7 @@ function Disconnect-CityGoWatchdogPublicSeed {
             # just after a detach. Retry ONLY full read-only verification;
             # never repeat Set-VMDvdDrive or act on a failed/partial guard.
             try{$null=Get-CityGoCanaryStopNative $StopPlan -ObserveStopping}catch{
-                if($attempt-ge9){throw}
+                if($attempt-ge79){throw}
                 Start-Sleep -Milliseconds 250
                 continue
             }

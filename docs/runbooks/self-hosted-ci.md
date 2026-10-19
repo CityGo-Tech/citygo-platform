@@ -5,7 +5,28 @@ CityGo планирует выполнять проверки GitHub Actions в 
 выпуска. Этот путь не требует покупки GitHub-hosted compute. Настройка не должна
 давать коду из PR доступ к личным файлам, ключам или рабочему серверу.
 
+Вычисления self-hosted runners [бесплатны по документации GitHub](https://docs.github.com/en/billing/concepts/product-billing/github-actions).
+Квоты хранения artifacts/cache/Packages от этого не исчезают; платные лимиты и
+платёжные настройки организации в этом этапе не менялись.
+
 ## Текущее состояние: сетевые canary и watchdog проверены, GitHub canary подготовлен
+
+Последний network-download canary отказал на установке публичного runner до
+регистрации; исходный отчёт сохранён. ВМ/диск/задача адресно удалены, gateway
+закрыт, неисполненный job отменён; repository runners API вернул ноль.
+Чтобы большая загрузка не занимала ограниченное окно guest, официальный архив
+заранее скачан без credentials на хосте и проверен по размеру/SHA-256.
+Следующий **public runner ISO** содержит три NoCloud-файла и этот точный архив,
+без регистрационного материала. Guest проверяет instance-id, четыре имени,
+размер/SHA архива и распаковывает с data-filter; CD монтируется только
+`ro,nodev,nosuid,noexec` и снимается до listener. Непривилегированный доступ
+к публичной toolchain проверяется до регистрации.
+
+Только `runner-cidata.iso` допускает до 256 МиБ; network ISO остаётся до 4 МиБ.
+Оба остаются явно PUBLIC, hash-bound и под read-lock. Native readback detach
+ограничен 20 секундами/80 итерациями, без повторного detach. Исходный 2,5-секундный
+отказ не переименован в PASS: отдельное чтение затем подтвердило пустой DVD.
+Новый сквозной GitHub/native прогон ещё требуется.
 
 На 19 октября 2026 года Hyper-V включён владельцем. Read-only preflight
 **успешно выполнен в отдельно подтверждённом административном процессе**.
@@ -783,7 +804,7 @@ IPv4-тест с kernel DROP evidence. Полный lifecycle failed; клиен
 после отдельного native Off-readback. Первые failed gateway/stop attempts и все
 закрытые материалы сохранены, четыре шлюза сейчас Off/disconnected.
 Это не работающий self-hosted CI или принятый для jobs golden image. Локальный набор
-`pnpm test:ci-host` прошёл **257/257 проверок без skip**, включая regression
+`pnpm test:ci-host` прошёл **258/258 проверок без skip**, включая regression
 tests гонки grace/fallback, решения watchdog и fingerprint обеих IP-family.
 Четыре отдельные native watchdog case также прошли; это не GitHub CI.
 Targeted ESLint, Prettier и `git diff --check` чистые.
