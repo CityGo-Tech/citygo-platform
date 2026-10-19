@@ -213,7 +213,7 @@ test("unique diagnostic workflow grants no permissions and cannot replace releas
     "utf8",
   );
   assert.match(workflow, /permissions: \{\}/);
-  assert.match(workflow, /runs-on: \[citygo-ci-canary-123f546e7fcc3b99\]/);
+  assert.match(workflow, /runs-on: \[citygo-ci-canary-4bb4f9ba2799bda6\]/);
   assert.match(workflow, /timeout-minutes: 3/);
   assert.match(workflow, /cancel-in-progress: false/);
   assert.doesNotMatch(
@@ -231,6 +231,7 @@ test("configured ephemeral and update policy come from the actual runner setting
 op='${operation}'
 v=dict(agentId=21,agentName='citygo-ci-canary-'+op,ephemeral=True,disableUpdate=True,workFolder='_work',gitHubUrl='https://github.com/'+r.REPOSITORY)
 assert r.configured_settings(json.dumps(v).encode(),op,json.loads)==21
+assert r.configured_settings(b'\\xef\\xbb\\xbf'+json.dumps(v).encode(),op,json.loads)==21
 for changed in [dict(v,ephemeral=False),dict(v,disableUpdate=False),dict(v,agentId=True),dict(v,agentName='foreign'),dict(v,workFolder='/host'),dict(v,gitHubUrl='https://github.com/foreign/repo')]:
  try:r.configured_settings(json.dumps(changed).encode(),op,json.loads);raise AssertionError('accepted')
  except r.Refused:pass

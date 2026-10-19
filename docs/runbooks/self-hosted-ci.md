@@ -184,6 +184,18 @@ transient и постоянный отказ. Следующий свежий na
 Следующий bootstrap также ждёт удаления host registration KVP до запуска
 listener. Управляющий GitHub credential никогда не передавался в гостя.
 
+Вторая свежая попытка остановилась после config, **до listener/получения job**:
+JSON reader отказал на `.runner`. Проверен [writer runner 2.338.0](https://github.com/actions/runner/blob/v2.338.0/src/Runner.Sdk/Util/IOUtil.cs):
+он использует `Encoding.UTF8`. Reader теперь допускает один ведущий UTF-8 BOM,
+сохраняя строгий JSON/duplicate-key контракт; оба варианта покрыты regression test.
+Эта поправка не превращает исходный отказ в PASS. Неисполненный canary отменён,
+его idle registration адресно удалена после подтверждения удаления ВМ/диска;
+шлюз Off/disconnected, оставшаяся завершённая задача также адресно удалена.
+Следующий контроллер на error-path сначала ждёт client-watchdog, затем закрывает
+gateway, чтобы не изменять его native metadata одновременно с client guard.
+Дополнительно сохраняется только внутренний allowlisted error identifier,
+никогда raw native exception/command/token. Новый native replay ещё требуется.
+
 - Компьютер: Windows 11 Pro, 32 ГБ оперативной памяти. Подтверждены состояние
   компонента Hyper-V `Enabled` и службы `vmms` `Running`; это не проверка гостевой
   изоляции и не подтверждение отсутствия всех ожидающих перезагрузку изменений.

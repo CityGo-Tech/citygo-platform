@@ -151,7 +151,10 @@ def registration_args(operation, token):
 
 
 def configured_settings(raw, operation, unique_json):
-    value = unique_json(raw.decode("utf8"))
+    # https://github.com/actions/runner/blob/v2.338.0/src/Runner.Sdk/Util/IOUtil.cs
+    # Runner's .NET JSON writer may prefix its otherwise ordinary UTF-8 JSON
+    # with a BOM. Admit that single leading marker, not comments/duplicates.
+    value = unique_json(raw.decode("utf-8-sig"))
     require(type(value) is dict and value.get("agentName") == "citygo-ci-canary-" + operation and
             type(value.get("agentId")) is int and value["agentId"] > 0 and value.get("ephemeral") is True and
             value.get("disableUpdate") is True and value.get("workFolder") == "_work" and

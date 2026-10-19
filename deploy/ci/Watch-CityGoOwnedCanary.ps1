@@ -318,6 +318,8 @@ function Invoke-CityGoOwnedWatchdog {
     }catch{
         $result.stage='failed_preserved_requires_inspection';$result.failurePhase=$phase;$result.armed=$armed;$result.reason=$reason
         $result.code='watchdog_native_failed'
+        $identifier=[string]$_.FullyQualifiedErrorId
+        if($identifier-cmatch'^ci_(?:watchdog|canary_stop|canary_cleanup)_[a-z0-9_]{1,100}$'){$result.code=$identifier}
         # No raw native exception, arbitrary process text or secret in evidence.
         try{Write-CityGoWatchdogRecord $plan 'watchdog-failure.json' $result $owner}catch{}
         return $result

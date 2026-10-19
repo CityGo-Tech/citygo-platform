@@ -11,7 +11,7 @@ concurrency:
 jobs:
   isolated-linux-canary:
     if: github.head_ref == 'codex/isolated-linux-runner' && github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [citygo-ci-canary-123f546e7fcc3b99]
+    runs-on: [citygo-ci-canary-4bb4f9ba2799bda6]
     timeout-minutes: 3
     steps:
       - name: Verify disposable Linux toolchain without repository or credentials
