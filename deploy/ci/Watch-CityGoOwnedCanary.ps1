@@ -228,7 +228,14 @@ function Disconnect-CityGoWatchdogPublicSeed {
         Assert-CityGoWatchdog ($current.Count-eq1-and(-not$current[0].Path-or[string]$current[0].Path-ieq$Plan.publicSeedPath)) 'foreign_seed_readback'
         if(-not$current[0].Path){
             $StopPlan.seedPath=$null;$StopPlan.seedSha256=$null
-            $null=Get-CityGoCanaryStopNative $StopPlan -ObserveStopping
+            # Independent Hyper-V cmdlets can expose different generations
+            # just after a detach. Retry ONLY full read-only verification;
+            # never repeat Set-VMDvdDrive or act on a failed/partial guard.
+            try{$null=Get-CityGoCanaryStopNative $StopPlan -ObserveStopping}catch{
+                if($attempt-ge9){throw}
+                Start-Sleep -Milliseconds 250
+                continue
+            }
             Write-CityGoWatchdogRecord $Plan 'watchdog-seed-detached.json' ([ordered]@{operationId=$Plan.operationId;vmId=$Plan.vmId;dvdEmpty=$true}) $Owner
             return
         }
@@ -310,6 +317,7 @@ function Invoke-CityGoOwnedWatchdog {
         return $result
     }catch{
         $result.stage='failed_preserved_requires_inspection';$result.failurePhase=$phase;$result.armed=$armed;$result.reason=$reason
+        $result.code='watchdog_native_failed'
         # No raw native exception, arbitrary process text or secret in evidence.
         try{Write-CityGoWatchdogRecord $plan 'watchdog-failure.json' $result $owner}catch{}
         return $result

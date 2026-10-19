@@ -157,7 +157,32 @@ ACL. Hash и read-lock удерживаются; чужой DVD останавл
 через exact host KVP только после внешнего сетевого readback. Управляющий GitHub
 credential в гостя не передаётся. Отдельный opt-in gateway mode закрывает forwarding
 через 900 секунд; обычный synthetic mode остаётся 180 секунд. Этот подготовленный
-код пока не означает, что runner зарегистрирован или GitHub job прошёл.
+код сам по себе не означает, что runner зарегистрирован или GitHub job прошёл.
+
+Первый GitHub canary действительно зарегистрировался и получил ровно одно
+диагностическое задание. Однако полный lifecycle **failed**: внешний контроллер
+отказал на неожиданном API shape (`os: unknown`, отсутствующее `ephemeral`).
+Такая REST-форма не доказывает отсутствие Linux/ephemeral: `--no-default-labels`
+убирает стандартные метки, а repository API может не возвращать `ephemeral`.
+Readback теперь не выдумывает эти свойства. Linux подтверждается отдельно в
+доверенном bootstrap и самом job; `ephemeral`, `disableUpdate`, agent ID и
+repository читаются из фактического `.runner` до начала прослушивания.
+
+Watchdog первого GitHub canary закрыл NIC и отправил одно отсоединение ISO,
+но отказал на последующем native-readback. Причина native-отказа по прежнему
+generic report не установлена. Отдельный свежий readback подтвердил пустой DVD,
+отключённую сеть клиента и закрытый шлюз. Только после полной проверки владения
+один guarded empty-DVD stop и Off-only cleanup удалили клиент/диск; завершённая
+своя задача также удалена. Gateway TurnOff не повторялся. GitHub job адресно
+отменён; после его `cancelled` repository API подтвердил отсутствие регистрации.
+Это не успешный GitHub job и не автоматически пройденный lifecycle.
+
+Добавлено ограниченное повторение **только полного read-only native guard**
+после отсоединения публичного ISO. Команда отсоединения не повторяется; чужой
+DVD или неуспешный guard не разрешают shutdown/delete. Тесты воспроизводят
+transient и постоянный отказ. Следующий свежий native-прогон ещё требуется.
+Следующий bootstrap также ждёт удаления host registration KVP до запуска
+listener. Управляющий GitHub credential никогда не передавался в гостя.
 
 - Компьютер: Windows 11 Pro, 32 ГБ оперативной памяти. Подтверждены состояние
   компонента Hyper-V `Enabled` и службы `vmms` `Running`; это не проверка гостевой
@@ -746,7 +771,7 @@ IPv4-тест с kernel DROP evidence. Полный lifecycle failed; клиен
 после отдельного native Off-readback. Первые failed gateway/stop attempts и все
 закрытые материалы сохранены, четыре шлюза сейчас Off/disconnected.
 Это не работающий self-hosted CI или принятый для jobs golden image. Локальный набор
-`pnpm test:ci-host` прошёл **254/254 проверок без skip**, включая regression
+`pnpm test:ci-host` прошёл **257/257 проверок без skip**, включая regression
 tests гонки grace/fallback, решения watchdog и fingerprint обеих IP-family.
 Четыре отдельные native watchdog case также прошли; это не GitHub CI.
 Targeted ESLint, Prettier и `git diff --check` чистые.
@@ -758,5 +783,5 @@ Hyper-V операции и не заменяют реальные clone/network
 Execution Policy или настроек Windows. Это локальная проверка, не зелёный CI
 в GitHub. Read-only API подтвердил отсутствие repo runners; доступ к настройкам
 организационных runner groups текущими credentials не подтверждён.
-До независимой приёмки изоляции и одноразового жизненного цикла код PR и GitHub
-jobs не допускаются.
+До приёмки фабрики и одноразового жизненного цикла произвольный код PR и общие
+CI jobs не допускаются. Отдельный fixed diagnostic canary их не заменяет.

@@ -213,7 +213,7 @@ test("unique diagnostic workflow grants no permissions and cannot replace releas
     "utf8",
   );
   assert.match(workflow, /permissions: \{\}/);
-  assert.match(workflow, /runs-on: \[citygo-ci-canary-239d735738b81481\]/);
+  assert.match(workflow, /runs-on: \[citygo-ci-canary-123f546e7fcc3b99\]/);
   assert.match(workflow, /timeout-minutes: 3/);
   assert.match(workflow, /cancel-in-progress: false/);
   assert.doesNotMatch(
@@ -223,4 +223,69 @@ test("unique diagnostic workflow grants no permissions and cannot replace releas
   assert.match(workflow, /test "\$\(id -u\)" -ne 0/);
   assert.match(workflow, /test ! -e \.git/);
   assert.match(workflow, /CITYGO_EPHEMERAL_CANARY_OK/);
+});
+
+test("configured ephemeral and update policy come from the actual runner settings before listening", () => {
+  assert.equal(
+    run(`
+op='${operation}'
+v=dict(agentId=21,agentName='citygo-ci-canary-'+op,ephemeral=True,disableUpdate=True,workFolder='_work',gitHubUrl='https://github.com/'+r.REPOSITORY)
+assert r.configured_settings(json.dumps(v).encode(),op,json.loads)==21
+for changed in [dict(v,ephemeral=False),dict(v,disableUpdate=False),dict(v,agentId=True),dict(v,agentName='foreign'),dict(v,workFolder='/host'),dict(v,gitHubUrl='https://github.com/foreign/repo')]:
+ try:r.configured_settings(json.dumps(changed).encode(),op,json.loads);raise AssertionError('accepted')
+ except r.Refused:pass
+print('settings_ok')`),
+    "settings_ok",
+  );
+  assert.ok(
+    source.indexOf("agent_id = configured_settings") <
+      source.indexOf('phase = "run_one_job"'),
+  );
+  assert.ok(
+    source.indexOf("while read_auth(operation") <
+      source.indexOf('phase = "run_one_job"'),
+  );
+  assert.match(source, /host_registration_not_removed/);
+});
+
+test("real repository REST shape with os=unknown and omitted ephemeral stays observation, not fabricated readiness", () => {
+  const apiSource = read("ephemeral-runner-api-readback.ps1");
+  assert.doesNotMatch(
+    apiSource,
+    /Get-VM|Invoke-Cim|HttpClient|Invoke-WebRequest|credential fill|Set-Item|WriteAll|\$env:/,
+  );
+  const code = `$ErrorActionPreference='Stop'
+. ([scriptblock]::Create([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${Buffer.from(apiSource).toString("base64")}'))))
+$op='${operation}';$name='citygo-ci-canary-'+$op;$label='citygo-ci-canary-${hash(operation).slice(0, 16)}'
+$r=[pscustomobject]@{id=21;name=$name;os='unknown';status='online';busy=$true;labels=@([pscustomobject]@{name=$label;type='custom'})}
+$good=Get-CityGoRunnerApiReadback $r $op 21
+$denied=@()
+foreach($change in @('id','name','os','label','ephemeral-false','ephemeral-string')){
+ $item=$r|ConvertTo-Json -Depth 5 -Compress|ConvertFrom-Json
+ if($change-ceq'id'){$item.id=22};if($change-ceq'name'){$item.name='foreign'};if($change-ceq'os'){$item.os='windows'};if($change-ceq'label'){$item.labels[0].name='foreign'}
+ if($change-ceq'ephemeral-false'){$item|Add-Member -NotePropertyName ephemeral -NotePropertyValue $false};if($change-ceq'ephemeral-string'){$item|Add-Member -NotePropertyName ephemeral -NotePropertyValue 'true'}
+ try{$null=Get-CityGoRunnerApiReadback $item $op 21;$denied+=$false}catch{$denied+=$true}
+}
+[ordered]@{good=$good;denied=$denied}|ConvertTo-Json -Depth 6 -Compress`;
+  const ps =
+    process.platform === "win32"
+      ? "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+      : "pwsh";
+  const result = spawnSync(
+    ps,
+    [
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-EncodedCommand",
+      Buffer.from(code, "utf16le").toString("base64"),
+    ],
+    { encoding: "utf8", timeout: 15000 },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const observed = JSON.parse(result.stdout.trim());
+  assert.equal(observed.good.apiOs, "unknown");
+  assert.equal(observed.good.ephemeralAttributePresent, false);
+  assert.equal(observed.good.linuxOrEphemeralReadinessProven, false);
+  assert.deepEqual(observed.denied, [true, true, true, true, true, true]);
 });

@@ -150,6 +150,15 @@ def registration_args(operation, token):
             "--no-default-labels", "--ephemeral", "--disableupdate", "--work", "_work"]
 
 
+def configured_settings(raw, operation, unique_json):
+    value = unique_json(raw.decode("utf8"))
+    require(type(value) is dict and value.get("agentName") == "citygo-ci-canary-" + operation and
+            type(value.get("agentId")) is int and value["agentId"] > 0 and value.get("ephemeral") is True and
+            value.get("disableUpdate") is True and value.get("workFolder") == "_work" and
+            value.get("gitHubUrl") == "https://github.com/" + REPOSITORY, "runner_settings_mismatch")
+    return value["agentId"]
+
+
 def native(args, timeout, uid=None, gid=None, groups=None, cwd="/"):
     try:
         done = subprocess.run(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
@@ -220,7 +229,9 @@ def main(arguments):
         report = dict(version=1, scope="ephemeral_ci_runner_canary", operationId=operation, stage="waiting_host_registration",
                       gatewayOperationId=value["gatewayOperationId"], hostSnapshotSha256=value["hostSnapshotSha256"],
                       versionInstalled=VERSION, archiveSha256=ARCHIVE_SHA, runnerRegistered=False, ciJobsAdmitted=False,
-                      negativeProbeCount=proof["negativeProbeCount"], linkProbeFramesSent=proof["linkProbeFramesSent"],
+                      negativeProbeCount=proof["negativeProbeCount"], gatewayProbeCount=proof["gatewayProbeCount"],
+                      dnsOk=proof["dnsOk"], httpsOk=proof["httpsOk"], sourceSpoofSent=proof["sourceSpoofSent"],
+                      ipv6DefaultRouteAbsent=proof["ipv6DefaultRouteAbsent"], linkProbeFramesSent=proof["linkProbeFramesSent"],
                       observedGatewayMac=proof["observedGatewayMac"])
         guest.publish(operation, helper.report_bytes(report))
         phase = "wait_host_registration"
@@ -234,8 +245,18 @@ def main(arguments):
         phase = "configure_ephemeral"
         native(registration_args(operation, token), 75, uid, gid, groups, ROOT)
         token = None
-        report.update(stage="configured_ephemeral", runnerRegistered=True)
+        settings = guest.read(ROOT + "/.runner", 16384)
+        agent_id = configured_settings(settings, operation, helper.unique_json)
+        report.update(stage="configured_ephemeral", runnerRegistered=True, agentId=agent_id,
+                      ephemeralReadback=True, disableUpdateReadback=True, linuxGuestVerified=True)
         guest.publish(operation, helper.report_bytes(report))
+        # Do not start listening for a job while the registration record is
+        # still supplied by the host. No management credential is ever here.
+        phase = "wait_host_registration_removal"
+        end = time.monotonic() + 60
+        while read_auth(operation, helper.unique_json) is not None:
+            require(time.monotonic() < end, "host_registration_not_removed")
+            time.sleep(1)
         phase = "run_one_job"
         native([ROOT + "/run.sh"], 300, uid, gid, groups, ROOT)
         report.update(stage="runner_process_exited")

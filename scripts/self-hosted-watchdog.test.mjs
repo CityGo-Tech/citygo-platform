@@ -157,6 +157,45 @@ ${invoke}`);
   },
 );
 
+test(
+  "detached DVD requires complete native readback; transient or permanent refusal never repeats detach",
+  { skip: !available },
+  () => {
+    for (const permanent of [false, true]) {
+      const out = run(`${request}${mocks}
+$request.publicSeedPath='D:\\CityGo-CI\\seeds\\'+$op+'\\runner-cidata.iso';$request.publicSeedSha256='a'*64;$script:dvd.Path=$request.publicSeedPath
+function Open-CityGoWatchdogPublicSeed {param($Plan,$Owner);return [IO.MemoryStream]::new()}
+function Read-CityGoWatchdogRequest {param($Plan,$Owner);return 'complete'}
+function Set-VMDvdDrive {param($VMDvdDrive,$Path,$ErrorAction);Track 'detach-once';$script:dvd.Path=$null}
+$script:originalNative=(Get-Item Function:Get-CityGoCanaryStopNative).ScriptBlock;$script:failedRead=0
+function Get-CityGoCanaryStopNative {param($Plan,[switch]$ObserveStopping)
+ if(-not$script:dvd.Path-and$Plan.seedPath-eq$null-and(${permanent ? "$true" : "$false"}-or$script:failedRead-eq0)){$script:failedRead++;Track 'readback-refused';throw 'TRANSIENT_PRIVATE_NATIVE_TEXT'}
+ & $script:originalNative $Plan -ObserveStopping:$ObserveStopping
+}
+${invoke}`);
+      assert.equal(out.calls.filter((x) => x === "detach-once").length, 1);
+      assert.equal(out.removed, !permanent);
+      assert.equal(
+        out.result.stage,
+        permanent
+          ? "failed_preserved_requires_inspection"
+          : "watchdog_cleanup_completed",
+      );
+      if (permanent) {
+        assert.equal(
+          out.calls.filter((x) => x === "readback-refused").length,
+          10,
+        );
+        assert.ok(!out.calls.includes("graceful"));
+        assert.ok(!out.calls.includes("cleanup"));
+      }
+      assert.ok(
+        !JSON.stringify(out.result).includes("TRANSIENT_PRIVATE_NATIVE_TEXT"),
+      );
+    }
+  },
+);
+
 test("watchdog has pinned helpers and no boot/registration/global mutations or arbitrary native output", () => {
   for (const path of paths.slice(0, 2))
     assert.ok(
