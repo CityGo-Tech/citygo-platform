@@ -68,8 +68,22 @@ stateful replies. Само наличие Hyper-V IP ACL не закрывает
 подтвердил `Private`, ноль подключённых host/guest NIC и неизменность прежних
 switch/NIC/NAT. Первый pre-creation отказ сохранён: у native management-NIC
 VMId оказался null. Он допускается только при явном `IsManagementOs=true`;
-пустой VMId гостя по-прежнему запрещён. ВМ-шлюз ещё не создана, IP forwarding
-не включён; старые NAT, firewall, WSL, Docker и production не перенастраивались.
+пустой VMId гостя по-прежнему запрещён. Отдельные тестовые ВМ-шлюзы подготовлены
+на свежих копиях базы: 2 CPU, 2 ГБ статической памяти, два отключённых NIC с
+разными фиксированными MAC, без auto-start/checkpoints. Первый native boot
+отказал на проверке готовности Linux policy; команда остановки была отправлена,
+а независимый read-only инвентарь подтвердил `Off`, два отключённых NIC и пустой
+DVD. Сбой сохранён как failed, не как успешный сетевой тест. Для следующей
+попытки добавлены фиксированные коды этапа/причины без raw exception/output.
+Вторая попытка уточнила отказ `rules_chain_invalid` на readback; этот failed
+report сохранён. После очистки таблиц только выделенного guest (сначала DROP
+в обеих IP-family) свежая третья копия прошла native `--test`, установку и
+двойной readback IPv4/IPv6. Подтверждены фактический DHCP lease, связанный свежий
+host snapshot и включение forwarding после проверок. Затем штатный контроллер
+подтвердил `Off`, отключение обоих NIC и пустой DVD. Все три тестовых шлюза
+выключены; диски и закрытые failure/control evidence сохранены для продолжения.
+Это **не** connected CI canary, сетевой watchdog или зарегистрированный runner.
+Старые NAT, firewall, WSL, Docker и production не перенастраивались.
 
 - Компьютер: Windows 11 Pro, 32 ГБ оперативной памяти. Подтверждены состояние
   компонента Hyper-V `Enabled` и службы `vmms` `Running`; это не проверка гостевой
@@ -326,9 +340,34 @@ WSL с доступом к дискам Windows и общий Docker Desktop д�
   Special/LAN/host/production deny идут до established permits. Требуются hash
   host snapshot, фактические WAN/lease сведения, явная классификация префиксов;
   недопустимы широкий VPN `/0`, совпадение DNS с запретом или DHCP с production.
-  Сейчас правила не применялись в Linux, forwarding не включался. Нужны installer,
-  независимый readback, реальные canary и fail-closed контроль смены Wi-Fi/VPN.
+  После двух сохранённых отказов свежий native запуск installer прошёл readback
+  обеих family и включение forwarding; затем guest выключен и отключён.
+  Нужны реальные CI canary и fail-closed контроль смены Wi-Fi/VPN.
   Свободный внешний HTTPS не является доказанным запретом всех косвенных прокси.
+- `deploy/ci/Convert-CityGoCanaryToGateway.ps1` превращает только один полный
+  manifest-owned Off/disconnected клон в профиль доверенного шлюза: 2 CPU / 2 ГБ,
+  два разных статических MAC и два guarded NIC без switch attachments. До
+  изменений пишет immutable intent, после независимо перечитывает профиль.
+  Не подключает сеть, не загружает ВМ и не удаляет/принимает partial attempts.
+- `deploy/ci/render-private-gateway-seed.mjs` — чистый renderer публичного
+  NoCloud seed без credentials, SSH, checkout и загрузок. WAN/LAN выбираются
+  разными exact MAC; только WAN получает DHCP, LAN — отдельный static `/30`.
+  DHCPv6, RA и link-local отключены. Seed связан с SHA исходников и свежего
+  host snapshot, а не с предполагаемым адресом DHCP server.
+- `deploy/ci/private-gateway-init.py` — one-shot root-only initializer отдельного
+  доверенного Ubuntu 24.04 guest, не job installer. Сверяет NoCloud/seed, пишет
+  durable intent, выключает forwarding, останавливает и маскирует Docker/SSH,
+  наблюдает фактические WAN/MAC/default route/DHCP lease. Обе таблицы сначала
+  проходят native `--test`. Только в этом dedicated guest и при подтверждённом
+  forwarding=0 выставляет filter DROP для обеих IP-family, затем очищает
+  предыдущие таблицы/пользовательские цепочки, включая оставшиеся от Docker.
+  После — установка и семантический readback IPv4/IPv6;
+  только после повторной сверки сети включается forwarding. При ошибке
+  forwarding закрывается best-effort; bounded report не содержит текста
+  исключения/команд/секретов. Неизвестные chains/rules и изменения порядка правил
+  не скрываются нормализацией. Повторный запуск existing intent запрещён.
+  Даже успешный report оставляет `guestIsolationVerified=false` и
+  `ciJobsAdmitted=false`: это не connected canary и не внешний watchdog.
 - Для самого первого доверенного boot возможен явно помеченный DHCP candidate:
   единственный `/32` адрес gateway из HNS ICS, **не** утверждение, что DHCP server
   уже наблюдался в lease. Это не широкое разрешение subnet и не допуск CI jobs.
@@ -560,7 +599,8 @@ Release harness создаёт `.local/release-candidate` и доказател�
 - [x] Direct-IP enforcement и bounded stop helpers покрыты AST/mock-проверками, включая отказы и повторы intent. Их реальное применение и внешний watchdog ещё не приняты.
 - [x] Создан отдельный Private switch без host/guest attachments; прежние switch/NIC/NAT не изменены. Поддержка native management-NIC null VMId ограничена явным host-признаком.
 - [x] Неудачный реальный early-startup stop адресно завершён отдельной reconciliation: один TurnOff, подтверждённый Off, удалены только второй клон и диск. Исходный тест остаётся failed; база Off/unchanged и закрытые отчёты сохранены.
-- [ ] Создан и проверен доверенный Linux-шлюз; Linux policy/readback, смена внешней сети и connected isolation испытаны фактически. Pure policy renderer не закрывает этот пункт.
+- [x] Подготовлен dedicated gateway profile 2 CPU / 2 ГБ / два отдельных guarded NIC. Native-прогон на свежей копии подтвердил Linux policy/readback, forwarding после проверок и финальный Off/disconnected; первые два отказа сохранены.
+- [ ] Проверены смена внешней сети, свежесть host snapshot на каждом job и внешний fail-closed watchdog. Успешный первый boot не закрывает этот пункт.
 - [ ] Проверены подключённые сетевые ограничения, включая LAN/host/metadata/production и stateful replies. Отключённый canary не заменяет эту проверку.
 - [ ] Создание и адресное удаление одноразовой ВМ испытаны на успехе, ошибке, отмене и обрыве.
 - [ ] Базовый образ не содержит checkout, runner registration, shared mounts или credentials.
@@ -573,9 +613,11 @@ Release harness создаёт `.local/release-candidate` и доказател�
 Текущий результат — проверенные инструменты, очищенная выключенная bootstrap-ВМ,
 успешный offline-тест первого клона и его адресное удаление; второй клон после
 неудачного startup-stop теста адресно остановлен и удалён отдельной процедурой.
-Private switch создан, пока без ВМ-шлюза и без подключённых интерфейсов. Это не
-работающий self-hosted CI или принятый для jobs golden image. Локальный набор
-`pnpm test:ci-host` прошёл 201/201 проверку без skip; AST/mock tests не выполняют
+Private switch создан; доверенный Linux gateway прошёл native policy/readback
+на свежей копии и затем выключен с отключением обоих NIC/DVD. Первые два failed
+gateway attempts и все закрытые материалы сохранены, три шлюза сейчас Off.
+Это не работающий self-hosted CI или принятый для jobs golden image. Локальный набор
+`pnpm test:ci-host` прошёл 225/225 проверок без skip; AST/mock tests не выполняют
 Hyper-V операции и не заменяют реальные clone/network canaries. Полный
 монорепозиторный `pnpm check` в этой рабочей копии на этом этапе не воспроизводился.
 Первый запуск в sandbox не смог запустить Git Bash из-за отказа Windows
