@@ -232,8 +232,65 @@ class Validation(unittest.TestCase):
         self.assertFalse(any("YOOKASSA" in key or key == "CITYGO_AI_PROFILE"
                              for key in spec["services"]["web"]["environment"]))
 
+    def test_cn_live_v5_is_exact_pro_only_and_cannot_reinterpret_legacy_profiles(self):
+        profile = s.CITYGO_10X_YOOKASSA_LIVE_CN_PROFILE
+        value = routerai_fixture(profile)
+        def validate(data, selected=profile):
+            with patch.object(t, "read_file", return_value=encoded(data)):
+                return s.api_secret("/unused", selected)
+        self.assertEqual(validate(value), encoded(value))
+        self.assertEqual(s.PROFILE_VERSIONS[profile], 5)
+        self.assertEqual({k: value[k] for k in s.ROUTERAI_LIMITS}, dict.fromkeys(s.ROUTERAI_LIMITS, "0"))
+        self.assertEqual(s.CLOSED_ONLY_PROFILES,
+                         {s.CITYGO_10X_YOOKASSA_LIVE_PROFILE, profile})
+        for key in value:
+            missing = dict(value); del missing[key]
+            with self.subTest(missing=key), self.assertRaises(b.BackupError): validate(missing)
+        for change in ({"ROUTERAI_COUNTRY": "us"}, {"ROUTERAI_COUNTRY": "ru"},
+                       {"ROUTERAI_MODEL": "deepseek/deepseek-v4-flash"}, {"ROUTERAI_UPSTREAM": "yandex"},
+                       {"ROUTERAI_REASONING_EFFORT": "low"}, {"ROUTERAI_MAX_OUTPUT_TOKENS": "32768"},
+                       {"ROUTERAI_MAX_OUTPUT_TOKENS": "4097"}, {"LLM_MAX_INPUT_BYTES": "64000"},
+                       {"LLM_MAX_INPUT_BYTES": "8193"}, {"ROUTERAI_REQUEST_TIMEOUT_MS": "240001"},
+                       {"YOOKASSA_MODE": "test"}, {"YOOKASSA_MODE": "disabled"},
+                       {"YOOKASSA_RECEIPT_MODE": "automatic"}, {"YOOKASSA_SECRET_KEY": "test_synthetic"},
+                       {"AI_CREDIT_MODE": "routerai_at_cost"}, {"OPENAI_API_KEY": "synthetic-hidden"},
+                       {"ROUTERAI_BASE_URL": "https://untrusted.test"}):
+            with self.subTest(keys=list(change)), self.assertRaises(b.BackupError): validate({**value, **change})
+        for old in (s.PROFILE, s.ROUTERAI_PROFILE, s.CITYGO_10X_PROFILE, s.CITYGO_10X_YOOKASSA_LIVE_PROFILE):
+            with self.subTest(old_profile=old), self.assertRaises(b.BackupError): validate(value, old)
+            if old != s.PROFILE:
+                legacy = routerai_fixture(old)
+                with self.subTest(old_secret=old), self.assertRaises(b.BackupError): validate(legacy)
+                self.assertEqual(legacy["ROUTERAI_COUNTRY"], "us")
+                self.assertEqual(legacy["ROUTERAI_MAX_OUTPUT_TOKENS"], "32768")
+                self.assertEqual(legacy["LLM_MAX_INPUT_BYTES"], "64000")
+
+    def test_cn_live_runtime_marker_is_api_only_and_cannot_use_a_legacy_marker(self):
+        profile = s.CITYGO_10X_YOOKASSA_LIVE_CN_PROFILE
+        self.assertEqual(s.profile_environment(profile),
+                         {"LLM_PROVIDER": "routerai", "CITYGO_AI_PROFILE": "routerai-citygo-10x-yookassa-live-cn-v1"})
+        image = {"local_id": "sha256:" + "c" * 64, "config_id": "sha256:" + "c" * 64}
+        value = preparation_fixture.container("api"); value["Image"] = image["local_id"]; value["State"]["Dead"] = False
+        base = detail(value, "api", image, "/tmp/api.json", profile)
+        args = ("api", image, "citygo-fixture", ORIGIN, "/tmp/api.json", {"web_api": WEB_NETWORK, "database": "e" * 64})
+        s.runtime(base, *args, profile)
+        for old in (s.PROFILE, s.ROUTERAI_PROFILE, s.CITYGO_10X_PROFILE, s.CITYGO_10X_YOOKASSA_LIVE_PROFILE):
+            with self.subTest(old_profile=old), self.assertRaises(b.BackupError): s.runtime(base, *args, old)
+        for extra in ("ROUTERAI_COUNTRY=cn", "ROUTERAI_API_KEY=synthetic-hidden",
+                      "YOOKASSA_SECRET_KEY=live_synthetic-not-live"):
+            bad = copy.deepcopy(base); bad["Config"]["Env"].append(extra)
+            with self.assertRaises(b.BackupError): s.runtime(bad, *args, profile)
+        spec = s.compose_spec("citygo-fixture", ORIGIN, {"api": image, "web": image}, "/tmp/api.json", profile)
+        self.assertNotIn("CITYGO_AI_PROFILE", spec["services"]["web"]["environment"])
+        self.assertNotIn("secrets", spec["services"]["web"])
+        self.assertEqual(spec["services"]["api"]["restart"], "no")
+        self.assertNotIn("ports", spec["services"]["api"])
+
 
 def routerai_fixture(profile=s.ROUTERAI_PROFILE):
+    if profile == s.CITYGO_10X_YOOKASSA_LIVE_CN_PROFILE:
+        return json.loads((Path(__file__).resolve().parent.parent / "fixtures" /
+                           "routerai-citygo-10x-yookassa-live-cn-profile.fixture.json").read_bytes())
     name = "routerai-citygo-10x-profile.fixture.json" if profile in (s.CITYGO_10X_PROFILE, s.CITYGO_10X_YOOKASSA_LIVE_PROFILE) else "routerai-profile.fixture.json"
     value = json.loads((Path(__file__).resolve().parent.parent / "fixtures" / name).read_bytes())
     if profile == s.CITYGO_10X_YOOKASSA_LIVE_PROFILE:
@@ -355,6 +412,35 @@ class Startup(unittest.TestCase):
         for change in ({"YOOKASSA_SHOP_ID": "54321"}, {"YOOKASSA_SECRET_KEY": "live_synthetic-other-key"},
                        {"YOOKASSA_MODE": "test"}, {"YOOKASSA_RECEIPT_MODE": "disabled"},
                        {"LLM_USER_DAILY_REQUEST_LIMIT": "0"}):
+            self.api.write_bytes(encoded(original))
+            self.start_approval = synthetic_start_approval(self.directory, self.authorization, self.api, profile=profile)
+            self.api.write_bytes(encoded({**original, **change}))
+            with self.subTest(keys=list(change)), self.assertRaises(b.BackupError): self.start()
+            self.assertEqual(self.host.events, []); self.assertFalse(self.pending.exists())
+            self.assertEqual(self.start_events, []); self.assertEqual(self.store.calls, [])
+
+    def test_cn_v5_starts_closed_without_admitting_traffic_worker_or_money(self):
+        profile = s.CITYGO_10X_YOOKASSA_LIVE_CN_PROFILE
+        enable_routerai_fixture(self, profile)
+        result = self.start()
+        self.assertEqual(self.runtime_profile, profile)
+        self.assertEqual(s.approval(self.start_approval.path.read_bytes(), time.time())["version"], 5)
+        self.assertTrue(self.host.closed); self.assertTrue(self.pending.exists())
+        self.assertFalse(result["startup"]["traffic_authorized"])
+        self.assertFalse(result["startup"]["worker_authorized"])
+        self.assertFalse((self.state / w.ADMISSION).exists())
+        for hidden in ("live_SYNTHETIC_NOT_A_REAL_KEY", "synthetic-not-live", "ROUTERAI_API_KEY"):
+            self.assertNotIn(hidden, json.dumps(result))
+
+    def test_cn_v5_binds_exact_notice_key_country_resource_envelope_and_quota_bytes_before_stop(self):
+        profile = s.CITYGO_10X_YOOKASSA_LIVE_CN_PROFILE
+        original = routerai_fixture(profile)
+        for change in ({"ROUTERAI_DATA_NOTICE": "A different synthetic notice"},
+                       {"ROUTERAI_PRODUCTION_POLICY_ID": "b" * 64},
+                       {"ROUTERAI_API_KEY": "synthetic-rotated-key"}, {"ROUTERAI_COUNTRY": "us"},
+                       {"ROUTERAI_MAX_OUTPUT_TOKENS": "32768"}, {"LLM_MAX_INPUT_BYTES": "64000"},
+                       {"YOOKASSA_SHOP_ID": "54321"}, {"YOOKASSA_SECRET_KEY": "live_synthetic-other-key"},
+                       {"LLM_USER_DAILY_REQUEST_LIMIT": "1"}):
             self.api.write_bytes(encoded(original))
             self.start_approval = synthetic_start_approval(self.directory, self.authorization, self.api, profile=profile)
             self.api.write_bytes(encoded({**original, **change}))

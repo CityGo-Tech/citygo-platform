@@ -31,6 +31,7 @@ export async function* readChatCompletion(
     maxOutputCharacters?: number;
     maxStreamBytes?: number;
     onGeneration?: (id: unknown) => Promise<void>;
+    expectedModel?: string;
   } = {},
 ): AsyncIterable<ModelStreamEvent> {
   const maxOutputCharacters = limits.maxOutputCharacters ?? 24000;
@@ -40,6 +41,14 @@ export async function* readChatCompletion(
     maxOutputCharacters > 128000
   )
     throw new Error("Invalid Chat Completions output limit");
+  if (
+    limits.expectedModel !== undefined &&
+    (typeof limits.expectedModel !== "string" ||
+      !limits.expectedModel.trim() ||
+      limits.expectedModel !== limits.expectedModel.trim() ||
+      limits.expectedModel.length > 200)
+  )
+    throw new Error("Invalid expected Chat Completions model");
   let stopped = false;
   let model: string | undefined;
   let usage: ModelUsage | undefined;
@@ -54,6 +63,8 @@ export async function* readChatCompletion(
       return;
     }
     const chunk = record(JSON.parse(data) as unknown);
+    // Preserve charge identity even when the declared model must be rejected.
+    // This validates the provider's declaration, not its actual upstream work.
     if (chunk.id != null) await limits.onGeneration?.(chunk.id);
     if (chunk.error != null) throw new Error("Chat Completions stream error");
     if (chunk.model != null) {
@@ -61,11 +72,17 @@ export async function* readChatCompletion(
         typeof chunk.model !== "string" ||
         !chunk.model.trim() ||
         chunk.model.length > 200 ||
-        (model !== undefined && model !== chunk.model)
+        (model !== undefined && model !== chunk.model) ||
+        (limits.expectedModel !== undefined &&
+          chunk.model !== limits.expectedModel)
       )
         throw new Error("Invalid Chat Completions model");
       model = chunk.model;
     }
+    // No visible content may precede the exact declared identity. Later chunks
+    // may omit model, but cannot change it when they include it.
+    if (limits.expectedModel !== undefined && model === undefined)
+      throw new Error("Chat Completions omitted expected model");
     if (chunk.usage != null) usage = readUsage(chunk.usage);
     if (!Array.isArray(chunk.choices))
       throw new Error("Missing Chat Completions choices");

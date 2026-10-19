@@ -101,3 +101,104 @@ test("invalid output bounds cannot remove the safety ceiling", async () => {
       { message: "Invalid Chat Completions output limit" },
     );
 });
+
+test("expected model rejects unknown identity before text and retains the generation for reconciliation", async () => {
+  for (const declared of [
+    undefined,
+    "deepseek/deepseek-v4-flash",
+    "deepseek/deepseek-v4-pro-latest",
+  ]) {
+    let cancelled = false;
+    const identities: unknown[] = [],
+      received: ModelStreamEvent[] = [];
+    const input = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(
+          new TextEncoder().encode(
+            "data: " +
+              JSON.stringify({
+                ...chunk("must-not-publish"),
+                model: declared,
+                id: "synthetic_identity",
+              }) +
+              "\n\n",
+          ),
+        );
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    await assert.rejects(async () => {
+      for await (const event of readChatCompletion(input, signal(), {
+        expectedModel: "deepseek/deepseek-v4-pro-0813",
+        onGeneration: async (id) => {
+          identities.push(id);
+        },
+      }))
+        received.push(event);
+    }, /Chat Completions (?:omitted expected|model)/);
+    assert.deepEqual(identities, ["synthetic_identity"]);
+    assert.deepEqual(received, []);
+    assert.equal(cancelled, true);
+  }
+});
+
+test("exact model may be omitted after identification but cannot change before its next delta", async () => {
+  const expectedModel = "synthetic-model";
+  assert.deepEqual(
+    await collect(
+      readChatCompletion(
+        body([
+          chunk("first"),
+          { choices: chunk("second").choices },
+          chunk("", true),
+        ]),
+        signal(),
+        { expectedModel },
+      ),
+    ),
+    [
+      { type: "delta", text: "first" },
+      { type: "delta", text: "second" },
+      { type: "complete", model: expectedModel },
+    ],
+  );
+  const received: ModelStreamEvent[] = [];
+  await assert.rejects(async () => {
+    for await (const event of readChatCompletion(
+      body([
+        chunk("first"),
+        { ...chunk("must-not-publish"), model: "different-model" },
+      ]),
+      signal(),
+      { expectedModel },
+    ))
+      received.push(event);
+  }, /Invalid Chat Completions model/);
+  assert.deepEqual(received, [{ type: "delta", text: "first" }]);
+});
+
+test("invalid expected identity fails closed and generic legacy streams remain unpinned", async () => {
+  for (const expectedModel of [
+    "",
+    " ",
+    " padded",
+    "x".repeat(201),
+    false as unknown as string,
+  ])
+    await assert.rejects(
+      collect(
+        readChatCompletion(body([chunk("ok", true)]), signal(), {
+          expectedModel,
+        }),
+      ),
+      /Invalid expected Chat Completions model/,
+    );
+  assert.equal(
+    (
+      await collect(readChatCompletion(body([chunk("legacy", true)]), signal()))
+    ).at(-1)?.type,
+    "complete",
+  );
+});

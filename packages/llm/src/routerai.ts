@@ -159,6 +159,9 @@ export class RouterAIProvider implements StreamingProvider {
           ? {
               maxOutputCharacters: 128000,
               maxStreamBytes: 16 * 1024 * 1024,
+              ...(this.model === "deepseek/deepseek-v4-pro-0813"
+                ? { expectedModel: this.model }
+                : {}),
               ...(guard?.billing ? { onGeneration: recordGeneration } : {}),
             }
           : guard?.billing

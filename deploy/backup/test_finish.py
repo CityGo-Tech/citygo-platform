@@ -306,4 +306,33 @@ class CityGo10xLiveCutover(RouterAiCutover):
         self.assertFalse((self.state / w.ADMISSION).exists())
 
 
+@unittest.skipUnless(sys.platform.startswith("linux"), "Linux protected CN live-profile atomic cutover")
+class CityGo10xLiveCnCutover(RouterAiCutover):
+    profile = s.CITYGO_10X_YOOKASSA_LIVE_CN_PROFILE
+    marker = "routerai-citygo-10x-yookassa-live-cn-v1"
+
+    def test_cn_v5_generation_remains_closed_and_preserves_only_the_exact_api_mount(self):
+        result = self.finish()
+        spec = json.loads(self.plan["files"]["compose.json"])
+        value = json.loads(self.api.read_bytes())
+        self.assertEqual(s.approval(self.start_approval.path.read_bytes(), time.time())["version"], 5)
+        self.assertEqual(value["ROUTERAI_COUNTRY"], "cn")
+        self.assertEqual(value["ROUTERAI_MODEL"], "deepseek/deepseek-v4-pro-0813")
+        self.assertEqual(value["ROUTERAI_MAX_OUTPUT_TOKENS"], "4096")
+        self.assertEqual(value["LLM_MAX_INPUT_BYTES"], "8192")
+        self.assertEqual({k: value[k] for k in s.ROUTERAI_LIMITS}, dict.fromkeys(s.ROUTERAI_LIMITS, "0"))
+        self.assertEqual(value["YOOKASSA_MODE"], "live")
+        self.assertEqual(value["YOOKASSA_RECEIPT_MODE"], "npd_manual")
+        for role in ("web", "worker", "backup"):
+            self.assertFalse(any("YOOKASSA" in key or "ROUTERAI" in key or key == "CITYGO_AI_PROFILE"
+                                 for key in spec["services"][role].get("environment", {})))
+            self.assertFalse(any(mount.get("source") == "api_config" if isinstance(mount, dict)
+                                 else mount == "api_config" for mount in spec["services"][role].get("secrets", [])))
+        for hidden in (value["YOOKASSA_SECRET_KEY"], value["ROUTERAI_API_KEY"], value["ROUTERAI_DATA_NOTICE"]):
+            self.assertNotIn(hidden, self.plan["files"]["compose.json"].decode())
+            self.assertNotIn(hidden, json.dumps(result))
+        self.assertTrue(self.host.closed)
+        self.assertFalse((self.state / w.ADMISSION).exists())
+
+
 if __name__ == "__main__": unittest.main()

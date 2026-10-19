@@ -5,6 +5,7 @@ import { createAiPolicy } from "./ai-policy.js";
 import { productionProviderAllowed } from "./ai-production.js";
 import { createProvider, createProviderRegistry } from "./provider.js";
 import { createAiControl } from "./ai-control.js";
+import { createAiExecution } from "./ai-execution.js";
 import { TestProvider } from "@citygo/testkit";
 
 const env = {
@@ -75,6 +76,54 @@ test("CityGo 10x production mode preserves the exact recipient approval gate wit
     productionProviderAllowed(config, { ...identity, model: "another/model" }),
     false,
   );
+  assert.equal(network.mock.callCount(), 0);
+});
+
+test("Pro CN requires a new recipient and monetary execution approval, without selecting Flash or making calls", (t) => {
+  const network = t.mock.method(globalThis, "fetch", async () => {
+    throw new Error("No network allowed");
+  });
+  const metadata = {
+    ...env,
+    AI_CREDIT_MODE: "routerai_citygo_10x",
+    ROUTERAI_MODEL: "deepseek/deepseek-v4-pro-0813",
+    ROUTERAI_UPSTREAM: "deepseek",
+    ROUTERAI_DATA_NOTICE: "Synthetic CN notice, not approved for users.",
+    ROUTERAI_MAX_OUTPUT_TOKENS: "4096",
+    LLM_MAX_INPUT_BYTES: "8192",
+  };
+  const pro = { name: "routerai" as const, model: metadata.ROUTERAI_MODEL };
+  const oldConfig = readConfig({ ...metadata, ROUTERAI_COUNTRY: "us" });
+  const oldPolicy = createAiPolicy(oldConfig, pro)!;
+  const unapproved = readConfig({
+    ...metadata,
+    ROUTERAI_COUNTRY: "cn",
+    ROUTERAI_PRODUCTION_POLICY_ID: oldPolicy.id,
+  });
+  const cnPolicy = createAiPolicy(unapproved, pro)!;
+  assert.notEqual(cnPolicy.id, oldPolicy.id);
+  assert.match(cnPolicy.routing, /cn/);
+  assert.equal(productionProviderAllowed(unapproved, pro), false);
+  assert.throws(() => createProvider(unapproved), /activation is blocked/);
+  const cnConfig = {
+    ...unapproved,
+    ROUTERAI_PRODUCTION_POLICY_ID: cnPolicy.id,
+  };
+  assert.equal(createProvider(cnConfig)?.model, pro.model);
+  assert.notEqual(
+    createAiExecution(cnConfig, cnPolicy).key,
+    createAiExecution(oldConfig, oldPolicy).key,
+  );
+  for (const changed of [
+    { ROUTERAI_MODEL: "deepseek/deepseek-v4-flash" },
+    { ROUTERAI_UPSTREAM: "other" },
+    { ROUTERAI_COUNTRY: "us" },
+    { ROUTERAI_DATA_NOTICE: "Different notice" },
+  ])
+    assert.throws(
+      () => createProvider({ ...cnConfig, ...changed }),
+      /activation is blocked/,
+    );
   assert.equal(network.mock.callCount(), 0);
 });
 

@@ -70,9 +70,9 @@ def policy(path=POLICY_PATH):
               "autodeploy-disabled")
     b.require(type(value["profile"]) is str and value["profile"] in s.PROFILE_VERSIONS and type(value["allow_new_migrations"]) is bool,
               "autodeploy-policy")
-    # v4 is a manual CLOSED-release profile, not a new standing permission to
+    # v4/v5 are manual CLOSED-release profiles, not a new standing permission to
     # run resume() (which opens ingress). Public live acceptance is separate.
-    b.require(value["profile"] != s.CITYGO_10X_YOOKASSA_LIVE_PROFILE, "autodeploy-live-profile-closed-only")
+    b.require(value["profile"] not in s.CLOSED_ONLY_PROFILES, "autodeploy-live-profile-closed-only")
     p.hostname(value["origin"])
     for key in ("config_path", "ingress_directory", "bundles_directory", "initial_bundle", "registry_config", "nginx_config"):
         b.require(type(value[key]) is str and f.path_string(value[key]) == str(Path(value[key])), "autodeploy-path")
