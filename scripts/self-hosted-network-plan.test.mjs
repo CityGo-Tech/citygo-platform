@@ -189,6 +189,15 @@ test(
       new Set(result.rules.map((rule) => rule.weight)).size,
       result.rules.length,
     );
+    assert.ok(
+      result.rules.every(
+        (rule, index) =>
+          Number.isInteger(rule.weight) &&
+          rule.weight >= 1 &&
+          rule.weight <= 65_535 &&
+          (index === 0 || result.rules[index - 1].weight > rule.weight),
+      ),
+    );
     assert.equal(
       result.rules.filter((rule) => rule.action === "Allow").length,
       6,
@@ -287,7 +296,7 @@ test(
 );
 
 test(
-  "Default Switch requires captured DHCP identity and admits only the narrow request/reply pair",
+  "Default Switch requires captured DHCP identity and admits only narrow broadcast, exact-server renewal and reply",
   { skip: !available },
   () => {
     assert.equal(
@@ -312,6 +321,32 @@ test(
     assert.equal(decide(result, { ...packet, localPort: "69" }).action, "Deny");
     assert.equal(
       decide(result, {
+        ...packet,
+        remote: "172.29.192.1",
+        local: "172.29.192.2",
+      }).action,
+      "Allow",
+    );
+    for (const deniedRenewal of [
+      { ...packet, remote: "172.29.192.2", local: "172.29.192.3" },
+      { ...packet, remote: "172.29.192.1" },
+      {
+        ...packet,
+        remote: "172.29.192.1",
+        local: "172.29.192.2",
+        localPort: "69",
+      },
+      {
+        ...packet,
+        remote: "172.29.192.1",
+        local: "172.29.192.2",
+        protocol: "TCP",
+      },
+    ]) {
+      assert.equal(decide(result, deniedRenewal).action, "Deny");
+    }
+    assert.equal(
+      decide(result, {
         remote: "172.29.192.1",
         direction: "Inbound",
         protocol: "UDP",
@@ -331,6 +366,70 @@ test(
       "Deny",
     );
     assert.equal(decide(result, { remote: "172.29.192.1" }).action, "Deny");
+    const dhcpRules = result.rules.filter((rule) =>
+      rule.name.startsWith("dhcp-"),
+    );
+    assert.equal(dhcpRules.length, 3);
+    assert.deepEqual(
+      dhcpRules.map((rule) => [rule.name, rule.weight]),
+      [
+        ["dhcp-broadcast-request", 64002],
+        ["dhcp-exact-server-renewal", 64001],
+        ["dhcp-exact-server-reply", 64000],
+      ],
+    );
+    assert.ok(
+      dhcpRules.every(
+        (rule) =>
+          rule.protocol === "UDP" &&
+          rule.remotePort === "67" &&
+          rule.localPort === "68",
+      ),
+    );
+    assert.ok(
+      dhcpRules.every((rule) =>
+        ["255.255.255.255/32", "172.29.192.1/32"].includes(
+          rule.remoteIPAddress,
+        ),
+      ),
+    );
+    assert.ok(
+      result.rules.every(
+        (rule) =>
+          Number.isInteger(rule.weight) &&
+          rule.weight >= 1 &&
+          rule.weight <= 65_535,
+      ),
+    );
+    assert.ok(
+      result.rules.every(
+        (rule, index) =>
+          index === 0 || result.rules[index - 1].weight > rule.weight,
+      ),
+    );
+    assert.equal(
+      result.rules.find((rule) => rule.name === "ipv6-inbound-deny").weight,
+      65535,
+    );
+    assert.equal(
+      result.rules.find((rule) => rule.name === "ipv6-outbound-deny").weight,
+      65534,
+    );
+    assert.ok(
+      result.rules
+        .filter((rule) => rule.name.startsWith("deny-"))
+        .every((rule) => rule.weight < 64000 && rule.weight > 5000),
+    );
+    assert.ok(
+      result.rules
+        .filter((rule) => rule.name.startsWith("public-tcp-"))
+        .every((rule) => rule.weight <= 5000 && rule.weight > 4000),
+    );
+    assert.ok(
+      !result.rules.some(
+        (rule) => rule.action === "Allow" && rule.localPort === "22",
+      ),
+    );
     assert.equal(
       result.rules
         .filter((rule) => rule.name.startsWith("dhcp-"))
@@ -369,6 +468,11 @@ test(
       { lanVpnPrefixes: ["0.0.0.0/0"] },
       { capturedDhcpServerIPv4: "172.29.192.1" },
       { switchKind: "DefaultSwitch", capturedDhcpServerIPv4: "192.168.1.1" },
+      {
+        switchKind: "DefaultSwitch",
+        bootstrapCandidateDhcpMode: "hns_gateway_candidate",
+        bootstrapCandidateDhcpIPv4: "172.29.192.1",
+      },
       { capturedAt: new Date(Date.now() - 901_000).toISOString() },
       { capturedAt: new Date(Date.now() + 60_000).toISOString() },
       { capturedAt: "2026-99-99T00:00:00Z" },
@@ -388,6 +492,23 @@ $results=@(foreach($case in $cases){try{$i=Read-CityGoNetworkInventory $case.pat
 ConvertTo-Json -InputObject $results -Compress`),
       cases.map(() => false),
     );
+  },
+);
+
+test(
+  "native UInt16 weight bounds reject invalid priorities before appending a rule",
+  { skip: !available },
+  () => {
+    const result = powershell(`
+$rejected=@();$rules=[Collections.Generic.List[object]]::new()
+foreach($weight in @(-1,0,65536,1000000)){
+ try{Add-CityGoNetworkRule $rules 'synthetic' $weight 'Outbound' 'Deny' '0.0.0.0/0';$rejected+=$false}catch{$rejected+=($_.Exception.Message -ceq 'acl_weight_outside_native_range')}
+}
+Add-CityGoNetworkRule $rules 'lowest' 1 'Outbound' 'Deny' '0.0.0.0/0'
+Add-CityGoNetworkRule $rules 'highest' 65535 'Inbound' 'Deny' '::/0'
+[ordered]@{rejected=$rejected;weights=@($rules.ToArray()|ForEach-Object{$_.weight})}|ConvertTo-Json -Compress`);
+    assert.deepEqual(result.rejected, [true, true, true, true]);
+    assert.deepEqual(result.weights, [1, 65_535]);
   },
 );
 

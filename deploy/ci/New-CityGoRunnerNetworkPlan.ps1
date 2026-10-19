@@ -99,6 +99,9 @@ function Add-CityGoNetworkRule {
     param($Rules, [string]$Name, [int]$Weight, [string]$Direction, [string]$Action,
           [string]$RemoteAddress, [string]$LocalAddress='ANY', [string]$Protocol='ANY',
           $RemotePort=$null, $LocalPort=$null, [bool]$Stateful=$false, $IdleSessionTimeout=$null)
+    # Hyper-V's cmdlet accepts Int32, but its native ACL MOF Weight is UInt16.
+    # A valid proposal must not rely on a later adapter truncating priorities.
+    Assert-CityGoNetworkValue ($Weight -ge 1 -and $Weight -le 65535) 'acl_weight_outside_native_range'
     $Rules.Add([ordered]@{ name=$Name; weight=$Weight; direction=$Direction; action=$Action;
         remoteIPAddress=$RemoteAddress; localIPAddress=$LocalAddress; protocol=$Protocol;
         remotePort=$RemotePort; localPort=$LocalPort; stateful=$Stateful; idleSessionTimeout=$IdleSessionTimeout })
@@ -162,27 +165,29 @@ function Get-CityGoRunnerNetworkPlan {
     foreach ($address in @($hosts) + @($production)) { [void]$blocked.Add($address + '/32') }
     [void]$blocked.Add($gateway.network)
     $rules = [System.Collections.Generic.List[object]]::new()
-    Add-CityGoNetworkRule $rules 'ipv6-inbound-deny' 1000000 'Inbound' 'Deny' '::/0'
-    Add-CityGoNetworkRule $rules 'ipv6-outbound-deny' 999999 'Outbound' 'Deny' '::/0'
+    Add-CityGoNetworkRule $rules 'ipv6-inbound-deny' 65535 'Inbound' 'Deny' '::/0'
+    Add-CityGoNetworkRule $rules 'ipv6-outbound-deny' 65534 'Outbound' 'Deny' '::/0'
     if ($dhcp) {
-        # Broadcast is not a normal stateful unicast flow. Only this documented
-        # exception pair is proposed; real DHCP sender/readback remains unproven.
-        Add-CityGoNetworkRule $rules 'dhcp-broadcast-request' 900001 'Outbound' 'Allow' '255.255.255.255/32' 'ANY' 'UDP' '67' '68'
-        Add-CityGoNetworkRule $rules 'dhcp-exact-server-reply' 900000 'Inbound' 'Allow' ($dhcp + '/32') 'ANY' 'UDP' '67' '68'
+        # Initial broadcast and unicast renewal are separate, narrow client
+        # flows. Only the captured exact server may send replies; no candidate
+        # server, whole-subnet exception or bootstrap SSH is admitted for CI.
+        Add-CityGoNetworkRule $rules 'dhcp-broadcast-request' 64002 'Outbound' 'Allow' '255.255.255.255/32' 'ANY' 'UDP' '67' '68'
+        Add-CityGoNetworkRule $rules 'dhcp-exact-server-renewal' 64001 'Outbound' 'Allow' ($dhcp + '/32') $gateway.network 'UDP' '67' '68'
+        Add-CityGoNetworkRule $rules 'dhcp-exact-server-reply' 64000 'Inbound' 'Allow' ($dhcp + '/32') 'ANY' 'UDP' '67' '68'
     }
-    $weight = 800000
+    $weight = 60000
     foreach ($prefix in @($blocked | Sort-Object)) {
         Add-CityGoNetworkRule $rules ('deny-outbound-' + $weight) $weight 'Outbound' 'Deny' $prefix
         $weight--
         Add-CityGoNetworkRule $rules ('deny-inbound-' + $weight) $weight 'Inbound' 'Deny' $prefix
         $weight--
     }
-    $weight = 50000
+    $weight = 5000
     foreach ($port in @('80','443')) {
         Add-CityGoNetworkRule $rules ('public-tcp-' + $port) $weight 'Outbound' 'Allow' '0.0.0.0/0' $gateway.network 'TCP' $port $null $true 300
         $weight--
     }
-    $weight = 40000
+    $weight = 4000
     foreach ($dns in @('1.1.1.1','8.8.8.8')) {
         foreach ($protocol in @('UDP','TCP')) {
             Add-CityGoNetworkRule $rules ('dns-' + $dns + '-' + $protocol) $weight 'Outbound' 'Allow' ($dns + '/32') $gateway.network $protocol '53' $null $true 30
