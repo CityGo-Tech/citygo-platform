@@ -9,7 +9,30 @@ CityGo планирует выполнять проверки GitHub Actions в 
 Квоты хранения artifacts/cache/Packages от этого не исчезают; платные лимиты и
 платёжные настройки организации в этом этапе не менялись.
 
-## Текущее состояние: сетевые canary и watchdog проверены, GitHub canary подготовлен
+## Текущее состояние: один GitHub job и внешний cleanup прошли; перенос CI ещё впереди
+
+**19 октября 2026: первый полный одноразовый GitHub canary PASS.**
+[Job источника `29bd5d5`](https://github.com/CityGo-Tech/citygo-platform/actions/runs/39245108127/job/118035019819)
+завершился `success`; отдельно получены серверный job/runner readback и журнал
+с `CITYGO_EPHEMERAL_CANARY_OK`, Node 24.22.0, pnpm 10.15.0 и Python 3.12.
+Задание проверило Linux/x64, отдельного non-root пользователя, отсутствие checkout
+и token/OIDC env, native Docker/Compose/buildx и age. Workflow не использует
+`secrets`, внешние actions или application keys, его `permissions: {}`.
+
+Фактический `.runner` подтвердил ephemeral/disableUpdate/repository/agent ID.
+После подтверждённого удаления host registration KVP начался listener; GitHub
+назначил ему ровно один diagnostic job и автоматически снял регистрацию.
+External watchdog закрыл exact NIC, отсоединил закреплённый public ISO,
+подтвердил empty DVD и Off, удалил клиент/диск. Контроллер независимо подтвердил
+отсутствие ресурсов и удалил только exact завершённую задачу. Gateway затем
+Off/disconnected, DVD empty. Source base, server/keys и существующие сети не
+изменялись. Private evidence и публичный архив сохранены; это не CI workspace.
+
+Это **не завершённая фабрика и не зелёные основные CI/main checks**. Проверен
+один fixed diagnostic job без приложения. Нужны автоматическое создание новой
+ВМ на каждый job, оставшиеся fault/admission проверки, необходимые Linux tools
+для полного набора и отдельный перенос CI/Container smoke. Publisher/deploy
+остаются hosted. PR остаётся Draft; merge/deploy не выполнялись.
 
 Последний network-download canary отказал на установке публичного runner до
 регистрации; исходный отчёт сохранён. ВМ/диск/задача адресно удалены, gateway
@@ -26,7 +49,8 @@ CityGo планирует выполнять проверки GitHub Actions в 
 Оба остаются явно PUBLIC, hash-bound и под read-lock. Native readback detach
 ограничен 20 секундами/80 итерациями, без повторного detach. Исходный 2,5-секундный
 отказ не переименован в PASS: отдельное чтение затем подтвердило пустой DVD.
-Новый сквозной GitHub/native прогон ещё требуется.
+Следующий отдельный сквозной GitHub/native прогон завершился PASS, как описано
+выше; все предшествующие failed/cancelled attempts сохраняют прежний статус.
 
 На 19 октября 2026 года Hyper-V включён владельцем. Read-only preflight
 **успешно выполнен в отдельно подтверждённом административном процессе**.
@@ -787,13 +811,13 @@ Release harness создаёт `.local/release-candidate` и доказател�
 - [x] Внешний client watchdog проверен native fault tests; настоящий Wi-Fi/VPN roaming исключён владельцем и не объявлен PASS. Для нового допуска нужен свежий host snapshot; при изменении fingerprint текущий клиент закрывается.
 - [x] Ограниченные MAC/IPv6 и public-seed cleanup canary прошли; исчерпывающая приёмка всех L2/ARP/NDP/proxy обходов не заявляется.
 - [ ] Завершена независимая connected-приёмка, включая L2/ARP/NDP/IPv6 и обходы; один IPv4-canary с DROP deltas не закрывает весь этот пункт.
-- [ ] Создание и адресное удаление одноразовой ВМ испытаны на успехе, ошибке, отмене и обрыве.
-- [ ] Базовый образ не содержит checkout, runner registration, shared mounts или credentials.
-- [ ] GitHub CI canary прошёл без привилегированных секретов; repo остался private.
+- [x] Creation/cleanup прошли на четырёх native fault cases и одном public-seed GitHub success. Это не вся матрица сбоев будущей фабрики.
+- [x] Sealed base проверен без checkout, runner registration и shared mounts; bootstrap auth удалён. Это не заявление forensic secure erase.
+- [x] Fixed GitHub canary прошёл без checkout/использования secrets/application keys; repo остался private. Он не заменяет основные CI checks.
 - [ ] Workflow contract tests сохраняют имена, события, все проверки и release gates.
 - [ ] CI и Container smoke прошли для точного нового main SHA на чистых гостях.
-- [ ] Publisher/deploy по-прежнему hosted; их перенос не отмечен выполненным без отдельной приёмки.
-- [ ] Не совершались покупки, оплаты GitHub, изменения production или открытия доступа.
+- [x] Publisher/deploy по-прежнему hosted; их перенос не отмечен выполненным без отдельной приёмки.
+- [x] Не совершались покупки, оплаты GitHub, изменения production или открытия доступа.
 
 Текущий результат — проверенные инструменты, очищенная выключенная bootstrap-ВМ,
 успешный offline-тест первого клона и его адресное удаление; второй клон после
