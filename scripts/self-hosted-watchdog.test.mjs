@@ -54,6 +54,14 @@ $switchId='11112222-3333-4444-8555-666677778888'
 $request=[ordered]@{operationId=$op;vmId=$vmId;manifestSha256=('d'*64);networkSha256=('b'*64);privateSwitchId=$switchId;
  controllerPid=1234;controllerStartedAt='2026-10-19T00:00:00.0000000Z';deadlineUtc='2026-10-19T00:00:15.0000000Z';apply=$false;acknowledge=''}
 `;
+const fullJob = String.raw`
+$request.jobPlanSha256='c'*64;$request.deadlineUtc='2026-10-19T01:10:00.0000000Z'
+$job=[pscustomobject][ordered]@{version=1;repositoryId=123;runId=500;runAttempt=1;workflowId=400;jobId=600;
+ workflowPath='.github/workflows/ci.yml';workflowRef=('CityGo-Tech/citygo-platform/.github/workflows/ci.yml@'+('a'*40));workflowSha256=('b'*64);headSha=('a'*40);
+ jobName='verify';label='citygo-ci-500-1-verify';runnerGroupId=9;operationId=$op;gatewayOperationId='98765432-1234-4234-8234-123456789abc';
+ jobKey='400-500-1-600';createdAt='2026-10-19T00:00:00.000Z';hardDeadline='2026-10-19T01:13:00.000Z';bootstrapSeconds=600;jobSeconds=3600;cleanupSeconds=180;
+ guestVcpu=4;guestMemoryGiB=6;guestDiskGiB=96}
+`;
 const mocks = String.raw`
 $script:removed=$false;$script:fault='cancel';$script:network='b'*64
 $script:nic|Add-Member -NotePropertyName SwitchId -NotePropertyValue ([guid]$switchId)
@@ -93,6 +101,83 @@ $request.apply=$true;$request.acknowledge=(Get-CityGoWatchdogPlan $request).requ
 $out=Invoke-CityGoOwnedWatchdog $request
 [ordered]@{result=$out;calls=@($script:calls.ToArray());removed=$script:removed;closed=(@($script:held|Where-Object{$_.CanRead}).Count-eq0)}|ConvertTo-Json -Depth 6 -Compress
 `;
+
+test(
+  "full-job lease is explicit, hash-bound and fixed to CI/Container absolute cleanup deadlines",
+  { skip: !available },
+  () => {
+    const out = run(`${request}${fullJob}
+$p=Get-CityGoWatchdogPlan $request;$ci=Get-CityGoWatchdogJobLease $job $p
+$job.workflowPath='.github/workflows/container-smoke.yml';$job.workflowRef='CityGo-Tech/citygo-platform/.github/workflows/container-smoke.yml@'+('a'*40)
+$job.jobName='production-images';$job.label='citygo-ci-500-1-production-images';$job.jobSeconds=2400;$job.hardDeadline='2026-10-19T00:53:00.000Z'
+$p.deadlineUtc='2026-10-19T00:50:00.0000000Z';$container=Get-CityGoWatchdogJobLease $job $p
+@{ciSeconds=$ci.maximumSeconds;containerSeconds=$container.maximumSeconds;ack=$p.requiredAcknowledgement;path=$p.jobPlanPath}|ConvertTo-Json -Compress`);
+    assert.equal(out.ciSeconds, 4200);
+    assert.equal(out.containerSeconds, 3000);
+    assert.ok(out.ack.endsWith(":JOB_PLAN:" + "c".repeat(64)));
+    assert.ok(out.path.endsWith("\\job-plan.json"));
+  },
+);
+
+test(
+  "full-job lease rejects changed IDs, shapes, resources, source and any moved deadline",
+  { skip: !available },
+  () => {
+    const out = run(`${request}${fullJob}
+$p=Get-CityGoWatchdogPlan $request;$denied=0
+foreach($fault in @('operation','gateway','deadline','created','duration','job','source','numeric','resources','extra')){
+ $j=$job.PSObject.Copy()
+ switch($fault){
+  'operation' {$j.operationId=$j.gatewayOperationId};'gateway' {$j.gatewayOperationId=$j.operationId}
+  'deadline' {$j.hardDeadline='2026-10-19T01:13:01.000Z'};'created' {$j.createdAt='2026-10-19T00:00:01.000Z'}
+  'duration' {$j.jobSeconds=99999};'job' {$j.jobName='deploy'};'source' {$j.workflowRef='foreign'}
+  'numeric' {$j.runId='500'};'resources' {$j.guestMemoryGiB=12};'extra' {$j|Add-Member NoteProperty secret 'synthetic'}
+ }
+ try{$null=Get-CityGoWatchdogJobLease $j $p}catch{$denied++}
+}
+@{denied=$denied}|ConvertTo-Json -Compress`);
+    assert.equal(out.denied, 10);
+  },
+);
+
+test(
+  "full-job plan remains read-locked until cancellation cleanup; no renewed lease or guest heartbeat",
+  { skip: !available },
+  () => {
+    const out = run(`${request}${mocks}${fullJob}
+$script:oldOpen=(Get-Item Function:Open-CityGoCanaryCleanupEvidence).ScriptBlock
+function Open-CityGoCanaryCleanupEvidence {param($Path,$OwnerSid,$ExpectedHash)
+ if($Path-ceq($control+'\\job-plan.json')){
+  Track 'locked-job-plan';if($ExpectedHash-cne('c'*64)){throw 'wrong-job-pin'}
+  $s=[IO.MemoryStream]::new();$script:held.Add($s);return @{value=$job;stream=$s}
+ }
+ return (& $script:oldOpen $Path $OwnerSid $ExpectedHash)
+}
+${invoke}`);
+    assert.equal(out.result.stage, "watchdog_cleanup_completed");
+    assert.equal(out.result.reason, "cancel");
+    assert.equal(out.closed, true);
+    assert.ok(
+      out.calls.indexOf("locked-job-plan") <
+        out.calls.indexOf("watchdog-ready.json"),
+    );
+    assert.ok(out.calls.indexOf("disconnect") < out.calls.indexOf("cleanup"));
+  },
+);
+
+test(
+  "UTC rollback stops the independent monitor and closes networking before cleanup",
+  { skip: !available },
+  () => {
+    const out = run(`${request}${mocks}
+function Start-Sleep {param($Milliseconds);Track 'sleep';$script:now=$script:now.AddMilliseconds(-1)}
+${invoke}`);
+    assert.equal(out.result.stage, "watchdog_cleanup_completed");
+    assert.equal(out.result.reason, "clock_rollback");
+    assert.equal(out.removed, true);
+    assert.ok(out.calls.indexOf("disconnect") < out.calls.indexOf("cleanup"));
+  },
+);
 
 test(
   "public seed is explicit, paired, operation-bound and included in the acknowledgement",

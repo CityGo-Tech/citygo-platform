@@ -20,7 +20,23 @@ export async function probeMain(args, input, output) {
     args[2] ===
       "CREATE_CITYGO_ISOLATED_GROUP:CityGo-Tech/citygo-platform:MAIN_ONLY";
   const inspectGroup = args.length === 1 && args[0] === "--inspect-main-group";
+  const prMode =
+    args.length === 1 && args[0] === "--inspect-pr-access"
+      ? "inspect"
+      : args.length === 3 &&
+          ["--configure-pr-access", "--repair-pr-repository"].includes(
+            args[0],
+          ) &&
+          args[1] === "--acknowledge" &&
+          /^LIMIT_CITYGO_PR_WORKFLOWS:[1-9][0-9]*:[a-f0-9]{40}:[a-f0-9]{40}$/.test(
+            args[2],
+          )
+        ? args[0] === "--repair-pr-repository"
+          ? "repair-repository"
+          : "apply"
+        : null;
   if (
+    !prMode &&
     !createMainGroup &&
     !inspectGroup &&
     (args.length !== 1 || args[0] !== "--probe")
@@ -37,8 +53,17 @@ export async function probeMain(args, input, output) {
       if (size > 32768) throw Error("ci_factory_app_input_bounds");
       chunks.push(bytes);
     }
-    const config = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-    const client = createRunnerAppClient(config);
+    const payload = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    if (
+      prMode &&
+      (!payload ||
+        Object.keys(payload).sort().join("|") !== "config|intent" ||
+        (prMode !== "inspect" &&
+          args[2] !==
+            `LIMIT_CITYGO_PR_WORKFLOWS:${payload.intent?.prNumber}:${payload.intent?.headSha}:${payload.intent?.mergeSha}`))
+    )
+      throw Error("ci_factory_app_pr_acknowledgement_invalid");
+    const client = createRunnerAppClient(prMode ? payload.config : payload);
     try {
       const refs = ["ci.yml", "container-smoke.yml"].map(
         (file) =>
@@ -47,11 +72,13 @@ export async function probeMain(args, input, output) {
           "@refs/heads/main",
       );
       output(
-        createMainGroup
-          ? await client.prepareGroup(refs)
-          : inspectGroup
-            ? await client.inspectGroup(refs)
-            : await client.inspect(),
+        prMode
+          ? await client.prAccess(payload.intent, prMode)
+          : createMainGroup
+            ? await client.prepareGroup(refs)
+            : inspectGroup
+              ? await client.inspectGroup(refs)
+              : await client.inspect(),
       );
     } finally {
       client.clearCachedToken();
@@ -72,6 +99,7 @@ export async function probeMain(args, input, output) {
       ...(error?.message === "ci_factory_app_request_refused" &&
       [
         "create_group",
+        "update_group",
         "read_group",
         "installation_token",
         "read_installation",
@@ -90,6 +118,9 @@ export async function probeMain(args, input, output) {
             ].includes(error.reason)
               ? error.reason
               : "unspecified",
+            ...(error.operation === "update_group" && error.groupValidation
+              ? { groupValidation: error.groupValidation }
+              : {}),
           }
         : {}),
     });

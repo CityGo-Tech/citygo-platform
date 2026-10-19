@@ -104,7 +104,7 @@ export function admitQueuedJob(policy, snapshot, now, ids = randomUUID) {
       policy.workflowRefs.every(
         (ref) =>
           typeof ref === "string" &&
-          /^CityGo-Tech\/citygo-platform\/\.github\/workflows\/(?:ci|container-smoke)\.yml@refs\/(?:heads\/(?:main|codex\/isolated-linux-runner)|pull\/[1-9][0-9]*\/merge)$/.test(
+          /^CityGo-Tech\/citygo-platform\/\.github\/workflows\/(?:ci|container-smoke)\.yml@(?:[a-f0-9]{40}|refs\/(?:heads\/(?:main|codex\/isolated-linux-runner)|pull\/[1-9][0-9]*\/merge))$/.test(
             ref,
           ),
       ),
@@ -189,7 +189,9 @@ export function admitQueuedJob(policy, snapshot, now, ids = randomUUID) {
     );
   if (run.event === "pull_request")
     requireCi(
-      /@refs\/pull\/[1-9][0-9]*\/merge$/.test(source.workflowRef),
+      /@(?:refs\/pull\/[1-9][0-9]*\/merge|[a-f0-9]{40})$/.test(
+        source.workflowRef,
+      ),
       "pr_ref_invalid",
     );
   exact(job, [
@@ -348,8 +350,9 @@ export function validateJobPlan(plan) {
       typeof plan.headSha === "string" &&
       sha.test(plan.headSha) &&
       typeof plan.workflowRef === "string" &&
-      plan.workflowRef.startsWith(
-        REPOSITORY + "/" + plan.workflowPath + "@refs/",
+      plan.workflowRef.startsWith(REPOSITORY + "/" + plan.workflowPath + "@") &&
+      /@(?:[a-f0-9]{40}|refs\/heads\/main|refs\/pull\/[1-9][0-9]*\/merge)$/.test(
+        plan.workflowRef,
       ) &&
       plan.jobKey ===
         `${plan.workflowId}-${plan.runId}-${plan.runAttempt}-${plan.jobId}` &&

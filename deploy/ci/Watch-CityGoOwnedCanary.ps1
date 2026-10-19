@@ -8,6 +8,7 @@ param(
     [string]$PrivateSwitchId='', [int]$ControllerPid=0,
     [string]$ControllerStartedAt='', [string]$DeadlineUtc='',
     [string]$PublicSeedPath='', [string]$ExpectedPublicSeedSha256='',
+    [string]$ExpectedJobPlanSha256='',
     [switch]$Apply, [string]$Acknowledge=''
 )
 $ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue'
@@ -34,6 +35,11 @@ function Get-CityGoWatchdogPlan {
             [Globalization.DateTimeStyles]::AssumeUniversal,[ref]$parsed)) 'time_invalid'
     }
     $dir='D:\CityGo-CI\control\'+$Request.operationId
+    $jobSha=''
+    if($Request.jobPlanSha256){
+        Assert-CityGoWatchdog ($Request.jobPlanSha256-is[string]-and$Request.jobPlanSha256-cmatch'^[a-f0-9]{64}$') 'job_plan_hash_invalid'
+        $jobSha=$Request.jobPlanSha256
+    }
     $seed='';$seedSha=''
     if($Request.publicSeedPath-or$Request.publicSeedSha256){
         $seedDir='D:\CityGo-CI\seeds\'+$Request.operationId+'\'
@@ -46,14 +52,54 @@ function Get-CityGoWatchdogPlan {
         networkSha256=$Request.networkSha256;privateSwitchId=$Request.privateSwitchId;
         controllerPid=$Request.controllerPid;controllerStartedAt=$Request.controllerStartedAt;deadlineUtc=$Request.deadlineUtc;
         publicSeedPath=$seed;publicSeedSha256=$seedSha;
+        jobPlanSha256=$jobSha;jobPlanPath=($dir+'\job-plan.json');
         controlDirectory=$dir;manifestPath=($dir+'\canary-creation.json');
         stopHelperPath=($dir+'\Stop-CityGoOwnedCanaryVm.ps1');
         stopHelperSha256='ce0117bb7e94af9a7610af3534bd16adc69e9e08b915a78af8072e546abe4f56';
         cleanupHelperPath=($dir+'\Remove-CityGoCanaryVm.ps1');
         cleanupHelperSha256='70f036f9b6c9885f6cfd15f5a362883b7bf72803dddf5d6fe28fc17c29bea098';
         requestPath=($dir+'\watchdog-request.json');
-        requiredAcknowledgement=('WATCH_OWNED_CANARY:'+$Request.vmId+':'+$Request.manifestSha256+$(if($seed){':PUBLIC_SEED:'+$seedSha}else{''}))
+        requiredAcknowledgement=('WATCH_OWNED_CANARY:'+$Request.vmId+':'+$Request.manifestSha256+$(if($seed){':PUBLIC_SEED:'+$seedSha}else{''})+$(if($jobSha){':JOB_PLAN:'+$jobSha}else{''}))
     }
+}
+
+function Get-CityGoWatchdogJobLease {
+    param($Job,[Collections.IDictionary]$Plan)
+    # A full job may exceed the historical canary hour, but only with a locked,
+    # host-owned factory plan and the exact original absolute deadline. This
+    # validates cleanup timing, NOT GitHub admission or gateway readiness.
+    $keys=@('version','repositoryId','runId','runAttempt','workflowId','jobId','workflowPath','workflowRef','workflowSha256','headSha',
+        'jobName','label','runnerGroupId','operationId','gatewayOperationId','jobKey','createdAt','hardDeadline','bootstrapSeconds',
+        'jobSeconds','cleanupSeconds','guestVcpu','guestMemoryGiB','guestDiskGiB')
+    $actual=@($Job.PSObject.Properties.Name)
+    Assert-CityGoWatchdog ($actual.Count-eq$keys.Count-and@($actual|Where-Object{$_-cnotin$keys}).Count-eq0) 'job_plan_shape_invalid'
+    foreach($name in @('version','repositoryId','runId','runAttempt','workflowId','jobId','runnerGroupId','bootstrapSeconds','jobSeconds','cleanupSeconds','guestVcpu','guestMemoryGiB','guestDiskGiB')){
+        Assert-CityGoWatchdog (($Job.$name-is[int]-or$Job.$name-is[long])-and$Job.$name-gt0-and$Job.$name-le9007199254740991) 'job_plan_number_invalid'
+    }
+    Assert-CityGoWatchdog ($Job.version-eq1-and$Job.operationId-ceq$Plan.operationId-and$Job.gatewayOperationId-is[string]-and
+        $Job.gatewayOperationId-cmatch'^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$'-and
+        $Job.gatewayOperationId-cne$Job.operationId-and$Job.bootstrapSeconds-eq600-and$Job.cleanupSeconds-eq180-and
+        $Job.guestVcpu-eq4-and$Job.guestMemoryGiB-eq6-and$Job.guestDiskGiB-eq96) 'job_plan_binding_invalid'
+    if($Job.workflowPath-ceq'.github/workflows/ci.yml'){$seconds=3600;$name='verify'}
+    elseif($Job.workflowPath-ceq'.github/workflows/container-smoke.yml'){$seconds=2400;$name='production-images'}
+    else{throw 'ci_watchdog_job_workflow_invalid'}
+    Assert-CityGoWatchdog ($Job.jobSeconds-eq$seconds-and$Job.jobName-ceq$name-and
+        $Job.jobKey-ceq($Job.workflowId.ToString()+'-'+$Job.runId.ToString()+'-'+$Job.runAttempt.ToString()+'-'+$Job.jobId.ToString())-and
+        $Job.label-ceq('citygo-ci-'+$Job.runId.ToString()+'-'+$Job.runAttempt.ToString()+'-'+$name)-and
+        $Job.workflowRef-is[string]-and$Job.workflowRef-cmatch('^CityGo-Tech/citygo-platform/'+[regex]::Escape($Job.workflowPath)+'@(?:[a-f0-9]{40}|refs/heads/main|refs/pull/[1-9][0-9]*/merge)$')-and
+        $Job.workflowSha256-is[string]-and$Job.workflowSha256-cmatch'^[a-f0-9]{64}$'-and
+        $Job.headSha-is[string]-and$Job.headSha-cmatch'^[a-f0-9]{40}$') 'job_plan_source_invalid'
+    $times=@{}
+    foreach($name in @('createdAt','hardDeadline')){
+        $parsed=[DateTimeOffset]::MinValue
+        Assert-CityGoWatchdog ($Job.$name-is[string]-and[DateTimeOffset]::TryParseExact($Job.$name,'yyyy-MM-ddTHH:mm:ss.fffZ',
+            [Globalization.CultureInfo]::InvariantCulture,[Globalization.DateTimeStyles]::AssumeUniversal,[ref]$parsed)) 'job_plan_time_invalid'
+        $times[$name]=$parsed
+    }
+    $deadline=[DateTimeOffset]::Parse($Plan.deadlineUtc,[Globalization.CultureInfo]::InvariantCulture)
+    Assert-CityGoWatchdog (($times.hardDeadline-$times.createdAt).TotalSeconds-eq(600+$seconds+180)-and
+        $deadline-eq$times.hardDeadline.AddSeconds(-180)) 'job_plan_deadline_invalid'
+    return [ordered]@{maximumSeconds=(600+$seconds);createdAt=$times.createdAt;monitorDeadline=$deadline}
 }
 
 function Get-CityGoWatchdogOwner {
@@ -262,6 +308,13 @@ function Invoke-CityGoOwnedWatchdog {
         $manifest=$evidence.value;$binding=Get-CityGoCanaryCleanupPlan $manifest @{manifestPath=$plan.manifestPath;manifestSha256=$plan.manifestSha256}
         Assert-CityGoWatchdog ($binding.vmId-ceq$plan.vmId-and$binding.operationId-ceq$plan.operationId-and-not$binding.resumedCreation) 'manifest_binding_invalid'
         foreach($key in @('vmName','nicId','nicName','vmPath')){$plan[$key]=$binding[$key]}
+        $maximumSeconds=3600;$jobLease=$null
+        if($plan.jobPlanSha256){
+            $phase='read_pinned_host_job_lease'
+            $job=Open-CityGoCanaryCleanupEvidence $plan.jobPlanPath $owner $plan.jobPlanSha256;$held+=,$job.stream
+            $jobLease=Get-CityGoWatchdogJobLease $job.value $plan
+            $maximumSeconds=$jobLease.maximumSeconds
+        }
         $stopRequest=[ordered]@{operationId=$plan.operationId;vmId=$plan.vmId;manifestSha256=$plan.manifestSha256;
             resumedCreation=$false;seedPath='';seedSha256='';graceSeconds=30;turnOffSeconds=30;apply=$true;acknowledge=''}
         $stopPlan=Get-CityGoCanaryStopPlan $stopRequest
@@ -277,7 +330,7 @@ function Invoke-CityGoOwnedWatchdog {
         Assert-CityGoWatchdog ($nic.Count-eq1-and$nic[0].SwitchId-and[guid]$nic[0].SwitchId-eq[guid]$plan.privateSwitchId) 'arm_requires_private_switch'
         $now=Get-CityGoWatchdogNow;$deadline=[DateTimeOffset]::Parse($plan.deadlineUtc,[Globalization.CultureInfo]::InvariantCulture)
         $remaining=($deadline-$now).TotalSeconds
-        Assert-CityGoWatchdog ($remaining-ge15-and$remaining-le3600-and(Test-CityGoWatchdogController $plan)-and
+        Assert-CityGoWatchdog (($null-eq$jobLease-or$now-ge$jobLease.createdAt)-and$remaining-ge15-and$remaining-le$maximumSeconds-and(Test-CityGoWatchdogController $plan)-and
             (Get-CityGoWatchdogNetworkHash $plan)-ceq$plan.networkSha256-and-not(Test-Path -LiteralPath $plan.requestPath)) 'arm_precondition_failed'
         foreach($name in @('watchdog-ready.json','watchdog-result.json','watchdog-failure.json','canary-stop-intent.json','canary-cleanup-intent.json')){
             Assert-CityGoWatchdog (-not(Test-Path -LiteralPath ($plan.controlDirectory+'\'+$name))) 'existing_attempt_refused'
@@ -288,9 +341,13 @@ function Invoke-CityGoOwnedWatchdog {
         $armed=$true;$phase='independent_monitor'
         try{
             # Separate iteration + monotonic + UTC bounds. Never reset on drift.
-            for($poll=0;$poll-le3601;$poll++){
-                $elapsed=((Get-CityGoWatchdogTicks)-$start)/[Diagnostics.Stopwatch]::Frequency
-                if((Get-CityGoWatchdogNow)-ge$deadline-or$elapsed-ge$remaining){$reason='deadline';break}
+            $lastNow=$now;$lastTicks=$start
+            for($poll=0;$poll-le($maximumSeconds+1);$poll++){
+                $currentNow=Get-CityGoWatchdogNow;$currentTicks=Get-CityGoWatchdogTicks
+                if($currentNow-lt$lastNow-or$currentTicks-lt$lastTicks){$reason='clock_rollback';break}
+                $lastNow=$currentNow;$lastTicks=$currentTicks
+                $elapsed=($currentTicks-$start)/[Diagnostics.Stopwatch]::Frequency
+                if($currentNow-ge$deadline-or$elapsed-ge$remaining){$reason='deadline';break}
                 if(-not(Test-CityGoWatchdogController $plan)){$reason='controller_exited';break}
                 if((Get-CityGoWatchdogNetworkHash $plan)-cne$plan.networkSha256){$reason='network_changed';break}
                 $action=Read-CityGoWatchdogRequest $plan $owner
@@ -333,6 +390,7 @@ try{
     $request=[ordered]@{operationId=$OperationId;vmId=$VmId;manifestSha256=$ExpectedManifestSha256;networkSha256=$ExpectedNetworkSha256;
         privateSwitchId=$PrivateSwitchId;controllerPid=$ControllerPid;controllerStartedAt=$ControllerStartedAt;deadlineUtc=$DeadlineUtc;
         publicSeedPath=$PublicSeedPath;publicSeedSha256=$ExpectedPublicSeedSha256;apply=[bool]$Apply;acknowledge=$Acknowledge}
+    $request.jobPlanSha256=$ExpectedJobPlanSha256
     $result=Invoke-CityGoOwnedWatchdog $request;$result|ConvertTo-Json -Depth 5 -Compress
     if($result.stage-like'failed_*'){exit 1}
 }catch{Write-Output '{"stage":"preconditions_not_met","ciJobsAdmitted":false}';exit 2}

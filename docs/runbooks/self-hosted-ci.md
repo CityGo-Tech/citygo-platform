@@ -23,19 +23,40 @@ App key остаётся исключительно в защищённом host
 
 Через App создана группа **CityGo-isolated-checks**: Selected repositories —
 только CityGo, Allow public repositories — false, Selected workflows — только
-`ci.yml@refs/heads/main` и `container-smoke.yml@refs/heads/main`. Независимые
-GET group + GET repositories подтвердили ограничения; UI также показывает
-1 repository, 2 workflows, 0 runners. Попытка включить `refs/pull/99/merge`
-получила HTTP 400. После отказа отдельно подтверждалось отсутствие группы;
-успешный более узкий main-only вариант не выдаётся за проверенный PR-допуск.
-Группа Default не менялась, новые runners не регистрировались.
+два проверенных workflow. Сначала это были refs main. Затем проверен отдельный
+допуск PR #99: `ci.yml` и `container-smoke.yml` закреплены на merge commit
+`33b9ec291d19124882cde797bf27cdb54acc51ec` (head `d4aa19e`, base `b66aab7`).
+Независимые GET group + GET repositories подтвердили ровно 1 приватный repository,
+2 immutable workflow refs, 0 runners. Это **проверка конфигурации допуска**, ещё
+не доказательство назначения настоящего задания этой группе. Группа Default
+не менялась; новые runners в этом этапе не регистрировались.
+
+GitHub отклонил как `refs/pull/99/merge`, так и SHA недостижимого из обычного ref
+merge commit. Создан только служебный lightweight tag
+`citygo-ci/pr-99-33b9ec291d19124882cde797bf27cdb54acc51ec`, после чего две ссылки
+`workflow@<merge SHA>` приняты API. Tag не попадает под существующие branch-only
+push triggers CI/publisher/deploy. Применяемый допуск не объединяет main и PR:
+это только два workflow одной проверенной ревизии. Новый push требует нового
+проверенного merge SHA и обновления ограничений до регистрации runner.
+
+При первом принятом PATCH GitHub обнулил список repositories из-за повторной
+передачи `visibility: selected` без списка repository IDs. Состояние было закрытым,
+без runners. Адресный repair вернул только CityGo, затем отдельный GET подтвердил
+весь scope. Клиент теперь PATCH-ит только workflow restrictions; repair допускается
+лишь для заранее проверенной группы с пустыми repositories и runners. Неизвестное
+состояние группы не принимается автоматически.
 
 `github-runner-app.mjs` — ограниченный host-only клиент RS256 JWT и installation
 token с проверкой exact permissions/repository. `probe-runner-app.mjs` по
 умолчанию выполняет только plan, а закрытый конфиг получает через anonymous stdin.
 Есть read-only `--probe`/`--inspect-main-group`; создание main-only группы требует
 отдельного точного acknowledgement и никогда не перезаписывает существующую
-группу. JIT-метод готовит конфигурацию **одного runner**, а не общий org
+группу. Для PR есть read-only `--inspect-pr-access`, отдельный guarded
+`--configure-pr-access` и узкий `--repair-pr-repository`. App не получил новых
+permissions: Contents refs/merge parents и Actions provenance проверяют текущий
+head, main base, отсутствие fork и SHA-256 обоих workflow; `/pulls` API не нужен.
+Apply повторно проверяет источник, ноль runners и точный предыдущий policy.
+JIT-метод готовит конфигурацию **одного runner**, а не общий org
 registration token: до POST проверяются группа, срок lease и queued job/run/SHA.
 Неоднозначный POST не повторяется. JIT пока покрыт синтетическими тестами,
 **не вызывался в реальном GitHub** и ещё не доставляется в guest.
@@ -58,10 +79,15 @@ operation ID, ВМ клиента, standalone-диск и шлюз. Контро
 повторно даже после сбоя. Новый запуск — новый GitHub attempt и новые ресурсы.
 
 Временные границы полного задания отделены от короткого canary: bootstrap 10 минут,
-CI 60 минут / Container smoke 40 минут, cleanup 3 минуты. Это требования к будущему
-native adapter, **не расширение действующих canary lease**. Истечение абсолютного
-срока, отмена и откат часов проверены на подставном adapter; native испытания полного
-lease, suspend/reboot и собственного сбоя watchdog ещё не выполнены.
+CI 60 минут / Container smoke 40 минут, cleanup 3 минуты. Клиентский watchdog теперь
+может принять 70/50 минут мониторинга **только** с отдельно hash-bound/private/read-locked
+`job-plan.json` из каталога той же операции. Проверяются полный flat schema, идентичности,
+workflow/job/label, ресурсы и неизменные абсолютные createdAt/hardDeadline; мониторинг
+заканчивается за 3 минуты до hardDeadline. Гость не может обновлять deadline.
+Без этого opt-in прежний canary предел остаётся 3600 секунд. UTC и monotonic rollback
+закрывают сеть, затем выполняется прежний guarded stop/cleanup. Это подготовленный
+код, не установленный длинный native lease: шлюзовый watchdog/lease, suspend/reboot
+и собственный сбой watchdog ещё не приняты.
 
 `render-job-workflows.mjs` готовит только preview: меняет runner route, добавляет
 конечный CI timeout и `checkout.persist-credentials: false`. Обратное сравнение
@@ -83,6 +109,31 @@ guest**; sudo нужен сохранённым apt/Playwright steps и не д�
 размеру/SHA-256. Он не исполнялся на Windows и не устанавливался в base/guest.
 Это готовность одного входного артефакта, не успешный native provisioning.
 
+Добавлены установочные host primitives: `New-CityGoJobVm.ps1` создаёт ровно один
+новый выключенный и отключённый client/gateway из неизменённой sealed base;
+`Remove-CityGoJobGateway.ps1` применяет прежний OFF-only cleanup с дополнительной
+проверкой полного двух-NIC gateway profile. Нет автоматического boot, подключения
+сети, остановки чужих ВМ или чтения ключей. По умолчанию оба сценария — plan only;
+apply требует точного acknowledgement и закрытого закреплённого host bundle.
+Это ещё не установленный adapter. Тринадцать mock/plan-тестов проверяют порядок
+intent, ownership/type guards, GUID casing, восстановление inventory-функции,
+отказ для running gateway/чужой ссылки и закрытие файлов при ошибке. Новый настоящий
+read-only тест импортера сохраняет source filename/PSScriptRoot, открывает pinned
+sibling guards и проверяет сохранение parameters, не исполняя native entrypoints.
+Они включены
+в `test:ci-host`; не подменяют native испытание.
+
+После включения этих сценариев полный `test:ci-host` повторён закреплённым
+pnpm 10.15.0 в обычном пользовательском процессе: **389 PASS, 0 FAIL, 0 SKIP**.
+Sandbox-запуск целевой тройки наборов первоначально отказал на создании тестовой
+junction (EPERM); исходные assertions сохранены, полный повтор прошёл без admin.
+Targeted ESLint, Prettier и `git diff --check` также прошли.
+
+После исправления source filename в импортере и добавления full-job lease:
+**394/394 CI-host PASS, 0 SKIP**; отдельно **23/23 release/deploy guards PASS**,
+targeted ESLint/Prettier/diff-check PASS. Все новые watchdog/factory сценарии,
+кроме описанного ниже native OFF client lifecycle, пока unit/mock/read-only.
+
 ### Что мешает активации
 
 Прежний HTTP 403 organization runner-groups API для пользовательского credential
@@ -96,10 +147,10 @@ guest**; sudo нужен сохранённым apt/Playwright steps и не д�
 API endpoints и требования permissions описаны в
 [справочнике runner groups](https://docs.github.com/en/rest/actions/self-hosted-runner-groups).
 
-Остаётся подобрать и сквозным тестом подтвердить поддерживаемый GitHub способ
-ограничить **PR workflows**. Нельзя считать main-only группу разрешением для PR,
-использовать метку вместо access boundary, разрешать все workflows, менять Default
-или открывать publisher/deploy. Затем требуется установить закреплённый native adapter/host lease и scheduler вне
+Остаётся подтвердить реальным назначением задания уже настроенный immutable
+PR-допуск. Нельзя использовать метку вместо access boundary, разрешать все
+workflows, менять Default или открывать publisher/deploy. Затем требуется
+установить закреплённый native adapter/host lease и scheduler вне
 checkout (сейчас их нет), проверить оба watchdog на длинном lease и провести два
 полных GitHub задания на свежих ВМ. Только после этого применять preview маршрутов.
 Unit/mock PASS **не означает** native factory PASS или зелёные основные checks.
@@ -108,9 +159,10 @@ Publisher/deploy остаются hosted. Рабочий сервер, его к
 
 Проверки нового ядра: 69 тестов, включая настоящие временные файловые журналы,
 CreateNew-гонку, junction/symlink, повреждение цепочки и отказ при повторном operation ID.
-Клиент App дополнительно покрыт 38 синтетическими тестами: scopes/JWT, отдельный
+Клиент App дополнительно покрыт 50 синтетическими тестами: scopes/JWT, отдельный
 readback группы, отсутствие POST при неправильном допуске, истечение lease,
-неожиданный JIT response и отсутствие повторного POST/вывода секретов.
+неожиданный JIT response и отсутствие повторного POST/вывода секретов, immutable
+PR source/workflow pins, отказ для fork/изменённого head/base и узкий repair.
 Результат прошлого ядра: `pnpm test:ci-host` — 327 тестов; отдельно release/deploy
 guards — 23 теста. Новый файл App-тестов включён в `test:ci-host`.
 После подключения App повторный полный `test:ci-host` прошёл **365/365**,
@@ -118,13 +170,35 @@ guards — 23 теста. Новый файл App-тестов включён в
 `NtCreateDirectoryObject` и junction `EPERM`); обычный пользовательский процесс
 прошёл те же тесты без изменения assertions и без административных прав.
 Отдельно повторены release-candidate/deploy-main guards — **23/23**.
-Полный `test:release` здесь **не прошёл**: два upgrade smoke test files не
-загрузились из-за отсутствующей `@electric-sql/pglite` в этой рабочей копии.
-Это не ошибка новых App-тестов и не разрешение пропустить миграционные проверки
-в основном CI; монорепозиторные зависимости этой копии ещё не установлены.
-Это локальные проверки, не запуск полного `pnpm check`, e2e/mobile или Container
-smoke в GitHub. Проверка junction в sandbox первоначально получила EPERM; повтор
-в обычном пользовательском процессе прошёл без пропуска проверки и без admin/ВМ.
+Первоначально два upgrade smoke не загружались из-за отсутствия PGlite. После
+`pnpm install --frozen-lockfile` закреплённым pnpm 10.15.0 зависимости установлены,
+lockfile не изменился. Локальный `pnpm typecheck` и полный `pnpm check` прошли,
+включая upgrade-12/18 проверки. Отдельно browser/e2e — **94/94**, Android/iOS export
+и проверка отсутствия env-canary в 28 клиентских артефактах — PASS. Это Windows
+проверки без настоящего PostgreSQL URL: PostgreSQL-only concurrency tests и один
+Linux-signal test явно SKIP. Полный Linux CI и Container smoke ещё не запускались
+в новых ВМ, поэтому их GitHub checks не считаются зелёными.
+
+Первый native OFF lifecycle тест остановился до Create-VM: в private harness не
+была импортирована зависимость функции хеширования. Следующая подготовленная
+версия также не исполнялась из-за синтаксической ошибки harness; в неё не входил
+ни один native вызов. Обе попытки сохранены, существующие ВМ не менялись.
+Исправленный сценарий предварительно разобран PowerShell parser и закреплён
+хешем; автоматический UAC-запуск был отменён Windows. После ручного запуска
+владельцем **OFF-only client lifecycle PASS**: свежая standalone ВМ создана,
+независимо проверена Off/disconnected и удалена вместе с диском и пустой owned
+папкой; повторный native readback подтвердил отсутствие. Sealed base Off/хеш
+не изменились. Boot/network/runner не выполнялись. Это не приёмка всей фабрики.
+
+Первая gateway-попытка создала обычный Off/disconnected client, но остановилась
+до gateway-profile intent: строковое пересоздание функции теряло PSScriptRoot
+при открытии sibling guard. Причина воспроизведена read-only без admin. Теперь
+AST сохраняет проверенный filename, body parameters и pinned source read-lock;
+inline header parameters отказаны явно. Ошибочная попытка сохранена, не переписана.
+Подготовлена отдельная reconciliation только полного известного pre-profile
+клиента (исходные manifest/failure hashes, запрет появившегося profile intent),
+после неё — один новый OFF gateway test. До его завершения прежний выключенный
+клон/диск сохранены; они не подключены к сети и не используются для CI.
 
 ## Пройденный предыдущий этап: один GitHub job и внешний cleanup
 

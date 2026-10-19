@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
-import { generateKeyPairSync, verify, createPrivateKey } from "node:crypto";
+import {
+  generateKeyPairSync,
+  verify,
+  createPrivateKey,
+  createHash,
+} from "node:crypto";
 import test from "node:test";
 import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -180,6 +185,18 @@ function fixture(mainOnly = false) {
     calls.push({ path, options });
     assert.ok(Object.hasOwn(routes, path), path);
     assert.equal(options.redirect, "error");
+    if (options.method === "PATCH")
+      Object.assign(routes[path], JSON.parse(options.body));
+    if (options.method === "PUT") {
+      assert.deepEqual(JSON.parse(options.body), {
+        selected_repository_ids: [123],
+      });
+      routes[path + "?per_page=100&page=1"] = {
+        total_count: 1,
+        repositories: [repo],
+      };
+      return new Response(null, { status: 204 });
+    }
     const status = options.method === "POST" ? 201 : 200;
     return new Response(JSON.stringify(routes[path]), { status });
   };
@@ -255,6 +272,7 @@ test("client refuses bad key/config with no secret in error and performs no netw
     "group",
     "inspect",
     "inspectGroup",
+    "prAccess",
     "prepareGroup",
     "queued",
   ]);
@@ -320,6 +338,217 @@ test("App access probe reports only bounded scope evidence, no runner or VM regi
     "/orgs/CityGo-Tech/actions/runner-groups?per_page=100&page=1"
   ].total_count = 101;
   await assert.rejects(f.client.inspect(), /groups_unbounded/);
+});
+
+function prFixture() {
+  const f = fixture(true),
+    mergeSha = "d".repeat(40);
+  const intent = {
+    prNumber: 99,
+    headSha: f.plan.headSha,
+    mergeSha,
+    previousMergeSha: null,
+    runnerGroupId: 9,
+    workflowSha256: {},
+  };
+  const prefix = "/repos/CityGo-Tech/citygo-platform";
+  f.routes["/orgs/CityGo-Tech/actions/runner-groups/9/repositories"] = {};
+  const refHead = {
+    ref: "refs/pull/99/head",
+    object: { type: "commit", sha: intent.headSha },
+  };
+  const refMerge = {
+    ref: "refs/pull/99/merge",
+    object: { type: "commit", sha: mergeSha },
+  };
+  f.routes[prefix + "/git/ref/heads/main"] = {
+    ref: "refs/heads/main",
+    object: { type: "commit", sha: "f".repeat(40) },
+  };
+  f.routes[prefix + "/git/ref/pull/99/head"] = refHead;
+  f.routes[prefix + "/git/ref/pull/99/merge"] = refMerge;
+  f.routes[prefix + "/git/commits/" + mergeSha] = {
+    sha: mergeSha,
+    parents: [{ sha: "f".repeat(40) }, { sha: intent.headSha }],
+  };
+  const prRun = {
+    path: ".github/workflows/ci.yml",
+    event: "pull_request",
+    head_sha: intent.headSha,
+    repository: { ...f.repo },
+    head_repository: { ...f.repo },
+    pull_requests: [
+      {
+        number: 99,
+        head: { sha: intent.headSha },
+        base: { ref: "main", sha: "f".repeat(40) },
+      },
+    ],
+  };
+  f.routes[
+    prefix +
+      "/actions/runs?event=pull_request&head_sha=" +
+      intent.headSha +
+      "&per_page=100&page=1"
+  ] = { total_count: 1, workflow_runs: [prRun] };
+  f.routes[
+    "/orgs/CityGo-Tech/actions/runner-groups/9/runners?per_page=100&page=1"
+  ] = { total_count: 0, runners: [] };
+  for (const path of [
+    ".github/workflows/ci.yml",
+    ".github/workflows/container-smoke.yml",
+  ]) {
+    const bytes = Buffer.from("synthetic reviewed " + path + "\n");
+    intent.workflowSha256[path] = createHash("sha256")
+      .update(bytes)
+      .digest("hex");
+    f.routes[
+      "/repos/CityGo-Tech/citygo-platform/contents/" + path + "?ref=" + mergeSha
+    ] = {
+      path,
+      type: "file",
+      size: bytes.length,
+      content: bytes.toString("base64") + "\n",
+      encoding: "base64",
+      sha: createHash("sha1")
+        .update("blob " + bytes.length + "\0")
+        .update(bytes)
+        .digest("hex"),
+    };
+  }
+  return { ...f, intent, prRun, refHead, refMerge };
+}
+
+test("PR access adds only two immutable reviewed workflow pins, preserves selected private repo and never overwrites Default", async () => {
+  const f = prFixture();
+  const result = await f.client.prAccess(f.intent, "apply");
+  assert.equal(result.stage, "reviewed_pr_group_verified");
+  assert.equal(result.organization, "CityGo-Tech");
+  assert.equal(result.workflowRefs.length, 2);
+  assert.equal(
+    result.workflowRefs.filter((x) => x.endsWith("@" + f.intent.mergeSha))
+      .length,
+    2,
+  );
+  const writes = f.calls.filter((x) => x.options.method === "PATCH");
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].path, "/orgs/CityGo-Tech/actions/runner-groups/9");
+  assert.deepEqual(JSON.parse(writes[0].options.body), {
+    restricted_to_workflows: true,
+    selected_workflows: result.workflowRefs,
+  });
+  const after = f.calls.length;
+  await assert.rejects(f.client.prAccess(f.intent, "apply"), /attempt_exists/);
+  assert.equal(f.calls.length, after);
+  assert.equal((await f.client.prAccess(f.intent)).sourcePinsVerified, true);
+  assert.equal(f.calls.filter((x) => x.options.method === "PATCH").length, 1);
+  assert.equal(
+    f.calls.some((x) => x.path.includes("/pulls/")),
+    false,
+  );
+});
+
+test("repository repair is explicit, exact-repo only and refuses a nonempty/foreign grant", async () => {
+  for (const nonempty of [false, true]) {
+    const f = prFixture();
+    f.routes["/orgs/CityGo-Tech/actions/runner-groups/9"].selected_workflows =
+      Object.keys(f.intent.workflowSha256).map(
+        (path) =>
+          "CityGo-Tech/citygo-platform/" + path + "@" + f.intent.mergeSha,
+      );
+    f.routes[
+      "/orgs/CityGo-Tech/actions/runner-groups/9/repositories?per_page=100&page=1"
+    ] = {
+      total_count: nonempty ? 1 : 0,
+      repositories: nonempty ? [{ id: 124 }] : [],
+    };
+    if (nonempty)
+      await assert.rejects(
+        f.client.prAccess(f.intent, "repair-repository"),
+        /repair_refused/,
+      );
+    else
+      assert.equal(
+        (await f.client.prAccess(f.intent, "repair-repository"))
+          .restrictedGroupVerified,
+        true,
+      );
+    const writes = f.calls.filter((x) => x.options.method === "PUT");
+    assert.equal(writes.length, nonempty ? 0 : 1);
+    assert.equal(
+      f.calls.some((x) => x.options.method === "PATCH"),
+      false,
+    );
+    if (!nonempty)
+      assert.equal(
+        writes[0].path,
+        "/orgs/CityGo-Tech/actions/runner-groups/9/repositories",
+      );
+  }
+});
+
+for (const fault of [
+  "fork",
+  "closed",
+  "wrong base",
+  "changed head",
+  "changed merge",
+  "workflow bytes",
+  "busy group",
+  "default group",
+  "extra repo",
+]) {
+  test(`PR group write refused for ${fault}`, async () => {
+    const f = prFixture();
+    if (fault === "fork") f.prRun.head_repository.id = 124;
+    if (fault === "closed")
+      delete f.routes[
+        "/repos/CityGo-Tech/citygo-platform/git/ref/pull/99/merge"
+      ];
+    if (fault === "wrong base") f.prRun.pull_requests[0].base.ref = "another";
+    if (fault === "changed head") f.refHead.object.sha = "e".repeat(40);
+    if (fault === "changed merge") f.refMerge.object.sha = "e".repeat(40);
+    if (fault === "workflow bytes")
+      f.intent.workflowSha256[".github/workflows/ci.yml"] = "0".repeat(64);
+    if (fault === "busy group")
+      f.routes[
+        "/orgs/CityGo-Tech/actions/runner-groups/9/runners?per_page=100&page=1"
+      ].total_count = 1;
+    if (fault === "default group")
+      f.routes["/orgs/CityGo-Tech/actions/runner-groups/9"].default = true;
+    if (fault === "extra repo")
+      f.routes[
+        "/orgs/CityGo-Tech/actions/runner-groups/9/repositories?per_page=100&page=1"
+      ].total_count = 2;
+    await assert.rejects(
+      f.client.prAccess(f.intent, "apply"),
+      /^Error: ci_factory_app_/,
+    );
+    assert.equal(
+      f.calls.some((x) => x.options.method === "PATCH"),
+      false,
+    );
+  });
+}
+
+test("PR-pinned queued job rechecks the current pull request before JIT issuance", async () => {
+  const f = prFixture();
+  await f.client.prAccess(f.intent, "apply");
+  const refs =
+    f.routes["/orgs/CityGo-Tech/actions/runner-groups/9"].selected_workflows;
+  const plan = { ...f.plan, workflowRef: refs[0] };
+  const policy = { ...f.policy, workflowRefs: refs };
+  const run =
+    f.routes["/repos/CityGo-Tech/citygo-platform/actions/runs/500/attempts/1"];
+  run.event = "pull_request";
+  run.head_branch = "codex/test";
+  run.pull_requests = [{ number: 99 }];
+  f.refMerge.object.sha = "e".repeat(40);
+  await assert.rejects(f.client.generateJit(plan, policy), /pr_source_changed/);
+  assert.equal(
+    f.calls.some((x) => x.path.endsWith("/generate-jitconfig")),
+    false,
+  );
 });
 
 test("group reconciliation is read-only, detects absent group and validates existing policy independently", async () => {

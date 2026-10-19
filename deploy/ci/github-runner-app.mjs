@@ -1,7 +1,7 @@
 // Trusted Windows HOST only, imported from the installed, pinned CI bundle.
 // No filesystem/env/credential discovery. Key is supplied by the protected host
 // loader, never a PR checkout. No caller-supplied URL or generic write endpoint.
-import { createPrivateKey, sign } from "node:crypto";
+import { createPrivateKey, sign, createHash } from "node:crypto";
 import {
   requireCi,
   validateJobPlan,
@@ -33,7 +33,7 @@ function workflowRefs(refs) {
       refs.length <= 8 &&
       strings(refs, refs) &&
       refs.every((ref) =>
-        /^CityGo-Tech\/citygo-platform\/\.github\/workflows\/(?:ci|container-smoke)\.yml@refs\/(?:heads\/main|pull\/[1-9][0-9]*\/merge)$/.test(
+        /^CityGo-Tech\/citygo-platform\/\.github\/workflows\/(?:ci|container-smoke)\.yml@(?:[a-f0-9]{40}|refs\/(?:heads\/main|pull\/[1-9][0-9]*\/merge))$/.test(
           ref,
         ),
       ),
@@ -142,6 +142,7 @@ export function createRunnerAppClient(
     previousTime = 0;
   const attempted = new Set();
   let groupCreationAttempted = false;
+  let prAccessAttempted = false;
   function now() {
     const ms = clock();
     requireCi(
@@ -156,6 +157,7 @@ export function createRunnerAppClient(
     // There is no exposed generic request method or arbitrary callback URL.
     let httpStatus = null;
     let reason = "unspecified";
+    let groupValidation = null;
     try {
       const response = await transport(API + path, {
         method,
@@ -182,6 +184,38 @@ export function createRunnerAppClient(
           typeof refusal?.message === "string"
             ? refusal.message.slice(0, 2048)
             : "";
+        if (
+          [400, 422].includes(response.status) &&
+          method === "PATCH" &&
+          /^\/orgs\/CityGo-Tech\/actions\/runner-groups\/[1-9][0-9]*$/.test(
+            path,
+          )
+        ) {
+          // This one request contains only public group names/workflow refs,
+          // never a key/token. Inspect bounded validation text, not raw JSON,
+          // headers or authentication/runner-config responses.
+          const safe = (x) =>
+            typeof x === "string" &&
+            /^[\x20-\x7e]{1,512}$/.test(x) &&
+            !/PRIVATE KEY|Bearer |Basic |gh[pousr]_/i.test(x)
+              ? x
+              : null;
+          groupValidation = {
+            message: safe(refusal?.message),
+            errors: Array.isArray(refusal?.errors)
+              ? refusal.errors.slice(0, 8).map((x) =>
+                  typeof x === "string"
+                    ? safe(x)
+                    : {
+                        resource: safe(x?.resource),
+                        field: safe(x?.field),
+                        code: safe(x?.code),
+                        message: safe(x?.message),
+                      },
+                )
+              : [],
+          };
+        }
         // Only a finite local classification, never the server's raw text/body.
         if (
           /workflow.*(?:ref|format|invalid|qualified|branch)|(?:invalid|unknown).*workflow/i.test(
@@ -200,6 +234,7 @@ export function createRunnerAppClient(
         else if (/repositor/i.test(message)) reason = "repository_rejected";
       }
       requireCi(response.status === status, "app_http_refused");
+      if (status === 204) return null;
       return await boundedJson(response);
     } catch {
       // No response body, URL with secrets, PEM, JWT/token, stack or native text.
@@ -207,18 +242,21 @@ export function createRunnerAppClient(
       const error = new Error("ci_factory_app_request_refused");
       error.httpStatus = httpStatus;
       error.reason = reason;
+      if (groupValidation) error.groupValidation = groupValidation;
       error.operation =
-        path === ORG + "runner-groups"
-          ? "create_group"
-          : path.startsWith(ORG + "runner-groups")
-            ? "read_group"
-            : path.endsWith("/access_tokens")
-              ? "installation_token"
-              : path.startsWith("/app/installations/")
-                ? "read_installation"
-                : path.endsWith("/generate-jitconfig")
-                  ? "generate_jit"
-                  : "read_job";
+        method === "PATCH" && path.startsWith(ORG + "runner-groups/")
+          ? "update_group"
+          : path === ORG + "runner-groups"
+            ? "create_group"
+            : path.startsWith(ORG + "runner-groups")
+              ? "read_group"
+              : path.endsWith("/access_tokens")
+                ? "installation_token"
+                : path.startsWith("/app/installations/")
+                  ? "read_installation"
+                  : path.endsWith("/generate-jitconfig")
+                    ? "generate_jit"
+                    : "read_job";
       throw error;
     }
   }
@@ -348,12 +386,26 @@ export function createRunnerAppClient(
         run.head_repository?.id === repositoryId &&
         (plan.workflowRef.endsWith("@refs/heads/main")
           ? run.event === "push" && run.head_branch === "main"
-          : /@refs\/pull\/[1-9][0-9]*\/merge$/.test(plan.workflowRef) &&
-            run.event === "pull_request") &&
+          : /@(?:refs\/pull\/[1-9][0-9]*\/merge|[a-f0-9]{40})$/.test(
+              plan.workflowRef,
+            ) && run.event === "pull_request") &&
         ["queued", "in_progress"].includes(run.status) &&
         run.conclusion === null,
       "app_run_changed",
     );
+    if (/@[a-f0-9]{40}$/.test(plan.workflowRef)) {
+      requireCi(
+        Array.isArray(run.pull_requests) &&
+          run.pull_requests.length === 1 &&
+          positive(run.pull_requests[0].number),
+        "app_pr_run_binding_invalid",
+      );
+      await currentPr({
+        prNumber: run.pull_requests[0].number,
+        headSha: plan.headSha,
+        mergeSha: plan.workflowRef.slice(-40),
+      });
+    }
     const job = await get(REPO + "/actions/jobs/" + plan.jobId);
     requireCi(
       job.id === plan.jobId &&
@@ -369,7 +421,270 @@ export function createRunnerAppClient(
     );
     return true;
   }
+  const paths = [
+    ".github/workflows/ci.yml",
+    ".github/workflows/container-smoke.yml",
+  ];
+  const mainRefs = paths.map(
+    (path) => REPOSITORY + "/" + path + "@refs/heads/main",
+  );
+  function prIntent(intent) {
+    requireCi(
+      intent &&
+        Object.keys(intent).sort().join("|") ===
+          [
+            "headSha",
+            "mergeSha",
+            "previousMergeSha",
+            "prNumber",
+            "runnerGroupId",
+            "workflowSha256",
+          ]
+            .sort()
+            .join("|") &&
+        positive(intent.prNumber) &&
+        positive(intent.runnerGroupId) &&
+        /^[a-f0-9]{40}$/.test(intent.headSha) &&
+        /^[a-f0-9]{40}$/.test(intent.mergeSha) &&
+        (intent.previousMergeSha === null ||
+          /^[a-f0-9]{40}$/.test(intent.previousMergeSha)) &&
+        intent.workflowSha256 &&
+        Object.keys(intent.workflowSha256).sort().join("|") ===
+          paths.slice().sort().join("|") &&
+        Object.values(intent.workflowSha256).every(
+          (hash) => typeof hash === "string" && /^[a-f0-9]{64}$/.test(hash),
+        ),
+      "app_pr_intent_invalid",
+    );
+    return intent;
+  }
+  const pinnedRefs = (sha) =>
+    paths.map((path) => REPOSITORY + "/" + path + "@" + sha);
+  const groupPolicy = (id, refs) => ({
+    runnerGroupId: id,
+    repositoryId,
+    runnerGroupName: "CityGo-isolated-checks",
+    workflowRefs: refs,
+  });
+  async function currentPr(intent) {
+    // Git refs + immutable merge parents + Actions provenance use the already
+    // approved Contents/Actions read scopes. Do not require Pull requests read
+    // or silently broaden App permissions merely to use /pulls/{number}.
+    const main = await get(REPO + "/git/ref/heads/main");
+    const head = await get(REPO + "/git/ref/pull/" + intent.prNumber + "/head");
+    const merge = await get(
+      REPO + "/git/ref/pull/" + intent.prNumber + "/merge",
+    );
+    requireCi(
+      main.ref === "refs/heads/main" &&
+        main.object?.type === "commit" &&
+        /^[a-f0-9]{40}$/.test(main.object.sha) &&
+        head.ref === "refs/pull/" + intent.prNumber + "/head" &&
+        head.object?.type === "commit" &&
+        head.object.sha === intent.headSha &&
+        merge.ref === "refs/pull/" + intent.prNumber + "/merge" &&
+        merge.object?.type === "commit" &&
+        merge.object.sha === intent.mergeSha,
+      "app_pr_source_changed",
+    );
+    const commit = await get(REPO + "/git/commits/" + intent.mergeSha);
+    requireCi(
+      commit.sha === intent.mergeSha &&
+        Array.isArray(commit.parents) &&
+        commit.parents.length === 2 &&
+        commit.parents[0].sha === main.object.sha &&
+        commit.parents[1].sha === intent.headSha,
+      "app_pr_merge_parents_invalid",
+    );
+    const runs = await get(
+      REPO +
+        "/actions/runs?event=pull_request&head_sha=" +
+        intent.headSha +
+        "&per_page=100&page=1",
+    );
+    requireCi(
+      Number.isSafeInteger(runs.total_count) &&
+        runs.total_count > 0 &&
+        runs.total_count <= 100 &&
+        Array.isArray(runs.workflow_runs) &&
+        runs.workflow_runs.length === runs.total_count,
+      "app_pr_runs_unbounded",
+    );
+    const selected = runs.workflow_runs.filter((run) =>
+      paths.includes(run.path),
+    );
+    requireCi(
+      selected.length >= 1 &&
+        selected.length <= 2 &&
+        selected.every(
+          (run) =>
+            run.event === "pull_request" &&
+            run.head_sha === intent.headSha &&
+            run.repository?.id === repositoryId &&
+            run.repository?.full_name === REPOSITORY &&
+            run.repository?.private === true &&
+            run.head_repository?.id === repositoryId &&
+            run.head_repository?.full_name === REPOSITORY &&
+            run.head_repository?.private === true &&
+            Array.isArray(run.pull_requests) &&
+            run.pull_requests.length === 1 &&
+            run.pull_requests[0].number === intent.prNumber &&
+            run.pull_requests[0].head?.sha === intent.headSha &&
+            run.pull_requests[0].base?.ref === "main" &&
+            run.pull_requests[0].base?.sha === main.object.sha,
+        ),
+      "app_pr_provenance_invalid",
+    );
+    return true;
+  }
+  async function reviewedPr(intent) {
+    prIntent(intent);
+    await currentPr(intent);
+    for (const path of paths) {
+      const source = await get(
+        REPO + "/contents/" + path + "?ref=" + intent.mergeSha,
+      );
+      requireCi(
+        source.type === "file" &&
+          source.path === path &&
+          source.encoding === "base64" &&
+          positive(source.size) &&
+          source.size <= 131072 &&
+          typeof source.content === "string" &&
+          source.content.length <= 180000 &&
+          /^[A-Za-z0-9+/=\n]+$/.test(source.content),
+        "app_pr_workflow_invalid",
+      );
+      const encoded = source.content.replaceAll("\n", ""),
+        bytes = Buffer.from(encoded, "base64");
+      requireCi(
+        bytes.length === source.size &&
+          bytes.toString("base64") === encoded &&
+          createHash("sha1")
+            .update("blob " + bytes.length + "\0")
+            .update(bytes)
+            .digest("hex") === source.sha &&
+          createHash("sha256").update(bytes).digest("hex") ===
+            intent.workflowSha256[path],
+        "app_pr_workflow_pin_mismatch",
+      );
+    }
+    await currentPr(intent);
+    // One admitted source at a time, not the union of main and PR revisions.
+    // The host lease must cover policy update through runner removal.
+    return pinnedRefs(intent.mergeSha);
+  }
   return Object.freeze({
+    async prAccess(intent, mode = "inspect") {
+      requireCi(
+        ["inspect", "apply", "repair-repository"].includes(mode),
+        "app_pr_mode_invalid",
+      );
+      requireCi(
+        mode !== "apply" || !prAccessAttempted,
+        "app_pr_attempt_exists",
+      );
+      const refs = await reviewedPr(intent);
+      if (mode === "repair-repository") {
+        requireCi(!prAccessAttempted, "app_pr_attempt_exists");
+        const value = await get(ORG + "runner-groups/" + intent.runnerGroupId);
+        requireCi(
+          value.id === intent.runnerGroupId &&
+            value.name === "CityGo-isolated-checks" &&
+            value.default === false &&
+            value.inherited === false &&
+            value.visibility === "selected" &&
+            value.allows_public_repositories === false &&
+            value.restricted_to_workflows === true &&
+            strings(value.selected_workflows, refs),
+          "app_group_readback_invalid",
+        );
+        const repos = await get(
+          ORG +
+            "runner-groups/" +
+            intent.runnerGroupId +
+            "/repositories?per_page=100&page=1",
+        );
+        requireCi(
+          repos.total_count === 0 &&
+            Array.isArray(repos.repositories) &&
+            repos.repositories.length === 0,
+          "app_pr_repository_repair_refused",
+        );
+        const runners = await get(
+          ORG +
+            "runner-groups/" +
+            intent.runnerGroupId +
+            "/runners?per_page=100&page=1",
+        );
+        requireCi(
+          runners.total_count === 0 &&
+            Array.isArray(runners.runners) &&
+            runners.runners.length === 0,
+          "app_pr_group_busy",
+        );
+        await currentPr(intent);
+        prAccessAttempted = true;
+        await request(
+          "PUT",
+          ORG + "runner-groups/" + intent.runnerGroupId + "/repositories",
+          await authenticate(),
+          { selected_repository_ids: [repositoryId] },
+          204,
+        );
+      }
+      const previous = intent.previousMergeSha
+        ? pinnedRefs(intent.previousMergeSha)
+        : mainRefs;
+      await group(
+        groupPolicy(intent.runnerGroupId, mode === "apply" ? previous : refs),
+      );
+      if (mode === "apply") {
+        requireCi(!prAccessAttempted, "app_pr_attempt_exists");
+        const runners = await get(
+          ORG +
+            "runner-groups/" +
+            intent.runnerGroupId +
+            "/runners?per_page=100&page=1",
+        );
+        requireCi(
+          runners.total_count === 0 &&
+            Array.isArray(runners.runners) &&
+            runners.runners.length === 0,
+          "app_pr_group_busy",
+        );
+        await currentPr(intent);
+        prAccessAttempted = true; // No retry after an ambiguous policy write.
+        await request(
+          "PATCH",
+          ORG + "runner-groups/" + intent.runnerGroupId,
+          await authenticate(),
+          {
+            restricted_to_workflows: true,
+            selected_workflows: refs,
+          },
+          200,
+        );
+        await group(groupPolicy(intent.runnerGroupId, refs));
+        await currentPr(intent);
+      }
+      return {
+        version: 1,
+        stage: "reviewed_pr_group_verified",
+        organization: "CityGo-Tech",
+        repository: REPOSITORY,
+        runnerGroupId: intent.runnerGroupId,
+        prNumber: intent.prNumber,
+        headSha: intent.headSha,
+        mergeSha: intent.mergeSha,
+        workflowRefs: refs,
+        sourcePinsVerified: true,
+        restrictedGroupVerified: true,
+        runnerRegistered: false,
+        vmCreated: false,
+        productionChanged: false,
+      };
+    },
     async inspectGroup(refs) {
       workflowRefs(refs);
       const value = await get(ORG + "runner-groups?per_page=100&page=1");
