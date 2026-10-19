@@ -86,8 +86,23 @@ workflow/job/label, ресурсы и неизменные абсолютные 
 заканчивается за 3 минуты до hardDeadline. Гость не может обновлять deadline.
 Без этого opt-in прежний canary предел остаётся 3600 секунд. UTC и monotonic rollback
 закрывают сеть, затем выполняется прежний guarded stop/cleanup. Это подготовленный
-код, не установленный длинный native lease: шлюзовый watchdog/lease, suspend/reboot
-и собственный сбой watchdog ещё не приняты.
+код, не установленный длинный native lease: длинный гостевой lease шлюза,
+suspend/reboot и собственный сбой watchdog ещё не приняты.
+
+Для disposable gateway добавлены отдельные `Stop-CityGoJobGatewayVm.ps1` и
+`Watch-CityGoJobGateway.ps1`. Они проверяют полный двухпортовый profile, точные
+native ID и ресурсы 2 CPU / 2 ГБ, а не ослабляют однопортовые client guards.
+Stop требует оба порта disconnected и empty DVD; неизменяемый stop binding
+связывает gateway hash и grace/fallback. Watchdog вооружается на выключенной ВМ
+отдельным host-процессом до boot. При controller exit, cancel, deadline, смене
+сетевого fingerprint или откате часов сначала закрываются оба собственных порта,
+затем отсоединяется только закреплённый public seed, подтверждается Off и удаляются
+только собственные ВМ/диск. Неоднозначные команды не повторяются; неподтверждённая
+очистка оставляет quarantine и запрещает следующее задание. Полный job plan
+задаёт неизменный абсолютный lease; короткий диагностический режим ограничен
+900 секундами и не даёт общего продления. Эти scripts сами не запускают ВМ,
+не подключают сеть, не регистрируют runner и не устанавливают постоянную службу.
+Mock-проверки этого поведения не подменяют native испытания.
 
 `render-job-workflows.mjs` готовит только preview: меняет runner route, добавляет
 конечный CI timeout и `checkout.persist-credentials: false`. Обратное сравнение
@@ -131,8 +146,10 @@ Targeted ESLint, Prettier и `git diff --check` также прошли.
 
 После исправления source filename в импортере и добавления full-job lease:
 **394/394 CI-host PASS, 0 SKIP**; отдельно **23/23 release/deploy guards PASS**,
-targeted ESLint/Prettier/diff-check PASS. Все новые watchdog/factory сценарии,
-кроме описанного ниже native OFF client lifecycle, пока unit/mock/read-only.
+targeted ESLint/Prettier/diff-check PASS. Это предыдущий срез до gateway stop/watchdog.
+После их добавления и UTF-8 регрессии полный CI-host набор прошёл **419/419, 0 SKIP**. Новые
+stop/watchdog сценарии пока unit/mock/read-only; native OFF client/gateway lifecycle
+описаны отдельно ниже. Это не зелёные CI и Container smoke в GitHub.
 
 ### Что мешает активации
 
@@ -195,10 +212,32 @@ Linux-signal test явно SKIP. Полный Linux CI и Container smoke ещё
 при открытии sibling guard. Причина воспроизведена read-only без admin. Теперь
 AST сохраняет проверенный filename, body parameters и pinned source read-lock;
 inline header parameters отказаны явно. Ошибочная попытка сохранена, не переписана.
-Подготовлена отдельная reconciliation только полного известного pre-profile
-клиента (исходные manifest/failure hashes, запрет появившегося profile intent),
-после неё — один новый OFF gateway test. До его завершения прежний выключенный
-клон/диск сохранены; они не подключены к сети и не используются для CI.
+Отдельная reconciliation проверила исходные manifest/failure hashes и отсутствие
+profile intent, после чего удалила только этот известный выключенный pre-profile
+клиент. Затем **OFF-only gateway lifecycle PASS**: новый полный двухпортовый
+gateway создан, независимо проверен Off/disconnected и удалён вместе с диском и
+пустой owned папкой. Обе операции завершились readback отсутствия; база осталась
+Off с неизменным хешем. Boot, network connect, task и runner не выполнялись.
+
+Первый OFF-only тест gateway watchdog остановился **до регистрации задачи**:
+private harness читал UTF-8 JSON через `Get-Content` без явной кодировки в Windows
+PowerShell 5.1, что изменило русское native NIC name. Отдельный read-only probe
+подтвердил совпадение строгого UTF-8 reader и `-Encoding UTF8`, но не default reader.
+Регрессионный тест читает настоящий синтетический UTF-8 файл с проверкой raw hash,
+сохраняет русское имя native NIC и подтверждает отказ для искажённого имени;
+Hyper-V и проверки ACL в этом тесте заменены mocks.
+Ошибочный отчёт сохранён. Исправленный новый harness явно читает UTF-8, сверил
+hash-bound материалы прежней попытки и отсутствие её задачи, затем адресно удалил
+только тот выключенный gateway и диск. Новый **OFF-only scheduled gateway watchdog
+controller-exit тест PASS**: отдельная временная задача вооружилась на новом
+выключенном шлюзе, после завершения только синтетического управляющего процесса
+зафиксировала `controller_exited`, подтвердила disconnected/Off и удалила только
+свои ВМ, диск и пустую owned папку. Независимый readback подтвердил отсутствие;
+задача завершилась с кодом 0 и была адресно удалена. Base Off/hash unchanged.
+Оба диска отсутствуют; private evidence сохранены. Ни одна из этих ВМ не
+загружалась и не подключалась к сети, runner не регистрировался. Поэтому это
+приёмка независимого OFF cleanup, **не** running shutdown, connected gateway,
+длинного lease, отказа самого watchdog или полной native factory.
 
 ## Пройденный предыдущий этап: один GitHub job и внешний cleanup
 
