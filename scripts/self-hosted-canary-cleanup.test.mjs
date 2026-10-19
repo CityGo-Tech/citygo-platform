@@ -55,7 +55,7 @@ const mocks = String.raw`
 $script:calls=[Collections.Generic.List[string]]::new();$script:receipts=@{};$script:failAt='';$script:ownPresent=$true;$script:diskPresent=$true;$script:dirPresent=$true;$script:otherReference=$false
 $script:vm=[pscustomobject]@{Id=[guid]$vmId;Name=$name;Path=$manifest.vmPath;State='Off';Generation=2}
 $script:nic=[pscustomobject]@{Id=$manifest.nicId;VMId=[guid]$vmId;Name=$manifest.nicName}
-$script:vhd=[pscustomobject]@{VhdFormat='VHDX';VhdType='Dynamic';ParentPath=$null;Attached=$false;Size=96GB;FileSize=1000;DiskIdentifier=[guid]$diskId}
+$script:vhd=[pscustomobject]@{VhdFormat='VHDX';VhdType='Dynamic';ParentPath=$null;Attached=$false;Size=96GB;FileSize=1000;DiskIdentifier=[string]$diskId}
 function Track([string]$Name){$script:calls.Add($Name);if($script:failAt-eq$Name){throw 'synthetic-failure'}}
 function Get-CityGoCanaryCleanupIdentity {param($RequireAdministrator);Track 'identity';if(-not $RequireAdministrator){throw 'admin-not-requested'};return 'S-1-5-21-1-2-3-1001'}
 function Assert-CityGoCanaryCleanupPlainPath {param($Path,$Directory);Track 'plain'}
@@ -75,20 +75,48 @@ function Get-VMNetworkAdapter {param($VM,$ErrorAction);Track 'get-nics';return $
 function Get-VMSnapshot {param($VM,$ErrorAction);Track 'get-snapshots'}
 function Get-VMAssignableDevice {param($VM,$ErrorAction);Track 'get-devices'}
 function Get-VHD {param($Path,$ErrorAction);Track 'get-vhd';return $script:vhd}
-function Remove-VM {param($VM,[switch]$Confirm,$ErrorAction);Track 'remove-vm';if($VM.Id.ToString('D')-cne$vmId){throw 'foreign-vm'};$script:ownPresent=$false}
+function Remove-VM {param($VM,[switch]$Force,[switch]$Confirm,$ErrorAction)
+ Track 'remove-vm';if(-not $Force){throw 'native-shouldcontinue-confirmation-required'}
+ if($Confirm -or $VM.Id.ToString('D')-cne$vmId -or $VM.State-cne'Off'){throw 'foreign-or-running-vm'}
+ $script:ownPresent=$false
+}
 function Remove-Item {param($LiteralPath,[switch]$Confirm,$ErrorAction);Track 'remove-disk';if($LiteralPath-cne$manifest.targetVhdx){throw 'foreign-file'};$script:diskPresent=$false}
 `;
 
-test("cleanup contains no stop/start/force/recursive/global/network/base mutations", () => {
+const resumed = String.raw`
+$initial=($manifest|ConvertTo-Json -Compress|ConvertFrom-Json)
+$initial.stage='failed_preserved_state_unverified';$initial.directoryCreated=$true;$initial.diskVerified=$false;$initial.vmCreated=$false
+foreach($field in @('vmId','nicId','nicName','diskIdentifier','diskType')){$initial.$field=$null}
+$initial.preflightSha256=('0'*64)
+$manifest|Add-Member -MemberType NoteProperty -Name initialCreationReceiptSha256 -Value ('e'*64)
+$manifest|Add-Member -MemberType NoteProperty -Name resumeVerificationSha256 -Value ('f'*64)
+$request.manifestPath=$control+'\canary-resume-creation.json'
+$verification=[pscustomobject][ordered]@{schemaVersion=1;scope='verified_owned_copy_before_resume';operationId=$op;
+ initialCreationReceiptSha256=('e'*64);sourceBaseSha256=$manifest.sourceBaseSha256;targetSha256=$manifest.sourceBaseSha256;
+ sourceDiskIdentifier='aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';targetDiskIdentifier='aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+ noVmOrReferencesObserved=$true;sourceVmOff=$true;targetStandaloneUnattached=$true;targetTreeOnlyDisk=$true;
+ guestIsolationVerified=$false;githubRunnerRegistered=$false;ciJobsAdmitted=$false}
+`;
+
+test("cleanup suppresses only guarded Remove-VM confirmation, with no forced shutdown/recursive/global/network/base mutations", () => {
   assert.doesNotMatch(
     source,
     /\b(?:Stop-VM|Start-VM|Set-VHD|Mount-VHD|Set-Acl|Disconnect-VMNetworkAdapter|Connect-VMNetworkAdapter|New-VMSwitch|New-NetNat|Invoke-WebRequest|Start-Process)\b/i,
   );
   assert.doesNotMatch(
     source,
-    /Remove-(?:Item|VM)[^\r\n]*-(?:Recurse|Force)\b|\$env:|ExecutionPolicy|Exception\.Message/,
+    /Remove-Item[^\r\n]*-(?:Recurse|Force)\b|Remove-VM[^\r\n]*-Recurse\b|\$env:|ExecutionPolicy|Exception\.Message/,
   );
-  assert.match(source, /Remove-VM -VM \$vm -Confirm:\$false -ErrorAction Stop/);
+  assert.match(
+    source,
+    /Remove-VM -VM \$vm -Force -Confirm:\$false -ErrorAction Stop/,
+  );
+  assert.deepEqual(
+    source.match(
+      /^\s*(?:Remove|Set|New|Stop|Start|Connect|Disconnect)-[^\r\n]*-Force\b[^\r\n]*$/gm,
+    ),
+    ["            Remove-VM -VM $vm -Force -Confirm:$false -ErrorAction Stop"],
+  );
   assert.match(
     source,
     /Remove-Item -LiteralPath \$plan\.targetVhdx -Confirm:\$false/,
@@ -99,6 +127,27 @@ test("cleanup contains no stop/start/force/recursive/global/network/base mutatio
 });
 
 test(
+  "Confirm false alone cannot bypass native-like ShouldContinue; guarded Force suppresses only that confirmation",
+  { skip: !available },
+  () => {
+    const out = run(`${fixture}${mocks}
+$denied=$false;try{Remove-VM -VM $script:vm -Confirm:$false -ErrorAction Stop}catch{$denied=($_.Exception.Message -ceq 'native-shouldcontinue-confirmation-required')}
+$stillPresent=$script:ownPresent;$script:calls.Clear()
+$request.apply=$true;$request.acknowledge=(Get-CityGoCanaryCleanupPlan $manifest $request).requiredAcknowledgement
+$result=Invoke-CityGoCanaryCleanup $manifest $request
+[ordered]@{denied=$denied;stillPresent=$stillPresent;result=$result;calls=@($script:calls.ToArray())}|ConvertTo-Json -Depth 5 -Compress`);
+    assert.equal(out.denied, true);
+    assert.equal(out.stillPresent, true);
+    assert.equal(out.result.stage, "cleanup_complete_resources_absent");
+    assert.equal(out.calls.filter((entry) => entry === "remove-vm").length, 1);
+    assert.ok(
+      out.calls.indexOf("write-receipt") < out.calls.indexOf("remove-vm"),
+    );
+    assert.ok(out.calls.indexOf("get-vhd") < out.calls.indexOf("remove-vm"));
+  },
+);
+
+test(
   "default is a pure unverified plan without host inventory or mutations",
   { skip: !available },
   () => {
@@ -106,7 +155,29 @@ test(
 $result=Invoke-CityGoCanaryCleanup $manifest $request
 [ordered]@{result=$result;calls=@($script:calls.ToArray())}|ConvertTo-Json -Compress`);
     assert.equal(out.result.stage, "plan_only_unverified");
+    assert.ok(!Object.hasOwn(out.result, "failurePhase"));
+    assert.ok(!Object.hasOwn(out.result, "failureCode"));
     assert.deepEqual(out.calls, []);
+  },
+);
+
+test(
+  "native string and Guid disk IDs normalize equally; invalid, zero and wrong IDs never authorize deletion",
+  { skip: !available },
+  () => {
+    const out = run(`${fixture}${mocks}
+$plan=Get-CityGoCanaryCleanupPlan $manifest $request
+$accepted=@();foreach($value in @([string]$diskId,$diskId.ToUpperInvariant(),[guid]$diskId)){
+ $script:vhd.DiskIdentifier=$value;$accepted+=(Test-CityGoCanaryCleanupDisk $plan)
+}
+$denied=@();foreach($value in @($null,'','invalid',[guid]::Empty,[guid]::Empty.ToString('D'),'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',7)){
+ $script:vhd.DiskIdentifier=$value
+ try{$null=Test-CityGoCanaryCleanupDisk $plan;$denied+=$false}catch{$denied+=($_.Exception.Message -ceq 'disk_identity_or_state_changed')}
+}
+[ordered]@{accepted=$accepted;denied=$denied;removed=(@($script:calls|Where-Object{$_-like'remove-*'}).Count)}|ConvertTo-Json -Compress`);
+    assert.deepEqual(out.accepted, [true, true, true]);
+    assert.deepEqual(out.denied, Array(7).fill(true));
+    assert.equal(out.removed, 0);
   },
 );
 
@@ -135,6 +206,132 @@ $denied=@();foreach($change in $changes){$m=($manifest|ConvertTo-Json -Compress|
 ConvertTo-Json -InputObject $denied -Compress`);
     assert.equal(out.length, 13);
     assert.ok(out.every(Boolean));
+  },
+);
+
+test(
+  "resumed COMPLETE manifest requires its exact second filename and two strict link hashes; ordinary schema stays unchanged",
+  { skip: !available },
+  () => {
+    const out = run(String.raw`${fixture}${resumed}
+$plan=Get-CityGoCanaryCleanupPlan $manifest $request
+$denied=@();foreach($kind in @('old-filename','arbitrary-filename','other-op','bad-initial-hash','upper-initial-hash','bad-verification-hash','partial-stage','missing-link')){
+ $m=($manifest|ConvertTo-Json -Compress|ConvertFrom-Json);$r=[ordered]@{};foreach($key in $request.Keys){$r[$key]=$request[$key]}
+ if($kind-eq'old-filename'){$r.manifestPath=$control+'\canary-creation.json'}
+ if($kind-eq'arbitrary-filename'){$r.manifestPath=$control+'\canary-resume-creation-v2.json'}
+ if($kind-eq'other-op'){$r.manifestPath='D:\CityGo-CI\control\aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee\canary-resume-creation.json'}
+ if($kind-eq'bad-initial-hash'){$m.initialCreationReceiptSha256='not-a-hash'}
+ if($kind-eq'upper-initial-hash'){$m.initialCreationReceiptSha256=('E'*64)}
+ if($kind-eq'bad-verification-hash'){$m.resumeVerificationSha256=$true}
+ if($kind-eq'partial-stage'){$m.stage='failed_preserved_state_unverified'}
+ if($kind-eq'missing-link'){$m.PSObject.Properties.Remove('initialCreationReceiptSha256')}
+ try{$null=Get-CityGoCanaryCleanupPlan $m $r;$denied+=$false}catch{$denied+=$true}
+}
+[ordered]@{resumed=$plan.resumedCreation;initialPath=$plan.initialCreationReceiptPath;proofPath=$plan.resumeVerificationPath;denied=$denied}|ConvertTo-Json -Compress`);
+    assert.equal(out.resumed, true);
+    assert.ok(out.initialPath.endsWith("\\canary-creation.json"));
+    assert.ok(out.proofPath.endsWith("\\canary-resume-verification.json"));
+    assert.deepEqual(out.denied, Array(8).fill(true));
+  },
+);
+
+test(
+  "resumed cleanup validates exact failed pre-VM original and fixed flat proof, allowing only preflight refresh",
+  { skip: !available },
+  () => {
+    const out = run(String.raw`${fixture}${resumed}
+$plan=Get-CityGoCanaryCleanupPlan $manifest $request
+Assert-CityGoCanaryResumeCleanupEvidence $initial $verification $manifest $plan
+$blocked=@();foreach($kind in @('initial-stage','initial-directory','initial-disk-verified','initial-vm-created','initial-id','initial-disk-type','initial-source','initial-seal','initial-preflight-format','initial-op','initial-path','initial-extra','proof-scope','proof-original-hash','proof-target-sha','proof-id-mismatch','proof-id-noncanonical','proof-bool','proof-unverified','proof-ci','proof-runner-string','proof-extra','current-id-not-reset')){
+ $a=($initial|ConvertTo-Json -Compress|ConvertFrom-Json);$p=($verification|ConvertTo-Json -Compress|ConvertFrom-Json);$m=($manifest|ConvertTo-Json -Compress|ConvertFrom-Json)
+ if($kind-eq'initial-stage'){$a.stage='created_off_disconnected'}
+ if($kind-eq'initial-directory'){$a.directoryCreated=$false}
+ if($kind-eq'initial-disk-verified'){$a.diskVerified=$true}
+ if($kind-eq'initial-vm-created'){$a.vmCreated=$true}
+ if($kind-eq'initial-id'){$a.vmId='aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'}
+ if($kind-eq'initial-disk-type'){$a.diskType='Dynamic'}
+ if($kind-eq'initial-source'){$a.sourceBaseSha256=('9'*64)}
+ if($kind-eq'initial-seal'){$a.sealedBaseEvidenceSha256=('9'*64)}
+ if($kind-eq'initial-preflight-format'){$a.preflightSha256='bad'}
+ if($kind-eq'initial-op'){$a.operationId='aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'}
+ if($kind-eq'initial-path'){$a.targetVhdx='D:\foreign.vhdx'}
+ if($kind-eq'initial-extra'){$a|Add-Member -MemberType NoteProperty -Name extra -Value $true}
+ if($kind-eq'proof-scope'){$p.scope='untrusted'}
+ if($kind-eq'proof-original-hash'){$p.initialCreationReceiptSha256=('9'*64)}
+ if($kind-eq'proof-target-sha'){$p.targetSha256=('9'*64)}
+ if($kind-eq'proof-id-mismatch'){$p.targetDiskIdentifier=$manifest.diskIdentifier}
+ if($kind-eq'proof-id-noncanonical'){$p.sourceDiskIdentifier=$p.sourceDiskIdentifier.ToUpperInvariant()}
+ if($kind-eq'proof-bool'){$p.noVmOrReferencesObserved='true'}
+ if($kind-eq'proof-unverified'){$p.targetStandaloneUnattached=$false}
+ if($kind-eq'proof-ci'){$p.ciJobsAdmitted=$true}
+ if($kind-eq'proof-runner-string'){$p.githubRunnerRegistered='False'}
+ if($kind-eq'proof-extra'){$p|Add-Member -MemberType NoteProperty -Name extra -Value $true}
+ if($kind-eq'current-id-not-reset'){$m.diskIdentifier=$p.sourceDiskIdentifier}
+ try{Assert-CityGoCanaryResumeCleanupEvidence $a $p $m $plan;$blocked+=$false}catch{$blocked+=$true}
+}
+[ordered]@{freshPreflightDiffAllowed=($initial.preflightSha256-cne$manifest.preflightSha256);blocked=$blocked}|ConvertTo-Json -Compress`);
+    assert.equal(out.freshPreflightDiffAllowed, true);
+    assert.deepEqual(out.blocked, Array(23).fill(true));
+  },
+);
+
+test(
+  "resumed cleanup read-locks hash-pinned original and proof before ALL native inventory and holds both until completion",
+  { skip: !available },
+  () => {
+    const out = run(String.raw`${fixture}${resumed}${mocks}
+$script:held=[Collections.Generic.List[object]]::new()
+function Open-CityGoCanaryCleanupEvidence {param($Path,$OwnerSid,$ExpectedHash)
+ $stream=[IO.MemoryStream]::new();$script:held.Add($stream)
+ if($Path-ceq($control+'\canary-creation.json') -and $ExpectedHash-ceq('e'*64)){Track 'open-initial';return @{value=$initial;stream=$stream}}
+ if($Path-ceq($control+'\canary-resume-verification.json') -and $ExpectedHash-ceq('f'*64)){Track 'open-proof';return @{value=$verification;stream=$stream}}
+ throw 'evidence_hash_mismatch'
+}
+$request.apply=$true;$request.acknowledge=(Get-CityGoCanaryCleanupPlan $manifest $request).requiredAcknowledgement
+$result=Invoke-CityGoCanaryCleanup $manifest $request
+[ordered]@{result=$result;calls=@($script:calls.ToArray());closed=(@($script:held|Where-Object{$_.CanRead}).Count -eq 0);receipts=$script:receipts.Count}|ConvertTo-Json -Depth 5 -Compress`);
+    assert.equal(out.result.stage, "cleanup_complete_resources_absent");
+    assert.equal(out.closed, true);
+    assert.equal(out.receipts, 2);
+    assert.ok(out.calls.indexOf("open-initial") < out.calls.indexOf("get-vms"));
+    assert.ok(out.calls.indexOf("open-proof") < out.calls.indexOf("get-vms"));
+    assert.ok(
+      out.calls.indexOf("open-proof") < out.calls.indexOf("write-receipt"),
+    );
+  },
+);
+
+test(
+  "wrong link raw hashes, altered original or invalid proof booleans block resumed cleanup before native inventory or intent",
+  { skip: !available },
+  () => {
+    const out = run(String.raw`${fixture}${resumed}${mocks}
+$originalInitial=$initial;$originalProof=$verification
+function Open-CityGoCanaryCleanupEvidence {param($Path,$OwnerSid,$ExpectedHash)
+ if($Path-ceq($control+'\canary-creation.json') -and $ExpectedHash-ceq('e'*64)){Track 'open-initial';return @{value=$initial;stream=$null}}
+ if($Path-ceq($control+'\canary-resume-verification.json') -and $ExpectedHash-ceq('f'*64)){Track 'open-proof';return @{value=$verification;stream=$null}}
+ throw 'evidence_hash_mismatch'
+}
+$request.apply=$true;$cases=@();foreach($kind in @('initial-hash','proof-hash','changed-original','proof-bool','direct-partial')){
+ $initial=($originalInitial|ConvertTo-Json -Compress|ConvertFrom-Json);$verification=($originalProof|ConvertTo-Json -Compress|ConvertFrom-Json)
+ $m=($manifest|ConvertTo-Json -Compress|ConvertFrom-Json);$r=[ordered]@{};foreach($key in $request.Keys){$r[$key]=$request[$key]}
+ if($kind-eq'initial-hash'){$m.initialCreationReceiptSha256=('9'*64)}
+ if($kind-eq'proof-hash'){$m.resumeVerificationSha256=('9'*64)}
+ if($kind-eq'changed-original'){$initial.vmCreated=$true}
+ if($kind-eq'proof-bool'){$verification.sourceVmOff='true'}
+ if($kind-eq'direct-partial'){$m=$initial;$r.manifestPath=$control+'\canary-creation.json'}
+ $script:calls.Clear();$blocked=$false
+ try{$r.acknowledge=(Get-CityGoCanaryCleanupPlan $m $r).requiredAcknowledgement;$result=Invoke-CityGoCanaryCleanup $m $r;$blocked=$result.stage -like 'failed_*'}catch{$blocked=$true}
+ $cases+=[ordered]@{blocked=$blocked;native=($script:calls.Contains('get-vms') -or $script:calls.Contains('get-vhd'));
+  mutated=($script:calls.Contains('write-receipt') -or $script:calls.Contains('remove-vm') -or $script:calls.Contains('remove-disk'))}
+}
+ConvertTo-Json -InputObject $cases -Depth 4 -Compress`);
+    assert.equal(out.length, 5);
+    for (const item of out) {
+      assert.equal(item.blocked, true);
+      assert.equal(item.native, false);
+      assert.equal(item.mutated, false);
+    }
   },
 );
 
@@ -228,6 +425,8 @@ $result=Invoke-CityGoCanaryCleanup $manifest $request
     assert.equal(out.result.stage, "cleanup_complete_resources_absent");
     assert.equal(out.result.vmAbsent, true);
     assert.equal(out.result.diskAbsent, true);
+    assert.ok(!Object.hasOwn(out.result, "failurePhase"));
+    assert.ok(!Object.hasOwn(out.result, "failureCode"));
     assert.equal(out.receiptCount, 2);
     assert.equal(out.vm, false);
     assert.equal(out.disk, false);
@@ -337,6 +536,88 @@ $code='not-blocked';try{Assert-CityGoCanaryCleanupForeignDisk 'D:\Foreign\child.
 );
 
 test(
+  "failed native boundaries return only fixed phases/codes without retries or broader deletion",
+  { skip: !available },
+  () => {
+    const out = run(`${fixture}${mocks}
+$request.apply=$true;$request.acknowledge=(Get-CityGoCanaryCleanupPlan $manifest $request).requiredAcknowledgement
+$results=@();foreach($kind in @('write-receipt','remove-vm','remove-disk','empty-owned-dirs')){
+ $script:ownPresent=$true;$script:diskPresent=$true;$script:dirPresent=$true;$script:receipts=@{};$script:calls.Clear();$script:failAt=$kind
+ $result=Invoke-CityGoCanaryCleanup $manifest $request
+ $results+=[ordered]@{kind=$kind;result=$result;vmRemovals=(@($script:calls|Where-Object{$_-ceq'remove-vm'}).Count);diskRemovals=(@($script:calls|Where-Object{$_-ceq'remove-disk'}).Count)}
+}
+ConvertTo-Json -InputObject $results -Depth 5 -Compress`);
+    assert.deepEqual(
+      out.map((entry) => entry.result.failurePhase),
+      [
+        "write_cleanup_intent",
+        "remove_owned_vm",
+        "remove_owned_disk",
+        "remove_empty_owned_directories",
+      ],
+    );
+    for (const entry of out) {
+      assert.equal(entry.result.stage, "failed_preserved_requires_inspection");
+      assert.equal(entry.result.failureCode, "canary_cleanup_failed");
+      assert.ok(entry.vmRemovals <= 1);
+      assert.ok(entry.diskRemovals <= 1);
+      assert.doesNotMatch(JSON.stringify(entry.result), /synthetic-failure/);
+    }
+    assert.equal(out[0].result.cleanupIntentRecorded, false);
+    assert.ok(
+      out.slice(1).every((entry) => entry.result.cleanupIntentRecorded),
+    );
+  },
+);
+
+test(
+  "stale VM readback after one native removal fails safely without retrying removal or touching disk",
+  { skip: !available },
+  () => {
+    const out = run(`${fixture}${mocks}
+$request.apply=$true;$request.acknowledge=(Get-CityGoCanaryCleanupPlan $manifest $request).requiredAcknowledgement
+function Get-VM {param($ErrorAction);Track 'get-vms';return $script:vm}
+$result=Invoke-CityGoCanaryCleanup $manifest $request
+[ordered]@{result=$result;calls=@($script:calls.ToArray());receipts=$script:receipts.Count;diskPresent=$script:diskPresent}|ConvertTo-Json -Depth 5 -Compress`);
+    assert.equal(out.result.stage, "failed_preserved_requires_inspection");
+    assert.equal(out.result.failurePhase, "verify_owned_vm_absent");
+    assert.equal(out.result.failureCode, "canary_cleanup_failed");
+    assert.equal(out.result.cleanupIntentRecorded, true);
+    assert.equal(out.calls.filter((entry) => entry === "remove-vm").length, 1);
+    assert.ok(!out.calls.includes("remove-disk"));
+    assert.equal(out.diskPresent, true);
+    assert.equal(out.receipts, 1);
+  },
+);
+
+test(
+  "completion receipt failure reports its exact safe phase without native exception text",
+  { skip: !available },
+  () => {
+    const out = run(`${fixture}${mocks}
+$request.apply=$true;$request.acknowledge=(Get-CityGoCanaryCleanupPlan $manifest $request).requiredAcknowledgement
+function Write-CityGoCanaryCleanupReceipt {param($Path,$Receipt,$Plan,$OwnerSid)
+ Track 'write-receipt';if($Path -ceq $Plan.resultPath){throw 'SYNTHETIC_NATIVE_PRIVATE_DETAIL'}
+ if($script:receipts.ContainsKey($Path)){throw 'overwrite-forbidden'}
+ $script:receipts[$Path]=($Receipt|ConvertTo-Json -Compress|ConvertFrom-Json)
+}
+$result=Invoke-CityGoCanaryCleanup $manifest $request
+[ordered]@{result=$result;receipts=$script:receipts.Count;vmPresent=$script:ownPresent;diskPresent=$script:diskPresent}|ConvertTo-Json -Depth 5 -Compress`);
+    assert.equal(out.result.stage, "failed_preserved_requires_inspection");
+    assert.equal(out.result.failurePhase, "write_complete_receipt");
+    assert.equal(out.result.failureCode, "canary_cleanup_failed");
+    assert.equal(out.result.cleanupIntentRecorded, true);
+    assert.equal(out.receipts, 1);
+    assert.equal(out.vmPresent, false);
+    assert.equal(out.diskPresent, false);
+    assert.doesNotMatch(
+      JSON.stringify(out.result),
+      /SYNTHETIC_NATIVE_PRIVATE_DETAIL/,
+    );
+  },
+);
+
+test(
   "crash after unregistering VM resumes from exact intent and unique disk identity; completion is idempotent",
   { skip: !available },
   () => {
@@ -349,6 +630,8 @@ $script:calls.Clear();$third=Invoke-CityGoCanaryCleanup $manifest $request
 [ordered]@{first=$first;afterFirst=$afterFirst;second=$second;secondCalls=$secondCalls;third=$third;thirdCalls=@($script:calls.ToArray());receipts=$script:receipts.Count}|ConvertTo-Json -Depth 5 -Compress`);
     assert.equal(out.first.stage, "failed_preserved_requires_inspection");
     assert.equal(out.first.cleanupIntentRecorded, true);
+    assert.equal(out.first.failurePhase, "remove_owned_disk");
+    assert.equal(out.first.failureCode, "canary_cleanup_failed");
     assert.deepEqual(out.afterFirst, { disk: true, vm: false, receipts: 1 });
     assert.equal(out.second.stage, "cleanup_complete_resources_absent");
     assert.ok(!out.secondCalls.includes("remove-vm"));

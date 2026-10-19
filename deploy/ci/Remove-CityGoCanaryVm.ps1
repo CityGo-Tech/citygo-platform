@@ -119,12 +119,18 @@ function Assert-CityGoCanaryCleanupGuid {
         $Value -ceq $guid.ToString('D')) 'identity_invalid'
 }
 
-function Get-CityGoCanaryCleanupPlan {
-    param($Manifest,[Collections.IDictionary]$Request)
-    $fields=@('schemaVersion','scope','operationId','vmName','vmId','nicId','nicName','targetDirectory','targetVhdx','vmPath',
+function Get-CityGoCanaryCreationFields {
+    return @('schemaVersion','scope','operationId','vmName','vmId','nicId','nicName','targetDirectory','targetVhdx','vmPath',
         'diskIdentifier','diskSizeBytes','diskFormat','diskType','controllerType','controllerNumber','controllerLocation',
         'sourceBaseSha256','sealedBaseEvidenceSha256','preflightSha256','stage','directoryCreated','diskVerified','vmCreated',
         'guestIsolationVerified','githubRunnerRegistered')
+}
+
+function Get-CityGoCanaryCleanupPlan {
+    param($Manifest,[Collections.IDictionary]$Request)
+    $resumed=$Request.manifestPath -is [string] -and $Request.manifestPath.EndsWith('\canary-resume-creation.json',[StringComparison]::Ordinal)
+    $fields=@(Get-CityGoCanaryCreationFields)
+    if ($resumed) { $fields+=@('initialCreationReceiptSha256','resumeVerificationSha256') }
     $actual=@($Manifest.PSObject.Properties.Name)
     Assert-CityGoCanaryCleanup ($actual.Count -eq $fields.Count -and @($actual|Where-Object{$_ -cnotin $fields}).Count -eq 0) 'manifest_keys_invalid'
     Assert-CityGoCanaryCleanup (($Manifest.schemaVersion -is [int] -or $Manifest.schemaVersion -is [long]) -and
@@ -143,10 +149,16 @@ function Get-CityGoCanaryCleanupPlan {
     $directory='D:\CityGo-CI\canaries\'+$Manifest.operationId
     $vmName='citygo-ci-canary-'+$Manifest.operationId
     $control='D:\CityGo-CI\control\'+$Manifest.operationId
+    $expectedManifest=$control+$(if($resumed){'\canary-resume-creation.json'}else{'\canary-creation.json'})
     foreach ($path in @($Manifest.targetDirectory,$Manifest.targetVhdx,$Manifest.vmPath,$Request.manifestPath)) { $null=Get-CityGoCanaryCleanupPath $path }
     Assert-CityGoCanaryCleanup ($Manifest.targetDirectory -ceq $directory -and $Manifest.targetVhdx -ceq ($directory+'\canary.vhdx') -and
         $Manifest.vmName -ceq $vmName -and $Manifest.vmPath -ceq ($directory+'\'+$vmName) -and
-        $Request.manifestPath -ceq ($control+'\canary-creation.json')) 'manifest_resource_paths_invalid'
+        $Request.manifestPath -ceq $expectedManifest) 'manifest_resource_paths_invalid'
+    if ($resumed) {
+        foreach ($hash in @($Manifest.initialCreationReceiptSha256,$Manifest.resumeVerificationSha256)) {
+            Assert-CityGoCanaryCleanup ($hash -is [string] -and $hash -cmatch '^[a-f0-9]{64}$') 'resume_link_hash_required'
+        }
+    }
     Assert-CityGoCanaryCleanup ($Manifest.diskSizeBytes -is [long] -and $Manifest.diskSizeBytes -eq 96GB -and
         $Manifest.diskFormat -ceq 'VHDX' -and $Manifest.diskType -cin @('Fixed','Dynamic') -and $Manifest.controllerType -ceq 'SCSI') 'manifest_disk_invalid'
     foreach ($key in @('controllerNumber','controllerLocation')) {
@@ -162,8 +174,62 @@ function Get-CityGoCanaryCleanupPlan {
     return [ordered]@{operationId=$Manifest.operationId;vmId=$Manifest.vmId;vmName=$vmName;nicId=$Manifest.nicId;nicName=$Manifest.nicName;
         targetDirectory=$directory;targetVhdx=$Manifest.targetVhdx;vmPath=$Manifest.vmPath;diskIdentifier=$Manifest.diskIdentifier;
         diskType=$Manifest.diskType;manifestSha256=$Request.manifestSha256;controlDirectory=$control;
+        resumedCreation=[bool]$resumed;initialCreationReceiptPath=($control+'\canary-creation.json');
+        initialCreationReceiptSha256=$(if($resumed){$Manifest.initialCreationReceiptSha256}else{$null});resumeVerificationPath=($control+'\canary-resume-verification.json');
+        resumeVerificationSha256=$(if($resumed){$Manifest.resumeVerificationSha256}else{$null});
         intentPath=($control+'\canary-cleanup-intent.json');resultPath=($control+'\canary-cleanup-result.json');
         requiredAcknowledgement=('DELETE_OFFLINE_CANARY:'+$Manifest.vmId+':'+$Request.manifestSha256)}
+}
+
+function Assert-CityGoCanaryResumeCleanupEvidence {
+    param($Initial,$Verification,$Manifest,[Collections.IDictionary]$Plan)
+    $fields=@(Get-CityGoCanaryCreationFields)
+    $names=@($Initial.PSObject.Properties.Name)
+    Assert-CityGoCanaryCleanup ($names.Count -eq $fields.Count -and @($names|Where-Object{$_ -cnotin $fields}).Count -eq 0) 'initial_receipt_keys_invalid'
+    Assert-CityGoCanaryCleanup (($Initial.schemaVersion -is [int] -or $Initial.schemaVersion -is [long]) -and
+        $Initial.schemaVersion -eq 1 -and $Initial.scope -ceq 'local_canary_creation' -and
+        $Initial.stage -ceq 'failed_preserved_state_unverified' -and $Initial.operationId -ceq $Plan.operationId -and
+        $Initial.vmName -ceq $Plan.vmName -and $Initial.targetDirectory -ceq $Plan.targetDirectory -and
+        $Initial.targetVhdx -ceq $Plan.targetVhdx -and $Initial.vmPath -ceq $Plan.vmPath) 'initial_receipt_binding_invalid'
+    foreach ($key in @('vmId','nicId','nicName','diskIdentifier','diskType')) {
+        Assert-CityGoCanaryCleanup ($null -eq $Initial.$key) 'initial_receipt_not_pre_vm_failure'
+    }
+    Assert-CityGoCanaryCleanup ($Initial.directoryCreated -is [bool] -and $Initial.directoryCreated) 'initial_receipt_not_pre_vm_failure'
+    foreach ($key in @('diskVerified','vmCreated','guestIsolationVerified','githubRunnerRegistered')) {
+        Assert-CityGoCanaryCleanup ($Initial.$key -is [bool] -and -not $Initial.$key) 'initial_receipt_not_pre_vm_failure'
+    }
+    Assert-CityGoCanaryCleanup ($Initial.diskSizeBytes -is [long] -and $Initial.diskSizeBytes -eq 96GB -and
+        $Initial.diskFormat -ceq 'VHDX' -and $Initial.controllerType -ceq 'SCSI') 'initial_receipt_disk_invalid'
+    foreach ($key in @('controllerNumber','controllerLocation')) {
+        Assert-CityGoCanaryCleanup (($Initial.$key -is [int] -or $Initial.$key -is [long]) -and $Initial.$key -eq 0) 'initial_receipt_disk_invalid'
+    }
+    foreach ($key in @('sourceBaseSha256','sealedBaseEvidenceSha256','preflightSha256')) {
+        Assert-CityGoCanaryCleanup ($Initial.$key -is [string] -and $Initial.$key -cmatch '^[a-f0-9]{64}$') 'initial_receipt_hash_invalid'
+    }
+    # A resumed attempt must use a fresh preflight; only that input may differ.
+    Assert-CityGoCanaryCleanup ($Initial.sourceBaseSha256 -ceq $Manifest.sourceBaseSha256 -and
+        $Initial.sealedBaseEvidenceSha256 -ceq $Manifest.sealedBaseEvidenceSha256) 'initial_source_binding_invalid'
+    $proofFields=@('schemaVersion','scope','operationId','initialCreationReceiptSha256','sourceBaseSha256','targetSha256',
+        'sourceDiskIdentifier','targetDiskIdentifier','noVmOrReferencesObserved','sourceVmOff','targetStandaloneUnattached',
+        'targetTreeOnlyDisk','guestIsolationVerified','githubRunnerRegistered','ciJobsAdmitted')
+    $proofNames=@($Verification.PSObject.Properties.Name)
+    Assert-CityGoCanaryCleanup ($proofNames.Count -eq $proofFields.Count -and @($proofNames|Where-Object{$_ -cnotin $proofFields}).Count -eq 0) 'resume_verification_keys_invalid'
+    foreach ($key in @('initialCreationReceiptSha256','sourceBaseSha256','targetSha256')) {
+        Assert-CityGoCanaryCleanup ($Verification.$key -is [string] -and $Verification.$key -cmatch '^[a-f0-9]{64}$') 'resume_verification_hash_invalid'
+    }
+    Assert-CityGoCanaryCleanup (($Verification.schemaVersion -is [int] -or $Verification.schemaVersion -is [long]) -and
+        $Verification.schemaVersion -eq 1 -and $Verification.scope -ceq 'verified_owned_copy_before_resume' -and
+        $Verification.operationId -ceq $Plan.operationId -and $Verification.initialCreationReceiptSha256 -ceq $Plan.initialCreationReceiptSha256 -and
+        $Verification.sourceBaseSha256 -ceq $Manifest.sourceBaseSha256 -and $Verification.targetSha256 -ceq $Manifest.sourceBaseSha256) 'resume_verification_binding_invalid'
+    foreach ($key in @('sourceDiskIdentifier','targetDiskIdentifier')) { Assert-CityGoCanaryCleanupGuid $Verification.$key }
+    Assert-CityGoCanaryCleanup ($Verification.sourceDiskIdentifier -ceq $Verification.targetDiskIdentifier -and
+        $Manifest.diskIdentifier -cne $Verification.sourceDiskIdentifier) 'resume_disk_identity_binding_invalid'
+    foreach ($key in @('noVmOrReferencesObserved','sourceVmOff','targetStandaloneUnattached','targetTreeOnlyDisk')) {
+        Assert-CityGoCanaryCleanup ($Verification.$key -is [bool] -and $Verification.$key) 'resume_verification_step_unverified'
+    }
+    foreach ($key in @('guestIsolationVerified','githubRunnerRegistered','ciJobsAdmitted')) {
+        Assert-CityGoCanaryCleanup ($Verification.$key -is [bool] -and -not $Verification.$key) 'resume_verification_admission_not_closed'
+    }
 }
 
 function Assert-CityGoCanaryCleanupForeignDisk {
@@ -225,9 +291,14 @@ function Test-CityGoCanaryCleanupDisk {
     if (-not (Test-Path -LiteralPath $Plan.targetVhdx -ErrorAction Stop)) { return $false }
     Assert-CityGoCanaryCleanupPlainPath $Plan.targetVhdx $false
     $disk=Get-VHD -Path $Plan.targetVhdx -ErrorAction Stop
+    # Native Hyper-V exposes DiskIdentifier as System.String. Normalize only
+    # this identifier; the immutable manifest and every other guard stay exact.
+    $diskId=[guid]::Empty
     Assert-CityGoCanaryCleanup ([string]$disk.VhdFormat -ceq 'VHDX' -and [string]$disk.VhdType -ceq $Plan.diskType -and
         -not $disk.ParentPath -and $disk.Attached -is [bool] -and -not $disk.Attached -and $disk.Size -eq 96GB -and $disk.FileSize -gt 0 -and
-        $disk.DiskIdentifier.ToString('D') -ceq $Plan.diskIdentifier) 'disk_identity_or_state_changed'
+        ($disk.DiskIdentifier -is [string] -or $disk.DiskIdentifier -is [guid]) -and
+        [guid]::TryParse([string]$disk.DiskIdentifier,[ref]$diskId) -and $diskId -ne [guid]::Empty -and
+        $diskId.ToString('D') -ceq $Plan.diskIdentifier) 'disk_identity_or_state_changed'
     return $true
 }
 
@@ -320,11 +391,21 @@ function Invoke-CityGoCanaryCleanup {
     $owner=Get-CityGoCanaryCleanupIdentity $true
     Assert-CityGoCanaryCleanupPlainPath $plan.controlDirectory $true
     Assert-CityGoCanaryCleanupPrivateAcl $plan.controlDirectory $owner $true
-    $evidence=@();$intentRecorded=$false
+    $evidence=@();$intentRecorded=$false;$phase='validate_resume_evidence'
     try {
+        if ($plan.resumedCreation) {
+            # A complete resumed manifest is allowed only with both immutable,
+            # raw-hash-pinned links held read-locked through the whole cleanup.
+            $initial=Open-CityGoCanaryCleanupEvidence $plan.initialCreationReceiptPath $owner $plan.initialCreationReceiptSha256;$evidence+=,$initial
+            $verification=Open-CityGoCanaryCleanupEvidence $plan.resumeVerificationPath $owner $plan.resumeVerificationSha256;$evidence+=,$verification
+            Assert-CityGoCanaryResumeCleanupEvidence $initial.value $verification.value $Manifest $plan
+        }
+        $phase='check_complete_receipt'
         if (Test-Path -LiteralPath $plan.resultPath -ErrorAction Stop) {
+            $phase='read_complete_receipt'
             $final=Open-CityGoCanaryCleanupEvidence $plan.resultPath $owner;$evidence+=,$final
             Assert-CityGoCanaryCleanupReceipt $final.value $plan $true
+            $phase='verify_completed_resources_absent'
             Assert-CityGoCanaryCleanup ($null -eq (Get-CityGoCanaryCleanupVm $plan) -and
                 -not (Test-CityGoCanaryCleanupDisk $plan)) 'resources_reappeared_after_cleanup'
             $directoryPresent=Test-Path -LiteralPath $plan.targetDirectory -ErrorAction Stop
@@ -332,35 +413,55 @@ function Invoke-CityGoCanaryCleanup {
             if ($directoryPresent) { Assert-CityGoCanaryCleanupTree $plan }
             return $final.value
         }
+        $phase='check_cleanup_intent'
         if (Test-Path -LiteralPath $plan.intentPath -ErrorAction Stop) {
+            $phase='read_cleanup_intent'
             $intent=Open-CityGoCanaryCleanupEvidence $plan.intentPath $owner;$evidence+=,$intent
             Assert-CityGoCanaryCleanupReceipt $intent.value $plan $false
             $intentRecorded=$true
         }
+        $phase='verify_initial_owned_tree'
         Assert-CityGoCanaryCleanupTree $plan
+        $phase='read_initial_owned_vm'
         $vm=Get-CityGoCanaryCleanupVm $plan
+        $phase='read_initial_owned_disk'
         $diskPresent=Test-CityGoCanaryCleanupDisk $plan
         Assert-CityGoCanaryCleanup ($null -eq $vm -or $diskPresent) 'owned_disk_missing_while_vm_exists'
         if (-not $intentRecorded) {
+            $phase='write_cleanup_intent'
             Write-CityGoCanaryCleanupReceipt $plan.intentPath (New-CityGoCanaryCleanupReceipt $plan 'cleanup_intent_recorded') $plan $owner
             $intentRecorded=$true
         }
         if ($null -ne $vm) {
+            $phase='reread_owned_vm_before_remove'
             $vm=Get-CityGoCanaryCleanupVm $plan
+            $phase='reread_owned_disk_before_vm_remove'
             Assert-CityGoCanaryCleanup ($null -ne $vm -and (Test-CityGoCanaryCleanupDisk $plan)) 'resources_changed_before_vm_remove'
-            Remove-VM -VM $vm -Confirm:$false -ErrorAction Stop
+            $phase='remove_owned_vm'
+            # Native Force suppresses Remove-VM's separate ShouldContinue
+            # confirmation only; all exact identity/Off/disk guards ran above.
+            Remove-VM -VM $vm -Force -Confirm:$false -ErrorAction Stop
         }
+        $phase='verify_owned_vm_absent'
         Assert-CityGoCanaryCleanup ($null -eq (Get-CityGoCanaryCleanupVm $plan)) 'vm_removal_unverified'
+        $phase='read_owned_disk_before_remove'
         if (Test-CityGoCanaryCleanupDisk $plan) {
+            $phase='verify_owned_tree_before_disk_remove'
             Assert-CityGoCanaryCleanupTree $plan
+            $phase='remove_owned_disk'
             Remove-Item -LiteralPath $plan.targetVhdx -Confirm:$false -ErrorAction Stop
         }
+        $phase='verify_owned_disk_absent'
         Assert-CityGoCanaryCleanup (-not (Test-Path -LiteralPath $plan.targetVhdx -ErrorAction Stop)) 'disk_removal_unverified'
+        $phase='verify_owned_tree_before_directory_cleanup'
         Assert-CityGoCanaryCleanupTree $plan
+        $phase='remove_empty_owned_directories'
         Remove-CityGoCanaryEmptyDirectories $plan
         $result=New-CityGoCanaryCleanupReceipt $plan 'cleanup_complete_resources_absent'
         $result.vmAbsent=$true;$result.diskAbsent=$true
+        $phase='verify_final_directory_state'
         $result.ownedDirectoryAbsent=-not (Test-Path -LiteralPath $plan.targetDirectory -ErrorAction Stop)
+        $phase='write_complete_receipt'
         Write-CityGoCanaryCleanupReceipt $plan.resultPath $result $plan $owner
         return $result
     } catch {
@@ -368,6 +469,9 @@ function Invoke-CityGoCanaryCleanup {
         # later exact-manifest retry inspect VM-missing/disk-remaining crashes.
         $result.stage='failed_preserved_requires_inspection'
         $result.cleanupIntentRecorded=$intentRecorded
+        # Fixed source-code diagnostics only, never raw native exception text.
+        # Default plans and successful durable receipts keep their exact schema.
+        $result.failurePhase=$phase;$result.failureCode='canary_cleanup_failed'
         return $result
     } finally { foreach ($entry in $evidence) { if ($entry.stream) { $entry.stream.Dispose() } } }
 }
@@ -376,7 +480,7 @@ $manifestEvidence=$null
 try {
     Assert-CityGoCanaryCleanup ($ExpectedManifestSha256.Length -eq 64 -and $ExpectedManifestSha256 -cmatch '^[a-f0-9]{64}$') 'expected_hash_required'
     $null=Get-CityGoCanaryCleanupPath $ManifestPath
-    Assert-CityGoCanaryCleanup ($ManifestPath -cmatch '^D:\\CityGo-CI\\control\\[a-f0-9-]{36}\\canary-creation\.json$') 'manifest_path_invalid'
+    Assert-CityGoCanaryCleanup ($ManifestPath -cmatch '^D:\\CityGo-CI\\control\\[a-f0-9-]{36}\\canary-(?:resume-)?creation\.json$') 'manifest_path_invalid'
     $owner=Get-CityGoCanaryCleanupIdentity ([bool]$Apply)
     $manifestEvidence=Open-CityGoCanaryCleanupEvidence $ManifestPath $owner $ExpectedManifestSha256
     $result=Invoke-CityGoCanaryCleanup $manifestEvidence.value ([ordered]@{manifestPath=$ManifestPath;manifestSha256=$ExpectedManifestSha256;apply=[bool]$Apply;acknowledge=$Acknowledge})

@@ -100,8 +100,9 @@ function Get-VHD {param($Path,$ErrorAction)
  Track 'get-vhd';$id=$(if($Path -eq $request.basePath){$script:sourceDiskId}else{$script:targetDiskId})
  return [pscustomobject]@{VhdFormat='VHDX';VhdType='Dynamic';ParentPath=$null;Attached=$false;Size=96GB;FileSize=100;DiskIdentifier=$id}
 }
-function Set-VHD {param($Path,[switch]$ResetDiskIdentifier,$ErrorAction)
+function Set-VHD {param($Path,[switch]$ResetDiskIdentifier,[switch]$Force,$ErrorAction)
  Track 'reset-new-disk-id';if($Path -eq $request.basePath -or -not $ResetDiskIdentifier -or $Path -ne (Get-CityGoCanaryPlan $request).targetVhdx){throw 'source-or-unowned-disk-write'}
+ if(-not $Force){throw 'native-confirmation-required'}
  if(-not $script:failReset){$script:targetDiskId=$script:newDiskId}
 }
 function New-VM {param($Name,$Generation,$MemoryStartupBytes,$VHDPath,$Path,$ErrorAction);Track 'new-vm';return $script:vm}
@@ -131,10 +132,19 @@ test("canary source has no start, connect, cleanup, host setup, network fetch or
   );
   assert.match(source, /\[IO\.FileMode\]::CreateNew/);
   assert.match(source, /\[IO\.FileShare\]::Read/);
-  assert.match(source, /Set-VHD -Path \$plan.targetVhdx -ResetDiskIdentifier/);
+  assert.match(
+    source,
+    /Set-VHD -Path \$plan.targetVhdx -ResetDiskIdentifier -Force -ErrorAction Stop/,
+  );
   assert.match(source, /sourceId\) 'copied-disk-identity-unexpected'/);
   assert.match(source, /canaryId -cne \$sourceId/);
   assert.match(source, /-IovWeight 0 -AllowTeaming Off -PortMirroring None/);
+  assert.deepEqual(
+    source.match(/^\s*\$null=(?:Set|New|Remove)-[^\r\n]*-Force\b[^\r\n]*$/gm),
+    [
+      "        $null=Set-VHD -Path $plan.targetVhdx -ResetDiskIdentifier -Force -ErrorAction Stop",
+    ],
+  );
 });
 
 test(
@@ -148,6 +158,8 @@ $result=Invoke-CityGoCanaryVm $request;$plan=Get-CityGoCanaryPlan $request
     assert.equal(out.result.stage, "plan_only_unverified");
     assert.equal(out.result.guestIsolationVerified, false);
     assert.equal(out.result.githubRunnerRegistered, false);
+    assert.ok(!Object.hasOwn(out.result, "failurePhase"));
+    assert.ok(!Object.hasOwn(out.result, "failureCode"));
     assert.equal(
       out.result.targetVhdx,
       out.plan.targetDirectory + "\\canary.vhdx",
@@ -223,6 +235,8 @@ $result=Invoke-CityGoCanaryVm $request
     assert.equal(out.denied, true);
     assert.deepEqual(out.early, []);
     assert.equal(out.result.stage, "failed_preserved_state_unverified");
+    assert.equal(out.result.failurePhase, "verify_source_hash");
+    assert.equal(out.result.failureCode, "canary_creation_failed");
     assert.ok(!out.calls.includes("mkdir"));
     assert.ok(!out.calls.includes("reset-new-disk-id"));
     assert.ok(!out.calls.includes("new-vm"));
@@ -273,6 +287,8 @@ $result=Invoke-CityGoCanaryVm $request
     assert.equal(out.result.vmCreated, true);
     assert.equal(out.result.guestIsolationVerified, false);
     assert.equal(out.result.githubRunnerRegistered, false);
+    assert.ok(!Object.hasOwn(out.result, "failurePhase"));
+    assert.ok(!Object.hasOwn(out.result, "failureCode"));
     assert.equal(out.receipts.length, 1);
     assert.equal(out.calls.filter((x) => x === "new-vm").length, 1);
     assert.equal(out.calls.filter((x) => x === "reset-new-disk-id").length, 1);
@@ -300,12 +316,38 @@ $script:failReset=$false;$script:targetDiskId=$script:sourceDiskId;$script:failA
     assert.equal(out.first.directoryCreated, true);
     assert.equal(out.first.diskVerified, false);
     assert.equal(out.first.vmCreated, false);
+    assert.equal(out.first.failurePhase, "verify_reset_canary_disk_identifier");
+    assert.equal(out.first.failureCode, "canary_creation_failed");
     assert.ok(!out.firstCalls.includes("new-vm"));
     assert.equal(out.second.stage, "failed_preserved_state_unverified");
     assert.equal(out.second.vmCreated, true);
     assert.equal(out.second.diskVerified, true);
+    assert.equal(out.second.failurePhase, "configure_canary_firmware");
+    assert.equal(out.second.failureCode, "canary_creation_failed");
     assert.equal(out.receipts.length, 2);
     assert.equal(out.receipts[1].stage, "failed_preserved_state_unverified");
+  },
+);
+
+test(
+  "native reset failure has only fixed safe failed-receipt phase/code and never creates a VM",
+  { skip: !available },
+  () => {
+    const out = run(`${request}${evidence}${mocks}
+$request.apply=$true;$request.acknowledge=(Get-CityGoCanaryPlan $request).requiredAcknowledgement
+$script:failAt='reset-new-disk-id';$result=Invoke-CityGoCanaryVm $request
+[ordered]@{result=$result;calls=@($script:calls.ToArray())}|ConvertTo-Json -Depth 6 -Compress`);
+    assert.equal(out.result.stage, "failed_preserved_state_unverified");
+    assert.equal(out.result.failurePhase, "reset_canary_disk_identifier");
+    assert.equal(out.result.failureCode, "canary_creation_failed");
+    assert.equal(out.result.directoryCreated, true);
+    assert.equal(out.result.diskVerified, false);
+    assert.equal(out.result.vmCreated, false);
+    assert.ok(!out.calls.includes("new-vm"));
+    assert.doesNotMatch(
+      JSON.stringify(out.result),
+      /synthetic-failure|native-confirmation-required/,
+    );
   },
 );
 

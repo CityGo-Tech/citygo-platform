@@ -310,55 +310,80 @@ function Invoke-CityGoCanaryVm {
     Assert-CityGoCanaryValue ($Request.acknowledge -ceq $plan.requiredAcknowledgement) 'typed-acknowledgement-required'
     $ownerSid=Get-CityGoCanaryIdentity
     Assert-CityGoCanaryControl $plan $ownerSid
-    $source=$null;$handles=@()
+    $source=$null;$handles=@();$phase='read_preflight'
     try {
         $preflight=Read-CityGoCanaryEvidence $plan.preflightPath $plan.preflightSha256 $ownerSid 1048576;$handles+=,$preflight
         Assert-CityGoCanaryPreflightContent $preflight.value
+        $phase='read_sealed_base_evidence'
         $seal=Read-CityGoCanaryEvidence $plan.sealedBaseEvidencePath $plan.sealedBaseEvidenceSha256 $ownerSid 65536;$handles+=,$seal
         Assert-CityGoCanarySealContent $seal.value $seal.raw $plan
+        $phase='verify_source_path_and_destinations'
         Assert-CityGoCanaryPlainPath $plan.basePath $false
         Assert-CityGoCanaryDestinationsAbsent $plan $ownerSid
+        $phase='verify_source_hash'
         $source=Open-CityGoCanarySource $plan.basePath
         Assert-CityGoCanaryValue ((Get-CityGoCanaryStreamSha $source) -ceq $plan.baseSha256) 'base-vhdx-hash-mismatch'
+        $phase='verify_source_vhd'
         $sourceDisk=Get-VHD -Path $plan.basePath -ErrorAction Stop
         $sourceId=Assert-CityGoCanaryVhd $sourceDisk
+        $phase='recheck_prerequisites'
         Assert-CityGoCanaryPreflightContent $preflight.value
         Assert-CityGoCanaryControl $plan $ownerSid
         Assert-CityGoCanaryDestinationsAbsent $plan $ownerSid
+        $phase='create_canary_directory'
         $null=New-Item -Path $plan.targetDirectory -ItemType Directory -ErrorAction Stop
         $receipt.directoryCreated=$true
+        $phase='protect_canary_directory'
         Set-CityGoCanaryPrivateDirectory $plan.targetDirectory $ownerSid
+        $phase='copy_and_hash_canary_disk'
         Copy-CityGoVerifiedCanaryDisk $source $plan
+        $phase='verify_copied_vhd'
         Assert-CityGoCanaryPlainPath $plan.targetVhdx $false
         $copied=Get-VHD -Path $plan.targetVhdx -ErrorAction Stop
         Assert-CityGoCanaryValue ((Assert-CityGoCanaryVhd $copied) -ceq $sourceId) 'copied-disk-identity-unexpected'
         # Only this new, fully verified copy is changed. Source stays read-locked.
-        $null=Set-VHD -Path $plan.targetVhdx -ResetDiskIdentifier -ErrorAction Stop
+        # Force suppresses this reset's native confirmation, not any safety gate.
+        $phase='reset_canary_disk_identifier'
+        $null=Set-VHD -Path $plan.targetVhdx -ResetDiskIdentifier -Force -ErrorAction Stop
+        $phase='verify_reset_canary_disk_identifier'
         $canaryDisk=Get-VHD -Path $plan.targetVhdx -ErrorAction Stop
         $canaryId=Assert-CityGoCanaryVhd $canaryDisk
         Assert-CityGoCanaryValue ($canaryId -cne $sourceId) 'canary-disk-identity-not-unique'
         $receipt.diskIdentifier=$canaryId;$receipt.diskType=[string]$canaryDisk.VhdType;$receipt.diskVerified=$true
+        $phase='recheck_preflight_before_vm'
         Assert-CityGoCanaryPreflightContent $preflight.value
+        $phase='create_canary_vm'
         $vm=New-VM -Name $plan.vmName -Generation 2 -MemoryStartupBytes 6GB -VHDPath $plan.targetVhdx -Path $plan.targetDirectory -ErrorAction Stop
         $receipt.vmId=$vm.Id.ToString('D');$receipt.vmCreated=$true
+        $phase='configure_canary_vm'
         $null=Set-VM -VM $vm -AutomaticStartAction Nothing -AutomaticCheckpointsEnabled $false -CheckpointType Disabled -ErrorAction Stop
+        $phase='configure_canary_cpu'
         $null=Set-VMProcessor -VM $vm -Count 4 -ErrorAction Stop
+        $phase='configure_canary_memory'
         $null=Set-VMMemory -VM $vm -DynamicMemoryEnabled $false -StartupBytes 6GB -ErrorAction Stop
+        $phase='configure_canary_firmware'
         $null=Set-VMFirmware -VM $vm -EnableSecureBoot On -SecureBootTemplate MicrosoftUEFICertificateAuthority -ErrorAction Stop
+        $phase='verify_new_canary_nic'
         $adapters=@(Get-VMNetworkAdapter -VM $vm -ErrorAction Stop)
         Assert-CityGoCanaryValue ($adapters.Count -eq 1 -and -not $adapters[0].SwitchName -and
             (-not $adapters[0].SwitchId -or [guid]$adapters[0].SwitchId -eq [guid]::Empty)) 'new-canary-nic-unexpected'
         $receipt.nicId=[string]$adapters[0].Id;$receipt.nicName=[string]$adapters[0].Name
+        $phase='protect_canary_nic'
         $null=Set-VMNetworkAdapter -VMNetworkAdapter $adapters[0] -MacAddressSpoofing Off -DhcpGuard On -RouterGuard On -IovWeight 0 -AllowTeaming Off -PortMirroring None -ErrorAction Stop
+        $phase='verify_stopped_canary'
         $nic=Assert-CityGoStoppedCanary $vm $plan $canaryId
         Assert-CityGoCanaryValue ([string]$nic.Id -ceq $receipt.nicId -and [string]$nic.Name -ceq $receipt.nicName) 'canary-nic-identity-changed'
         $receipt.stage='created_off_disconnected'
+        $phase='write_creation_receipt'
         Write-CityGoCanaryCreation $plan $receipt $ownerSid
         return $receipt
     } catch {
         # No adoption, stop, delete, repair or cleanup of partial resources.
         # Incomplete receipts cannot authorize automatic cleanup of an unknown VM.
         $receipt.stage='failed_preserved_state_unverified'
+        # Only fixed source-code phases/codes are emitted, never native exception
+        # text. The exact complete creation manifest remains unchanged.
+        $receipt.failurePhase=$phase;$receipt.failureCode='canary_creation_failed'
         try { Write-CityGoCanaryCreation $plan $receipt $ownerSid } catch { $receipt.stage='failed_preserved_receipt_unavailable' }
         return $receipt
     } finally {
