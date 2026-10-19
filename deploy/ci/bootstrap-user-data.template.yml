@@ -1,0 +1,64 @@
+#cloud-config
+# Trusted first boot ONLY. The renderer must reject unresolved placeholders.
+# Render the per-VM private host key only into a private, access-controlled seed;
+# never commit, log or upload the rendered user-data/ISO. It is not a golden image.
+# NoCloud meta-data must supply a unique instance-id. The separate network-config
+# must match the VM's MAC, use DHCP4, disable DHCP-provided DNS and set reviewed
+# public DNS addresses. A network key in this user-data would NOT set early DNS.
+# References: docs.cloud-init.io/en/latest/reference/datasources/nocloud.html
+# and docs.cloud-init.io/en/latest/reference/yaml_examples/ssh.html
+hostname: citygo-ci-bootstrap
+manage_etc_hosts: true
+users:
+  - name: citygo-bootstrap
+    lock_passwd: true
+    shell: /bin/bash
+    sudo: ["ALL=(ALL) NOPASSWD:ALL"]
+    ssh_authorized_keys:
+      - 'from="__CITYGO_BOOTSTRAP_HOST_IPV4__",restrict __CITYGO_BOOTSTRAP_AUTHORIZED_PUBLIC_KEY__'
+disable_root: true
+ssh_pwauth: false
+ssh_deletekeys: true
+ssh_genkeytypes: [ed25519]
+ssh_keys:
+  ed25519_private: |
+    __CITYGO_VM_UNIQUE_ED25519_HOST_PRIVATE_KEY__
+  ed25519_public: __CITYGO_VM_UNIQUE_ED25519_HOST_PUBLIC_KEY__
+ssh_publish_hostkeys:
+  enabled: false
+no_ssh_fingerprints: true
+ssh:
+  emit_keys_to_console: false
+write_files:
+  - path: /etc/ssh/sshd_config.d/10-citygo-bootstrap.conf
+    owner: root:root
+    permissions: "0644"
+    content: |
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      PermitRootLogin no
+      AllowUsers citygo-bootstrap
+      AllowAgentForwarding no
+      AllowTcpForwarding no
+      X11Forwarding no
+  - path: /usr/local/sbin/citygo-bootstrap-toolchain
+    owner: root:root
+    permissions: "0700"
+    encoding: b64
+    content: __CITYGO_BOOTSTRAP_TOOLCHAIN_BASE64__
+  - path: /var/lib/citygo-bootstrap/public-metadata.json
+    owner: root:root
+    permissions: "0644"
+    encoding: b64
+    content: __CITYGO_PUBLIC_TOOLCHAIN_METADATA_BASE64__
+  - path: /usr/local/share/citygo-bootstrap/node-release-keys.kbx
+    owner: root:root
+    permissions: "0644"
+    encoding: b64
+    content: __CITYGO_OFFICIAL_NODE_RELEASE_KEYRING_BASE64__
+runcmd:
+  # Do not call cloud-init status --wait from its own final-stage command.
+  - [/usr/local/sbin/citygo-bootstrap-toolchain, --apply]
+# No checkout, runner registration, personal keys, PR code or automatic shutdown.
+# A separate reviewed seal step must remove bootstrap access, host keys, seed and
+# cloud-init seed/cache copies BEFORE any golden VHDX is admitted for cloning.

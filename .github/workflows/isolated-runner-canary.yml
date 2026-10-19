@@ -1,0 +1,35 @@
+name: Isolated runner canary
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/isolated-runner-canary.yml
+permissions: {}
+concurrency:
+  group: isolated-runner-canary-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+jobs:
+  isolated-linux-canary:
+    if: github.head_ref == 'codex/isolated-linux-runner' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [citygo-ci-canary-47a6f940dc442649]
+    timeout-minutes: 3
+    steps:
+      - name: Verify disposable Linux toolchain without repository or credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -s)" = Linux
+          test "$(uname -m)" = x86_64
+          test "$(id -u)" -ne 0
+          test "$(id -un)" = ci-runner
+          test ! -e .git
+          test -z "${GITHUB_TOKEN:-}"
+          test -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}"
+          node --version
+          test "$(pnpm --version)" = 10.15.0
+          python3 --version
+          age --version
+          docker --host unix:///var/run/docker.sock version --format '{{.Server.Os}}' | grep -Fx linux
+          docker --host unix:///var/run/docker.sock compose version
+          docker --host unix:///var/run/docker.sock buildx version
+          printf 'CITYGO_EPHEMERAL_CANARY_OK\n'

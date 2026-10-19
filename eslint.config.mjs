@@ -29,6 +29,7 @@ export default tseslint.config(
       "apps/worker/**/*.ts",
       "packages/**/*.{js,mjs,ts}",
       "scripts/**/*.mjs",
+      "deploy/ci/**/*.mjs",
       "e2e/**/*.ts",
       "playwright.config.ts",
     ],
