@@ -166,8 +166,23 @@ listener требует отсутствия всех JIT fragments и отде�
 Он не запускает ВМ. Подготовлен одноразовый `offline-job-tools.py` rehearsal:
 новый private-only guest без default route, регистрации, checkout и listener;
 установка архивов и наблюдение версий от non-root, затем внешний stop/cleanup.
-Ручной запуск закреплённого административного harness пока ожидается. Sealed
-base не изменялась; private seed и admin paths не публикуются.
+Первый административный запуск 20 октября создал свежий выключенный клон,
+но остановился до подключения ISO/сети, task registration и boot: harness
+ошибочно требовал ровно один пустой DVD, тогда как creator допускает отсутствие
+привода. Failure/result и manifest сохранены. Флаги отсутствия ресурсов в этом
+отчёте означают **неподтверждённую очистку**, а не успешное удаление или наличие
+зарегистрированной задачи.
+
+Подготовлен новый immutable harness и отдельный public ISO: сначала точная
+hash-bound reconciliation только прежнего Off/disconnected клона, затем новый
+rehearsal с новым operation ID. Отсутствующий DVD добавляется лишь в свободный
+SCSI 0:1; пустой существующий привод используется повторно. Чужой носитель,
+другой слот/контроллер, Running, неожиданный readback или неоднозначный native
+ответ останавливают попытку без повторения команды. Ownership guard повторяется
+перед каждым native write. Пять дополнительных private mock-тестов PowerShell 5
+прошли; это не Hyper-V PASS. Ручной запуск нового пакета пока ожидается;
+удаление прежнего клона не объявляется выполненным. Sealed base не изменялась;
+private seed, operation IDs и admin paths не публикуются.
 
 После APT-дополнения полный `test:ci-host` — **453 PASS, 0 FAIL, 0 SKIP**;
 release/deploy guards — **23/23 PASS**. Набор повторён закреплённым pnpm 10.15.0
@@ -234,9 +249,10 @@ sealed base или рабочий сервер. Официальные инде�
 [security](https://security.ubuntu.com/ubuntu/dists/noble-security/Release)
 проверены по HTTPS вне guest; это не native apt/Playwright PASS. Нужна гостевая
 проверка. Открытие порта 80, пропуск шагов или ослабление firewall не разрешаются.
-Замороженный offline rehearsal относится к snapshot `0486f96` до этого
-APT-дополнения: его ISO/admin script не переписаны. В нём проверяется неизменённая
-установка публичных инструментов, не новый APT-путь и не вся актуальная factory.
+Первый замороженный offline rehearsal относится к snapshot `0486f96` до этого
+APT-дополнения: его ISO/admin script не переписаны. Новый пакет использует source
+`66ea6b1`, но вызывает только ту же установку публичных инструментов: он не
+исполняет APT-путь, listener или всю factory и не подтверждает их native приёмку.
 Unit/mock PASS **не означает** native factory PASS или зелёные основные checks.
 Publisher/deploy остаются hosted. Рабочий сервер, его ключи, main, Windows policy,
 существующие WSL/Docker/NAT/firewall на этом этапе не менялись.
