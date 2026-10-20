@@ -190,9 +190,45 @@ mock-тестов PowerShell 5 прошли; это не Hyper-V PASS.
 семи предыдущих файлов с проверкой plain path, ACL, SHA-256 и привязки манифеста.
 Эти проверки не вызывают Hyper-V и не удаляют ресурсы. Новый контроллер повторно
 использует только подготовленный публичный ISO незапущенной попытки; не принимает
-существующую чужую ВМ и не перезаписывает прежние отчёты. Его ручной запуск пока
-ожидается; удаление прежнего клона не объявляется выполненным. Sealed base не
-изменялась; private seed, operation IDs и admin paths не публикуются.
+существующую чужую ВМ и не перезаписывает прежние отчёты.
+
+Следующий административный запуск подтвердил удаление первого клона и создал
+свежий. Но чтение `watchdog-ready.json` попало между созданием файла и завершением
+его записи с exclusive lock: сохранённый failure timestamp находится между
+creation/last-write timestamps готового отчёта. Watchdog успел вооружиться;
+boot не отправлялся. Штатный точный запрос `complete`, опубликованный атомарным
+rename после flush/close, завершил cleanup. Native watchdog result сообщает
+network disconnected, VM/disk absent; отдельное файловое чтение подтвердило
+отсутствие диска. Это не tools PASS. Завершённая временная задача ещё не удалена;
+независимый elevated inventory и адресное удаление этой задачи входят в следующий
+пакет. Все прежние failed receipts сохранены, не заменены успешным отчётом.
+
+Добавлена read-only библиотека `Read-CityGoCommittedCiRecord.ps1`: только три
+разрешённых watchdog record names одной операции, прежние plain-path/private ACL
+и JSON guards. Лишь вложенные I/O sharing/lock violations 32/33 означают
+«запись ещё не завершена»; ошибки ACL, закрытый невалидный JSON и остальные I/O
+остаются fatal. Библиотека не спит, не пишет, не вызывает Hyper-V и не продлевает
+исходный deadline вызывающего контроллера. Восемь новых тестов включают реальную
+exclusive file lock: заблокированный файл не считается готовностью, а закрытый
+валидный JSON читается; закрытый частичный JSON отвергается.
+
+Новый подготовленный private launcher создаёт отдельный hidden PS5 controller с
+read-locked source pin. Открытая интерактивная консоль больше не является PID
+контроллера; это позволяет watchdog заметить его реальный exit. Parent не вызывает
+Hyper-V. Worker сначала проверяет отсутствие прежних VM/disk и exact completed
+task action/owner/result, затем удаляет только эту задачу и создаёт новый клиент.
+Task action reconstruction из закреплённого исходного PS5 here-string проверен
+mock-тестами, включая запрет изменённых action/principal, Running и failed result.
+Watchdog readiness/final result читаются через новую библиотеку, запрос завершения
+публикуется атомарно. Native запуск этого нового пакета ещё ожидается; это не
+допуск всей factory или доказательство всей fault matrix. Последний admin snapshot
+подтвердил base Off/hash unchanged. Private seed, operation IDs и admin paths
+не публикуются.
+
+После этой read-race дельты полный `test:ci-host` повторён закреплённым pnpm 10.15.0:
+**461 PASS, 0 FAIL, 0 SKIP**; отдельно **23/23 release/deploy guards PASS**.
+Targeted ESLint/Prettier и `git diff --check` прошли; private worker/launcher
+прошли PS5 parser, а 7 private media/task-source tests — PASS без native writes.
 
 После APT-дополнения полный `test:ci-host` — **453 PASS, 0 FAIL, 0 SKIP**;
 release/deploy guards — **23/23 PASS**. Набор повторён закреплённым pnpm 10.15.0
