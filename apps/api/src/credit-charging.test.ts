@@ -98,7 +98,7 @@ async function fixture(
           has_web_search: false,
         };
         return new Response(
-          JSON.stringify(receipt).replace(/}$/, `,"total_cost":${state.cost}}`),
+          `{"data":${JSON.stringify(receipt).replace(/}$/, `,"total_cost":${state.cost}}`)}}`,
           { headers: { "content-type": "application/json" } },
         );
       }
