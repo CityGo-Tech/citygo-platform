@@ -724,7 +724,7 @@ test("existing least-privilege API grants can start/complete after identity trig
     );
 });
 
-test("container smoke's actual synthetic rewind/seed SQL upgrades from 9 to 22 and preserves populated history", async (t) => {
+test("container smoke's actual synthetic rewind/seed SQL upgrades from 9 to 23 and preserves populated history", async (t) => {
   const db = await fixture(t);
   // Read literal fixture SQL without importing/executing the Docker harness.
   // Fail if its representation changes; never evaluate JavaScript from a file.
