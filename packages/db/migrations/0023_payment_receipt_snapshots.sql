@@ -181,4 +181,3 @@ $$;
 revoke all on function citygo_guard_payment_receipt_snapshot() from public;
 revoke all on function citygo_guard_refund_receipt_source() from public;
 commit;
-
