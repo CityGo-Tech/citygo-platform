@@ -890,6 +890,16 @@ export async function buildApp(options: {
           await charges
             .releaseBeforeTransport(user.id, creditHoldId)
             .catch(() => {});
+        const creditRefusedBeforeDispatch =
+          attemptError?.code === "AI_CREDIT_EXHAUSTED" &&
+          !adapterEntered &&
+          !creditHoldId &&
+          !generation &&
+          content.length === 0 &&
+          !routing.human;
+        const persistedContent = creditRefusedBeforeDispatch
+          ? "Недостаточно средств на балансе CityGo для отправки запроса ИИ. Пополните баланс, чтобы продолжить. Запрос не отправлен ИИ, деньги не списаны."
+          : content;
         let persistenceFailed = false;
         if (!saved)
           await repo
@@ -898,10 +908,12 @@ export async function buildApp(options: {
               input.requestId,
               reservation.lease,
               routing.to,
-              content,
+              persistedContent,
               false,
-              !routing.human,
+              creditRefusedBeforeDispatch ? false : !routing.human,
               generation,
+              undefined,
+              creditRefusedBeforeDispatch ? "AI_CREDIT_EXHAUSTED" : undefined,
             )
             .catch(() => {
               persistenceFailed = true;

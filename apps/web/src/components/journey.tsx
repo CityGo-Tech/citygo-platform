@@ -17,6 +17,7 @@ import {
 import { questChecklist } from "@citygo/content";
 import { AiAccessPanel } from "./ai-access";
 import type { TopupActions } from "./test-topup";
+import { EmptyAiCreditHint, messageInterruptionLabel } from "./chat-readiness";
 
 export const agentNames: Record<AgentKey, string> = {
   housing: "Housing Navigator",
@@ -418,7 +419,9 @@ export function Journey(props: JourneyProps) {
                     <p>{message.content || "Ответ не получен"}</p>
                   )}
                   {message.status === "interrupted" && (
-                    <small>Ответ не завершён</small>
+                    <small>
+                      {messageInterruptionLabel(message, "Ответ не завершён")}
+                    </small>
                   )}
                 </article>
               ))}
@@ -461,6 +464,7 @@ export function Journey(props: JourneyProps) {
               </div>
             )}
             <form onSubmit={props.onChat} className="journey-composer">
+              <EmptyAiCreditHint access={board.aiAccess} />
               <label className="sr-only" htmlFor="journey-message">
                 Сообщение помощнику
               </label>

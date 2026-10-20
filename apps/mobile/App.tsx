@@ -31,6 +31,10 @@ import { tokens } from "@citygo/design-tokens";
 import { Button, Card, Field } from "@citygo/ui-native";
 import { questChecklist } from "@citygo/content";
 import {
+  hasEmptyChargeBalance,
+  messageInterruptionLabel,
+} from "./src/chat-readiness";
+import {
   allQuestsCompleted,
   canStopChat,
   completeQuest,
@@ -86,6 +90,23 @@ export default function App() {
     [confirmed, setConfirmed] = useState(false),
     [notice, setNotice] = useState("");
   const abort = useRef<AbortController | null>(null);
+  const contentScroll = useRef<ScrollView | null>(null);
+  const balanceSection = useRef<View | null>(null);
+  const scrollOffset = useRef(0);
+  function showBalance() {
+    const scroll = contentScroll.current;
+    const target = balanceSection.current;
+    const viewport = scroll?.getNativeScrollRef();
+    if (!scroll || !target || !viewport) return;
+    viewport.measureInWindow((_x, viewportY) => {
+      target.measureInWindow((_targetX, targetY) => {
+        scroll.scrollTo({
+          y: Math.max(0, scrollOffset.current + targetY - viewportY),
+          animated: true,
+        });
+      });
+    });
+  }
   function clearUserState(owner?: string) {
     lifetime.reset(owner);
     abort.current?.abort();
@@ -312,6 +333,11 @@ export default function App() {
         >
           <StatusBar barStyle="dark-content" />
           <ScrollView
+            ref={contentScroll}
+            onScroll={(event) => {
+              scrollOffset.current = event.nativeEvent.contentOffset.y;
+            }}
+            scrollEventThrottle={16}
             contentContainerStyle={styles.content}
             keyboardShouldPersistTaps="handled"
           >
@@ -567,7 +593,11 @@ export default function App() {
                   )}
                   <Text style={styles.title}>Передача данных AI</Text>
                   {board.aiAccess?.credit && (
-                    <View>
+                    <View
+                      ref={balanceSection}
+                      collapsable={false}
+                      testID="citygo-balance"
+                    >
                       <Text style={styles.title}>
                         {board.aiAccess.credit.chargingStatus ===
                         "routerai_citygo_10x"
@@ -602,7 +632,10 @@ export default function App() {
                               "routerai_at_cost"
                             ? "Ответы RouterAI — по подтверждённой стоимости без наценки. Неизвестная стоимость остаётся в резерве до сверки. Доли микрорубля округляются вниз."
                             : "Автоматическое списание за ответы пока не подключено."}{" "}
-                        Пополнение пока недоступно. Баланс не включает ИИ.
+                        {board.aiAccess.credit.topUpAvailable
+                          ? "Для пополнения воспользуйтесь веб-кабинетом CityGo. В мобильном приложении оплата пока не подключена."
+                          : "Пополнение пока недоступно."}{" "}
+                        Баланс не включает ИИ.
                       </Text>
                       {board.aiAccess.credit.pending?.map((item) => (
                         <Text key={item.holdId}>
@@ -676,10 +709,27 @@ export default function App() {
                         {m.role === "user" ? "Вы" : m.agentKey}
                       </Text>
                       <Text>{m.content || "Ответ не получен"}</Text>
-                      {m.status === "interrupted" && <Text>Ответ прерван</Text>}
+                      {m.status === "interrupted" && (
+                        <Text>{messageInterruptionLabel(m)}</Text>
+                      )}
                     </View>
                   ))}
                   {!!draft && <Text>{draft}</Text>}
+                  {hasEmptyChargeBalance(board.aiAccess) && (
+                    <View>
+                      <Text>
+                        На балансе нет доступных средств для платного ответа ИИ.
+                        Необходимый резерв проверяется сервером.
+                      </Text>
+                      <Text
+                        accessibilityRole="link"
+                        onPress={showBalance}
+                        style={{ textDecorationLine: "underline" }}
+                      >
+                        Баланс и пополнение
+                      </Text>
+                    </View>
+                  )}
                   <Field
                     label="Сообщение помощнику"
                     value={text}

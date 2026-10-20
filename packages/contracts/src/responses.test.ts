@@ -31,6 +31,60 @@ test("stored past move dates and legacy dashboards without optional money fields
   );
 });
 
+test("credit admission failure is additive and only valid for an ungenerated interrupted assistant message", () => {
+  const message = {
+    id: "2",
+    role: "assistant",
+    content: "Недостаточно средств. Запрос не отправлен ИИ.",
+    agentKey: "housing",
+    status: "interrupted",
+  };
+  const dashboard = (patch: object) => ({
+    ...board,
+    thread: {
+      id: "1",
+      agentKey: "housing",
+      messages: [{ ...message, ...patch }],
+    },
+  });
+  for (const legacy of [{}, { failureCode: null }]) {
+    const result = dashboardResponseSchema.parse(dashboard(legacy));
+    assert.ok(!result.thread!.messages[0]!.failureCode);
+  }
+  for (const generation of [undefined, null]) {
+    const result = dashboardResponseSchema.parse(
+      dashboard({ failureCode: "AI_CREDIT_EXHAUSTED", generation }),
+    );
+    assert.equal(
+      result.thread!.messages[0]!.failureCode,
+      "AI_CREDIT_EXHAUSTED",
+    );
+  }
+  for (const failureCode of [
+    "STREAM_INTERRUPTED",
+    "AI_CREDIT_UNAVAILABLE",
+    "",
+    0,
+    true,
+    {},
+  ])
+    assert.equal(
+      dashboardResponseSchema.safeParse(dashboard({ failureCode })).success,
+      false,
+    );
+  for (const patch of [
+    { role: "user" },
+    { status: "complete" },
+    { generation: { provider: "routerai", requestedModel: "test/model" } },
+  ])
+    assert.equal(
+      dashboardResponseSchema.safeParse(
+        dashboard({ failureCode: "AI_CREDIT_EXHAUSTED", ...patch }),
+      ).success,
+      false,
+    );
+});
+
 test("quest plan metadata is additive for old servers but validated when present", () => {
   const quest = {
     id: "1",

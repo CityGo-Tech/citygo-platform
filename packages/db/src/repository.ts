@@ -548,7 +548,8 @@ export class Repository {
     const rows = (
       await tx.query<Message>(
         `select id::text,role,content,coalesce(metadata->>'agentKey','housing') as "agentKey",
-      coalesce(metadata->>'status','complete') as status, metadata->'generation' as generation
+      coalesce(metadata->>'status','complete') as status, metadata->'generation' as generation,
+      metadata->>'failureCode' as "failureCode"
       from messages where thread_id=$1 and role in ('user','assistant')
       order by id desc limit 100`,
         [threadId],
@@ -828,7 +829,17 @@ export class Repository {
     modelResponse = complete,
     generation?: ModelGeneration,
     creditHoldId?: string,
+    failureCode?: Message["failureCode"],
   ) {
+    if (
+      failureCode != null &&
+      (failureCode !== "AI_CREDIT_EXHAUSTED" ||
+        complete ||
+        modelResponse ||
+        generation ||
+        creditHoldId)
+    )
+      fail(400, "Причина отказа допустима только до отправки запроса ИИ");
     return this.db.transaction(async (tx) => {
       const owner = (
         await tx.query(
@@ -837,6 +848,16 @@ export class Repository {
         )
       ).rows[0];
       if (!owner) fail(409, "Ответ устарел");
+      if (failureCode) {
+        const attempted = (
+          await tx.query<{ attempted: boolean }>(
+            "select exists(select 1 from ai_model_attempts where thread_id=$1 and request_id=$2) as attempted",
+            [threadId, requestId],
+          )
+        ).rows[0]!.attempted;
+        if (attempted)
+          fail(409, "Причина отказа не соответствует существующей попытке ИИ");
+      }
       const message = (
         await tx.query<{ id: string }>(
           "insert into messages(thread_id,role,content,metadata) values ($1,'assistant',$2,$3) returning id::text",
@@ -848,6 +869,7 @@ export class Repository {
               status: complete ? "complete" : "interrupted",
               source: modelResponse ? "model" : "system",
               ...(modelResponse && generation ? { generation } : {}),
+              ...(failureCode ? { failureCode } : {}),
             }),
           ],
         )

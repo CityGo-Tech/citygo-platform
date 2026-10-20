@@ -444,6 +444,10 @@
   grid-column: 1 / -1;
   font-size: 11px;
 }
+.journey-composer > .chat-credit-hint {
+  grid-column: 1 / -1;
+  margin: 0;
+}
 .journey-agent-panel {
   display: flex;
   flex-direction: column;

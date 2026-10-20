@@ -8,6 +8,7 @@ import {
 } from "@citygo/contracts";
 import { Button, Card } from "@citygo/ui-web";
 import { TestTopupPanel, type TopupActions } from "./test-topup";
+import { chatBalanceTarget } from "./chat-readiness";
 
 export function AiAccessPanel({
   access,
@@ -42,6 +43,8 @@ export function AiAccessPanel({
     <Card className="ai-access">
       {access.credit && (
         <section
+          id={chatBalanceTarget}
+          tabIndex={-1}
           aria-label={citygoTariff ? "Баланс CityGo" : "Бесплатный баланс AI"}
         >
           <h2>{citygoTariff ? "Баланс CityGo" : "Бесплатный баланс AI"}</h2>
