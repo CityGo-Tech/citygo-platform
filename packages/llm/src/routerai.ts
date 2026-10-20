@@ -228,7 +228,7 @@ export class RouterAIProvider implements StreamingProvider {
         reader.releaseLock();
       }
       // Node >=22.13 exposes the exact JSON number lexeme, before binary rounding.
-      const data = JSON.parse(
+      const envelope: unknown = JSON.parse(
         Buffer.concat(chunks).toString("utf8"),
         (key: string, value: unknown, context?: { source?: string }) => {
           if (key !== "total_cost") return value;
@@ -237,7 +237,23 @@ export class RouterAIProvider implements StreamingProvider {
           return context.source;
         },
       );
+      // The generation lookup returns { data: receipt }, not a completion or a
+      // flat receipt. Never fall back to unrelated outer fields on malformed
+      // responses; identity and exact decimal checks below apply to this data.
       if (
+        !envelope ||
+        typeof envelope !== "object" ||
+        Array.isArray(envelope) ||
+        Object.keys(envelope).length !== 1 ||
+        !("data" in envelope) ||
+        !envelope.data ||
+        typeof envelope.data !== "object" ||
+        Array.isArray(envelope.data)
+      )
+        throw new Error("Invalid cost envelope");
+      const data = envelope.data as Record<string, unknown>;
+      if (
+        typeof data.total_cost !== "string" ||
         data.id !== generationId ||
         data.session_id !== reference ||
         data.model !== this.model ||

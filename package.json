@@ -15,7 +15,7 @@
     "test:env": "node scripts/with-env.mjs test node --test scripts/env.test.mjs scripts/routerai-route-check.test.mjs",
     "ai:policy:preview": "node scripts/with-env.mjs api pnpm exec tsx apps/api/src/preview-policy.ts",
     "test:containers": "node scripts/with-env.mjs test node --test scripts/container-runtime.test.mjs scripts/container-stop-check.test.mjs scripts/ingress-maintenance.test.mjs",
-    "test:release": "node scripts/with-env.mjs test node --test scripts/release-candidate.test.mjs scripts/deploy-main.test.mjs scripts/release-upgrade-12-smoke.test.mjs scripts/release-upgrade-18-smoke.test.mjs",
+    "test:release": "node scripts/with-env.mjs test node --test scripts/release-candidate.test.mjs scripts/deploy-main.test.mjs scripts/operator-release.test.mjs scripts/release-upgrade-12-smoke.test.mjs scripts/release-upgrade-18-smoke.test.mjs",
     "test:container-smoke": "node scripts/container-smoke.mjs",
     "typecheck": "node scripts/with-env.mjs build pnpm exec turbo run typecheck --concurrency=3",
     "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm test:containers && pnpm test:release && pnpm build && pnpm test:startup",
