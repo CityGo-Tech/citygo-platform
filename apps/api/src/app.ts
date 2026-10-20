@@ -12,6 +12,9 @@ import {
   loginSchema,
   changePasswordSchema,
   changeRoleSchema,
+  messageIdSchema,
+  setMessageFavoriteSchema,
+  favoriteMessagesQuerySchema,
   questionnaireSchema,
   aiConsentSchema,
   aiRoutingInputSchema,
@@ -34,6 +37,7 @@ import {
 import {
   Repository,
   AccountAccess,
+  MessageFavorites,
   ensureConversation,
   DomainError,
   AiCreditLedger,
@@ -582,6 +586,18 @@ export async function buildApp(options: {
   app.post("/v1/conversations/start", async (request) => {
     const user = await authenticate(request);
     return ensureConversation(options.db, user.id);
+  });
+  const favorites = new MessageFavorites(options.db);
+  app.get("/v1/messages/favorites", async (request) => {
+    const user = await authenticate(request);
+    const query = favoriteMessagesQuerySchema.parse(request.query);
+    return favorites.list(user.id, query.before);
+  });
+  app.post("/v1/messages/:id/favorite", async (request) => {
+    const user = await authenticate(request);
+    const id = messageIdSchema.parse((request.params as { id: string }).id);
+    const input = setMessageFavoriteSchema.parse(request.body);
+    return favorites.set(user.id, id, input.saved);
   });
   app.post("/v1/auth/logout", async (request, reply) => {
     const token =

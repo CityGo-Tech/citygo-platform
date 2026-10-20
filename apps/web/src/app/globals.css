@@ -133,6 +133,53 @@ small {
   flex-wrap: wrap;
   margin-bottom: var(--cg-space-lg);
 }
+.message-favorites {
+  max-width: 816px;
+  margin: auto;
+  display: grid;
+  gap: var(--cg-space-md);
+  padding: var(--cg-space-lg);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.message-favorites h1 {
+  font-size: 32px;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: normal;
+  margin: 0;
+}
+.message-favorites h2 {
+  font-size: 24px;
+  font-weight: 700;
+}
+.message-favorites .cg-button {
+  font-weight: 600;
+}
+.message-favorites > .cg-button-secondary {
+  background: var(--cg-color-surface);
+  color: var(--cg-color-foreground);
+  border-color: var(--cg-color-border);
+}
+.message-favorites > p,
+.message-favorites h2,
+.favorites-empty p {
+  margin: 0;
+}
+.favorites-empty {
+  display: grid;
+  gap: var(--cg-space-md);
+  padding: var(--cg-space-lg);
+  background: color-mix(
+    in srgb,
+    var(--cg-color-primary-strong) 6%,
+    var(--cg-color-surface)
+  );
+  border-radius: var(--cg-radius-card);
+}
+.favorites-list {
+  min-width: 0;
+}
 .conversation-workspace {
   display: grid;
   grid-template-columns: 200px minmax(0, 1fr) 240px;

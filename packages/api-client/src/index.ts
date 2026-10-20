@@ -34,6 +34,10 @@ import {
   dashboardResponseSchema,
   okResponseSchema,
   startResponseSchema,
+  messageIdSchema,
+  setMessageFavoriteSchema,
+  messageFavoriteResultSchema,
+  favoriteMessagesPageSchema,
   CONTRACT_VERSION,
   CONTRACT_VERSION_HEADER,
   supportsContractVersion,
@@ -392,6 +396,30 @@ export function createClient(
         role,
       }),
     dashboard: () => request("/v1/dashboard", dashboardResponseSchema),
+    favoriteMessages: async (before?: string) =>
+      request(
+        "/v1/messages/favorites" +
+          (before !== undefined
+            ? "?before=" + messageIdSchema.parse(before)
+            : ""),
+        favoriteMessagesPageSchema,
+      ),
+    setMessageFavorite: async (messageId: string, saved: boolean) => {
+      messageIdSchema.parse(messageId);
+      setMessageFavoriteSchema.parse({ saved });
+      const result = await request(
+        "/v1/messages/" + messageId + "/favorite",
+        messageFavoriteResultSchema,
+        { saved },
+      );
+      if (result.messageId !== messageId || result.saved !== saved)
+        throw new ApiError(
+          200,
+          "Ответ сервера не соответствует сообщению",
+          "invalid_response",
+        );
+      return result;
+    },
     startConversation: () =>
       request("/v1/conversations/start", startResponseSchema, {}),
     aiConsent: (input: AiConsentInput) =>

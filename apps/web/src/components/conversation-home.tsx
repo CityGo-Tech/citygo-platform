@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Button, Card, Badge, AssistantMessage } from "@citygo/ui-web";
 import { AiAccessPanel } from "./ai-access";
 import { agentNames, type JourneyProps } from "./journey";
+import { FavoriteButton } from "./message-favorites";
 
 const helpers = [
   [
@@ -124,6 +125,9 @@ export function ConversationHome(props: JourneyProps) {
           <h1>Личный кабинет</h1>
           <p>{board.user.username ?? board.user.email}</p>
           <p>Роль: {board.user.role ?? "user"}</p>
+          <Button variant="secondary" onClick={props.onFavorites}>
+            Избранные сообщения
+          </Button>
           <Button variant="secondary" onClick={props.onPassword}>
             Изменить пароль
           </Button>
@@ -203,6 +207,13 @@ export function ConversationHome(props: JourneyProps) {
                     {message.status === "interrupted" && (
                       <small>Ответ прерван</small>
                     )}
+                    <FavoriteButton
+                      saved={message.favorite}
+                      disabled={busy || sending}
+                      onClick={() =>
+                        props.onFavorite?.(message.id, !message.favorite)
+                      }
+                    />
                   </article>
                 ))}
                 {props.pending && (

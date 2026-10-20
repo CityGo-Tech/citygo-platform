@@ -114,6 +114,7 @@ export type Message = {
   agentKey: AgentKey;
   status: "complete" | "interrupted";
   generation?: ModelGeneration | null;
+  favorite?: boolean;
 };
 export type Dashboard = {
   user: AccountUser;

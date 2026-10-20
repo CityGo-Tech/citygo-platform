@@ -1,6 +1,7 @@
 import { PGlite } from "@electric-sql/pglite";
 import pg from "pg";
 export { Repository, DomainError } from "./repository.js";
+export { MessageFavorites } from "./message-favorites.js";
 export { AiCreditLedger } from "./ai-credit.js";
 export { AiCreditCharges } from "./ai-credit-charges.js";
 export {

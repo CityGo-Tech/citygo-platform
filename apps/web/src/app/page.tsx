@@ -14,6 +14,7 @@ import { Button, Card, Field, Badge } from "@citygo/ui-web";
 import { Journey } from "../components/journey";
 import { ConversationHome } from "../components/conversation-home";
 import { OwnerReceiptsPanel } from "../components/owner-receipts";
+import { MessageFavoritesPanel } from "../components/message-favorites";
 
 export default function Home() {
   const [session] = useState(createSessionGuard);
@@ -28,6 +29,7 @@ export default function Home() {
   const [mode, setMode] = useState<"register" | "login">("register");
   const [passwordOpen, setPasswordOpen] = useState(false);
   const [receiptsOpen, setReceiptsOpen] = useState(false);
+  const [favoritesOpen, setFavoritesOpen] = useState(false);
   const [text, setText] = useState("");
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
@@ -64,6 +66,7 @@ export default function Home() {
     setLogoutUnconfirmed(false);
     setPasswordOpen(false);
     setReceiptsOpen(false);
+    setFavoritesOpen(false);
     setFormVersion((value) => value + 1);
     window.history.replaceState(
       null,
@@ -278,7 +281,22 @@ export default function Home() {
               <Button
                 variant="ghost"
                 disabled={busy || sending}
-                onClick={() => setReceiptsOpen(true)}
+                onClick={() => {
+                  setReceiptsOpen(false);
+                  setFavoritesOpen(true);
+                }}
+              >
+                Избранное
+              </Button>
+            )}
+            {!board.user.mustChangePassword && !passwordOpen && (
+              <Button
+                variant="ghost"
+                disabled={busy || sending}
+                onClick={() => {
+                  setFavoritesOpen(false);
+                  setReceiptsOpen(true);
+                }}
               >
                 Мои чеки
               </Button>
@@ -450,7 +468,18 @@ export default function Home() {
           </Card>
         ) : (
           <>
-            {receiptsOpen ? (
+            {favoritesOpen ? (
+              <MessageFavoritesPanel
+                key={board.user.id + ":favorites:" + formVersion}
+                userId={board.user.id}
+                sessionSignal={session.capture().signal}
+                onAccessDenied={requireLogin}
+                onClose={() => {
+                  setFavoritesOpen(false);
+                  void refresh(session.capture()).catch(() => {});
+                }}
+              />
+            ) : receiptsOpen ? (
               <section aria-label="Чеки личного кабинета">
                 <Button
                   variant="secondary"
@@ -479,6 +508,20 @@ export default function Home() {
                 onChat={chat}
                 onStop={() => abort.current?.abort()}
                 onPassword={() => setPasswordOpen(true)}
+                onFavorites={() => setFavoritesOpen(true)}
+                onFavorite={(messageId, saved) =>
+                  void act(async (ticket) => {
+                    await api.setMessageFavorite(messageId, saved);
+                    ticket.check();
+                    await refresh(ticket);
+                    ticket.check();
+                    setNotice(
+                      saved
+                        ? "Сообщение сохранено в избранное."
+                        : "Закладка удалена. Сообщение осталось в диалоге.",
+                    );
+                  })
+                }
                 topups={topups}
                 onBegin={() =>
                   void act(async (ticket) => {

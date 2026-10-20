@@ -548,7 +548,8 @@ export class Repository {
     const rows = (
       await tx.query<Message>(
         `select id::text,role,content,coalesce(metadata->>'agentKey','housing') as "agentKey",
-      coalesce(metadata->>'status','complete') as status, metadata->'generation' as generation
+      coalesce(metadata->>'status','complete') as status, metadata->'generation' as generation,
+      (metadata->'citygoFavorite'='true'::jsonb) is true as favorite
       from messages where thread_id=$1 and role in ('user','assistant')
       order by id desc limit 100`,
         [threadId],
