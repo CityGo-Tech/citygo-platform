@@ -3,6 +3,8 @@ import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import {
   createTopupSchema,
+  buildYooKassaReceipt,
+  YOOKASSA_RECEIPT_PROFILE,
   topupOrderSchema,
   type TopupOrder,
 } from "@citygo/contracts";
@@ -26,6 +28,7 @@ import { createPaymentAdmissionBinding } from "./payment-admission.js";
 export type PaymentClient = Pick<YooKassaClient, "create" | "get">;
 const REPLAY_LIMIT_MS = 23 * 60 * 60 * 1000;
 const paramsSchema = z.strictObject({ orderId: z.uuid() });
+const attemptParamsSchema = z.strictObject({ requestId: z.uuid() });
 
 // Check injected config before DB initialization as well as readConfig callers.
 export function preparePayments(
@@ -131,15 +134,27 @@ export function registerPaymentTopups(
       description: order.test
         ? "Пополнение тестового баланса CityGo"
         : "Пополнение баланса CityGo",
+      ...(order.payloadVersion === 2
+        ? {
+            receipt: buildYooKassaReceipt({
+              email: order.receiptEmail,
+              amountKopeks: order.amountKopeks,
+              test: order.test,
+            }),
+          }
+        : {}),
     };
     if (
       order.createKey !== order.id ||
+      (order.payloadVersion === 2 &&
+        order.receiptProfile !== YOOKASSA_RECEIPT_PROFILE) ||
       !isDeepStrictEqual(order.createPayload, payload)
     )
       throw new DomainError(
         409,
         "Сохранённый запрос платежа требует проверки владельцем",
       );
+    return "receipt" in payload ? payload.receipt : undefined;
   }
   function verified(payment: YooKassaPayment, order: PaymentTopupOrder) {
     if (
@@ -196,7 +211,25 @@ export function registerPaymentTopups(
     async (request) => {
       const user = await options.authenticate(request);
       const client = available();
-      const input = createTopupSchema.parse(request.body);
+      const parsed = createTopupSchema.safeParse(request.body);
+      if (!parsed.success)
+        throw new DomainError(
+          400,
+          "Проверьте сумму, ID попытки и email для чека",
+        );
+      const input = parsed.data;
+      const fiscal =
+        options.config.YOOKASSA_FISCAL_PROFILE === YOOKASSA_RECEIPT_PROFILE;
+      if (options.config.YOOKASSA_MODE === "live" && !fiscal)
+        throw new DomainError(
+          503,
+          "Новый приём платежей требует настроенного чека",
+        );
+      if ((fiscal && !input.receiptEmail) || (!fiscal && input.receiptEmail))
+        throw new DomainError(
+          400,
+          "Укажите email для чека в настроенном режиме оплаты",
+        );
       const order = await orders.create(
         user.id,
         input.requestId,
@@ -204,14 +237,22 @@ export function registerPaymentTopups(
         options.config.YOOKASSA_SHOP_ID!,
         options.config.YOOKASSA_MODE === "test",
         returnUrl,
+        fiscal
+          ? {
+              receiptEmail: input.receiptEmail!,
+              receiptProfile: YOOKASSA_RECEIPT_PROFILE,
+            }
+          : undefined,
       );
-      configured(order);
+      const receipt = configured(order);
       if (
         order.providerPaymentId ||
         order.status === "review_required" ||
         order.credited
       )
         return publicOrder(order);
+      if (fiscal && order.payloadVersion !== 2)
+        return publicOrder(await orders.markReviewRequired(user.id, order.id));
       const age = Date.now() - Date.parse(order.createdAt);
       if (!Number.isFinite(age) || age < -60_000 || age >= REPLAY_LIMIT_MS)
         return publicOrder(await orders.markReviewRequired(user.id, order.id));
@@ -227,6 +268,8 @@ export function registerPaymentTopups(
           orderId: order.id,
           amountKopeks: order.amountKopeks,
           returnUrl: order.returnUrl,
+          ...(receipt ? { receipt } : {}),
+          createPayload: order.createPayload,
         }),
       );
       verified(payment, order);
@@ -241,6 +284,15 @@ export function registerPaymentTopups(
       return publicOrder(recorded);
     },
   );
+
+  app.get("/v1/payments/topup-attempts/:requestId", async (request) => {
+    const user = await options.authenticate(request);
+    available();
+    const input = attemptParamsSchema.parse(request.params);
+    const order = await orders.getByRequestId(user.id, input.requestId);
+    configured(order);
+    return publicOrder(order); // Owner-scoped recovery; no provider call or write.
+  });
 
   app.get("/v1/payments/topups/:orderId", async (request) => {
     const user = await options.authenticate(request);

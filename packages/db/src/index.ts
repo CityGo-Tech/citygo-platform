@@ -58,6 +58,7 @@ export {
 export {
   PaymentTopupOrders,
   type PaymentTopupOrder,
+  type PaymentReceiptOptions,
 } from "./payment-topup-orders.js";
 export {
   assertRealAiDatabaseSafety,

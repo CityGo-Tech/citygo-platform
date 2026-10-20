@@ -37,6 +37,9 @@ export function createPaymentAdmissionBinding(
     returnPath: "/",
     tariffVersion: "citygo-10x-v1",
     receiptMode: config.YOOKASSA_RECEIPT_MODE,
+    ...(config.YOOKASSA_FISCAL_PROFILE !== "disabled"
+      ? { fiscalProfile: config.YOOKASSA_FISCAL_PROFILE }
+      : {}),
   };
   return {
     merchantId: policy.merchantId,

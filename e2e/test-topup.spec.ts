@@ -61,14 +61,20 @@ async function fixture(
     failFirst?: boolean;
     unsafeUrl?: boolean;
     live?: boolean;
+    recoverAttempt?: boolean;
   } = {},
 ) {
   const state = {
     available: options.available ?? true,
     userId: "101",
-    creates: [] as { requestId: string; amountKopeks: number }[],
+    creates: [] as {
+      requestId: string;
+      amountKopeks: number;
+      receiptEmail?: string;
+    }[],
     reconciles: 0,
     reads: 0,
+    attemptReads: 0,
     credited: false,
     unexpected: [] as string[],
   };
@@ -99,6 +105,15 @@ async function fixture(
             : {}),
         },
       });
+    }
+    if (
+      path.startsWith("/api/v1/payments/topup-attempts/") &&
+      request.method() === "GET"
+    ) {
+      state.attemptReads++;
+      return options.recoverAttempt
+        ? route.fulfill({ json: { ...order, test: options.live !== true } })
+        : route.fulfill({ status: 404, json: { error: "Платёж не найден" } });
     }
     if (
       path === `/api/v1/payments/topups/${order.orderId}` &&
@@ -172,12 +187,16 @@ test("checkout is hidden without the server capability; return parameters do not
   expect(state.unexpected).toEqual([]);
 });
 
-test("ambiguous create survives reload with the same key; only explicit reconciliation confirms credit", async ({
+test("ambiguous create retries the frozen email and key in memory; only explicit reconciliation confirms credit", async ({
   page,
 }) => {
   const state = await fixture(page, { failFirst: true });
   await page.goto("/");
   await expect(page.getByLabel("Сумма пополнения")).toHaveValue("100");
+  await expect(page.getByLabel("Email для чека ЮKassa")).toHaveValue("");
+  await page
+    .getByLabel("Email для чека ЮKassa")
+    .fill("receipt-buyer@synthetic-citygo-mail.ru");
   await expect(
     page.getByRole("button", { name: "Создать платёж", exact: true }),
   ).toBeEnabled();
@@ -188,7 +207,15 @@ test("ambiguous create survives reload with the same key; only explicit reconcil
     "Не удалось подтвердить результат",
   );
   expect(state.creates).toHaveLength(1);
-  await page.reload();
+  expect(
+    await page.evaluate(() =>
+      JSON.parse(sessionStorage.getItem("citygo.test-topup.101")!),
+    ),
+  ).toEqual({
+    requestId: state.creates[0]!.requestId,
+    amountKopeks: order.amountKopeks,
+  });
+  await expect(page.getByLabel("Email для чека ЮKassa")).toHaveCount(0);
   const retry = page.getByRole("button", {
     name: "Повторить создание с прежним ID",
     exact: true,
@@ -206,6 +233,9 @@ test("ambiguous create survives reload with the same key; only explicit reconcil
   expect(state.creates).toHaveLength(2);
   expect(state.creates[0]).toEqual(state.creates[1]);
   expect(state.creates[0]?.amountKopeks).toBe(10000);
+  expect(state.creates[0]?.receiptEmail).toBe(
+    "receipt-buyer@synthetic-citygo-mail.ru",
+  );
   expect(state.reconciles).toBe(0);
   await page.goto(`/?payment=succeeded&credited=true&orderId=${order.orderId}`);
   await expect(
@@ -235,6 +265,9 @@ test("a malformed checkout response never exposes an unsafe payment link or retr
 }) => {
   const state = await fixture(page, { unsafeUrl: true });
   await page.goto("/");
+  await page
+    .getByLabel("Email для чека ЮKassa")
+    .fill("receipt-buyer@synthetic-citygo-mail.ru");
   await page
     .getByRole("button", { name: "Создать платёж", exact: true })
     .click();
@@ -269,6 +302,10 @@ test("live checkout explicitly warns about real money, credits 100 to 100 and ne
     page.getByRole("region", { name: "Баланс CityGo", exact: true }),
   ).toContainText("Доступно: 0 ₽");
   await expect(panel.getByLabel("Сумма пополнения")).toHaveValue("100");
+  await expect(panel.getByLabel("Email для чека ЮKassa")).toHaveValue("");
+  await panel
+    .getByLabel("Email для чека ЮKassa")
+    .fill("receipt-buyer@synthetic-citygo-mail.ru");
   expect(state.creates).toHaveLength(0);
   expect(state.reconciles).toBe(0);
   await panel
@@ -296,6 +333,14 @@ test("live checkout explicitly warns about real money, credits 100 to 100 and ne
   ).toHaveCount(0);
   expect(state.creates).toHaveLength(1);
   expect(state.creates[0]?.amountKopeks).toBe(10000);
+  expect(state.creates[0]?.receiptEmail).toBe(
+    "receipt-buyer@synthetic-citygo-mail.ru",
+  );
+  const stored = await page.evaluate(() =>
+    sessionStorage.getItem("citygo.test-topup.101"),
+  );
+  expect(stored).not.toContain("receipt-buyer");
+  expect(stored).not.toContain("receiptEmail");
   expect(state.reconciles).toBe(0);
   await page.goto(`/?payment=succeeded&credited=true&orderId=${order.orderId}`);
   await expect(panel).toContainText("зачисление не подтверждено");
@@ -335,6 +380,7 @@ test("closed checkout keeps a saved pending payment readable and explicitly reco
     "Ссылка относится к ранее созданному платежу",
   );
   await expect(panel.getByLabel("Сумма пополнения")).toHaveCount(0);
+  await expect(panel.getByLabel("Email для чека ЮKassa")).toHaveCount(0);
   await expect(
     panel.getByRole("button", { name: /создан|Новый платёж/i }),
   ).toHaveCount(0);
@@ -375,7 +421,12 @@ test("closed checkout preserves an ambiguous attempt without POST, automatic ret
   await expect(panel).toContainText(ambiguous.requestId);
   await expect(panel).toContainText("Результат создания не подтверждён");
   await expect(panel).toContainText("Повторное создание сейчас недоступно");
-  await expect(panel.getByRole("button")).toHaveCount(0);
+  await expect(
+    panel.getByRole("button", {
+      name: "Найти сохранённый платёж",
+      exact: true,
+    }),
+  ).toBeEnabled();
   await expect(panel.getByRole("link")).toHaveCount(0);
   await page.reload();
   await expect(panel).toContainText(ambiguous.requestId);
@@ -386,6 +437,7 @@ test("closed checkout preserves an ambiguous attempt without POST, automatic ret
   ).toEqual(ambiguous);
   expect(state.creates).toEqual([]);
   expect(state.reads).toBe(0);
+  await expect.poll(() => state.attemptReads).toBe(2);
   expect(state.reconciles).toBe(0);
   expect(state.unexpected).toEqual([]);
 });
@@ -395,6 +447,9 @@ test("closing new checkout after creation preserves the existing payment and doe
 }) => {
   const state = await fixture(page, { live: true });
   await page.goto("/");
+  await page
+    .getByLabel("Email для чека ЮKassa")
+    .fill("receipt-buyer@synthetic-citygo-mail.ru");
   await page
     .getByRole("button", { name: "Создать платёж", exact: true })
     .click();
@@ -423,5 +478,106 @@ test("closing new checkout after creation preserves the existing payment and doe
   expect(state.creates).toHaveLength(1);
   expect(state.reads).toBe(1);
   expect(state.reconciles).toBe(0);
+  expect(state.unexpected).toEqual([]);
+});
+
+test("new checkout requires an explicit buyer email without using the account email", async ({
+  page,
+}) => {
+  const state = await fixture(page);
+  await page.goto("/");
+  const email = page.getByLabel("Email для чека ЮKassa");
+  const create = page.getByRole("button", {
+    name: "Создать платёж",
+    exact: true,
+  });
+  await expect(email).toHaveValue("");
+  await expect(create).toBeDisabled();
+  await email.fill("not-an-email");
+  await expect(create).toBeDisabled();
+  expect(state.creates).toEqual([]);
+  await email.fill("receipt-buyer@synthetic-citygo-mail.ru");
+  await create.click();
+  await expect.poll(() => state.creates.length).toBe(1);
+  expect(state.creates[0]?.receiptEmail).toBe(
+    "receipt-buyer@synthetic-citygo-mail.ru",
+  );
+  expect(state.creates[0]?.receiptEmail).not.toBe("checkout-101@example.test");
+  expect(state.unexpected).toEqual([]);
+});
+
+test("reloaded ambiguous checkout never replaces the original buyer email or POSTs again", async ({
+  page,
+}) => {
+  const state = await fixture(page, { failFirst: true });
+  await page.goto("/");
+  await page
+    .getByLabel("Email для чека ЮKassa")
+    .fill("original-buyer@synthetic-citygo-mail.ru");
+  await page
+    .getByRole("button", { name: "Создать платёж", exact: true })
+    .click();
+  await expect(page.locator(".ai-access [role=alert]")).toContainText(
+    "Не удалось подтвердить результат",
+  );
+  expect(state.creates).toHaveLength(1);
+  const original = state.creates[0]!;
+  await page.reload();
+  const panel = page.getByRole("region", { name: "Пополнение баланса ЮKassa" });
+  await expect(panel).toContainText(original.requestId);
+  await expect(panel).toContainText("исходный email для чека не хранится");
+  await expect.poll(() => state.attemptReads).toBe(1);
+  await expect(panel.getByLabel("Email для чека ЮKassa")).toHaveCount(0);
+  await expect(
+    panel.getByRole("button", {
+      name: /создать|Повторить создание|Новый платёж/,
+    }),
+  ).toHaveCount(0);
+  expect(
+    await page.evaluate(() =>
+      JSON.parse(sessionStorage.getItem("citygo.test-topup.101")!),
+    ),
+  ).toEqual({
+    requestId: original.requestId,
+    amountKopeks: original.amountKopeks,
+  });
+  expect(state.creates).toHaveLength(1);
+  expect(state.reconciles).toBe(0);
+  expect(state.unexpected).toEqual([]);
+});
+
+test("an ambiguous attempt recovers through an authenticated read-only lookup with checkout closed", async ({
+  page,
+}) => {
+  const state = await fixture(page, {
+    available: false,
+    recoverAttempt: true,
+  });
+  await saveSyntheticAttempt(page, {
+    requestId: savedAttempt.requestId,
+    amountKopeks: savedAttempt.amountKopeks,
+  });
+  await page.goto("/");
+  const panel = page.getByRole("region", { name: "Пополнение баланса ЮKassa" });
+  await expect(panel).toContainText("Приём новых платежей временно закрыт");
+  await expect.poll(() => state.attemptReads).toBe(1);
+  await expect(panel).toContainText(order.orderId);
+  await expect(panel.getByLabel("Email для чека ЮKassa")).toHaveCount(0);
+  await expect(
+    panel.getByRole("button", { name: "Проверить платёж", exact: true }),
+  ).toBeEnabled();
+  expect(
+    await page.evaluate(() =>
+      JSON.parse(sessionStorage.getItem("citygo.test-topup.101")!),
+    ),
+  ).toEqual(savedAttempt);
+  expect(state.creates).toEqual([]);
+  expect(state.reconciles).toBe(0);
+  await panel
+    .getByRole("button", { name: "Проверить платёж", exact: true })
+    .click();
+  await expect(panel).toContainText("зачисление подтверждено сервером");
+  expect(state.reconciles).toBe(1);
+  expect(state.creates).toEqual([]);
   expect(state.unexpected).toEqual([]);
 });

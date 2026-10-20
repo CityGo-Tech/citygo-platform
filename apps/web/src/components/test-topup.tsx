@@ -1,7 +1,9 @@
 "use client";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import {
+  createTopupSchema,
   formatMoneyMicros,
+  yooKassaReceiptEmailSchema,
   type CreateTopupInput,
   type TopupOrder,
 } from "@citygo/contracts";
@@ -15,6 +17,7 @@ import {
 export type TopupActions = {
   createTopup: (input: CreateTopupInput) => Promise<TopupOrder>;
   topupOrder: (orderId: string) => Promise<TopupOrder>;
+  topupAttempt: (requestId: string) => Promise<TopupOrder>;
   reconcileTopup: (orderId: string) => Promise<TopupOrder>;
   onCredited: () => Promise<void>;
 };
@@ -41,12 +44,16 @@ export function TestTopupPanel({
   canCreate: boolean;
 }) {
   const [amount, setAmount] = useState("100");
+  const [receiptEmail, setReceiptEmail] = useState("");
   const [attempt, setAttempt] = useState<PaymentAttempt | null>(null);
   const [order, setOrder] = useState<TopupOrder | null>(null);
   const [error, setError] = useState("");
   const [ready, setReady] = useState(false);
   const [pending, setPending] = useState(false);
   const inFlight = useRef(false);
+  // Buyer contact is frozen for this request only, and never persisted in the
+  // browser. A restored ambiguous attempt must not adopt a different email.
+  const frozenCreate = useRef<CreateTopupInput | null>(null);
   const revision = useRef(0);
   const key = `citygo.test-topup.${userId}`;
   useEffect(() => {
@@ -54,17 +61,26 @@ export function TestTopupPanel({
     const loadedRevision = revision.current;
     try {
       const saved = parsePaymentAttempt(sessionStorage.getItem(key));
-      // Check that an ambiguous create can be safely retried after a reload.
+      // Only non-sensitive identity and amount are restored after a reload.
       sessionStorage.setItem(`${key}.probe`, "1");
       sessionStorage.removeItem(`${key}.probe`);
       setAttempt(saved);
       setReady(true);
       if (saved) setAmount(String(saved.amountKopeks / 100));
-      if (saved?.orderId) {
-        void actions
-          .topupOrder(saved.orderId)
+      if (saved) {
+        void (
+          saved.orderId
+            ? actions.topupOrder(saved.orderId)
+            : actions.topupAttempt(saved.requestId)
+        )
           .then((value) => {
-            if (active && loadedRevision === revision.current) setOrder(value);
+            if (!active || loadedRevision !== revision.current) return;
+            if (value.amountKopeks !== saved.amountKopeks)
+              throw new Error("Payment attempt mismatch");
+            const recovered = { ...saved, orderId: value.orderId };
+            sessionStorage.setItem(key, JSON.stringify(recovered));
+            setAttempt(recovered);
+            setOrder(value);
           })
           .catch(() => {
             if (active && loadedRevision === revision.current)
@@ -105,14 +121,38 @@ export function TestTopupPanel({
   function create(event: FormEvent) {
     event.preventDefault();
     const amountKopeks = paymentAmountKopeks(amount);
-    if (!canCreate || !ready || amountKopeks === null || attempt?.orderId)
+    if (
+      !canCreate ||
+      !ready ||
+      amountKopeks === null ||
+      attempt?.orderId ||
+      (attempt && !frozenCreate.current)
+    )
       return;
+    const parsed = createTopupSchema.safeParse(
+      frozenCreate.current ?? {
+        requestId: crypto.randomUUID(),
+        amountKopeks,
+        receiptEmail: receiptEmail.trim(),
+      },
+    );
+    if (!parsed.success) {
+      setError(
+        "Укажите действующий email покупателя для отправки чека ЮKassa.",
+      );
+      return;
+    }
     void work(async () => {
-      const next = attempt ?? { requestId: crypto.randomUUID(), amountKopeks };
+      const input = frozenCreate.current ?? parsed.data;
+      const next = attempt ?? {
+        requestId: input.requestId,
+        amountKopeks: input.amountKopeks,
+      };
       // Persist before the network call, including requests with an unknown result.
       sessionStorage.setItem(key, JSON.stringify(next));
+      frozenCreate.current = input;
       setAttempt(next);
-      const value = await actions.createTopup(next);
+      const value = await actions.createTopup(input);
       const saved = { ...next, orderId: value.orderId };
       setOrder(value);
       setAttempt(saved);
@@ -122,9 +162,16 @@ export function TestTopupPanel({
   }
 
   function check() {
-    if (!attempt?.orderId) return;
+    if (!attempt) return;
     void work(async () => {
-      const value = await actions.reconcileTopup(attempt.orderId!);
+      const value = attempt.orderId
+        ? await actions.reconcileTopup(attempt.orderId)
+        : await actions.topupAttempt(attempt.requestId);
+      if (value.amountKopeks !== attempt.amountKopeks)
+        throw new Error("Payment attempt mismatch");
+      const saved = { ...attempt, orderId: value.orderId };
+      sessionStorage.setItem(key, JSON.stringify(saved));
+      setAttempt(saved);
       setOrder(value);
       if (value.credited) await actions.onCredited();
     });
@@ -162,15 +209,43 @@ export function TestTopupPanel({
               onChange={(event) => setAmount(event.target.value)}
             />
           </label>
+          {!attempt && (
+            <label>
+              Email покупателя для чека ЮKassa{" "}
+              <input
+                aria-label="Email для чека ЮKassa"
+                type="email"
+                inputMode="email"
+                autoComplete="email"
+                required
+                maxLength={254}
+                value={receiptEmail}
+                disabled={locked}
+                onChange={(event) => setReceiptEmail(event.target.value)}
+              />
+            </label>
+          )}
+          {!attempt && (
+            <p>
+              Укажите свой действующий email: ЮKassa отправит чек на этот адрес.
+              Это не подтверждение владения email. В хранилище вкладки
+              сохраняются только ID попытки, сумма и ID созданного платежа.
+            </p>
+          )}
           <p>
             От 1 до 10 000 ₽. Оплата 100 ₽ соответствует 100 ₽ CityGo, не 1 000
             ₽.
           </p>
-          {!attempt?.orderId && (
+          {!attempt?.orderId && (!attempt || frozenCreate.current) && (
             <Button
               type="submit"
               disabled={
-                locked || !ready || paymentAmountKopeks(amount) === null
+                locked ||
+                !ready ||
+                paymentAmountKopeks(amount) === null ||
+                (!attempt &&
+                  !yooKassaReceiptEmailSchema.safeParse(receiptEmail.trim())
+                    .success)
               }
             >
               {attempt ? "Повторить создание с прежним ID" : "Создать платёж"}
@@ -179,11 +254,12 @@ export function TestTopupPanel({
         </form>
       )}
       {attempt && <p>ID попытки: {attempt.requestId}</p>}
-      {!canCreate && attempt && !attempt.orderId && (
+      {attempt && !attempt.orderId && !frozenCreate.current && (
         <p>
           Результат создания не подтверждён. Повторное создание сейчас
-          недоступно. Не оплачивайте заново: сообщите владельцу сервиса ID
-          сохранённой попытки.
+          недоступно: исходный email для чека не хранится в браузере. Не
+          оплачивайте заново: сообщите владельцу сервиса ID сохранённой попытки
+          для проверки.
         </p>
       )}
       {order && (
@@ -225,9 +301,9 @@ export function TestTopupPanel({
           </p>
         </div>
       )}
-      {attempt?.orderId && (
+      {attempt && (
         <Button type="button" disabled={locked} onClick={check}>
-          Проверить платёж
+          {attempt.orderId ? "Проверить платёж" : "Найти сохранённый платёж"}
         </Button>
       )}
       {canCreate && terminal && (
@@ -239,6 +315,8 @@ export function TestTopupPanel({
             try {
               sessionStorage.removeItem(key);
               setAttempt(null);
+              frozenCreate.current = null;
+              setReceiptEmail("");
               setOrder(null);
               setError("");
             } catch {

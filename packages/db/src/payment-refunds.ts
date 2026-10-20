@@ -5,6 +5,7 @@ import {
   adminPaymentRefundListSchema,
   adminPaymentRefundSchema,
   adminPaymentSourceListSchema,
+  assertYooKassaReceiptTotal,
   createPaymentRefundSchema,
   creditUserIdSchema,
   ownerPaymentRefundListSchema,
@@ -12,7 +13,10 @@ import {
   ownerPaymentSourceListSchema,
   paymentRefundListQuerySchema,
   paymentRefundReviewReasonSchema,
+  parseYooKassaReceipt,
+  yooKassaReceiptRegistrationSchema,
   type AdminPaymentRefund,
+  type YooKassaReceipt,
 } from "@citygo/contracts";
 import type { Database, Sql } from "./index.js";
 import { DomainError } from "./errors.js";
@@ -45,6 +49,9 @@ const proofSchema = z.strictObject({
   status: z.enum(["pending", "succeeded", "canceled"]),
   observation: z.enum(["create_response", "server_get"]),
   verifiedAt: z.iso.datetime(),
+  // Fiscal registration is non-monetary metadata. Only the independently
+  // verified refund status/amount can settle or release the reservation.
+  receiptRegistration: yooKassaReceiptRegistrationSchema.optional(),
 });
 export type PaymentRefundObservation = z.infer<typeof proofSchema>;
 export type PaymentRefundDispatchInput = {
@@ -56,6 +63,7 @@ export type PaymentRefundDispatchInput = {
   refundedBeforeKopeks: number;
   createdAt: string;
   createPayload?: unknown;
+  receipt?: YooKassaReceipt;
 };
 const stamp = (column: string) =>
   `to_char(${column} at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`;
@@ -304,6 +312,66 @@ export class PaymentRefunds {
             "Возврат доступен только для исходного тестового магазина",
           );
         await this.account(tx, source.user_id);
+        const original = (
+          await tx.query<{
+            user_id: string;
+            merchant_id: string;
+            test: boolean;
+            amount_kopeks: number;
+            provider_payment_id: string | null;
+            payload_version: number;
+            receipt_email: string | null;
+            receipt_profile: string | null;
+            create_payload: { receipt?: unknown };
+          }>(
+            `select user_id::text,merchant_id,test,amount_kopeks,provider_payment_id,create_payload,
+          coalesce((to_jsonb(o)->>'payload_version')::integer,1) as payload_version,
+          to_jsonb(o)->>'receipt_email' as receipt_email,to_jsonb(o)->>'receipt_profile' as receipt_profile
+          from payment_topup_orders o where id=$1`,
+            [command.paymentOperationId],
+          )
+        ).rows[0];
+        let receipt: YooKassaReceipt | undefined;
+        let receiptEmail: string | undefined;
+        if (original?.payload_version === 2) {
+          try {
+            const paid = assertYooKassaReceiptTotal(
+              parseYooKassaReceipt(original.create_payload.receipt),
+              Number(source.paid_kopeks),
+            );
+            if (
+              original.user_id !== source.user_id ||
+              original.merchant_id !== source.merchant_id ||
+              original.test !== source.test ||
+              original.amount_kopeks !== Number(source.paid_kopeks) ||
+              original.receipt_profile !== "citygo_service_full_payment_v1" ||
+              original.receipt_email !== paid.customer.email ||
+              !original.provider_payment_id
+            )
+              throw new Error("receipt source mismatch");
+            receiptEmail = paid.customer.email;
+            // Built-in YooKassa fiscalization uses the original receipt for a
+            // full payment refund. Only a partial refund supplies line items.
+            if (command.amountKopeks < Number(source.paid_kopeks))
+              receipt = assertYooKassaReceiptTotal(
+                {
+                  ...paid,
+                  items: [
+                    {
+                      ...paid.items[0],
+                      amount: {
+                        ...paid.items[0]!.amount,
+                        value: `${Math.floor(command.amountKopeks / 100)}.${String(command.amountKopeks % 100).padStart(2, "0")}`,
+                      },
+                    },
+                  ],
+                },
+                command.amountKopeks,
+              );
+          } catch {
+            throw new DomainError(409, "Исходный чек платежа требует проверки");
+          }
+        }
         const id = randomUUID();
         const allocation = await reservePaidRefund(
           tx,
@@ -321,35 +389,54 @@ export class PaymentRefunds {
             409,
             "Тестовый возврат не должен оставлять остаток менее 1 ₽",
           );
-        await tx.query(
-          `insert into payment_refunds(id,request_id,created_by_user_id,user_id,payment_operation_id,
+        if (
+          receiptEmail &&
+          original!.provider_payment_id !== allocation.providerPaymentId
+        )
+          throw new DomainError(
+            409,
+            "Чек возврата не соответствует исходному платежу",
+          );
+        const payload = {
+          payment_id: allocation.providerPaymentId,
+          amount: {
+            value: `${Math.floor(command.amountKopeks / 100)}.${String(command.amountKopeks % 100).padStart(2, "0")}`,
+            currency: "RUB",
+          },
+          description: allocation.test
+            ? "Тестовый возврат CityGo"
+            : "Возврат средств CityGo",
+          metadata: { citygo_refund_id: id },
+          ...(receipt ? { receipt } : {}),
+        };
+        const values = [
+          id,
+          command.requestId,
+          ctx.userId,
+          source.user_id,
+          command.paymentOperationId,
+          allocation.providerPaymentId,
+          allocation.merchantId,
+          allocation.test,
+          command.amountKopeks,
+          Number(source.paid_kopeks),
+          allocation.refundedBeforeKopeks,
+          JSON.stringify(payload),
+        ];
+        if (receiptEmail)
+          await tx.query(
+            `insert into payment_refunds(id,request_id,created_by_user_id,user_id,payment_operation_id,
+          provider_payment_id,merchant_id,test,amount_kopeks,payment_amount_kopeks,refunded_before_kopeks,create_key,create_payload,
+          payload_version,receipt_email,receipt_profile) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$1,$12,2,$13,$14)`,
+            [...values, receiptEmail, "citygo_service_full_payment_v1"],
+          );
+        else
+          await tx.query(
+            `insert into payment_refunds(id,request_id,created_by_user_id,user_id,payment_operation_id,
           provider_payment_id,merchant_id,test,amount_kopeks,payment_amount_kopeks,refunded_before_kopeks,create_key,create_payload)
           values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$1,$12)`,
-          [
-            id,
-            command.requestId,
-            ctx.userId,
-            source.user_id,
-            command.paymentOperationId,
-            allocation.providerPaymentId,
-            allocation.merchantId,
-            allocation.test,
-            command.amountKopeks,
-            Number(source.paid_kopeks),
-            allocation.refundedBeforeKopeks,
-            JSON.stringify({
-              payment_id: allocation.providerPaymentId,
-              amount: {
-                value: `${Math.floor(command.amountKopeks / 100)}.${String(command.amountKopeks % 100).padStart(2, "0")}`,
-                currency: "RUB",
-              },
-              description: allocation.test
-                ? "Тестовый возврат CityGo"
-                : "Возврат средств CityGo",
-              metadata: { citygo_refund_id: id },
-            }),
-          ],
-        );
+            values,
+          );
         const row = await this.read(tx, id);
         await this.event(tx, row, "reserved", ctx.userId, {
           amountKopeks: command.amountKopeks,
@@ -467,6 +554,22 @@ export class PaymentRefunds {
         [row.id],
       )
     ).rows[0]!;
+    let receipt: YooKassaReceipt | undefined;
+    if (
+      typeof amounts.create_payload === "object" &&
+      amounts.create_payload !== null &&
+      !Array.isArray(amounts.create_payload) &&
+      "receipt" in amounts.create_payload
+    ) {
+      try {
+        receipt = assertYooKassaReceiptTotal(
+          amounts.create_payload.receipt,
+          row.amountKopeks,
+        );
+      } catch {
+        throw new DomainError(409, "Сохранённый чек возврата требует проверки");
+      }
+    }
     return {
       refundRequestId: row.id,
       paymentId: row.providerPaymentId,
@@ -476,6 +579,7 @@ export class PaymentRefunds {
       refundedBeforeKopeks: Number(amounts.refunded_before_kopeks),
       createdAt: row.createdAt,
       createPayload: amounts.create_payload,
+      ...(receipt ? { receipt } : {}),
     };
   }
   async prepareDispatch(

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
+import { buildYooKassaReceipt, type YooKassaReceipt } from "@citygo/contracts";
 import {
   YooKassaClient,
   YooKassaError,
@@ -42,6 +43,108 @@ function fixture(response: () => Response | Promise<Response>) {
     client: new YooKassaTestClient({ shopId, secretKey, fetch }),
   };
 }
+
+test("receipt-bearing create validates persisted body and snapshots before asynchronous provider work", async () => {
+  const receipt = buildYooKassaReceipt({
+    email: "buyer@citygo-mail.ru",
+    amountKopeks: expected.amountKopeks,
+    test: true,
+  });
+  const payload = {
+    amount: { value: "100.01", currency: "RUB" },
+    capture: true,
+    confirmation: { type: "redirect", return_url: "https://citygo.ru/" },
+    description: "Пополнение тестового баланса CityGo",
+    metadata: { citygo_order_id: orderId },
+    receipt,
+  };
+  let release!: () => void;
+  const f = fixture(async () => {
+    await new Promise<void>((ok) => {
+      release = ok;
+    });
+    return json(valid());
+  });
+  const pending = f.client.create({
+    ...expected,
+    returnUrl: "https://citygo.ru/",
+    receipt,
+    createPayload: payload,
+  });
+  receipt.customer.email = "changed@citygo-mail.ru";
+  receipt.items[0]!.amount.value = "1.00";
+  payload.metadata.citygo_order_id = randomUUID();
+  release();
+  await pending;
+  const sent = JSON.parse(String(f.calls[0]!.init.body));
+  assert.equal(sent.receipt.customer.email, "buyer@citygo-mail.ru");
+  assert.equal(sent.receipt.items[0].amount.value, "100.01");
+  assert.equal(sent.metadata.citygo_order_id, orderId);
+  assert.equal(
+    new Headers(f.calls[0]!.init.headers).get("Idempotence-Key"),
+    orderId,
+  );
+});
+test("invalid receipt or stored payload drift fails before any request without PII", async () => {
+  const receipt = buildYooKassaReceipt({
+    email: "PRIVATE@citygo-mail.ru",
+    amountKopeks: expected.amountKopeks,
+  });
+  const f = fixture(() => json(valid()));
+  for (const invalid of [
+    { ...receipt, tax_system_code: 1 },
+    { ...receipt, customer: { email: "admin@citygo.invalid" } },
+    {
+      ...receipt,
+      items: [
+        { ...receipt.items[0], amount: { value: "1.00", currency: "RUB" } },
+      ],
+    },
+  ]) {
+    await rejected(
+      f.client.create({
+        ...expected,
+        returnUrl: "https://citygo.ru/",
+        receipt: invalid as YooKassaReceipt,
+      }),
+      "invalid_input",
+    );
+  }
+  await rejected(
+    f.client.create({
+      ...expected,
+      returnUrl: "https://citygo.ru/",
+      receipt,
+      createPayload: { receipt },
+    }),
+    "invalid_input",
+  );
+  assert.equal(f.calls.length, 0);
+});
+test("receipt registration is independently allowlisted and cannot cancel a paid payment", async () => {
+  for (const receipt_registration of [
+    "pending",
+    "succeeded",
+    "canceled",
+  ] as const) {
+    const f = fixture(() =>
+      json({
+        ...valid(),
+        status: "succeeded",
+        paid: true,
+        receipt_registration,
+      }),
+    );
+    const observed = await f.client.get(paymentId, expected);
+    assert.equal(observed.status, "succeeded");
+    assert.equal(observed.paid, true);
+    assert.equal(observed.receiptRegistration, receipt_registration);
+  }
+  const f = fixture(() =>
+    json({ ...valid(), receipt_registration: "PRIVATE injected status" }),
+  );
+  await rejected(f.client.get(paymentId, expected), "invalid_response");
+});
 async function rejected(
   work: Promise<unknown>,
   code: YooKassaTestError["code"],

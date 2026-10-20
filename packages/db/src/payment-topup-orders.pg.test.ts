@@ -3,12 +3,14 @@ import test from "node:test";
 import { randomUUID } from "node:crypto";
 import { PaymentTopupOrders } from "./payment-topup-orders.js";
 import { AiCreditLedger } from "./ai-credit.js";
+import { PaymentRefunds } from "./payment-refunds.js";
 import {
   lockPaymentMode,
   assertRealAiDatabaseSafety,
 } from "./payment-isolation.js";
 import {
   connectDatabase,
+  DomainError,
   migrate,
   Repository,
   type Database,
@@ -20,6 +22,8 @@ const testUrl = process.env.TEST_DATABASE_URL;
 if (testUrl && !/^postgres(?:ql)?:\/\//.test(testUrl))
   throw new Error("Invalid synthetic PostgreSQL URL");
 const returnUrl = "https://citygo.example.test/test-balance";
+const receiptProfile = "citygo_service_full_payment_v1" as const;
+const receiptEmail = "receipt@citygo-synthetic.ru";
 async function fixture() {
   const scoped = new URL(testUrl!);
   assert.ok(["postgres:", "postgresql:"].includes(scoped.protocol));
@@ -453,6 +457,230 @@ test(
         "synthetic-shop",
         true,
         returnUrl,
+      ),
+    );
+  },
+);
+
+test(
+  "PostgreSQL receipt snapshots: concurrent same request has one immutable body and conflicting emails never dispatch",
+  { skip: !testUrl },
+  async (t) => {
+    const f = await fixture();
+    t.after(f.close);
+    const orders = new PaymentTopupOrders(f.runtime),
+      request = randomUUID();
+    const create = (email = receiptEmail) =>
+      orders.create(
+        f.user,
+        request,
+        10000,
+        "synthetic-shop",
+        false,
+        returnUrl,
+        { receiptEmail: email, receiptProfile },
+      );
+    const same = await Promise.all(Array.from({ length: 6 }, () => create()));
+    assert.equal(new Set(same.map((o) => o.id)).size, 1);
+    const first = same[0]!;
+    assert.equal(first.payloadVersion, 2);
+    assert.equal(first.receiptEmail, receiptEmail);
+    assert.deepEqual(await orders.getByRequestId(f.user, request), first);
+    await assert.rejects(
+      orders.getByRequestId(f.other, request),
+      (e: unknown) => e instanceof DomainError && e.statusCode === 404,
+    );
+    const collision = await Promise.allSettled(
+      Array.from({ length: 3 }, () => create("different@citygo-synthetic.ru")),
+    );
+    assert.equal(
+      collision.filter(
+        (r) =>
+          r.status === "rejected" &&
+          r.reason instanceof DomainError &&
+          r.reason.statusCode === 409,
+      ).length,
+      3,
+    );
+    await assert.rejects(
+      f.db.query(
+        "update payment_topup_orders set receipt_email='different@citygo-synthetic.ru' where id=$1",
+        [first.id],
+      ),
+      /snapshot is immutable/,
+    );
+    await assert.rejects(
+      f.db.query(
+        "update payment_topup_orders set payload_version=1 where id=$1",
+        [first.id],
+      ),
+      /snapshot is immutable/,
+    );
+    await assert.rejects(
+      f.runtime.query(
+        "update payment_topup_orders set receipt_profile='different' where id=$1",
+        [first.id],
+      ),
+      (e: unknown) =>
+        typeof e === "object" &&
+        e !== null &&
+        "code" in e &&
+        e.code === "42501",
+    );
+    const payload = structuredClone(first.createPayload),
+      id = randomUUID();
+    payload.metadata.citygo_order_id = id;
+    payload.receipt!.items[0]!.amount.value = "99.99";
+    await assert.rejects(
+      f.runtime.query(
+        `insert into payment_topup_orders(id,user_id,request_id,amount_kopeks,merchant_id,test,return_url,create_payload,
+      payload_version,receipt_email,receipt_profile) values($1,$2,$3,10000,'synthetic-shop',false,$4,$5,2,$6,$7)`,
+        [
+          id,
+          f.user,
+          randomUUID(),
+          returnUrl,
+          JSON.stringify(payload),
+          receiptEmail,
+          receiptProfile,
+        ],
+      ),
+    );
+    assert.equal(
+      (
+        await f.db.query(
+          "select count(*)::integer as n from payment_topup_orders",
+        )
+      ).rows[0]!.n,
+      1,
+    );
+    assert.equal(
+      (await f.db.query("select count(*)::integer as n from ai_credit_topups"))
+        .rows[0]!.n,
+      0,
+    );
+    assert.deepEqual(
+      (await orders.get(f.user, first.id)).createPayload,
+      first.createPayload,
+    );
+  },
+);
+
+test(
+  "PostgreSQL receipt snapshots: NPD and repeated partial/full refunds retain original payer email and exact dispatch bodies",
+  { skip: !testUrl },
+  async (t) => {
+    const f = await fixture();
+    t.after(f.close);
+    await f.db.query("update users set role='super_admin' where id=$1", [
+      f.other,
+    ]);
+    const ctx = { userId: f.other, sessionTokenHash: "b".repeat(64) };
+    await f.db.query(
+      "insert into sessions(token_hash,user_id,expires_at) values($1,$2,clock_timestamp()+interval '1 day')",
+      [ctx.sessionTokenHash, f.other],
+    );
+    const ledger = new AiCreditLedger(f.db),
+      refunds = new PaymentRefunds(f.db);
+    const paid = async () => {
+      const order = await f.orders.create(
+          f.user,
+          randomUUID(),
+          10000,
+          "synthetic-shop",
+          false,
+          returnUrl,
+          { receiptEmail, receiptProfile },
+        ),
+        payment = randomUUID();
+      await f.orders.recordProvider(f.user, order.id, {
+        providerPaymentId: payment,
+        status: "pending",
+      });
+      await f.db.query(
+        "update user_credentials set email='changed@citygo-synthetic.ru' where user_id=$1",
+        [f.user],
+      );
+      await ledger.topUpConfirmed(f.user, order.id, {
+        providerPaymentId: payment,
+        paidKopeks: 10000,
+        merchantId: "synthetic-shop",
+        test: false,
+        verifiedAt: new Date().toISOString(),
+        verification: "server_get_succeeded",
+        currency: "RUB",
+      });
+      assert.equal(
+        (
+          await f.db.query<{ buyer_email: string }>(
+            "select buyer_email from npd_receipt_tasks where id=$1",
+            [order.id],
+          )
+        ).rows[0]!.buyer_email,
+        receiptEmail,
+      );
+      return order;
+    };
+    const original = await paid(),
+      command = {
+        requestId: randomUUID(),
+        paymentOperationId: original.id,
+        amountKopeks: 2500,
+      };
+    const repeated = await Promise.all(
+      Array.from({ length: 4 }, () => refunds.create(ctx, command)),
+    );
+    assert.equal(new Set(repeated.map((r) => r.refund.id)).size, 1);
+    assert.equal((await ledger.status(f.user)).heldMicros, 25_000_000);
+    const partial = repeated[0]!.refund;
+    const dispatch = await refunds.prepareDispatch(ctx, partial.id, {
+      merchantId: "synthetic-shop",
+      test: false,
+    });
+    const expected = structuredClone(original.createPayload.receipt!);
+    expected.items[0]!.amount.value = "25.00";
+    assert.deepEqual(dispatch.dispatch!.input.receipt, expected);
+    assert.deepEqual(
+      (dispatch.dispatch!.input.createPayload as { receipt: unknown }).receipt,
+      expected,
+    );
+    await assert.rejects(
+      f.db.query(
+        "update payment_refunds set receipt_email='other@citygo-synthetic.ru',revision=revision+1 where id=$1",
+        [partial.id],
+      ),
+      /snapshot is immutable/,
+    );
+    await assert.rejects(
+      f.db.query(
+        "update payment_refunds set create_payload=create_payload-'receipt' where id=$1",
+        [partial.id],
+      ),
+    );
+    const fullOriginal = await paid();
+    const full = await refunds.create(ctx, {
+      requestId: randomUUID(),
+      paymentOperationId: fullOriginal.id,
+      amountKopeks: 10000,
+    });
+    const fullDispatch = await refunds.prepareDispatch(ctx, full.refund.id, {
+      merchantId: "synthetic-shop",
+      test: false,
+    });
+    assert.equal(fullDispatch.dispatch!.input.receipt, undefined);
+    assert.equal(
+      "receipt" in (fullDispatch.dispatch!.input.createPayload as object),
+      false,
+    );
+    const rows = (
+      await f.db.query<{ payload_version: number; receipt_email: string }>(
+        "select payload_version,receipt_email from payment_refunds",
+      )
+    ).rows;
+    assert.equal(rows.length, 2);
+    assert.ok(
+      rows.every(
+        (r) => r.payload_version === 2 && r.receipt_email === receiptEmail,
       ),
     );
   },

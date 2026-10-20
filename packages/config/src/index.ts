@@ -127,6 +127,11 @@ export const serverConfigSchema = z.object({
   // Technical workflow selection, not a tax opinion or provider contract.
   // Live acceptance remains an independent release/merchant decision.
   YOOKASSA_RECEIPT_MODE: z.enum(["disabled", "npd_manual"]).default("disabled"),
+  // Explicit operator-selected transport fields, not a tax/legal approval.
+  // Disabled preserves historical order reconciliation, never new live POSTs.
+  YOOKASSA_FISCAL_PROFILE: z
+    .enum(["disabled", "citygo_service_full_payment_v1"])
+    .default("disabled"),
   // Development rehearsal only. This flag is not a production approval.
   R1_HOUSING_API_MODE: z.enum(["disabled", "synthetic"]).default("disabled"),
   TRUSTED_PROXY_CIDRS: trustedProxySchema,
@@ -162,6 +167,12 @@ export function validatePaymentConfig(
 ) {
   if (!["disabled", "test", "live"].includes(config.YOOKASSA_MODE))
     throw new Error("Unsupported YooKassa mode");
+  if (
+    !["disabled", "citygo_service_full_payment_v1"].includes(
+      config.YOOKASSA_FISCAL_PROFILE,
+    )
+  )
+    throw new Error("Unsupported YooKassa fiscal profile");
   if (config.YOOKASSA_MODE === "disabled") return;
   if (
     config.YOOKASSA_MODE === "test" &&

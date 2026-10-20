@@ -26,9 +26,12 @@ ROUTERAI_PROFILE = "citygo-api-web-routerai-credit-v1"
 CITYGO_10X_PROFILE = "citygo-api-web-routerai-citygo-10x-v1"
 CITYGO_10X_YOOKASSA_LIVE_PROFILE = "citygo-api-web-routerai-citygo-10x-yookassa-live-v1"
 CITYGO_10X_YOOKASSA_LIVE_CN_PROFILE = "citygo-api-web-routerai-citygo-10x-yookassa-live-cn-v1"
+CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_PROFILE = "citygo-api-web-routerai-citygo-10x-yookassa-live-cn-fiscal-v2"
 PROFILE_VERSIONS = {PROFILE: 1, ROUTERAI_PROFILE: 2, CITYGO_10X_PROFILE: 3,
-                    CITYGO_10X_YOOKASSA_LIVE_PROFILE: 4, CITYGO_10X_YOOKASSA_LIVE_CN_PROFILE: 5}
-CLOSED_ONLY_PROFILES = frozenset((CITYGO_10X_YOOKASSA_LIVE_PROFILE, CITYGO_10X_YOOKASSA_LIVE_CN_PROFILE))
+                    CITYGO_10X_YOOKASSA_LIVE_PROFILE: 4, CITYGO_10X_YOOKASSA_LIVE_CN_PROFILE: 5,
+                    CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_PROFILE: 6}
+CLOSED_ONLY_PROFILES = frozenset((CITYGO_10X_YOOKASSA_LIVE_PROFILE, CITYGO_10X_YOOKASSA_LIVE_CN_PROFILE,
+                                CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_PROFILE))
 # Public configuration is pinned together with the private key by startup approval.
 # No live budget, user bonus, consent or payment authorization is encoded here.
 ROUTERAI_FIXED = {
@@ -52,6 +55,10 @@ CITYGO_10X_YOOKASSA_LIVE_FIXED = {**CITYGO_10X_FIXED, "YOOKASSA_MODE": "live",
 # independently closed. No Flash or provider fallback is admitted here.
 CITYGO_10X_YOOKASSA_LIVE_CN_FIXED = {**CITYGO_10X_YOOKASSA_LIVE_FIXED,
     "ROUTERAI_COUNTRY": "cn", "ROUTERAI_MAX_OUTPUT_TOKENS": "4096", "LLM_MAX_INPUT_BYTES": "8192"}
+# Receipt-bearing requests have a new independently approved configuration.
+# This exact transport choice is not legal certification or payment admission.
+CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_FIXED = {**CITYGO_10X_YOOKASSA_LIVE_CN_FIXED,
+    "YOOKASSA_FISCAL_PROFILE": "citygo_service_full_payment_v1"}
 YOOKASSA_LIVE_KEYS = {"YOOKASSA_SHOP_ID", "YOOKASSA_SECRET_KEY"}
 ROUTERAI_LIMITS = {
     "LLM_USER_DAILY_REQUEST_LIMIT": 10000, "LLM_GLOBAL_DAILY_REQUEST_LIMIT": 1000000,
@@ -72,7 +79,8 @@ def api_secret(path, profile=PROFILE):
     if profile == PROFILE:
         b.require({"DATABASE_URL"} <= set(value) <= {"DATABASE_URL", "ADMIN_USER_IDS"}, "start-secret")
     else:
-        fixed = (CITYGO_10X_YOOKASSA_LIVE_CN_FIXED if profile == CITYGO_10X_YOOKASSA_LIVE_CN_PROFILE else
+        fixed = (CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_FIXED if profile == CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_PROFILE else
+                 CITYGO_10X_YOOKASSA_LIVE_CN_FIXED if profile == CITYGO_10X_YOOKASSA_LIVE_CN_PROFILE else
                  CITYGO_10X_YOOKASSA_LIVE_FIXED if profile == CITYGO_10X_YOOKASSA_LIVE_PROFILE else
                  CITYGO_10X_FIXED if profile == CITYGO_10X_PROFILE else ROUTERAI_FIXED)
         payment_keys = YOOKASSA_LIVE_KEYS if profile in CLOSED_ONLY_PROFILES else set()
@@ -157,6 +165,7 @@ def profile_environment(profile):
     b.require(type(profile) is str and profile in PROFILE_VERSIONS, "start-profile")
     return ({"LLM_PROVIDER": "disabled"} if profile == PROFILE else
             {"LLM_PROVIDER": "routerai", "CITYGO_AI_PROFILE":
+             "routerai-citygo-10x-yookassa-live-cn-fiscal-v2" if profile == CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_PROFILE else
              "routerai-citygo-10x-yookassa-live-cn-v1" if profile == CITYGO_10X_YOOKASSA_LIVE_CN_PROFILE else
              "routerai-citygo-10x-yookassa-live-v1" if profile == CITYGO_10X_YOOKASSA_LIVE_PROFILE else
              "routerai-citygo-10x-v1" if profile == CITYGO_10X_PROFILE else "routerai-credit-v1"})

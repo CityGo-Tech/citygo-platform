@@ -223,6 +223,64 @@ test("checkout client preserves the explicit server mode without activating chec
   }
 });
 
+test("checkout client sends the caller's explicit receipt email without deriving contact from the session", async () => {
+  const requests: unknown[] = [];
+  const client = createClient("/api", {
+    fetch: async (_url, init) => {
+      requests.push(JSON.parse(String(init?.body)));
+      return Response.json(paymentOrder);
+    },
+  });
+  const input = {
+    requestId: "356c6b57-eb44-43c6-af7c-7e392a315aeb",
+    amountKopeks: 10000,
+    receiptEmail: "receipt-buyer@synthetic-citygo-mail.ru",
+  };
+  await client.createTopup(input);
+  await client.createTopup(input);
+  assert.deepEqual(requests, [input, input]);
+  for (const receiptEmail of [
+    "not-an-email",
+    "admin@bootstrap.invalid",
+    "receipt@example.test",
+    "",
+  ]) {
+    assert.throws(() => client.createTopup({ ...input, receiptEmail }));
+  }
+  assert.equal(requests.length, 2);
+});
+
+test("checkout attempt recovery is an authenticated read-only lookup without buyer contact or automatic payment creation", async () => {
+  const requests: { url: string; method: string; body: unknown }[] = [];
+  const client = createClient("/api", {
+    token: () => "synthetic-session",
+    fetch: async (url, init) => {
+      requests.push({
+        url: String(url),
+        method: init?.method ?? "GET",
+        body: init?.body,
+      });
+      assert.equal(init?.credentials, "include");
+      assert.equal(
+        (init?.headers as Record<string, string>).Authorization,
+        "Bearer synthetic-session",
+      );
+      return Response.json(paymentOrder);
+    },
+  });
+  const requestId = "356c6b57-eb44-43c6-af7c-7e392a315aeb";
+  assert.deepEqual(await client.topupAttempt(requestId), paymentOrder);
+  assert.deepEqual(requests, [
+    {
+      url: "/api/v1/payments/topup-attempts/" + requestId,
+      method: "GET",
+      body: undefined,
+    },
+  ]);
+  assert.throws(() => client.topupAttempt("../other-owner"));
+  assert.equal(requests.length, 1);
+});
+
 test("checkout client rejects unsafe payment links, invalid sums and malformed mode flags", async () => {
   for (const patch of [
     { confirmationUrl: "http://checkout.example.test" },

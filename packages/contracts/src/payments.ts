@@ -1,10 +1,12 @@
 import { z } from "zod";
+import { yooKassaReceiptEmailSchema } from "./yookassa-receipt.js";
 
 // The server selects the test/live shop. A redirect or client report is never
 // payment evidence; the server must reconcile with that configured provider.
 export const createTopupSchema = z.strictObject({
   requestId: z.uuid(),
   amountKopeks: z.number().int().min(100).max(1_000_000),
+  receiptEmail: yooKassaReceiptEmailSchema.optional(),
 });
 export type CreateTopupInput = z.infer<typeof createTopupSchema>;
 

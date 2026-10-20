@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { creditUserIdSchema } from "@citygo/contracts";
+import {
+  buildYooKassaReceipt,
+  creditUserIdSchema,
+  type YooKassaReceipt,
+} from "@citygo/contracts";
 import type { Database, Sql } from "./index.js";
 import { DomainError } from "./errors.js";
 import { lockPaymentMode } from "./payment-isolation.js";
@@ -50,6 +54,10 @@ const providerSchema = z.strictObject({
   confirmationUrl: confirmationSchema.optional(),
 });
 type ProviderUpdate = z.infer<typeof providerSchema>;
+export type PaymentReceiptOptions = {
+  receiptEmail: string;
+  receiptProfile: "citygo_service_full_payment_v1";
+};
 export type PaymentTopupOrder = {
   id: string;
   userId: string;
@@ -59,12 +67,17 @@ export type PaymentTopupOrder = {
   merchantId: string;
   test: boolean;
   returnUrl: string;
+  // Optional only for historical/internal fixtures; reads always project these.
+  payloadVersion?: 1 | 2;
+  receiptEmail?: string | null;
+  receiptProfile?: "citygo_service_full_payment_v1" | null;
   createPayload: {
     amount: { value: string; currency: "RUB" };
     capture: true;
     confirmation: { type: "redirect"; return_url: string };
     metadata: { citygo_order_id: string };
     description: string;
+    receipt?: YooKassaReceipt;
   };
   createKey: string;
   createdAt: string;
@@ -117,6 +130,8 @@ export class PaymentTopupOrders {
         `select o.id,o.id as "createKey",o.user_id::text as "userId",o.request_id as "requestId",
        o.amount_kopeks as "amountKopeks",o.currency,o.merchant_id as "merchantId",o.test,
        o.return_url as "returnUrl",o.create_payload as "createPayload",
+       coalesce((to_jsonb(o)->>'payload_version')::integer,1) as "payloadVersion",
+       to_jsonb(o)->>'receipt_email' as "receiptEmail",to_jsonb(o)->>'receipt_profile' as "receiptProfile",
        o.provider_payment_id as "providerPaymentId",o.status,o.confirmation_url as "confirmationUrl",
        to_char(o.created_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "createdAt",
        to_char(o.updated_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "updatedAt",
@@ -138,6 +153,19 @@ export class PaymentTopupOrders {
     return this.read(userId, orderId, this.db);
   }
 
+  async getByRequestId(userId: string, requestId: string) {
+    creditUserIdSchema.parse(userId);
+    idSchema.parse(requestId);
+    const row = (
+      await this.db.query<{ id: string }>(
+        "select id from payment_topup_orders where user_id=$1 and request_id=$2",
+        [userId, requestId],
+      )
+    ).rows[0];
+    if (!row) throw new DomainError(404, "Пополнение не найдено");
+    return this.read(userId, row.id, this.db);
+  }
+
   async create(
     userId: string,
     requestId: string,
@@ -145,6 +173,7 @@ export class PaymentTopupOrders {
     merchantId: string,
     test: boolean,
     returnUrl: string,
+    receiptOptions?: PaymentReceiptOptions,
   ) {
     creditUserIdSchema.parse(userId);
     idSchema.parse(requestId);
@@ -152,6 +181,24 @@ export class PaymentTopupOrders {
     merchantSchema.parse(merchantId);
     z.boolean().parse(test);
     returnUrlSchema.parse(returnUrl);
+    let receipt: YooKassaReceipt | undefined;
+    if (receiptOptions !== undefined) {
+      try {
+        const parsed = z
+          .strictObject({
+            receiptEmail: z.string().max(254),
+            receiptProfile: z.literal("citygo_service_full_payment_v1"),
+          })
+          .parse(receiptOptions);
+        receipt = buildYooKassaReceipt({
+          email: parsed.receiptEmail,
+          amountKopeks,
+          test,
+        });
+      } catch {
+        throw new DomainError(400, "Укажите действующий email для чека");
+      }
+    }
     if (
       !test &&
       this.admissionBinding &&
@@ -180,7 +227,11 @@ export class PaymentTopupOrders {
           previous.amountKopeks !== amountKopeks ||
           previous.merchantId !== merchantId ||
           previous.test !== test ||
-          previous.returnUrl !== returnUrl
+          previous.returnUrl !== returnUrl ||
+          (previous.payloadVersion ?? 1) !== (receipt ? 2 : 1) ||
+          (receipt &&
+            (previous.receiptEmail !== receipt.customer.email ||
+              previous.receiptProfile !== "citygo_service_full_payment_v1"))
         )
           throw new DomainError(
             409,
@@ -200,21 +251,40 @@ export class PaymentTopupOrders {
         description: test
           ? "Пополнение тестового баланса CityGo"
           : "Пополнение баланса CityGo",
+        ...(receipt ? { receipt } : {}),
       };
-      await tx.query(
-        `insert into payment_topup_orders(id,user_id,request_id,amount_kopeks,merchant_id,test,return_url,create_payload)
+      if (receipt)
+        await tx.query(
+          `insert into payment_topup_orders(id,user_id,request_id,amount_kopeks,merchant_id,test,return_url,create_payload,
+         payload_version,receipt_email,receipt_profile) values ($1,$2,$3,$4,$5,$6,$7,$8,2,$9,$10)`,
+          [
+            id,
+            userId,
+            requestId,
+            amountKopeks,
+            merchantId,
+            test,
+            returnUrl,
+            JSON.stringify(payload),
+            receipt.customer.email,
+            "citygo_service_full_payment_v1",
+          ],
+        );
+      else
+        await tx.query(
+          `insert into payment_topup_orders(id,user_id,request_id,amount_kopeks,merchant_id,test,return_url,create_payload)
          values ($1,$2,$3,$4,$5,$6,$7,$8)`,
-        [
-          id,
-          userId,
-          requestId,
-          amountKopeks,
-          merchantId,
-          test,
-          returnUrl,
-          JSON.stringify(payload),
-        ],
-      );
+          [
+            id,
+            userId,
+            requestId,
+            amountKopeks,
+            merchantId,
+            test,
+            returnUrl,
+            JSON.stringify(payload),
+          ],
+        );
       return this.read(userId, id, tx);
     });
   }

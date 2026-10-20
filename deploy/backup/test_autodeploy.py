@@ -74,7 +74,7 @@ class Validation(unittest.TestCase):
             "postgres_image", "secret_files", "secret_sha256", "allow_new_migrations", "nginx_config", "nginx_sha256"}
         value = {**dict.fromkeys(fields, None), "version": 1, "purpose": "citygo-main-standing-authorization",
                  "enabled": True, "repository": t.REPOSITORY, "allow_new_migrations": True}
-        for profile in (a.s.CITYGO_10X_YOOKASSA_LIVE_PROFILE, a.s.CITYGO_10X_YOOKASSA_LIVE_CN_PROFILE):
+        for profile in a.s.CLOSED_ONLY_PROFILES:
             with self.subTest(profile=profile), patch.object(t, "read_file", return_value=encoded({**value, "profile": profile})), \
                  patch.object(a.b, "load_config") as load, patch.object(a, "GitHub") as github, \
                  patch.object(a, "resume") as resume, patch.object(ctl, "apply") as apply:
@@ -297,7 +297,7 @@ class Capabilities(unittest.TestCase):
     def test_live_profile_cannot_be_selected_by_standing_autodeploy_or_reopen_traffic(self):
         policy_path = self.entrypoint_fixture()
         value = t.strict_json(policy_path.read_bytes())
-        for profile in (a.s.CITYGO_10X_YOOKASSA_LIVE_PROFILE, a.s.CITYGO_10X_YOOKASSA_LIVE_CN_PROFILE):
+        for profile in a.s.CLOSED_ONLY_PROFILES:
             value["profile"] = profile
             policy_path.write_bytes(encoded(value))
             with self.assertRaisesRegex(b.BackupError, "autodeploy-live-profile-closed-only"):

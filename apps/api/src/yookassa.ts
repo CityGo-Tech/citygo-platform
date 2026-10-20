@@ -1,6 +1,13 @@
 // Server-only transport. The caller explicitly chooses the shop mode; neither
 // the credentials nor a provider response can change it. A create response is
 // never proof authorizing balance credit: settlement requires a separate GET.
+import { isDeepStrictEqual } from "node:util";
+import {
+  assertYooKassaReceiptTotal,
+  yooKassaReceiptRegistrationSchema,
+  type YooKassaReceipt,
+  type YooKassaReceiptRegistration,
+} from "@citygo/contracts";
 const ENDPOINT = "https://api.yookassa.ru/v3";
 const MAX_RESPONSE_BYTES = 64 * 1024;
 const TIMEOUT_MS = 10_000;
@@ -21,6 +28,7 @@ export type YooKassaPayment = {
   paid: boolean;
   confirmationUrl?: string;
   verifiedAt: string;
+  receiptRegistration?: YooKassaReceiptRegistration;
 };
 export type YooKassaTestPayment = YooKassaPayment & { test: true };
 
@@ -210,13 +218,22 @@ export class YooKassaClient {
     orderId: string;
     amountKopeks: number;
     returnUrl: string;
+    receipt?: YooKassaReceipt;
+    createPayload?: unknown;
   }): Promise<YooKassaPayment> {
     input = Object.freeze({ ...input });
     this.validateExpected(input);
     const returnUrl = httpsUrl(input.returnUrl);
     if (!returnUrl) throw new YooKassaError("invalid_input");
     const amount = BigInt(input.amountKopeks);
-    return this.request("POST", "/payments", input, {
+    let receipt: YooKassaReceipt | undefined;
+    try {
+      if (input.receipt !== undefined)
+        receipt = assertYooKassaReceiptTotal(input.receipt, input.amountKopeks);
+    } catch {
+      throw new YooKassaError("invalid_input");
+    }
+    const body = {
       amount: {
         value: `${amount / 100n}.${(amount % 100n).toString().padStart(2, "0")}`,
         currency: "RUB",
@@ -228,7 +245,16 @@ export class YooKassaClient {
           ? "Пополнение тестового баланса CityGo"
           : "Пополнение баланса CityGo",
       metadata: { citygo_order_id: input.orderId },
-    });
+      ...(receipt ? { receipt } : {}),
+    };
+    if (receipt && receipt.items[0]!.description !== body.description)
+      throw new YooKassaError("invalid_input");
+    if (
+      input.createPayload !== undefined &&
+      !isDeepStrictEqual(input.createPayload, body)
+    )
+      throw new YooKassaError("invalid_input");
+    return this.request("POST", "/payments", input, body);
   }
 
   async get(
@@ -308,6 +334,11 @@ export class YooKassaClient {
     )
       throw invalid();
     let confirmationUrl: string | undefined;
+    const receiptRegistration =
+      raw.receipt_registration === undefined
+        ? undefined
+        : yooKassaReceiptRegistrationSchema.safeParse(raw.receipt_registration);
+    if (receiptRegistration && !receiptRegistration.success) throw invalid();
     if (raw.confirmation !== undefined) {
       if (
         !object(raw.confirmation) ||
@@ -327,6 +358,9 @@ export class YooKassaClient {
       paid: raw.paid,
       ...(confirmationUrl ? { confirmationUrl } : {}),
       verifiedAt: new Date().toISOString(),
+      ...(receiptRegistration?.success
+        ? { receiptRegistration: receiptRegistration.data }
+        : {}),
     };
   }
 
@@ -456,6 +490,8 @@ export class YooKassaTestClient extends YooKassaClient {
     orderId: string;
     amountKopeks: number;
     returnUrl: string;
+    receipt?: YooKassaReceipt;
+    createPayload?: unknown;
   }): Promise<YooKassaTestPayment> {
     return super.create(input) as Promise<YooKassaTestPayment>;
   }
