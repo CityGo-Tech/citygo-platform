@@ -13,6 +13,7 @@ import {
   paymentAmountKopeks,
   type PaymentAttempt,
 } from "./payment-attempt";
+import { openPaymentPopup, type PaymentPopup } from "./payment-popup";
 
 export type TopupActions = {
   createTopup: (input: CreateTopupInput) => Promise<TopupOrder>;
@@ -50,7 +51,9 @@ export function TestTopupPanel({
   const [error, setError] = useState("");
   const [ready, setReady] = useState(false);
   const [pending, setPending] = useState(false);
+  const [popupNotice, setPopupNotice] = useState("");
   const inFlight = useRef(false);
+  const pendingPopup = useRef<PaymentPopup | null>(null);
   // Buyer contact is frozen for this request only, and never persisted in the
   // browser. A restored ambiguous attempt must not adopt a different email.
   const frozenCreate = useRef<CreateTopupInput | null>(null);
@@ -96,6 +99,8 @@ export function TestTopupPanel({
     }
     return () => {
       active = false;
+      pendingPopup.current?.close();
+      pendingPopup.current = null;
     };
     // Actions use the current session guard; remount when the account changes.
   }, [key]);
@@ -123,6 +128,8 @@ export function TestTopupPanel({
     const amountKopeks = paymentAmountKopeks(amount);
     if (
       !canCreate ||
+      disabled ||
+      inFlight.current ||
       !ready ||
       amountKopeks === null ||
       attempt?.orderId ||
@@ -142,22 +149,47 @@ export function TestTopupPanel({
       );
       return;
     }
+    // Keep the browser's user activation: allocate the safe blank tab before
+    // work() or a network call can await. Recovery/read-only paths never do this.
+    const popup = openPaymentPopup();
+    pendingPopup.current = popup;
+    setPopupNotice(
+      popup.opened
+        ? "Готовим оплату в отдельной вкладке…"
+        : "Браузер не открыл отдельную вкладку. После создания платежа нажмите кнопку оплаты ниже.",
+    );
     void work(async () => {
-      const input = frozenCreate.current ?? parsed.data;
-      const next = attempt ?? {
-        requestId: input.requestId,
-        amountKopeks: input.amountKopeks,
-      };
-      // Persist before the network call, including requests with an unknown result.
-      sessionStorage.setItem(key, JSON.stringify(next));
-      frozenCreate.current = input;
-      setAttempt(next);
-      const value = await actions.createTopup(input);
-      const saved = { ...next, orderId: value.orderId };
-      setOrder(value);
-      setAttempt(saved);
-      sessionStorage.setItem(key, JSON.stringify(saved));
-      if (value.credited) await actions.onCredited();
+      try {
+        const input = frozenCreate.current ?? parsed.data;
+        const next = attempt ?? {
+          requestId: input.requestId,
+          amountKopeks: input.amountKopeks,
+        };
+        // Persist before the network call, including requests with an unknown result.
+        sessionStorage.setItem(key, JSON.stringify(next));
+        frozenCreate.current = input;
+        setAttempt(next);
+        const value = await actions.createTopup(input);
+        const saved = { ...next, orderId: value.orderId };
+        setOrder(value);
+        setAttempt(saved);
+        sessionStorage.setItem(key, JSON.stringify(saved));
+        const opened = popup.navigate(value);
+        setPopupNotice(
+          value.status === "pending" && value.confirmationUrl
+            ? opened
+              ? "Оплата открыта в отдельной вкладке. Если вкладка не появилась, нажмите кнопку оплаты ниже."
+              : "Отдельная вкладка не открылась или была закрыта. Нажмите кнопку оплаты ниже — новый платёж не создаётся."
+            : "Платёж сейчас не ожидает оплаты. Вкладка закрыта; проверьте состояние платежа в CityGo.",
+        );
+        if (value.credited) await actions.onCredited();
+      } catch (error) {
+        popup.close();
+        setPopupNotice("");
+        throw error;
+      } finally {
+        if (pendingPopup.current === popup) pendingPopup.current = null;
+      }
     });
   }
 
@@ -254,6 +286,7 @@ export function TestTopupPanel({
         </form>
       )}
       {attempt && <p>ID попытки: {attempt.requestId}</p>}
+      {popupNotice && <p role="status">{popupNotice}</p>}
       {attempt && !attempt.orderId && !frozenCreate.current && (
         <p>
           Результат создания не подтверждён. Повторное создание сейчас
@@ -290,6 +323,7 @@ export function TestTopupPanel({
           )}
           <p>
             <a
+              className="cg-button cg-button-primary"
               href={order.confirmationUrl}
               target="_blank"
               rel="noopener noreferrer"
@@ -317,6 +351,7 @@ export function TestTopupPanel({
               setAttempt(null);
               frozenCreate.current = null;
               setReceiptEmail("");
+              setPopupNotice("");
               setOrder(null);
               setError("");
             } catch {
