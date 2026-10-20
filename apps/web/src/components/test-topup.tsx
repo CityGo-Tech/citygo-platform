@@ -33,10 +33,12 @@ export function TestTopupPanel({
   userId,
   actions,
   disabled,
+  canCreate,
 }: {
   userId: string;
   actions: TopupActions;
   disabled: boolean;
+  canCreate: boolean;
 }) {
   const [amount, setAmount] = useState("100");
   const [attempt, setAttempt] = useState<PaymentAttempt | null>(null);
@@ -103,7 +105,8 @@ export function TestTopupPanel({
   function create(event: FormEvent) {
     event.preventDefault();
     const amountKopeks = paymentAmountKopeks(amount);
-    if (!ready || amountKopeks === null || attempt?.orderId) return;
+    if (!canCreate || !ready || amountKopeks === null || attempt?.orderId)
+      return;
     void work(async () => {
       const next = attempt ?? { requestId: crypto.randomUUID(), amountKopeks };
       // Persist before the network call, including requests with an unknown result.
@@ -130,6 +133,9 @@ export function TestTopupPanel({
   const terminal =
     order?.status === "canceled" ||
     (order?.status === "succeeded" && order.credited);
+  // Admission closes only new external payment creation, not recovery of an
+  // existing order. Keep the saved identity and server verification available.
+  if (!canCreate && !attempt) return error ? <p role="alert">{error}</p> : null;
   return (
     <section aria-label="Пополнение баланса ЮKassa">
       <h3>Пополнение баланса ЮKassa</h3>
@@ -138,30 +144,48 @@ export function TestTopupPanel({
         списывает деньги и не подтверждает зачисление. Проверьте сумму и режим
         ниже перед переходом на страницу ЮKassa.
       </p>
-      <form onSubmit={create}>
-        <label>
-          Сумма, ₽ CityGo{" "}
-          <input
-            aria-label="Сумма пополнения"
-            inputMode="decimal"
-            value={amount}
-            disabled={locked || !!attempt}
-            onChange={(event) => setAmount(event.target.value)}
-          />
-        </label>
-        <p>
-          От 1 до 10 000 ₽. Оплата 100 ₽ соответствует 100 ₽ CityGo, не 1 000 ₽.
+      {!canCreate && (
+        <p role="status">
+          Приём новых платежей временно закрыт. Сохранённую попытку можно
+          проверить; новый платёж автоматически не создаётся.
         </p>
-        {!attempt?.orderId && (
-          <Button
-            type="submit"
-            disabled={locked || !ready || paymentAmountKopeks(amount) === null}
-          >
-            {attempt ? "Повторить создание с прежним ID" : "Создать платёж"}
-          </Button>
-        )}
-      </form>
+      )}
+      {canCreate && (
+        <form onSubmit={create}>
+          <label>
+            Сумма, ₽ CityGo{" "}
+            <input
+              aria-label="Сумма пополнения"
+              inputMode="decimal"
+              value={amount}
+              disabled={locked || !!attempt}
+              onChange={(event) => setAmount(event.target.value)}
+            />
+          </label>
+          <p>
+            От 1 до 10 000 ₽. Оплата 100 ₽ соответствует 100 ₽ CityGo, не 1 000
+            ₽.
+          </p>
+          {!attempt?.orderId && (
+            <Button
+              type="submit"
+              disabled={
+                locked || !ready || paymentAmountKopeks(amount) === null
+              }
+            >
+              {attempt ? "Повторить создание с прежним ID" : "Создать платёж"}
+            </Button>
+          )}
+        </form>
+      )}
       {attempt && <p>ID попытки: {attempt.requestId}</p>}
+      {!canCreate && attempt && !attempt.orderId && (
+        <p>
+          Результат создания не подтверждён. Повторное создание сейчас
+          недоступно. Не оплачивайте заново: сообщите владельцу сервиса ID
+          сохранённой попытки.
+        </p>
+      )}
       {order && (
         <div role="status">
           <p>
@@ -180,24 +204,33 @@ export function TestTopupPanel({
         </div>
       )}
       {order?.confirmationUrl && order.status === "pending" && (
-        <p>
-          <a
-            href={order.confirmationUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            {order.test
-              ? "Открыть тестовую оплату ЮKassa"
-              : "Перейти к оплате ЮKassa"}
-          </a>
-        </p>
+        <div>
+          {!canCreate && (
+            <p>
+              Ссылка относится к ранее созданному платежу. Перед продолжением
+              проверьте его состояние кнопкой «Проверить платёж» и не
+              оплачивайте повторно, если деньги уже списаны.
+            </p>
+          )}
+          <p>
+            <a
+              href={order.confirmationUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              {order.test
+                ? "Открыть тестовую оплату ЮKassa"
+                : "Перейти к оплате ЮKassa"}
+            </a>
+          </p>
+        </div>
       )}
       {attempt?.orderId && (
         <Button type="button" disabled={locked} onClick={check}>
           Проверить платёж
         </Button>
       )}
-      {terminal && (
+      {canCreate && terminal && (
         <Button
           type="button"
           variant="secondary"

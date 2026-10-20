@@ -18,6 +18,7 @@ import { validatePaymentConfig, type readConfig } from "@citygo/config";
 import {
   YooKassaClient,
   YooKassaError,
+  yooKassaFailureDiagnostic,
   type YooKassaPayment,
 } from "./yookassa.js";
 import { createPaymentAdmissionBinding } from "./payment-admission.js";
@@ -151,11 +152,34 @@ export function registerPaymentTopups(
     )
       throw new DomainError(409, "Данные платежа не соответствуют пополнению");
   }
-  async function transport<T>(work: () => Promise<T>) {
+  async function transport<T>(
+    operation: "create_payment" | "get_payment",
+    work: () => Promise<T>,
+  ) {
     try {
       return await work();
     } catch (error) {
       if (error instanceof DomainError) throw error;
+      const diagnostic = yooKassaFailureDiagnostic(error);
+      if (diagnostic) {
+        try {
+          // Deliberate projection, not an Error serializer or provider body.
+          // No identifiers, URLs, description, headers or caller data enter it.
+          app.log.warn(
+            {
+              event: "yookassa_operation_failed",
+              operation,
+              failureClass: diagnostic.failureClass,
+              httpStatus: diagnostic.httpStatus,
+              providerCode: diagnostic.providerCode,
+              parameter: diagnostic.parameter,
+            },
+            "YooKassa operation failed",
+          );
+        } catch {
+          // Diagnostics must not change the public or monetary outcome.
+        }
+      }
       // No provider bodies, headers, keys, IDs or injected exceptions escape.
       if (error instanceof YooKassaError || error instanceof Error)
         throw new DomainError(
@@ -198,7 +222,7 @@ export function registerPaymentTopups(
         await options.db.transaction((tx) =>
           assertLiveCheckoutAdmission(tx, binding),
         );
-      const payment = await transport(() =>
+      const payment = await transport("create_payment", () =>
         client.create({
           orderId: order.id,
           amountKopeks: order.amountKopeks,
@@ -255,7 +279,7 @@ export function registerPaymentTopups(
         "Создание платежа не подтверждено. Повторите исходное создание с прежним ID попытки.",
       );
     }
-    const payment = await transport(() =>
+    const payment = await transport("get_payment", () =>
       client.get(order.providerPaymentId!, {
         orderId: order.id,
         amountKopeks: order.amountKopeks,

@@ -69,12 +69,13 @@ export function AiAccessPanel({
               : "Пополнение пока недоступно."}{" "}
             Бонус не включает ИИ и не заменяет общий бюджет сервиса.
           </p>
-          {access.credit.topUpAvailable === true && userId && topups && (
+          {userId && topups && (
             <TestTopupPanel
               key={userId}
               userId={userId}
               actions={topups}
               disabled={busy}
+              canCreate={access.credit.topUpAvailable === true}
             />
           )}
           {!!access.credit.pending?.length && (

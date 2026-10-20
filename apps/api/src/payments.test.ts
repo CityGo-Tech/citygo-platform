@@ -43,6 +43,7 @@ async function fixture(enabled = true) {
     createStatus: "pending",
     getStatus: "pending",
     patch: {} as Record<string, unknown>,
+    httpFailure: undefined as { status: number; body: unknown } | undefined,
   };
   const posted: {
     orderId: string;
@@ -132,6 +133,11 @@ async function fixture(enabled = true) {
         record = found;
         status = state.getStatus;
       }
+      if (state.httpFailure)
+        return new Response(JSON.stringify(state.httpFailure.body), {
+          status: state.httpFailure.status,
+          headers: { "Content-Type": "application/json" },
+        });
       return new Response(
         JSON.stringify({
           id: record.id,
@@ -228,6 +234,128 @@ async function fixture(enabled = true) {
 function order(body: string): TopupOrder {
   return topupOrderSchema.parse(JSON.parse(body));
 }
+
+test("provider create refusal logs only safe diagnostics and preserves generic503 without retry or credit", async (t) => {
+  const f = await fixture();
+  t.after(f.close);
+  const warnings: unknown[][] = [];
+  t.mock.method(f.app.log, "warn", (...args: unknown[]) => {
+    warnings.push(args);
+  });
+  f.state.httpFailure = {
+    status: 400,
+    body: {
+      type: "error",
+      code: "invalid_request",
+      parameter: "receipt",
+      id: "PRIVATE-PROVIDER-ID",
+      description: "PRIVATE " + key,
+      customer: { email: "PRIVATE@example.test" },
+      headers: { authorization: key },
+      confirmation_url: "https://PRIVATE.example.test/pay",
+    },
+  };
+  const result = await f.create();
+  assert.equal(result.statusCode, 503);
+  assert.equal(
+    result.json().error,
+    "Не удалось проверить платёж. Повторите проверку состояния, не создавайте новый платёж.",
+  );
+  assert.deepEqual(warnings, [
+    [
+      {
+        event: "yookassa_operation_failed",
+        operation: "create_payment",
+        failureClass: "http",
+        httpStatus: 400,
+        providerCode: "invalid_request",
+        parameter: "receipt",
+      },
+      "YooKassa operation failed",
+    ],
+  ]);
+  assert.doesNotMatch(
+    result.body + JSON.stringify(warnings),
+    /PRIVATE|SYNTHETIC|Authorization|https:/,
+  );
+  assert.doesNotMatch(result.body, /invalid_request|receipt|providerCode/);
+  assert.equal(f.state.posts, 1);
+  assert.equal(f.state.gets, 0);
+  assert.equal((await f.balance()).availableMicros, 0);
+  assert.deepEqual(
+    (
+      await f.actual.query(
+        "select status,provider_payment_id,confirmation_url from payment_topup_orders",
+      )
+    ).rows,
+    [{ status: "queued", provider_payment_id: null, confirmation_url: null }],
+  );
+});
+
+test("provider settlement refusal logs a literal get operation without leaking fields or repeating POST", async (t) => {
+  const f = await fixture();
+  t.after(f.close);
+  const created = order((await f.create()).body);
+  const before = (await f.actual.query("select * from payment_topup_orders"))
+    .rows;
+  const warnings: unknown[][] = [];
+  t.mock.method(f.app.log, "warn", (...args: unknown[]) => {
+    warnings.push(args);
+  });
+  f.state.httpFailure = {
+    status: 503,
+    body: {
+      type: "error",
+      code: "PRIVATE " + key,
+      parameter: "PRIVATE@example.test",
+      description: "PRIVATE",
+    },
+  };
+  const result = await f.reconcile(created.orderId);
+  assert.equal(result.statusCode, 503);
+  assert.deepEqual(warnings, [
+    [
+      {
+        event: "yookassa_operation_failed",
+        operation: "get_payment",
+        failureClass: "http",
+        httpStatus: 503,
+        providerCode: "unrecognized",
+        parameter: "unrecognized",
+      },
+      "YooKassa operation failed",
+    ],
+  ]);
+  assert.doesNotMatch(
+    result.body + JSON.stringify(warnings),
+    /PRIVATE|SYNTHETIC|Authorization|https:/,
+  );
+  assert.equal(f.state.posts, 1);
+  assert.equal(f.state.gets, 1);
+  assert.equal((await f.balance()).availableMicros, 0);
+  assert.deepEqual(
+    (await f.actual.query("select * from payment_topup_orders")).rows,
+    before,
+  );
+});
+
+test("diagnostic logger failure cannot change public refusal, retry or monetary state", async (t) => {
+  const f = await fixture();
+  t.after(f.close);
+  f.state.httpFailure = {
+    status: 400,
+    body: { code: "invalid_request", parameter: "receipt" },
+  };
+  t.mock.method(f.app.log, "warn", () => {
+    throw new Error("PRIVATE logger failure");
+  });
+  const result = await f.create();
+  assert.equal(result.statusCode, 503);
+  assert.doesNotMatch(result.body, /PRIVATE|receipt|invalid_request/);
+  assert.equal(f.state.posts, 1);
+  assert.equal(f.state.gets, 0);
+  assert.equal((await f.balance()).availableMicros, 0);
+});
 
 test("disabled payment capability remains false in direct balance and dashboard; endpoints cannot create orders", async (t) => {
   const f = await fixture(false);

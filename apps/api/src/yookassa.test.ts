@@ -6,6 +6,7 @@ import {
   YooKassaError,
   YooKassaTestClient,
   YooKassaTestError,
+  yooKassaFailureDiagnostic,
   type YooKassaMode,
 } from "./yookassa.js";
 
@@ -584,4 +585,131 @@ test("the shared deadline also bounds a stalled response body", async (t) => {
   t.mock.timers.tick(10_001);
   await pending;
   assert.equal(canceled, true);
+});
+
+test("HTTP diagnostics expose only a frozen literal projection, never provider fields", async () => {
+  const privateValue = "PRIVATE response body " + secretKey;
+  for (const patch of [
+    {},
+    { id: privateValue },
+    { description: privateValue },
+    { code: privateValue },
+    { parameter: privateValue },
+    { code: { private: privateValue }, parameter: [privateValue] },
+    { headers: { authorization: privateValue }, customer: privateValue },
+    { confirmation: { confirmation_url: "https://PRIVATE.test/" } },
+  ]) {
+    const raw = {
+      type: "error",
+      code: "invalid_request",
+      parameter: "receipt",
+      ...patch,
+    };
+    const f = fixture(
+      () =>
+        new Response(JSON.stringify(raw), {
+          status: 400,
+          headers: {
+            "Content-Type": "application/json",
+            "X-Private": privateValue,
+          },
+        }),
+    );
+    await assert.rejects(
+      f.client.get(paymentId, expected),
+      (error: unknown) => {
+        assert.ok(error instanceof YooKassaError);
+        assert.equal(error.code, "http");
+        const diagnostic = yooKassaFailureDiagnostic(error);
+        assert.deepEqual(diagnostic, {
+          failureClass: "http",
+          httpStatus: 400,
+          providerCode:
+            raw.code === "invalid_request" ? "invalid_request" : "unrecognized",
+          parameter: raw.parameter === "receipt" ? "receipt" : "unrecognized",
+        });
+        assert.ok(Object.isFrozen(diagnostic));
+        Object.assign(error, { body: privateValue, diagnostic: raw });
+        assert.equal(yooKassaFailureDiagnostic(error), diagnostic);
+        assert.doesNotMatch(
+          JSON.stringify(diagnostic),
+          /PRIVATE|SYNTHETIC|https:/,
+        );
+        return true;
+      },
+    );
+    assert.equal(f.calls.length, 1);
+  }
+  assert.equal(yooKassaFailureDiagnostic(new Error(privateValue)), undefined);
+  assert.equal(yooKassaFailureDiagnostic(null), undefined);
+  assert.equal(
+    yooKassaFailureDiagnostic(Object.create(YooKassaError.prototype)),
+    undefined,
+  );
+});
+
+test("unrecognized HTTP bodies retain status, remain bounded and never retry", async () => {
+  for (const [body, headers] of [
+    ["PRIVATE", { "Content-Type": "text/html" }],
+    ["{PRIVATE", { "Content-Type": "application/json" }],
+    ["null", { "Content-Type": "application/json" }],
+    ["[]", { "Content-Type": "application/json" }],
+    [" ".repeat(65_537), { "Content-Type": "application/json" }],
+    ["{}", { "Content-Type": "application/json", "Content-Length": "65537" }],
+  ] as const) {
+    const f = fixture(() => new Response(body, { status: 403, headers }));
+    await assert.rejects(
+      f.client.create({ ...expected, returnUrl: "https://pilot.example.test" }),
+      (error: unknown) => {
+        assert.ok(error instanceof YooKassaError);
+        assert.equal(error.code, "http");
+        const diagnostic = yooKassaFailureDiagnostic(error);
+        assert.equal(diagnostic?.httpStatus, 403);
+        assert.doesNotMatch(JSON.stringify(error), /PRIVATE|SYNTHETIC/);
+        assert.doesNotMatch(JSON.stringify(diagnostic), /PRIVATE|SYNTHETIC/);
+        return true;
+      },
+    );
+    assert.equal(f.calls.length, 1);
+  }
+});
+
+test("HTTP error body shares the original deadline and cancels a stalled stream", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let canceled = false;
+  const f = fixture(
+    () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(
+              new TextEncoder().encode('{"description":"PRIVATE'),
+            );
+          },
+          cancel() {
+            canceled = true;
+          },
+        }),
+        { status: 400, headers: { "Content-Type": "application/json" } },
+      ),
+  );
+  const pending = assert.rejects(
+    f.client.create({ ...expected, returnUrl: "https://pilot.example.test" }),
+    (error: unknown) => {
+      assert.ok(error instanceof YooKassaError);
+      assert.deepEqual(yooKassaFailureDiagnostic(error), {
+        failureClass: "timeout",
+        httpStatus: 400,
+        providerCode: null,
+        parameter: null,
+      });
+      assert.doesNotMatch(JSON.stringify(error), /PRIVATE|SYNTHETIC/);
+      return true;
+    },
+  );
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+  t.mock.timers.tick(10_001);
+  await pending;
+  assert.equal(canceled, true);
+  assert.equal(f.calls.length, 1);
 });

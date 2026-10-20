@@ -64,6 +64,8 @@ async function fixture(
   } = {},
 ) {
   const state = {
+    available: options.available ?? true,
+    userId: "101",
     creates: [] as { requestId: string; amountKopeks: number }[],
     reconciles: 0,
     reads: 0,
@@ -75,7 +77,9 @@ async function fixture(
     const request = route.request();
     const path = new URL(request.url()).pathname;
     if (path === "/api/v1/dashboard") {
-      const board = dashboard(options.available);
+      const board = dashboard(state.available);
+      board.user.id = state.userId;
+      board.user.email = `checkout-${state.userId}@example.test`;
       if (state.credited && board.aiAccess.credit) {
         board.aiAccess.credit.grantedMicros = order.creditMicros;
         board.aiAccess.credit.availableMicros = order.creditMicros;
@@ -126,6 +130,21 @@ async function fixture(
     });
   });
   return state;
+}
+
+const savedAttempt = {
+  requestId: "356c6b57-eb44-43c6-af7c-7e392a315aeb",
+  amountKopeks: order.amountKopeks,
+  orderId: order.orderId,
+};
+
+async function saveSyntheticAttempt(
+  page: Page,
+  attempt: { requestId: string; amountKopeks: number; orderId?: string },
+) {
+  await page.addInitScript((value) => {
+    sessionStorage.setItem("citygo.test-topup.101", JSON.stringify(value));
+  }, attempt);
 }
 
 test("checkout is hidden without the server capability; return parameters do not grant money", async ({
@@ -298,5 +317,111 @@ test("live checkout explicitly warns about real money, credits 100 to 100 and ne
   await expect(
     panel.getByRole("button", { name: "Новый платёж", exact: true }),
   ).toBeVisible();
+  expect(state.unexpected).toEqual([]);
+});
+
+test("closed checkout keeps a saved pending payment readable and explicitly reconcilable without another create", async ({
+  page,
+}) => {
+  const state = await fixture(page, { available: false, live: true });
+  await saveSyntheticAttempt(page, savedAttempt);
+  await page.goto("/?payment=succeeded&credited=true");
+  const panel = page.getByRole("region", { name: "Пополнение баланса ЮKassa" });
+  await expect(panel).toContainText("Приём новых платежей временно закрыт");
+  await expect(panel).toContainText(savedAttempt.requestId);
+  await expect.poll(() => state.reads).toBe(1);
+  await expect(panel).toContainText("зачисление не подтверждено");
+  await expect(panel).toContainText(
+    "Ссылка относится к ранее созданному платежу",
+  );
+  await expect(panel.getByLabel("Сумма пополнения")).toHaveCount(0);
+  await expect(
+    panel.getByRole("button", { name: /создан|Новый платёж/i }),
+  ).toHaveCount(0);
+  await expect(
+    panel.getByRole("link", { name: "Перейти к оплате ЮKassa", exact: true }),
+  ).toHaveAttribute("href", order.confirmationUrl!);
+  expect(state.creates).toEqual([]);
+  expect(state.reconciles).toBe(0);
+  await panel
+    .getByRole("button", { name: "Проверить платёж", exact: true })
+    .click();
+  await expect(panel).toContainText("зачисление подтверждено сервером");
+  await expect(
+    page.getByRole("region", { name: "Баланс CityGo", exact: true }),
+  ).toContainText("Доступно: 100 ₽");
+  await expect(
+    panel.getByRole("link", { name: "Перейти к оплате ЮKassa", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    panel.getByRole("button", { name: "Новый платёж", exact: true }),
+  ).toHaveCount(0);
+  expect(state.creates).toEqual([]);
+  expect(state.reconciles).toBe(1);
+  expect(state.unexpected).toEqual([]);
+});
+
+test("closed checkout preserves an ambiguous attempt without POST, automatic retry or a new identity", async ({
+  page,
+}) => {
+  const state = await fixture(page, { available: false });
+  const ambiguous = {
+    requestId: savedAttempt.requestId,
+    amountKopeks: savedAttempt.amountKopeks,
+  };
+  await saveSyntheticAttempt(page, ambiguous);
+  await page.goto("/");
+  const panel = page.getByRole("region", { name: "Пополнение баланса ЮKassa" });
+  await expect(panel).toContainText(ambiguous.requestId);
+  await expect(panel).toContainText("Результат создания не подтверждён");
+  await expect(panel).toContainText("Повторное создание сейчас недоступно");
+  await expect(panel.getByRole("button")).toHaveCount(0);
+  await expect(panel.getByRole("link")).toHaveCount(0);
+  await page.reload();
+  await expect(panel).toContainText(ambiguous.requestId);
+  expect(
+    await page.evaluate(() =>
+      JSON.parse(sessionStorage.getItem("citygo.test-topup.101")!),
+    ),
+  ).toEqual(ambiguous);
+  expect(state.creates).toEqual([]);
+  expect(state.reads).toBe(0);
+  expect(state.reconciles).toBe(0);
+  expect(state.unexpected).toEqual([]);
+});
+
+test("closing new checkout after creation preserves the existing payment and does not leak it to another account", async ({
+  page,
+}) => {
+  const state = await fixture(page, { live: true });
+  await page.goto("/");
+  await page
+    .getByRole("button", { name: "Создать платёж", exact: true })
+    .click();
+  const panel = page.getByRole("region", { name: "Пополнение баланса ЮKassa" });
+  await expect(
+    panel.getByRole("link", { name: "Перейти к оплате ЮKassa", exact: true }),
+  ).toBeVisible();
+  const firstRequest = state.creates[0]!;
+  state.available = false;
+  await page.reload();
+  await expect(panel).toContainText("Приём новых платежей временно закрыт");
+  await expect(panel).toContainText(firstRequest.requestId);
+  await expect.poll(() => state.reads).toBe(1);
+  await expect(
+    panel.getByRole("button", { name: "Проверить платёж", exact: true }),
+  ).toBeEnabled();
+  state.userId = "102";
+  await page.reload();
+  await expect(
+    page.getByText("ID аккаунта: 102", { exact: true }),
+  ).toBeVisible();
+  await expect(panel).toHaveCount(0);
+  await expect(
+    page.getByText(firstRequest.requestId, { exact: false }),
+  ).toHaveCount(0);
+  expect(state.creates).toHaveLength(1);
+  expect(state.reads).toBe(1);
+  expect(state.reconciles).toBe(0);
   expect(state.unexpected).toEqual([]);
 });
