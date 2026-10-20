@@ -18,7 +18,7 @@ export const localCheckCommands = Object.freeze({
   ]),
   "container-smoke": Object.freeze([
     "python3 -B -m unittest discover -s deploy/backup -p test_*.py -v",
-    "node --test scripts/release-candidate.test.mjs scripts/deploy-main.test.mjs scripts/operator-release.test.mjs",
+    "node --test scripts/release-candidate.test.mjs scripts/deploy-main.test.mjs scripts/operator-release.test.mjs scripts/image-content.test.mjs",
     "node --test scripts/container-stop-check.test.mjs",
     "node --test scripts/ingress-maintenance.test.mjs",
     "node scripts/container-smoke.mjs --disposable --release-candidate",

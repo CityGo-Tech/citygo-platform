@@ -26,23 +26,37 @@ login, pull, tag, удаления, переключения Docker backend ил
 
 ### Classic Docker и containerd
 
-В classic store `.Id` — config digest, поэтому требуется точное совпадение с
-протестированным ID. У containerd `.Id` может быть manifest digest. Простое
+В classic store `.Id` — config digest. При совпадении с протестированным config ID
+сохраняется прежний путь. У containerd `.Id` может быть manifest или index digest. Простое
 игнорирование различия небезопасно: проверяется точный descriptor и SHA-256
-локальных manifest/config bytes, связь manifest → config, платформа, RootFS
-и source/revision. При наличии descriptor допустим local ID, равный одному из
-двух проверенных digest (manifest или config), **только после** проверки обоих
-blobs. Совпадение config ID не обходит чтение content. Размеры descriptor/config
-также должны совпасть. Читаются
-только два фиксированных digest через `ctr content get`, namespace `moby`, socket
+локальных index/manifest/config bytes, связь index → manifest → config, платформа,
+RootFS и source/revision. Допустимы только ID из полностью проверенной цепочки.
+Совпадение config ID при наличии descriptor не обходит чтение content. Размеры
+также должны совпасть. Читаются только два или три фиксированных JSON digest
+через `ctr content get`, namespace `moby`, socket
 `/run/containerd/containerd.sock`; никакие команды из образа не выполняются.
 
-Поддерживаются одиночные OCI/Docker schema-2 manifest. Неизвестный формат, index,
-другая архитектура, недоступный `ctr`/blob или несовпадение — закрытый отказ,
-**не** fallback на одни labels и **не** повод менять daemon. Если будущий CI
-запишет manifest ID вместо config ID, всё равно проверяется вся цепочка bytes.
-Classic CI ID на containerd-хосте поддерживается. Обратное сочетание manifest ID
-из containerd CI на classic-хосте пока отклоняется; автоматического ослабления нет.
+Поддерживаются одиночные OCI/Docker schema-2 manifest и одноуровневый OCI/Docker
+index с **ровно одним** linux/amd64 manifest. Дополнительные дескрипторы допустимы
+только как BuildKit attestations `unknown/unknown`, явно связанные с выбранным
+manifest. Они не выбираются для запуска и не считаются одобрением. Индекс и
+attestations не удаляются и digest не подменяется digest дочернего manifest.
+Дубликаты, несколько runnable-кандидатов, другие платформы/варианты, вложенные
+индексы, URL/embedded data, неверные hash/size или связь attestation — закрытый отказ.
+
+Для разных Docker backends разрешено заранее отдельно разместить metadata в
+`<state_dir>/image-content/<sha256 hex>.json`. Это **не разрешение**, а локальный
+content-addressed cache. Контроллер не создаёт его и не обращается к registry.
+Файлы должны принадлежать оператору, иметь private-права, nlink=1, без symlink и
+небезопасных предков; максимум 256 KiB каждый. При наличии небезопасного cache
+файла нет fallback. При отсутствии файла сохраняется прежнее чтение локального ctr.
+Каждый прочитанный blob всё равно проверяется по ожидаемому digest.
+
+Таким образом classic-хост может проверить index/manifest ID, испытанный на
+containerd: проверяются все bytes цепочки и точное совпадение config digest с
+реальным local ID classic Docker. Неполные metadata, недоступные blobs или
+несовпадение запрещают подготовку до остановки сервисов; labels сами по себе
+никогда не являются заменой.
 
 Доверие к локальному root/Docker/content store обязательно. Эта проверка не
 проверяет подпись/attestation, не перечитывает каждый слой с диска, не доказывает
@@ -71,14 +85,15 @@ Docker сам отвечает за content-addressed storage. Полный Conf
 
 ## Проверки без рабочего сервера
 
-Unit tests покрывают оба формата Docker, неправильные ID/platform/source/digest,
-повреждённые и отсутствующие blobs, index, привязку ролей и безопасный транспорт.
+Unit tests покрывают оба Docker backend, прямой manifest и index, неправильные
+ID/platform/source/digest, неоднозначные/вложенные индексы, подмену attestation,
+повреждённые и отсутствующие blobs, cache-права, привязку ролей и безопасный транспорт.
 Linux integration tests проверяют отсутствие downtime при preflight-отказе,
 отзыв approval во время чтения образов и запрет backup/квитка при drift.
 
 В disposable CI после push/pull трёх образов в loopback registry проверяются
 **настоящие** local Docker inspect и отказы для отсутствующего/неверного образа.
-Те же настоящие manifest/config bytes проверяются через **имитацию** формата
+Те же настоящие index/manifest/config bytes проверяются через **имитацию** формата
 containerd и blob-транспорта; повреждённые bytes обязаны отклоняться. Это не запуск
 настоящего containerd daemon и не проверка рабочей ВМ. Synthetic approval в прежнем
 prepare smoke использует имитацию image store; реальная проверка образов идёт
@@ -91,4 +106,6 @@ prepare smoke использует имитацию image store; реальна�
 Источники: [Docker image inspect](https://docs.docker.com/reference/cli/docker/image/inspect/),
 [фиксированный digest](https://docs.docker.com/reference/cli/docker/image/pull/),
 [containerd image store](https://docs.docker.com/engine/storage/containerd/),
+[OCI index](https://github.com/opencontainers/image-spec/blob/v1.1.1/image-index.md),
+[формат BuildKit attestations](https://docs.docker.com/build/metadata/attestations/attestation-storage/),
 [реализация containerd ImageInspect](https://github.com/moby/moby/blob/master/daemon/containerd/image_inspect.go).
