@@ -4,6 +4,7 @@ import {
   mkdirSync,
   writeFileSync,
   readFileSync,
+  readdirSync,
   rmSync,
   copyFileSync,
 } from "node:fs";
@@ -16,6 +17,16 @@ import { containerSpec } from "./container-runtime.mjs";
 import { renderNginx } from "../deploy/render-pilot.mjs";
 
 const db = "postgresql://synthetic:test@127.0.0.1:1/not-used";
+
+test("production container smoke expects the complete checked-in migration inventory", () => {
+  const count = readdirSync(join(root, "packages/db/migrations")).filter(
+    (name) => /^\d{4}_[a-z0-9_]+\.sql$/.test(name),
+  ).length;
+  const smoke = readFileSync(join(root, "scripts/container-smoke.mjs"), "utf8");
+  const expected = /assert\.equal\(migrations, "(\d+)"\)/.exec(smoke);
+  assert.ok(expected, "Keep the smoke migration target explicit and reviewed");
+  assert.equal(Number(expected[1]), count);
+});
 
 test("release jobs include only the reviewed PostgreSQL grants build input", () => {
   const ignore = readFileSync(join(root, ".dockerignore"), "utf8");
