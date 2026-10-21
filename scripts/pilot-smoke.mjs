@@ -70,17 +70,18 @@ export async function pilotSmoke({
     return r.stdout;
   }
   const compose = (args, options) => docker([...base, ...args], options);
-  const psql = (sql, database = "citygo_pilot") =>
+  const psql = (sql, database = "citygo_pilot", quiet = false) =>
     compose([
       "exec",
       "-T",
       "postgres",
       "sh",
       "-c",
-      'export PGPASSWORD="$(cat /run/secrets/db_admin_password)"; exec psql -U postgres -d "$1" -v ON_ERROR_STOP=1 -Atc "$2"',
+      'export PGPASSWORD="$(cat /run/secrets/db_admin_password)"; exec psql -U postgres -d "$1" -v ON_ERROR_STOP=1 "$3" "$2"',
       "--",
       database,
       sql,
+      quiet ? "-qAtc" : "-Atc",
     ]).trim();
   let created = false;
   try {
@@ -159,6 +160,8 @@ export async function pilotSmoke({
     assert.equal(
       psql(
         "set role citygo_api; select citygo_apply_credit_debt_repayments(-1); reset role; select 'api-debt-execution-ok'",
+        "citygo_pilot",
+        true,
       ),
       "api-debt-execution-ok",
     );
