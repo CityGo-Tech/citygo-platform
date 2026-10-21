@@ -134,6 +134,34 @@ export async function pilotSmoke({
       "-c",
       'export PGPASSWORD="$(cat /run/secrets/db_migrate_password)"; exec psql -U citygo_migrator -d citygo_pilot -v ON_ERROR_STOP=1 -f /opt/citygo/grants.sql',
     ]);
+    // Real provisioning revokes the migrator's default PUBLIC EXECUTE. The
+    // invoker repayment function needs its own narrow API grant, including
+    // admission and new-source paths when the account has no debt yet.
+    assert.equal(
+      psql(
+        "select has_function_privilege('citygo_api','citygo_apply_credit_debt_repayments(bigint)','EXECUTE')",
+      ),
+      "t",
+    );
+    for (const role of ["citygo_worker", "citygo_backup"])
+      assert.equal(
+        psql(
+          `select has_function_privilege('${role}','citygo_apply_credit_debt_repayments(bigint)','EXECUTE')`,
+        ),
+        "f",
+      );
+    assert.equal(
+      psql(
+        "select exists(select 1 from pg_proc p cross join lateral aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a where p.oid='citygo_apply_credit_debt_repayments(bigint)'::regprocedure and a.grantee=0 and a.privilege_type='EXECUTE')",
+      ),
+      "f",
+    );
+    assert.equal(
+      psql(
+        "set role citygo_api; select citygo_apply_credit_debt_repayments(-1); reset role; select 'api-debt-execution-ok'",
+      ),
+      "api-debt-execution-ok",
+    );
     await releaseMigrationSmoke({ project, directory, compose, docker, psql });
     await releaseUpgrade12Smoke({ project, directory, compose, docker, psql });
     await releaseUpgrade18Smoke({ project, directory, compose, docker, psql });

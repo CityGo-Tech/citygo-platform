@@ -19,6 +19,10 @@ grant select, insert on credit_source_lots, credit_hold_allocations,
 -- Fixed-reserve debt identity and repayments are append-only. Neither runtime
 -- role can rewrite/delete a debt or its payment/source attribution.
 grant select, insert on credit_charge_debts, credit_debt_repayments to citygo_api;
+-- Migrator defaults revoke PUBLIC EXECUTE. Runtime debt admission and the
+-- invoker new-source trigger call this function explicitly, even with no debt.
+-- Do not grant execution of trigger guards or this function to other roles.
+grant execute on function citygo_apply_credit_debt_repayments(bigint) to citygo_api;
 -- Provider events are durable ID hints, never settlement proof or Worker jobs.
 grant select, insert on payment_notification_inbox to citygo_api;
 grant update (status,attempt_count,lease_token,lease_until,next_attempt_at,last_reason,processed_at)
