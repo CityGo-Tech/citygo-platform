@@ -28,6 +28,8 @@ const tables = [
   "citygo_migration_lock",
   "citygo_migrations",
   "consent_events",
+  "credit_charge_debts",
+  "credit_debt_repayments",
   "credit_hold_allocations",
   "credit_refund_allocations",
   "credit_source_lots",
@@ -60,6 +62,8 @@ const tables = [
 ] as const;
 // No money, attempt, receipt, policy, migration, catalog or usage row is rewritten.
 const retainedTables = [
+  "credit_charge_debts",
+  "credit_debt_repayments",
   "credit_hold_allocations",
   "credit_refund_allocations",
   "credit_source_lots",
@@ -317,6 +321,13 @@ async function inspect(tx: Sql, options: Options) {
   await block(
     "HELD_CREDIT_BALANCES",
     "select count(*)::int as count from ai_credit_accounts where held_micros<>0",
+  );
+  // Retain historical debt/repayment identities, but never retire the login of
+  // an account that still owes money. Repayment is a separate trusted workflow.
+  await block(
+    "OUTSTANDING_CREDIT_DEBT",
+    `select count(*)::int as count from credit_charge_debts d where d.principal_micros>
+     coalesce((select sum(r.amount_micros) from credit_debt_repayments r where r.debt_hold_id=d.hold_id),0)`,
   );
   await block(
     "PENDING_CREDIT_HOLDS",

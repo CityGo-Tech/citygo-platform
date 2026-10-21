@@ -100,3 +100,50 @@ test("guidance renders an explicit balance anchor, not a payment action or a har
     "",
   );
 });
+
+test("fixed-reserve guidance includes debt and sub-five balances without blocking free handoff", () => {
+  const fixed = access("routerai_citygo_10x", 5_000_000);
+  fixed.credit = {
+    ...fixed.credit!,
+    reservationMode: "fixed5_overdraft",
+    minimumRequestBalanceMicros: 5_000_000,
+    outstandingDebtMicros: 0,
+  };
+  for (const availableMicros of [-1_000_000, 0, 1, 4_999_999])
+    assert.equal(
+      hasEmptyChargeBalance({
+        ...fixed,
+        credit: { ...fixed.credit!, availableMicros },
+      }),
+      true,
+    );
+  assert.equal(hasEmptyChargeBalance(fixed), false);
+  assert.equal(
+    hasEmptyChargeBalance({
+      ...fixed,
+      credit: { ...fixed.credit!, outstandingDebtMicros: 1 },
+    }),
+    true,
+  );
+  assert.equal(
+    hasEmptyChargeBalance({
+      ...fixed,
+      credit: {
+        ...fixed.credit!,
+        minimumRequestBalanceMicros: undefined,
+        availableMicros: 4_999_999,
+      },
+    }),
+    true,
+  );
+  const html = renderToStaticMarkup(
+    createElement(EmptyAiCreditHint, {
+      access: { ...fixed, credit: { ...fixed.credit!, availableMicros: -1 } },
+    }),
+  );
+  assert.match(html, /не менее 5 ₽ CityGo/);
+  assert.match(html, /сначала погашает задолженность/);
+  assert.match(html, /href="#citygo-balance"/);
+  assert.doesNotMatch(html, /<button|<form|disabled|target=|yookassa/);
+  assert.equal(hasEmptyChargeBalance(access("routerai_citygo_10x", -1)), true);
+});

@@ -72,6 +72,39 @@ test("client sends explicit consent actions and the viewed policy ID with chat",
     globalThis.fetch = original;
   }
 });
+
+test("stream echoes the displayed fixed-reserve capability once without changing the user's message", async () => {
+  const original = globalThis.fetch;
+  const bodies: unknown[] = [];
+  globalThis.fetch = async (_url, options) => {
+    bodies.push(JSON.parse(String(options?.body)));
+    return new Response('data: {"type":"done","messageId":"1"}\n\n', {
+      headers: { "Content-Type": "text/event-stream" },
+    });
+  };
+  try {
+    const policyId = "a".repeat(64);
+    await createClient("http://test").stream(
+      "1",
+      "last question",
+      "synthetic-request",
+      () => {},
+      undefined,
+      policyId,
+      "fixed5_overdraft",
+    );
+    assert.deepEqual(bodies, [
+      {
+        text: "last question",
+        requestId: "synthetic-request",
+        policyId,
+        creditReservationMode: "fixed5_overdraft",
+      },
+    ]);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
 test("SSE decoder preserves split UTF-8, multiple events and terminal state", async () => {
   const original = globalThis.fetch;
   const bytes = new TextEncoder().encode(

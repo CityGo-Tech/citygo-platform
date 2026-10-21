@@ -19,9 +19,11 @@ const tables = [
   "payment_refunds",
   "payment_refund_events",
   "payment_notification_inbox",
+  "credit_charge_debts",
+  "credit_debt_repayments",
 ];
 
-test("the disposable release fixture rewinds only reviewed new schema and reapplies all twenty-three migrations", async (t) => {
+test("the disposable release fixture rewinds only reviewed new schema and reapplies all twenty-four migrations", async (t) => {
   const db = await connectDatabase("pglite://:memory:");
   t.after(() => db.close());
   await migrate(db);
@@ -70,6 +72,11 @@ test("the disposable release fixture rewinds only reviewed new schema and reappl
     "guard_payment_refund_event_immutable",
     "citygo_guard_payment_notification",
     "citygo_guard_payment_admission_history",
+    "citygo_guard_credit_debt_identity",
+    "citygo_guard_charge_reservation_mode",
+    "citygo_apply_credit_debt_repayments",
+    "citygo_repay_credit_debt_from_new_source",
+    "citygo_check_credit_debt_conservation",
   ])
     assert.equal(
       (await db.query("select 1 from pg_proc where proname=$1", [name])).rows
@@ -79,7 +86,7 @@ test("the disposable release fixture rewinds only reviewed new schema and reappl
   await migrate(db);
   assert.equal(
     (await db.query("select 1 from citygo_migrations")).rows.length,
-    23,
+    24,
   );
 });
 
@@ -101,10 +108,12 @@ test("reviewed NPD grants support invoker duties/session locks but not identity 
       await db.query<{
         can_read: boolean;
         can_append: boolean;
+        can_backup_read: boolean;
         broad: boolean;
       }>(
         `select has_table_privilege('citygo_api',$1,'SELECT') as can_read,
           has_table_privilege('citygo_api',$1,'INSERT') as can_append,
+          has_table_privilege('citygo_backup',$1,'SELECT') as can_backup_read,
           (has_table_privilege('citygo_api',$1,'UPDATE') or
            has_table_privilege('citygo_api',$1,'DELETE') or
            has_table_privilege('citygo_api',$1,'TRUNCATE') or
@@ -115,6 +124,7 @@ test("reviewed NPD grants support invoker duties/session locks but not identity 
     assert.deepEqual(permissions, {
       can_read: true,
       can_append: true,
+      can_backup_read: true,
       broad: false,
     });
   }
@@ -157,6 +167,8 @@ test("reviewed NPD grants support invoker duties/session locks but not identity 
     "npd_receipt_evidence",
     "npd_refund_observations",
     "payment_refund_events",
+    "credit_charge_debts",
+    "credit_debt_repayments",
   ])
     await assert.rejects(
       db.exec(`update ${table} set created_at=created_at`),

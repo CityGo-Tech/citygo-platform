@@ -12,6 +12,12 @@ import {
 import type { Database, Sql } from "./index.js";
 import { AiCreditLedger } from "./ai-credit.js";
 import { DomainError } from "./errors.js";
+import {
+  FIXED_CITYGO_HOLD_MICROS,
+  MAX_OVERDRAFT_REAL_CEILING_MICROS,
+  type AiCreditReservationMode,
+} from "./credit-debt.js";
+export type { AiCreditReservationMode } from "./credit-debt.js";
 
 function decimalWithinCeiling(costRub: string, realCeilingMicros: number) {
   // The receipt schema has already bounded this grammar and the exponent.
@@ -38,6 +44,7 @@ type Charge = {
   amount_micros: string;
   tariff_snapshot: CityGoTariffSnapshot;
   real_ceiling_micros: string;
+  reservation_mode: AiCreditReservationMode;
 };
 export class AiCreditCharges {
   private ledger: AiCreditLedger;
@@ -45,10 +52,22 @@ export class AiCreditCharges {
   constructor(
     private db: Database,
     tariffSnapshot: CityGoTariffSnapshot = LEGACY_AT_COST_TARIFF,
+    private reservationMode: AiCreditReservationMode = "full",
   ) {
-    this.ledger = new AiCreditLedger(db);
     this.tariff = Object.freeze(
       citygoTariffSnapshotSchema.parse(tariffSnapshot),
+    );
+    if (
+      !["full", "fixed5_overdraft"].includes(reservationMode) ||
+      (reservationMode === "fixed5_overdraft" &&
+        this.tariff.version !== "citygo-10x-v1")
+    )
+      throw new Error("Fixed5 overdraft requires the exact CityGo 10x tariff");
+    this.ledger = new AiCreditLedger(
+      db,
+      "not_connected",
+      false,
+      reservationMode,
     );
   }
 
@@ -63,16 +82,28 @@ export class AiCreditCharges {
     },
     amount: number,
   ) {
+    if (
+      this.reservationMode === "fixed5_overdraft" &&
+      (!Number.isSafeInteger(amount) ||
+        amount < 500_000 ||
+        amount > MAX_OVERDRAFT_REAL_CEILING_MICROS)
+    )
+      throw new DomainError(
+        409,
+        "Потолок fixed5 должен быть от 0,5 до 6 реальных ₽",
+      );
     const id = randomUUID();
     await this.ledger.hold(
       input.userId,
       id,
-      reserveCitygoMicros(amount, this.tariff),
+      this.reservationMode === "fixed5_overdraft"
+        ? FIXED_CITYGO_HOLD_MICROS
+        : reserveCitygoMicros(amount, this.tariff),
       tx,
     );
     await tx.query(
-      `insert into ai_credit_charges(hold_id,user_id,thread_id,request_id,attempt_number,model,upstream,tariff_snapshot,real_ceiling_micros)
-      values ($1,$2,$3,$4,1,$5,$6,$7,$8)`,
+      `insert into ai_credit_charges(hold_id,user_id,thread_id,request_id,attempt_number,model,upstream,tariff_snapshot,real_ceiling_micros,reservation_mode)
+      values ($1,$2,$3,$4,1,$5,$6,$7,$8,$9)`,
       [
         id,
         input.userId,
@@ -82,6 +113,7 @@ export class AiCreditCharges {
         input.upstream,
         JSON.stringify(this.tariff),
         amount,
+        this.reservationMode,
       ],
     );
     return id;
@@ -201,10 +233,11 @@ export class AiCreditCharges {
       );
       if (
         !exactWithinCeiling ||
-        citygoDebitMicros > Number(row.amount_micros)
+        ((row.reservation_mode ?? "full") === "full" &&
+          citygoDebitMicros > Number(row.amount_micros))
       ) {
-        // Never charge more than the accepted hold. Stop future spend pending
-        // operator review; the operator ceiling remains conservative, not billed.
+        // Full mode stays within its hold; fixed5 may exceed its initial hold
+        // only within the accepted real ceiling. Neither mode guesses overrun.
         await tx.query(
           "update ai_budget set enabled=false,revision=revision+1 where id=1 and enabled",
         );
@@ -223,6 +256,11 @@ export class AiCreditCharges {
         );
         return true;
       }
+      if (row.reservation_mode === "fixed5_overdraft")
+        await tx.query(
+          "update ai_credit_charges set receipt=$2 where hold_id=$1",
+          [id, JSON.stringify(receipt)],
+        );
       await this.ledger.resolve(
         userId,
         randomUUID(),

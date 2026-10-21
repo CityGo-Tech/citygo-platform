@@ -48,6 +48,11 @@ export const aiCreditReconcileSchema = z.strictObject({
 });
 export type AiCreditReconcile = z.infer<typeof aiCreditReconcileSchema>;
 const amount = z.number().int().min(0).max(CITYGO_MAX_AMOUNT_MICROS);
+const signedBalance = z
+  .number()
+  .int()
+  .min(-CITYGO_MAX_AMOUNT_MICROS)
+  .max(CITYGO_MAX_AMOUNT_MICROS);
 export const creditUserIdSchema = z.string().regex(/^[1-9][0-9]{0,17}$/);
 export const aiCreditGrantSchema = z.strictObject({
   userId: creditUserIdSchema,
@@ -61,7 +66,14 @@ export const aiCreditResponseSchema = z
     grantedMicros: amount,
     heldMicros: amount,
     spentMicros: amount,
-    availableMicros: amount,
+    // Only the net account balance is signed. Source lots, holds and postings
+    // remain nonnegative even when a confirmed AI charge creates debt.
+    availableMicros: signedBalance,
+    // Optional capabilities keep responses from older servers readable. A small
+    // fixed reservation is admission, never a promised final price or cost cap.
+    reservationMode: z.enum(["full", "fixed5_overdraft"]).optional(),
+    minimumRequestBalanceMicros: amount.positive().optional(),
+    outstandingDebtMicros: amount.optional(),
     chargingStatus: z.enum([
       "not_connected",
       "routerai_at_cost",

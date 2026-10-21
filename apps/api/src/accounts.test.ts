@@ -570,6 +570,126 @@ test("profile-free chat still requires AI consent and sends unknown context only
   );
 });
 
+test("the latest numeric history window reaches the model in order with the current question last", async (t) => {
+  const f = await fixture(t);
+  const user = await f.register();
+  const start = await f.call("POST", "/v1/conversations/start", user.token, {});
+  assert.equal(start.statusCode, 200, start.body);
+  const threadId = start.json<{ id: string }>().id;
+  const other = await f.register();
+  const foreign = await f.call(
+    "POST",
+    "/v1/conversations/start",
+    other.token,
+    {},
+  );
+  assert.equal(foreign.statusCode, 200, foreign.body);
+  const seeded = (
+    await f.db.query<{
+      id: string;
+      role: "user" | "assistant";
+      content: string;
+      status: string;
+    }>(
+      `insert into messages(thread_id,role,content,metadata)
+       select $1, case when i%2=1 then 'user' else 'assistant' end,
+         'synthetic-history-' || i,
+         jsonb_build_object('agentKey','support','status',case when i%6=0 then 'interrupted' else 'complete' end)
+       from generate_series(1,118) i order by i
+       returning id::text,role,content,metadata->>'status' as status`,
+      [threadId],
+    )
+  ).rows;
+  assert.equal(seeded.length, 118);
+  await f.db.query(
+    `insert into messages(thread_id,role,content,metadata)
+     select $1,'user','FOREIGN-PRIVATE-' || i,'{"status":"complete"}'::jsonb
+     from generate_series(1,20) i order by i`,
+    [foreign.json<{ id: string }>().id],
+  );
+  const before = (
+    await f.db.query<{ id: string; value: unknown }>(
+      "select m.id::text as id, row_to_json(m) as value from messages m order by m.id",
+    )
+  ).rows;
+  const board = (
+    await f.call("GET", "/v1/dashboard", user.token)
+  ).json<Dashboard>();
+  assert.deepEqual(
+    board.thread!.messages.map((m) => m.id),
+    seeded.slice(-100).map((m) => m.id),
+  );
+  const policyId = board.aiAccess.policy!.id;
+  const consent = await f.call("POST", "/v1/ai/consent", user.token, {
+    action: "granted",
+    policyId,
+  });
+  assert.equal(consent.statusCode, 200, consent.body);
+  const currentQuestion = "Последний вопрос: как подготовиться к переезду?";
+  const requestId = randomUUID();
+  const reply = await f.call(
+    "POST",
+    `/v1/threads/${threadId}/messages`,
+    user.token,
+    {
+      text: currentQuestion,
+      requestId,
+      policyId,
+    },
+  );
+  assert.equal(reply.statusCode, 200, reply.body);
+  assert.match(reply.body, /"type":"done"/);
+  assert.equal(f.provider.calls.length, 1);
+  // history() first selects the latest 100 records numerically. The API then
+  // keeps completed records, selects the last 20 and prepends profile context.
+  const expected = [
+    ...seeded.slice(-99),
+    { role: "user" as const, content: currentQuestion, status: "complete" },
+  ]
+    .filter((m) => m.status === "complete")
+    .slice(-20)
+    .map(({ role, content }) => ({ role, content }));
+  const sent = f.provider.calls[0]!.messages;
+  assert.deepEqual(sent.slice(1), expected);
+  assert.deepEqual(sent.at(-1), { role: "user", content: currentQuestion });
+  assert.equal(sent.length, 21);
+  assert.ok(!JSON.stringify(sent).includes("FOREIGN-PRIVATE-"));
+  const after = (
+    await f.call("GET", "/v1/dashboard", user.token)
+  ).json<Dashboard>();
+  assert.equal(after.thread!.messages.length, 100);
+  assert.deepEqual(
+    after
+      .thread!.messages.slice(-2)
+      .map(({ role, content }) => ({ role, content })),
+    [
+      { role: "user", content: currentQuestion },
+      {
+        role: "assistant",
+        content: "Синтетический ориентир по переезду. Что сейчас важнее всего?",
+      },
+    ],
+  );
+  // Reading in the corrected order must not rewrite existing content/metadata.
+  assert.deepEqual(
+    (
+      await f.db.query(
+        "select m.id::text as id, row_to_json(m) as value from messages m where m.id <= $1::bigint order by m.id",
+        [before.at(-1)!.id],
+      )
+    ).rows,
+    before,
+  );
+  const replay = await f.call(
+    "POST",
+    `/v1/threads/${threadId}/messages`,
+    user.token,
+    { text: currentQuestion, requestId, policyId },
+  );
+  assert.equal(replay.statusCode, 409, replay.body);
+  assert.equal(f.provider.calls.length, 1);
+});
+
 test("cookie-authenticated password changes remain same-origin and an invalid target role is rejected", async (t) => {
   const f = await fixture(t);
   const browser = await f.login("admin", "admin", "cookie");

@@ -2,7 +2,10 @@ import { PGlite } from "@electric-sql/pglite";
 import pg from "pg";
 export { Repository, DomainError } from "./repository.js";
 export { AiCreditLedger } from "./ai-credit.js";
-export { AiCreditCharges } from "./ai-credit-charges.js";
+export {
+  AiCreditCharges,
+  type AiCreditReservationMode,
+} from "./ai-credit-charges.js";
 export {
   PaymentAdmission,
   assertLiveCheckoutAdmission,

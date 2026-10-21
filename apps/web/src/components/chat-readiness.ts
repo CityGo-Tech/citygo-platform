@@ -16,12 +16,18 @@ export function messageInterruptionLabel(
 
 export function hasEmptyChargeBalance(access?: AiAccess) {
   const credit = access?.credit;
+  const minimum =
+    credit?.minimumRequestBalanceMicros ??
+    (credit?.reservationMode === "fixed5_overdraft" ? 5_000_000 : null);
   return (
     !!credit &&
     ["routerai_at_cost", "routerai_citygo_10x"].includes(
       credit.chargingStatus,
     ) &&
-    credit.availableMicros === 0
+    ((credit.outstandingDebtMicros ?? 0) > 0 ||
+      (minimum === null
+        ? credit.availableMicros <= 0
+        : credit.availableMicros < minimum))
   );
 }
 
@@ -31,7 +37,9 @@ export function EmptyAiCreditHint({ access }: { access?: AiAccess }) {
   return createElement(
     "p",
     { role: "note", className: "chat-credit-hint" },
-    "На балансе нет доступных средств для платного ответа ИИ. Необходимый резерв проверяется сервером. ",
+    access?.credit?.reservationMode === "fixed5_overdraft"
+      ? "Для нового платного ответа ИИ нужно не менее 5 ₽ CityGo доступного баланса. Пополнение сначала погашает задолженность. Проверку резерва выполняет сервер. "
+      : "На балансе недостаточно доступных средств для платного ответа ИИ. Необходимый резерв проверяется сервером. ",
     createElement(
       "a",
       {

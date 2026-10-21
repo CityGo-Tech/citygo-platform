@@ -9,6 +9,43 @@ const production = {
   TRUSTED_PROXY_CIDRS: "10.0.0.8/32, ::1/128",
 };
 
+test("fixed 5 CityGo overdraft is explicit and cannot reinterpret disabled or at-cost charging", () => {
+  assert.equal(readConfig({}).AI_CREDIT_RESERVATION_MODE, "full");
+  const allowed = {
+    AI_CREDIT_MODE: "routerai_citygo_10x",
+    AI_CREDIT_RESERVATION_MODE: "fixed5_overdraft",
+    LLM_PROVIDER: "routerai",
+  };
+  assert.equal(
+    readConfig(allowed).AI_CREDIT_RESERVATION_MODE,
+    "fixed5_overdraft",
+  );
+  assert.equal(
+    readConfig({ ...allowed, LLM_PROVIDER: "disabled" })
+      .AI_CREDIT_RESERVATION_MODE,
+    "fixed5_overdraft",
+  );
+  for (const patch of [
+    { AI_CREDIT_MODE: "disabled" },
+    { AI_CREDIT_MODE: "routerai_at_cost" },
+    { LLM_PROVIDER: "openai" },
+    { LLM_PROVIDER: "gigachat" },
+    { LLM_PROVIDER: undefined },
+  ])
+    assert.throws(
+      () => readConfig({ ...allowed, ...patch }),
+      /Fixed 5 CityGo overdraft/,
+    );
+  for (const AI_CREDIT_RESERVATION_MODE of [
+    "5",
+    "fixed2",
+    "true",
+    "",
+    "unlimited",
+  ])
+    assert.throws(() => readConfig({ ...allowed, AI_CREDIT_RESERVATION_MODE }));
+});
+
 test("YooKassa defaults disabled; test checkout cannot coexist with real AI or production", () => {
   assert.equal(readConfig({}).YOOKASSA_MODE, "disabled");
   assert.equal(readConfig({}).YOOKASSA_FISCAL_PROFILE, "disabled");

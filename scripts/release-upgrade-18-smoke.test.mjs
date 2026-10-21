@@ -41,7 +41,7 @@ const migrations = readdirSync(migrationDirectory)
 const withoutTransaction = (sql) =>
   sql.replace(/^begin;\s*/i, "").replace(/commit;\s*$/i, "");
 
-test("18→23 rehearsal rejects a production project before fixture I/O", async () => {
+test("18→24 rehearsal rejects a production project before fixture I/O", async () => {
   const unexpected = () => assert.fail("No I/O before ownership guards");
   await assert.rejects(
     releaseUpgrade18Smoke({
@@ -55,11 +55,11 @@ test("18→23 rehearsal rejects a production project before fixture I/O", async 
   );
 });
 
-test("literal schema-18 fixture preserves budgets/orders/holds, rolls back late ACLs and reapplies only 19–23", async (t) => {
+test("literal schema-18 fixture preserves budgets/orders/holds, rolls back late ACLs and reapplies only 19–24", async (t) => {
   const db = new PGlite();
   t.after(() => db.close());
   await db.waitReady;
-  assert.equal(migrations.length, 23);
+  assert.equal(migrations.length, 24);
   assert.equal(migrations[17].name, "0018_payment_refunds.sql");
   assert.deepEqual(
     migrations.slice(18).map(({ name }) => name),
@@ -69,6 +69,7 @@ test("literal schema-18 fixture preserves budgets/orders/holds, rolls back late 
       "0021_payment_notifications.sql",
       "0022_payment_admission.sql",
       "0023_payment_receipt_snapshots.sql",
+      "0024_ai_credit_overdraft.sql",
     ],
   );
   await db.exec(
@@ -96,6 +97,15 @@ test("literal schema-18 fixture preserves budgets/orders/holds, rolls back late 
   await apply(migrations);
   const defaultBudget = (await db.query("select * from ai_budget")).rows;
   await db.exec(upgrade18RewindSql());
+  assert.deepEqual(
+    (
+      await db.query(
+        "select to_regclass('credit_charge_debts')::text as debts,to_regclass('credit_debt_repayments')::text as repayments,exists(select 1 from information_schema.columns where table_schema='public' and table_name='ai_credit_charges' and column_name='reservation_mode') as overdraft,exists(select 1 from pg_constraint where conrelid='ai_credit_accounts'::regclass and conname='ai_credit_accounts_check') as fully_prepaid",
+      )
+    ).rows,
+    [{ debts: null, repayments: null, overdraft: false, fully_prepaid: true }],
+    "Schema18 is truly fully prepaid, not merely a truncated migration journal",
+  );
   const journal = async () =>
     (
       await db.query(

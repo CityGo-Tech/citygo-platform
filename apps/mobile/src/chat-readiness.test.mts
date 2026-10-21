@@ -78,3 +78,52 @@ test("native zero-balance hint is not a model/handoff admission guard or a guess
     );
   }
 });
+
+test("native fixed-reserve hint handles signed balances, debt and the exact five threshold", () => {
+  const fixed: AiAccess = {
+    policy: null,
+    granted: false,
+    dailyLimit: 0,
+    credit: {
+      currency: "RUB",
+      bonusGranted: false,
+      grantedMicros: 5_000_000,
+      availableMicros: 5_000_000,
+      heldMicros: 0,
+      spentMicros: 0,
+      chargingStatus: "routerai_citygo_10x",
+      reservationMode: "fixed5_overdraft",
+      minimumRequestBalanceMicros: 5_000_000,
+      outstandingDebtMicros: 0,
+      topUpAvailable: true,
+      history: [],
+    },
+  };
+  for (const availableMicros of [-1_000_000, 0, 1, 4_999_999])
+    assert.equal(
+      hasEmptyChargeBalance({
+        ...fixed,
+        credit: { ...fixed.credit!, availableMicros },
+      }),
+      true,
+    );
+  assert.equal(hasEmptyChargeBalance(fixed), false);
+  assert.equal(
+    hasEmptyChargeBalance({
+      ...fixed,
+      credit: { ...fixed.credit!, outstandingDebtMicros: 1 },
+    }),
+    true,
+  );
+  assert.equal(
+    hasEmptyChargeBalance({
+      ...fixed,
+      credit: {
+        ...fixed.credit!,
+        minimumRequestBalanceMicros: undefined,
+        availableMicros: 4_999_999,
+      },
+    }),
+    true,
+  );
+});

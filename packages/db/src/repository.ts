@@ -24,7 +24,10 @@ import { canTransitionQuest } from "@citygo/domain";
 import { DomainError } from "./errors.js";
 import { currentQuestPlan, lockQuestPlan } from "./quest-plans.js";
 import { AiCreditLedger } from "./ai-credit.js";
-import { AiCreditCharges } from "./ai-credit-charges.js";
+import {
+  AiCreditCharges,
+  type AiCreditReservationMode,
+} from "./ai-credit-charges.js";
 import { lockPaymentMode } from "./payment-isolation.js";
 import {
   aiBudget,
@@ -50,6 +53,7 @@ export class Repository {
     private creditCharging = false,
     private creditTariff: CityGoTariffSnapshot = LEGACY_AT_COST_TARIFF,
     private topUpAvailable: boolean | (() => Promise<boolean>) = false,
+    private creditReservationMode: AiCreditReservationMode = "full",
   ) {}
   aiBudget(executions: AiExecution[]) {
     return aiBudget(this.db, executions);
@@ -236,7 +240,11 @@ export class Repository {
         ],
       );
       return this.creditCharging
-        ? new AiCreditCharges(this.db, this.creditTariff).reserve(
+        ? new AiCreditCharges(
+            this.db,
+            this.creditTariff,
+            this.creditReservationMode,
+          ).reserve(
             tx,
             {
               userId: input.userId,
@@ -493,6 +501,7 @@ export class Repository {
                 : "routerai_at_cost"
               : "not_connected",
             topUpAvailable,
+            this.creditReservationMode,
           ).status(user.id, tx),
           budget: await aiUserBudget(tx, user.id),
           policy,
@@ -547,11 +556,11 @@ export class Repository {
   async history(tx: Sql, threadId: string): Promise<Message[]> {
     const rows = (
       await tx.query<Message>(
-        `select id::text,role,content,coalesce(metadata->>'agentKey','housing') as "agentKey",
-      coalesce(metadata->>'status','complete') as status, metadata->'generation' as generation,
-      metadata->>'failureCode' as "failureCode"
-      from messages where thread_id=$1 and role in ('user','assistant')
-      order by id desc limit 100`,
+        `select m.id::text,m.role,m.content,coalesce(m.metadata->>'agentKey','housing') as "agentKey",
+      coalesce(m.metadata->>'status','complete') as status, m.metadata->'generation' as generation,
+      m.metadata->>'failureCode' as "failureCode"
+      from messages m where m.thread_id=$1 and m.role in ('user','assistant')
+      order by m.id desc limit 100`,
         [threadId],
       )
     ).rows;

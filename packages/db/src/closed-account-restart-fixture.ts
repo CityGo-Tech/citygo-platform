@@ -2,6 +2,9 @@ import { createHash, randomUUID } from "node:crypto";
 import { readFile, readdir } from "node:fs/promises";
 import { Repository, type Database } from "./index.js";
 import { PaymentTopupOrders } from "./payment-topup-orders.js";
+import { CITYGO_10X_TARIFF, routerAiCostMicros } from "@citygo/contracts";
+import { AiCreditLedger } from "./ai-credit.js";
+import { AiCreditCharges } from "./ai-credit-charges.js";
 
 // Synthetic fixtures shared by in-memory correctness and opt-in PostgreSQL tests.
 // Never read an application database URL or provider credentials here.
@@ -302,6 +305,8 @@ export async function seedRestartNpdObligation(
 }
 
 export const retainedFinancialTables = [
+  "credit_charge_debts",
+  "credit_debt_repayments",
   "credit_hold_allocations",
   "credit_refund_allocations",
   "credit_source_lots",
@@ -325,6 +330,123 @@ export const retainedFinancialTables = [
   "citygo_migrations",
   "quests",
 ] as const;
+
+// A real-shaped fixed5 liability in a synthetic current-schema database. No
+// trigger is bypassed: exact receipts create debt, and a verified test-fixture
+// posting repays it through the normal source trigger when requested.
+export async function seedRestartCreditDebt(
+  db: Database,
+  userId: string,
+  { repaid = false } = {},
+) {
+  const ledger = new AiCreditLedger(db, "routerai_citygo_10x");
+  await ledger.grantWelcome(userId, userId);
+  const thread = (
+    await db.query<{ id: string }>(
+      "insert into agent_threads(user_id,agent_key) values($1,'housing') returning id::text",
+      [userId],
+    )
+  ).rows[0]!.id;
+  let debtHold = "";
+  for (const [mode, ceiling, costRub] of [
+    ["full", 49_500_000, "49.5"],
+    ["fixed5_overdraft", 6_000_000, "0.6"],
+  ] as const) {
+    const charges = new AiCreditCharges(db, CITYGO_10X_TARIFF, mode);
+    const request = randomUUID();
+    const hold = await db.transaction(async (tx) => {
+      await tx.query(
+        "select id from account_security_state where id=1 for update",
+      );
+      await tx.query(
+        "insert into chat_requests(thread_id,request_id,status) values($1,$2,'complete')",
+        [thread, request],
+      );
+      await tx.query(
+        "insert into ai_model_attempts(thread_id,request_id,attempt_number,user_id,provider,model,policy_id,routing_revision) values($1,$2,1,$3,'routerai','synthetic-debt-model',$4,1)",
+        [thread, request, userId, "a".repeat(64)],
+      );
+      return charges.reserve(
+        tx,
+        {
+          userId,
+          threadId: thread,
+          requestId: request,
+          model: "synthetic-debt-model",
+          upstream: "synthetic",
+        },
+        ceiling,
+      );
+    });
+    const generationId = "synthetic-debt-" + hold;
+    await charges.dispatch(userId, hold);
+    await charges.identify(userId, hold, generationId);
+    await db.query(
+      "update ai_credit_charges set response_complete=true where hold_id=$1",
+      [hold],
+    );
+    await charges.settle(userId, hold, {
+      reference: hold,
+      generationId,
+      model: "synthetic-debt-model",
+      upstream: "synthetic",
+      currency: "RUB",
+      costRub,
+      amountMicros: routerAiCostMicros(costRub),
+    });
+    if (mode === "fixed5_overdraft") debtHold = hold;
+  }
+  if (repaid)
+    await ledger.topUpConfirmed(userId, randomUUID(), {
+      providerPaymentId: randomUUID(),
+      merchantId: "synthetic-debt-shop",
+      test: false,
+      paidKopeks: 100,
+      verifiedAt: "2026-10-21T00:00:00.000Z",
+      verification: "server_get_succeeded",
+      currency: "RUB",
+    });
+  return { debtHold };
+}
+
+// Independently unknown full-prepaid attempt. Do not null/rewrite a settled
+// historical receipt merely to obtain an unresolved-maintenance fixture.
+export async function seedRestartUnreconciledCharge(
+  db: Database,
+  userId: string,
+  threadId: string,
+) {
+  const charges = new AiCreditCharges(db, CITYGO_10X_TARIFF, "full");
+  const requestId = randomUUID();
+  const hold = await db.transaction(async (tx) => {
+    await tx.query(
+      "select id from account_security_state where id=1 for update",
+    );
+    await tx.query(
+      "insert into chat_requests(thread_id,request_id,status) values($1,$2,'interrupted')",
+      [threadId, requestId],
+    );
+    await tx.query(
+      "insert into ai_model_attempts(thread_id,request_id,attempt_number,user_id,provider,model,policy_id,routing_revision) values($1,$2,1,$3,'routerai','synthetic-pending-model',$4,1)",
+      [threadId, requestId, userId, "a".repeat(64)],
+    );
+    return charges.reserve(
+      tx,
+      {
+        userId,
+        threadId,
+        requestId,
+        model: "synthetic-pending-model",
+        upstream: "synthetic",
+      },
+      100_000,
+    );
+  });
+  const generationId = "synthetic-pending-" + hold;
+  await charges.dispatch(userId, hold);
+  await charges.identify(userId, hold, generationId);
+  return { charges, hold, generationId };
+}
 
 // A source-pinned monetary refund history, not a request to any provider. The
 // optional canceled terminal result releases the reservation so closed restart

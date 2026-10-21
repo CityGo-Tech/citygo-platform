@@ -121,6 +121,11 @@ export const serverConfigSchema = z.object({
   AI_CREDIT_MODE: z
     .enum(["disabled", "routerai_at_cost", "routerai_citygo_10x"])
     .default("disabled"),
+  // New overdraft semantics are an explicit runtime opt-in. Existing attempts
+  // retain their durable full-prepayment snapshots regardless of this setting.
+  AI_CREDIT_RESERVATION_MODE: z
+    .enum(["full", "fixed5_overdraft"])
+    .default("full"),
   YOOKASSA_MODE: z.enum(["disabled", "test", "live"]).default("disabled"),
   YOOKASSA_SHOP_ID: optionalSetting,
   YOOKASSA_SECRET_KEY: optionalSetting,
@@ -138,6 +143,7 @@ export const serverConfigSchema = z.object({
 });
 export function readConfig(env: NodeJS.ProcessEnv = process.env) {
   const config = serverConfigSchema.parse(env);
+  validateCreditReservationConfig(config);
   validatePaymentConfig(config);
   if (
     config.NODE_ENV === "production" &&
@@ -158,6 +164,20 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env) {
       "Production requires explicit TRUSTED_PROXY_CIDRS for the Web proxy; see docs/runbooks/production.md",
     );
   return config;
+}
+
+export function validateCreditReservationConfig(
+  config: z.infer<typeof serverConfigSchema>,
+) {
+  if (
+    !["full", "fixed5_overdraft"].includes(config.AI_CREDIT_RESERVATION_MODE) ||
+    (config.AI_CREDIT_RESERVATION_MODE === "fixed5_overdraft" &&
+      (config.AI_CREDIT_MODE !== "routerai_citygo_10x" ||
+        !["routerai", "disabled"].includes(config.LLM_PROVIDER ?? "")))
+  )
+    throw new Error(
+      "Fixed 5 CityGo overdraft requires the explicit CityGo 10x RouterAI profile",
+    );
 }
 
 // Reused before DB access for explicitly injected config too. Neither a live
