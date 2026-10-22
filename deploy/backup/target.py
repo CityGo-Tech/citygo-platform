@@ -44,6 +44,7 @@ FILES = frozenset({
     "docs/runbooks/release-backup-window.md", "docs/runbooks/release-preparation.md",
     "docs/runbooks/release-target.md", "docs/runbooks/release-images.md", "docs/runbooks/release-migration.md", "docs/runbooks/release-migration-job.md", "docs/runbooks/release-approved-migration.md", "docs/runbooks/release-start-health.md", "docs/runbooks/release-finish.md", "docs/runbooks/release-candidate.md",
     "docs/runbooks/routerai-deployment-profile.md",
+    "docs/runbooks/operator-local-release.md",
 })
 # The first delivered candidate predates Worker/drain/prepare helpers. Current
 # manifests may contain this baseline plus known additions, never arbitrary paths.
@@ -89,26 +90,35 @@ def strict_json(data):
 
 def manifest(data, *, current=False):
     value = strict_json(data)
-    keys(value, {"version", "kind", "repository", "sourceSha", "releaseId", "platform", "run",
+    b.require(type(value) is dict and type(value.get("version")) is int and value["version"] in (1, 2), "target-manifest")
+    local = value["version"] == 2
+    keys(value, {"version", "kind", "repository", "sourceSha", "releaseId", "platform", "local" if local else "run",
                  "bases", "images", "imageIds", "migrations", "runtimeFiles", "policy"}, "target-manifest")
-    b.require(type(value["version"]) is int and value["version"] == 1
-              and value["kind"] == "candidate-not-deployed" and value["repository"] == REPOSITORY
+    b.require(value["kind"] == ("operator-local-candidate-not-deployed" if local else "candidate-not-deployed") and value["repository"] == REPOSITORY
               and value["platform"] == "linux/amd64" and matches(value["sourceSha"], SHA), "target-manifest")
     keys(value["policy"], POLICY, "target-policy")
     b.require(value["policy"] == POLICY and value["policy"]["deploymentApproved"] is False
               and value["policy"]["automaticRollback"] is False, "target-policy")
-    run = value["run"]
-    keys(run, {"id", "attempt", "checks"}, "target-run")
-    b.require(matches(run["id"], r"[1-9][0-9]{0,19}") and matches(run["attempt"], r"[1-9][0-9]{0,5}"), "target-run")
-    b.require(value["releaseId"] == f'{value["sourceSha"]}-{run["id"]}-{run["attempt"]}', "target-run")
-    checks = run["checks"]
-    b.require(type(checks) is list and len(checks) == 2, "target-checks")
-    for check in checks:
-        keys(check, {"workflow", "id", "attempt"}, "target-checks")
-        b.require(type(check["id"]) is int and 0 < check["id"] < 2**53
-                  and type(check["attempt"]) is int and 0 < check["attempt"] < 10**6, "target-checks")
-        b.require(check["workflow"] in ("ci.yml", "container-smoke.yml"), "target-checks")
-    b.require(len({c["workflow"] for c in checks}) == 2 and len({c["id"] for c in checks}) == 2, "target-checks")
+    if local:
+        proof = value["local"]
+        keys(proof, {"kind", "id", "receiptSha256", "sourceTree", "sourceDigest", "checks"}, "target-local")
+        b.require(proof["kind"] == "operator-local-linux-v1" and matches(proof["id"], r"[a-f0-9]{32}")
+                  and matches(proof["receiptSha256"], HASH) and matches(proof["sourceTree"], SHA)
+                  and matches(proof["sourceDigest"], HASH) and proof["checks"] == ["ci", "container-smoke"]
+                  and value["releaseId"] == f'{value["sourceSha"]}-local-{proof["id"]}', "target-local")
+    else:
+        run = value["run"]
+        keys(run, {"id", "attempt", "checks"}, "target-run")
+        b.require(matches(run["id"], r"[1-9][0-9]{0,19}") and matches(run["attempt"], r"[1-9][0-9]{0,5}"), "target-run")
+        b.require(value["releaseId"] == f'{value["sourceSha"]}-{run["id"]}-{run["attempt"]}', "target-run")
+        checks = run["checks"]
+        b.require(type(checks) is list and len(checks) == 2, "target-checks")
+        for check in checks:
+            keys(check, {"workflow", "id", "attempt"}, "target-checks")
+            b.require(type(check["id"]) is int and 0 < check["id"] < 2**53
+                      and type(check["attempt"]) is int and 0 < check["attempt"] < 10**6, "target-checks")
+            b.require(check["workflow"] in ("ci.yml", "container-smoke.yml"), "target-checks")
+        b.require(len({c["workflow"] for c in checks}) == 2 and len({c["id"] for c in checks}) == 2, "target-checks")
     keys(value["bases"], {"node", "postgres"}, "target-bases")
     for name, tag in (("node", "node:24-bookworm-slim"), ("postgres", "postgres:17-alpine")):
         b.require(matches(value["bases"][name], re.escape(tag) + "@" + DIGEST), "target-bases")
@@ -215,22 +225,26 @@ def retained_jobs(value):
 
 def approval(data, now):
     value = strict_json(data)
-    b.require(type(value) is dict and type(value.get("version")) is int and value["version"] in (1, 2), "target-approval")
+    b.require(type(value) is dict and type(value.get("version")) is int and value["version"] in (1, 2, 3), "target-approval")
+    local = value["version"] == 3
     fields = {"version", "purpose", "repository_id", "organization_id", "artifact_id",
                  "current_manifest_sha256", "target_manifest_sha256", "target_release_id", "target_sha",
                  "project", "origin", "configuration_sha256", "current_images", "approved_at", "expires_at",
                  "allow_preparation", "allow_migration"}
-    keys(value, fields | ({"retained_jobs"} if value["version"] == 2 else set()), "target-approval")
-    if value["version"] == 2: retained_jobs(value["retained_jobs"])
-    b.require(value["purpose"] == "citygo-release-preparation"
+    keys(value, fields | ({"retained_jobs"} if value["version"] >= 2 else set())
+         | ({"local_receipt_sha256"} if local else set()), "target-approval")
+    if value["version"] >= 2: retained_jobs(value["retained_jobs"])
+    b.require(value["purpose"] == ("citygo-operator-local-preparation" if local else "citygo-release-preparation")
               and type(value["repository_id"]) is int and value["repository_id"] == REPOSITORY_ID
               and type(value["organization_id"]) is int and value["organization_id"] == ORGANIZATION_ID
-              and matches(value["artifact_id"], r"[1-9][0-9]{0,19}"), "target-approval")
+              and matches(value["artifact_id"], r"local:[a-f0-9]{32}" if local else r"[1-9][0-9]{0,19}"), "target-approval")
+    if local:
+        b.require(matches(value["local_receipt_sha256"], HASH), "target-local-approval")
     b.require(value["allow_preparation"] is True and value["allow_migration"] is False, "target-approval")
     for key in ("current_manifest_sha256", "target_manifest_sha256", "configuration_sha256"):
         b.require(matches(value[key], HASH), "target-approval")
     b.require(matches(value["target_sha"], SHA)
-              and matches(value["target_release_id"], SHA + r"-[1-9][0-9]{0,19}-[1-9][0-9]{0,5}")
+              and matches(value["target_release_id"], SHA + (r"-local-[a-f0-9]{32}" if local else r"-[1-9][0-9]{0,19}-[1-9][0-9]{0,5}"))
               and matches(value["project"], r"citygo-[a-z0-9][a-z0-9-]{0,62}"), "target-approval")
     b.require(type(value["origin"]) is str, "target-approval")  # Compared with the caller's validated exact origin.
     keys(value["current_images"], SERVICES, "target-approval")
@@ -275,6 +289,10 @@ class Selection:
                       and approved["configuration_sha256"] == b.configuration_fingerprint(config), "target-binding")
             current = bundle(self.current_directory, approved["current_manifest_sha256"], current=True)
             target = bundle(self.target_directory, approved["target_manifest_sha256"])
+            b.require((target["version"] == 2) == (approved["version"] == 3), "target-provenance-approval")
+            if target["version"] == 2:
+                b.require(approved["artifact_id"] == "local:" + target["local"]["id"]
+                          and approved["local_receipt_sha256"] == target["local"]["receiptSha256"], "target-local-approval")
             b.require(current["sourceSha"] == config["source_sha"] and target["sourceSha"] == target_sha
                       and target["releaseId"] == approved["target_release_id"]
                       and current["sourceSha"] != target["sourceSha"], "target-binding")
@@ -290,7 +308,7 @@ class Selection:
             return copy.deepcopy({"approval_sha256": pin, "artifact_id": approved["artifact_id"],
                 "current_manifest_sha256": approved["current_manifest_sha256"],
                 "target_manifest_sha256": approved["target_manifest_sha256"], "target_sha": target_sha,
-                "release_id": target["releaseId"], "run": target["run"], "images": target["images"],
+                "release_id": target["releaseId"], **({"local": target["local"]} if target["version"] == 2 else {"run": target["run"]}), "images": target["images"],
                 "image_ids": target["imageIds"], "new_migrations": target["migrations"][len(old):],
                 "current": {"source_sha": current["sourceSha"], "images": current["images"],
                             "image_ids": current["imageIds"], "postgres": current["bases"]["postgres"]},

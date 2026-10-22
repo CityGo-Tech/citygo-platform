@@ -17,6 +17,9 @@ export function createAiExecution(
         version: "ai-reserve-v1",
         policyId: policy.id,
         ...limits,
+        ...(config.AI_CREDIT_RESERVATION_MODE === "fixed5_overdraft"
+          ? { creditReservationMode: "fixed5_overdraft" }
+          : {}),
       }),
     )
     .digest("hex");

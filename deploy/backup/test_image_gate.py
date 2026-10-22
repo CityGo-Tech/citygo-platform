@@ -3,6 +3,7 @@ import copy
 import json
 from pathlib import Path
 import subprocess
+import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -77,7 +78,96 @@ def containerd_fixture(config_change=None, manifest_change=None):
     return store, ref, config_id
 
 
+def indexed_fixture(change=None):
+    store, old_ref, config_id = containerd_fixture()
+    manifest_id = old_ref.split("@")[1]
+    selected = {"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": manifest_id,
+                "size": len(store.blobs[manifest_id]), "platform": {"os": "linux", "architecture": "amd64"}}
+    attestation = {"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "sha256:" + "e" * 64,
+                   "size": 123, "platform": {"os": "unknown", "architecture": "unknown"},
+                   "annotations": {"vnd.docker.reference.type": "attestation-manifest",
+                                   "vnd.docker.reference.digest": manifest_id}}
+    index = {"schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json",
+             "manifests": [selected, attestation]}
+    if change: change(index)
+    raw = encoded(index); index_id = "sha256:" + t.sha256(raw)
+    ref = old_ref.split("@")[0] + "@" + index_id
+    info = store.values.pop(old_ref)
+    info.update(Id=index_id, RepoDigests=[ref], Descriptor={"digest": index_id, "size": len(raw), "mediaType": index["mediaType"]})
+    store.values[ref] = info; store.blobs[index_id] = raw
+    return store, ref, manifest_id, config_id
+
+
 class Images(unittest.TestCase):
+    def test_index_binds_all_three_ids_and_never_reads_or_runs_attestation(self):
+        store, ref, manifest_id, config_id = indexed_fixture()
+        index_id = ref.split("@")[1]
+        for local_id in (index_id, manifest_id, config_id):
+            for tested_id in (index_id, manifest_id, config_id):
+                store.calls.clear(); store.values[ref]["Id"] = local_id
+                proof = g.verify_image(store, ref, tested_id, "b" * 40)
+                self.assertEqual(proof["mode"], "containerd-index-content")
+                self.assertEqual(proof["config_id"], config_id)
+                self.assertEqual(store.calls, [("inspect", ref), ("blob", index_id), ("blob", manifest_id), ("blob", config_id)])
+
+    def test_classic_host_requires_complete_offline_chain_for_containerd_tested_id(self):
+        store, ref, manifest_id, config_id = indexed_fixture()
+        store.values[ref].update(Id=config_id, Descriptor=None)
+        for tested_id in (ref.split("@")[1], manifest_id):
+            proof = g.verify_image(store, ref, tested_id, "b" * 40)
+            self.assertEqual(proof["mode"], "classic-index-content")
+        for missing in (ref.split("@")[1], manifest_id, config_id):
+            original = store.blobs.pop(missing)
+            with self.assertRaises(b.BackupError): g.verify_image(store, ref, manifest_id, "b" * 40)
+            store.blobs[missing] = original
+
+    def test_index_rejects_ambiguous_non_amd64_nested_and_misbound_attestations(self):
+        changes = [lambda v: v.update(schemaVersion=True), lambda v: v.update(manifests=[]),
+                   lambda v: v["manifests"].append(copy.deepcopy(v["manifests"][0])),
+                   lambda v: v["manifests"][0]["platform"].update(architecture="arm64"),
+                   lambda v: v["manifests"][0]["platform"].update(variant="v3"),
+                   lambda v: v["manifests"][0].update(mediaType="application/vnd.oci.image.index.v1+json"),
+                   lambda v: v["manifests"][0].update(size=True),
+                   lambda v: v["manifests"][0].update(size=t.LIMIT+1),
+                   lambda v: v["manifests"][0].update(urls=["https://example.invalid"]),
+                   lambda v: v["manifests"][0].update(data="e30="),
+                   lambda v: v["manifests"][0].update(annotations={"vnd.docker.reference.type":"attestation-manifest"}),
+                   lambda v: v["manifests"][1]["platform"].update(os="linux"),
+                   lambda v: v["manifests"][1]["annotations"].update({"vnd.docker.reference.digest":"sha256:"+"a"*64}),
+                   lambda v: v["manifests"][1].update(annotations={}),
+                   lambda v: v["manifests"][1].update(annotations={"bad":False})]
+        for change in changes:
+            store, ref, _manifest_id, config_id = indexed_fixture(change)
+            with self.subTest(change=change), self.assertRaises(b.BackupError):
+                g.verify_image(store, ref, config_id, "b"*40)
+
+    def test_index_rejects_modified_bytes_sizes_missing_blobs_and_unrelated_local_id(self):
+        for fault in ("root", "child", "config", "missing", "size", "descriptor", "tested", "local"):
+            store, ref, manifest_id, config_id = indexed_fixture()
+            index_id = ref.split("@")[1]; tested = config_id
+            if fault in ("root", "child", "config"):
+                store.blobs[{"root":index_id,"child":manifest_id,"config":config_id}[fault]] += b" "
+            elif fault == "missing": del store.blobs[manifest_id]
+            elif fault == "size": store.values[ref]["Descriptor"]["size"] += 1
+            elif fault == "descriptor": store.values[ref]["Descriptor"]["mediaType"] = next(iter(g.MANIFEST_TYPES))
+            elif fault == "tested": tested = "sha256:"+"a"*64
+            elif fault == "local": store.values[ref]["Id"] = "sha256:"+"a"*64
+            with self.subTest(fault=fault), self.assertRaises(b.BackupError):
+                g.verify_image(store, ref, tested, "b"*40)
+
+    def test_protected_metadata_cache_is_bounded_local_read_only_and_no_ctr_fallback_on_bad_permissions(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(g.sys,"platform","linux"):
+            root=Path(directory); cache=root/"image-content"; cache.mkdir(mode=0o700)
+            raw=encoded({"synthetic":True}); digest="sha256:"+t.sha256(raw)
+            path=cache/(digest.split(":")[1]+".json"); path.write_bytes(raw); path.chmod(0o600)
+            store=g.Store(root)
+            with patch.object(store,"_read",side_effect=AssertionError("no external command")):
+                self.assertEqual(store.blob(digest),raw)
+                path.chmod(0o644)
+                with self.assertRaises(b.BackupError): store.blob(digest)
+                path.chmod(0o600); path.unlink(); path.symlink_to(root/"absent")
+                with self.assertRaises(b.BackupError): store.blob(digest)
+
     def test_classic_verifies_reference_config_id_platform_and_source_without_blob_reads(self):
         ref = "ghcr.io/citygo-tech/citygo-platform-api@sha256:" + "d" * 64
         store = FakeStore(); store.values[ref] = inspection(ref, "sha256:" + "c" * 64, "b" * 40)

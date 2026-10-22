@@ -10,6 +10,7 @@ export * from "./payments.js";
 export * from "./payment-admission.js";
 export * from "./payment-refunds.js";
 export * from "./payment-fiscal.js";
+export * from "./yookassa-receipt.js";
 // NPD provider choices for planning only, not runtime or fiscal approval.
 export * from "./npd-receipt-plan.js";
 export * from "./npd-receipts.js";

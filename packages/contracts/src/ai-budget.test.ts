@@ -4,8 +4,10 @@ import {
   aiBudgetInputSchema,
   formatMoneyCounterMicros,
   formatMoneyMicros,
+  formatSignedMoneyMicros,
   parseMoneyMicros,
 } from "./ai-budget.js";
+import { CITYGO_MAX_AMOUNT_MICROS } from "./citygo-tariff.js";
 
 test("money decimal conversion is exact, bounded and never silently rounded", () => {
   for (const [text, amount] of [
@@ -47,6 +49,32 @@ test("cumulative money counters render exactly without raising input limits", ()
   assert.throws(() => formatMoneyMicros(Number.MAX_SAFE_INTEGER));
   for (const value of [-1, 0.1, Infinity, NaN, Number.MAX_SAFE_INTEGER + 1])
     assert.throws(() => formatMoneyCounterMicros(value));
+});
+
+test("signed balance display is exact without accepting negative payment or budget inputs", () => {
+  for (const [amount, text] of [
+    [-1, "-0.000001"],
+    [-1_250_000, "-1.25"],
+    [-0, "0"],
+    [0, "0"],
+    [5_000_000, "5"],
+    [CITYGO_MAX_AMOUNT_MICROS, "10000000"],
+    [-CITYGO_MAX_AMOUNT_MICROS, "-10000000"],
+  ] as const)
+    assert.equal(formatSignedMoneyMicros(amount), text);
+  for (const amount of [
+    0.1,
+    -0.1,
+    NaN,
+    Infinity,
+    -Infinity,
+    CITYGO_MAX_AMOUNT_MICROS + 1,
+    -CITYGO_MAX_AMOUNT_MICROS - 1,
+    Number.MAX_SAFE_INTEGER + 1,
+  ])
+    assert.throws(() => formatSignedMoneyMicros(amount));
+  assert.throws(() => formatMoneyMicros(-1));
+  assert.equal(parseMoneyMicros("-1"), null);
 });
 test("money settings are strict integers, explicit currency and unique bounded rules", () => {
   const input = {

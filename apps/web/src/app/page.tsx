@@ -222,6 +222,7 @@ export default function Home() {
           },
           controller.signal,
           board.aiAccess.policy?.id,
+          board.aiAccess.credit?.reservationMode,
         );
       } catch (e) {
         if (!ticket.active()) return;
@@ -250,6 +251,12 @@ export default function Home() {
     topupOrder: async (orderId: string) => {
       const ticket = session.capture();
       const order = await api.topupOrder(orderId);
+      ticket.check();
+      return order;
+    },
+    topupAttempt: async (requestId: string) => {
+      const ticket = session.capture();
+      const order = await api.topupAttempt(requestId);
       ticket.check();
       return order;
     },

@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import {
   AiCreditCharges,
   AiCreditLedger,
+  Repository,
   connectDatabase,
   migrate,
   type Database,
@@ -12,7 +13,13 @@ import {
 import { readConfig } from "@citygo/config";
 import { RouterAIProvider } from "@citygo/llm";
 import { testProfile } from "@citygo/testkit";
-import type { Dashboard, AiCredit } from "@citygo/contracts";
+import type {
+  Dashboard,
+  AiCredit,
+  AiControlStatus,
+  AiBudgetInput,
+  AiBudgetSettings,
+} from "@citygo/contracts";
 import { buildApp } from "./app.js";
 import { seedTestBudget } from "./test-budget.js";
 
@@ -21,6 +28,7 @@ async function fixture(
   t: TestContext,
   ceiling = 100 * RUB,
   mode: "routerai_at_cost" | "routerai_citygo_10x" = "routerai_at_cost",
+  reservationMode: "full" | "fixed5_overdraft" = "full",
 ) {
   const base = process.env.TEST_DATABASE_URL;
   const database = "citygo_charging_" + randomUUID().replaceAll("-", "");
@@ -78,6 +86,7 @@ async function fixture(
     cost: "1.23456789",
     costDown: false,
     interrupted: false,
+    emptyResponse: false,
     sameId: false,
   };
   const references = new Map<string, string>();
@@ -98,7 +107,7 @@ async function fixture(
           has_web_search: false,
         };
         return new Response(
-          JSON.stringify(receipt).replace(/}$/, `,"total_cost":${state.cost}}`),
+          `{"data":${JSON.stringify(receipt).replace(/}$/, `,"total_cost":${state.cost}}`)}}`,
           { headers: { "content-type": "application/json" } },
         );
       }
@@ -113,7 +122,9 @@ async function fixture(
         model: "test/model",
         choices: [{ index: 0, delta: { content }, finish_reason }],
       });
-      const events: unknown[] = [chunk("Проверьте условия аренды.")];
+      const events: unknown[] = state.emptyResponse
+        ? []
+        : [chunk("Проверьте условия аренды.")];
       if (!state.interrupted) events.push(chunk("", "stop"), "[DONE]");
       return new Response(
         events
@@ -137,6 +148,7 @@ async function fixture(
     ROUTERAI_UPSTREAM: "test-upstream",
     ADMIN_USER_IDS: "1",
     AI_CREDIT_MODE: mode,
+    AI_CREDIT_RESERVATION_MODE: reservationMode,
   });
   await seedTestBudget(db, config, { routerai: provider });
   await db.query(
@@ -200,6 +212,9 @@ async function fixture(
       text: "Как выбрать квартиру?",
       requestId,
       policyId: user.policyId,
+      ...(reservationMode === "fixed5_overdraft"
+        ? { creditReservationMode: "fixed5_overdraft" }
+        : {}),
     });
   const balance = async () =>
     (await call("GET", "/v1/ai/credit", user.token)).json<AiCredit>();
@@ -215,18 +230,135 @@ async function fixture(
     state,
     provider,
     config,
+    reservationMode,
   };
+}
+
+type ChargingFixture = Awaited<ReturnType<typeof fixture>>;
+async function budgetStatus(f: ChargingFixture) {
+  const response = await f.call("GET", "/v1/admin/ai", f.admin.token);
+  assert.equal(response.statusCode, 200, response.body);
+  return response.json<AiControlStatus>().budget!;
+}
+function balanceBudgetInput(
+  budget: Awaited<ReturnType<typeof budgetStatus>>,
+  ceiling: number,
+): AiBudgetInput {
+  assert.equal(budget.settings.rules.length, 1);
+  return {
+    expectedRevision: budget.settings.revision,
+    enabled: true,
+    mode: "routerai_balance",
+    currency: "RUB",
+    dailyLimitMicros: null,
+    totalLimitMicros: null,
+    userDailyLimitMicros: null,
+    rules: budget.settings.rules.map(({ key }) => ({
+      key,
+      attemptCeilingMicros: ceiling,
+    })),
+  };
+}
+async function fundSynthetic100Rub(f: ChargingFixture) {
+  await new AiCreditLedger(f.db).topUpConfirmed(f.user.id, randomUUID(), {
+    providerPaymentId: "synthetic-payment-" + randomUUID(),
+    paidKopeks: 10000,
+    merchantId: "synthetic-shop",
+    test: false,
+    verifiedAt: new Date().toISOString(),
+    verification: "server_get_succeeded",
+    currency: "RUB",
+  });
+}
+async function fundFixed5SyntheticCredit(
+  f: ChargingFixture,
+  paidKopeks: number,
+) {
+  const ledger = new AiCreditLedger(
+    f.db,
+    "routerai_citygo_10x",
+    false,
+    f.reservationMode,
+  );
+  const operationId = randomUUID();
+  const receipt = {
+    providerPaymentId: "synthetic-payment-" + randomUUID(),
+    paidKopeks,
+    merchantId: "synthetic-shop",
+    test: false,
+    verifiedAt: new Date().toISOString(),
+    verification: "server_get_succeeded" as const,
+    currency: "RUB" as const,
+  };
+  await ledger.topUpConfirmed(f.user.id, operationId, receipt);
+  return { ledger, operationId, receipt };
+}
+async function admissionSnapshot(f: ChargingFixture) {
+  const result: Record<string, unknown[]> = {};
+  // Fixed synthetic-only inventory: a refused reservation must roll back the
+  // operator counters, wallet and paid-source allocations together.
+  for (const table of [
+    "account_security_state",
+    "ai_budget",
+    "ai_budget_daily",
+    "ai_model_attempt_daily",
+    "ai_user_model_attempt_daily",
+    "ai_model_attempts",
+    "ai_credit_accounts",
+    "ai_credit_entries",
+    "ai_credit_charges",
+    "credit_charge_debts",
+    "credit_debt_repayments",
+    "credit_source_lots",
+    "credit_hold_allocations",
+  ])
+    result[table] = (
+      await f.db.query(
+        `select row_to_json(x) as value from ${table} x order by row_to_json(x)::text`,
+      )
+    ).rows;
+  return result;
 }
 
 test("RouterAI bonus admission, exact at-cost debit, request replay and history", async (t) => {
   const f = await fixture(t);
-  const blocked = await f.send();
+  const blockedId = randomUUID();
+  const blocked = await f.send(blockedId);
   assert.match(blocked.body, /AI_CREDIT_EXHAUSTED/);
   assert.equal(f.state.posts, 0);
+  assert.equal(f.state.gets, 0);
   assert.equal(
     (await f.db.query("select * from ai_model_attempts")).rows.length,
     0,
   );
+  for (const table of ["ai_credit_charges", "ai_credit_entries"])
+    assert.equal(
+      (await f.db.query(`select count(*)::int as count from ${table}`)).rows[0]!
+        .count,
+      0,
+    );
+  const readBoard = async () =>
+    (await f.call("GET", "/v1/dashboard", f.user.token)).json<Dashboard>();
+  const refused = (await readBoard()).thread!.messages.at(-1)!;
+  assert.equal(refused.role, "assistant");
+  assert.equal(refused.status, "interrupted");
+  assert.equal(refused.failureCode, "AI_CREDIT_EXHAUSTED");
+  assert.ok(!refused.generation);
+  assert.match(refused.content, /Недостаточно средств.*Пополните баланс/);
+  assert.match(refused.content, /Запрос не отправлен ИИ, деньги не списаны/);
+  assert.deepEqual((await readBoard()).thread!.messages.at(-1), refused);
+  const metadata = (
+    await f.db.query<{ metadata: Record<string, unknown> }>(
+      "select metadata from messages where id=$1 and thread_id=$2",
+      [refused.id, f.user.thread],
+    )
+  ).rows[0]!.metadata;
+  assert.equal(metadata.source, "system");
+  assert.equal(metadata.failureCode, "AI_CREDIT_EXHAUSTED");
+  assert.equal(Object.hasOwn(metadata, "generation"), false);
+  assert.equal((await f.send(blockedId)).statusCode, 409);
+  assert.equal(f.state.posts, 0);
+  assert.equal(f.state.gets, 0);
   assert.equal(
     Number(
       (await f.db.query("select total_reserved_micros from ai_budget")).rows[0]!
@@ -259,6 +391,10 @@ test("RouterAI bonus admission, exact at-cost debit, request replay and history"
     await f.db.query("select receipt,response_complete from ai_credit_charges")
   ).rows[0]!;
   assert.equal(charge.response_complete, true);
+  const completed = (await readBoard()).thread!.messages.at(-1)!;
+  assert.equal(completed.status, "complete");
+  assert.ok(completed.generation);
+  assert.ok(!completed.failureCode);
   assert.equal((charge.receipt as { costRub: string }).costRub, "1.23456789");
   assert.equal(
     Number(
@@ -336,6 +472,685 @@ test("CityGo 10x mode credits payment 1:1, debits the exact raw price and never 
     await f.call("GET", "/v1/dashboard", f.user.token)
   ).json<Dashboard>();
   assert.equal(board.aiAccess.credit!.chargingStatus, "routerai_citygo_10x");
+});
+
+test("admin budget CAS lowers only future real ceilings from 10 to 6 RUB and allows another exact 10x debit from 97.830467 CityGo", async (t) => {
+  const f = await fixture(t, 10 * RUB, "routerai_citygo_10x");
+  let budget = await budgetStatus(f);
+  const initial = await f.call(
+    "POST",
+    "/v1/admin/ai/budget",
+    f.admin.token,
+    balanceBudgetInput(budget, 10 * RUB),
+  );
+  assert.equal(initial.statusCode, 200, initial.body);
+  await fundSynthetic100Rub(f);
+  assert.equal((await f.balance()).availableMicros, 100 * RUB);
+  f.state.cost = "0.2169533830464";
+  const firstRequest = randomUUID();
+  assert.match((await f.send(firstRequest)).body, /"type":"done"/);
+  assert.equal((await f.balance()).availableMicros, 97830467);
+  assert.equal((await f.balance()).spentMicros, 2169533);
+  assert.equal((await f.balance()).heldMicros, 0);
+  const oldCharge = async () =>
+    (
+      await f.db.query<{ value: Record<string, unknown> }>(
+        "select row_to_json(c) as value from ai_credit_charges c where c.user_id=$1 and c.request_id=$2",
+        [f.user.id, firstRequest],
+      )
+    ).rows[0]!.value;
+  const oldSnapshot = await oldCharge();
+  assert.equal(oldSnapshot.real_ceiling_micros, 10 * RUB);
+  const oldHold = (
+    await f.db.query("select * from ai_credit_entries where operation_id=$1", [
+      oldSnapshot.hold_id,
+    ])
+  ).rows;
+  assert.equal(Number(oldHold[0]!.amount_micros), 100 * RUB);
+  const beforeDenied = await admissionSnapshot(f);
+  const denied = await f.send();
+  assert.match(denied.body, /AI_CREDIT_EXHAUSTED/);
+  assert.deepEqual(await admissionSnapshot(f), beforeDenied);
+  assert.equal(f.state.posts, 1);
+  assert.equal(f.state.gets, 1);
+  budget = await budgetStatus(f);
+  const input = balanceBudgetInput(budget, 6 * RUB);
+  const changed = await f.call(
+    "POST",
+    "/v1/admin/ai/budget",
+    f.admin.token,
+    input,
+  );
+  assert.equal(changed.statusCode, 200, changed.body);
+  const settings = changed.json<AiBudgetSettings>();
+  assert.deepEqual(settings, {
+    ...budget.settings,
+    revision: budget.settings.revision + 1,
+    rules: budget.settings.rules.map((rule) => ({
+      ...rule,
+      attemptCeilingMicros: 6 * RUB,
+    })),
+  });
+  assert.equal(settings.mode, "routerai_balance");
+  assert.equal(settings.dailyLimitMicros, null);
+  assert.equal(settings.totalLimitMicros, null);
+  assert.equal(settings.userDailyLimitMicros, null);
+  const afterChanged = await admissionSnapshot(f);
+  const stale = await f.call(
+    "POST",
+    "/v1/admin/ai/budget",
+    f.admin.token,
+    input,
+  );
+  assert.equal(stale.statusCode, 409, stale.body);
+  assert.equal(stale.json().code, "REVISION_CONFLICT");
+  assert.deepEqual(await admissionSnapshot(f), afterChanged);
+  const secondRequest = randomUUID();
+  assert.match((await f.send(secondRequest)).body, /"type":"done"/);
+  assert.equal(f.state.posts, 2);
+  assert.equal(f.state.gets, 2);
+  const second = (
+    await f.db.query<{
+      real_ceiling_micros: string;
+      held_micros: string;
+      reserved_micros: string;
+      settled_micros: string;
+      receipt: { amountMicros: number; costRub: string };
+      tariff_snapshot: {
+        version: string;
+        numerator: number;
+        denominator: number;
+      };
+    }>(
+      `select c.real_ceiling_micros::text,h.amount_micros::text as held_micros,
+      a.money_reserved_micros::text as reserved_micros,s.amount_micros::text as settled_micros,c.receipt,c.tariff_snapshot
+      from ai_credit_charges c join ai_credit_entries h on h.operation_id=c.hold_id
+      join ai_credit_entries s on s.hold_id=c.hold_id and s.kind='settle'
+      join ai_model_attempts a on a.thread_id=c.thread_id and a.request_id=c.request_id and a.attempt_number=c.attempt_number
+      where c.user_id=$1 and c.request_id=$2`,
+      [f.user.id, secondRequest],
+    )
+  ).rows[0]!;
+  assert.equal(second.real_ceiling_micros, String(6 * RUB));
+  assert.equal(second.held_micros, String(60 * RUB));
+  assert.equal(second.reserved_micros, String(6 * RUB));
+  assert.equal(second.receipt.costRub, "0.2169533830464");
+  assert.equal(second.receipt.amountMicros, 216953);
+  assert.equal(second.settled_micros, "2169533");
+  assert.deepEqual(second.tariff_snapshot, {
+    version: "citygo-10x-v1",
+    realCurrency: "RUB",
+    balanceUnit: "CITYGO_RUB",
+    numerator: 10,
+    denominator: 1,
+  });
+  const balance = await f.balance();
+  assert.equal(balance.grantedMicros, 100 * RUB);
+  assert.equal(balance.spentMicros, 4339066);
+  assert.equal(balance.availableMicros, 95660934);
+  assert.equal(balance.heldMicros, 0);
+  assert.equal(balance.pending?.length, 0);
+  assert.equal(
+    (await f.db.query("select 1 from ai_model_attempts")).rows.length,
+    2,
+  );
+  assert.equal((await budgetStatus(f)).totalReservedMicros, 16 * RUB);
+  assert.deepEqual(await oldCharge(), oldSnapshot);
+  assert.deepEqual(
+    (
+      await f.db.query(
+        "select * from ai_credit_entries where operation_id=$1",
+        [oldSnapshot.hold_id],
+      )
+    ).rows,
+    oldHold,
+  );
+});
+
+test("lowering a future ceiling does not shrink an old pending hold or reprice its GET-only settlement", async (t) => {
+  const f = await fixture(t, 10 * RUB, "routerai_citygo_10x");
+  let budget = await budgetStatus(f);
+  const configured = await f.call(
+    "POST",
+    "/v1/admin/ai/budget",
+    f.admin.token,
+    balanceBudgetInput(budget, 10 * RUB),
+  );
+  assert.equal(configured.statusCode, 200, configured.body);
+  await fundSynthetic100Rub(f);
+  // This mocked old receipt exceeds the NEW 6-RUB ceiling but is below its OWN
+  // accepted 10-RUB ceiling. No provider or payment network is used.
+  f.state.cost = "8";
+  f.state.costDown = true;
+  assert.match((await f.send()).body, /"type":"done"/);
+  const held = (await f.balance()).pending![0]!;
+  assert.equal(held.amountMicros, 100 * RUB);
+  assert.equal(held.responseComplete, true);
+  const charge = async () =>
+    (
+      await f.db.query<{ value: Record<string, unknown> }>(
+        "select row_to_json(c) as value from ai_credit_charges c where c.hold_id=$1 and c.user_id=$2",
+        [held.holdId, f.user.id],
+      )
+    ).rows[0]!.value;
+  const original = await charge();
+  assert.equal(original.receipt, null);
+  budget = await budgetStatus(f);
+  const changed = await f.call(
+    "POST",
+    "/v1/admin/ai/budget",
+    f.admin.token,
+    balanceBudgetInput(budget, 6 * RUB),
+  );
+  assert.equal(changed.statusCode, 200, changed.body);
+  assert.deepEqual(await charge(), original);
+  assert.equal((await f.balance()).heldMicros, 100 * RUB);
+  assert.equal((await f.balance()).availableMicros, 0);
+  const beforeDenied = await admissionSnapshot(f);
+  assert.match((await f.send()).body, /AI_CREDIT_EXHAUSTED/);
+  assert.deepEqual(await admissionSnapshot(f), beforeDenied);
+  assert.equal(f.state.posts, 1);
+  assert.equal(f.state.gets, 1);
+  f.state.costDown = false;
+  const body = {
+    userId: f.user.id,
+    holdId: held.holdId,
+    confirmReconcile: true,
+  };
+  const reconciled = await f.call(
+    "POST",
+    "/v1/admin/ai/credit/reconcile",
+    f.admin.token,
+    body,
+  );
+  assert.equal(reconciled.statusCode, 200, reconciled.body);
+  assert.equal(f.state.posts, 1);
+  assert.equal(f.state.gets, 2);
+  const final = await charge();
+  assert.deepEqual({ ...final, receipt: null }, original);
+  assert.equal((final.receipt as { costRub: string }).costRub, "8");
+  const balance = await f.balance();
+  assert.equal(balance.spentMicros, 80 * RUB);
+  assert.equal(balance.availableMicros, 20 * RUB);
+  assert.equal(balance.heldMicros, 0);
+  assert.equal(balance.pending?.length, 0);
+  const after = await budgetStatus(f);
+  assert.equal(after.settings.enabled, true);
+  assert.equal(after.settings.rules[0]!.attemptCeilingMicros, 6 * RUB);
+  assert.equal(after.totalReservedMicros, 10 * RUB);
+  const replay = await f.call(
+    "POST",
+    "/v1/admin/ai/credit/reconcile",
+    f.admin.token,
+    body,
+  );
+  assert.equal(replay.statusCode, 200, replay.body);
+  assert.equal(f.state.posts, 1);
+  assert.equal(f.state.gets, 2);
+  assert.equal(
+    (await f.balance()).history.filter((entry) => entry.kind === "settle")
+      .length,
+    1,
+  );
+});
+
+test("fixed5 reserves five CityGo, settles exact 10x debt and repays it once from a verified top-up", async (t) => {
+  const f = await fixture(
+    t,
+    6 * RUB,
+    "routerai_citygo_10x",
+    "fixed5_overdraft",
+  );
+  await fundFixed5SyntheticCredit(f, 500);
+  let balance = await f.balance();
+  assert.equal(balance.reservationMode, "fixed5_overdraft");
+  assert.equal(balance.minimumRequestBalanceMicros, 5 * RUB);
+  assert.equal(balance.outstandingDebtMicros, 0);
+  assert.equal(balance.availableMicros, 5 * RUB);
+  f.state.cost = "0.8";
+  assert.match((await f.send()).body, /"type":"done"/);
+  assert.equal(f.state.posts, 1);
+  assert.equal(f.state.gets, 1);
+  balance = await f.balance();
+  assert.equal(balance.grantedMicros, 5 * RUB);
+  assert.equal(balance.spentMicros, 8 * RUB);
+  assert.equal(balance.availableMicros, -3 * RUB);
+  assert.equal(balance.outstandingDebtMicros, 3 * RUB);
+  assert.equal(balance.heldMicros, 0);
+  assert.equal(balance.pending?.length, 0);
+  const firstCharge = (
+    await f.db.query<{
+      hold_id: string;
+      reservation_mode: string;
+      real_ceiling_micros: string;
+      held_micros: string;
+      settled_micros: string;
+    }>(
+      `select c.hold_id,c.reservation_mode,c.real_ceiling_micros::text,
+      h.amount_micros::text as held_micros,s.amount_micros::text as settled_micros
+      from ai_credit_charges c join ai_credit_entries h on h.operation_id=c.hold_id
+      join ai_credit_entries s on s.hold_id=c.hold_id and s.kind='settle' where c.user_id=$1`,
+      [f.user.id],
+    )
+  ).rows[0]!;
+  assert.equal(firstCharge.reservation_mode, "fixed5_overdraft");
+  assert.equal(firstCharge.real_ceiling_micros, String(6 * RUB));
+  assert.equal(firstCharge.held_micros, String(5 * RUB));
+  assert.equal(firstCharge.settled_micros, String(8 * RUB));
+  assert.deepEqual(
+    (
+      await f.db.query(
+        "select principal_micros::text as principal from credit_charge_debts where hold_id=$1 and user_id=$2",
+        [firstCharge.hold_id, f.user.id],
+      )
+    ).rows,
+    [{ principal: String(3 * RUB) }],
+  );
+  const beforeDenied = await admissionSnapshot(f);
+  assert.match((await f.send()).body, /AI_CREDIT_EXHAUSTED/);
+  assert.deepEqual(await admissionSnapshot(f), beforeDenied);
+  assert.equal((await f.balance()).outstandingDebtMicros, 3 * RUB);
+  assert.equal(f.state.posts, 1);
+  assert.equal(f.state.gets, 1);
+  const payment = await fundFixed5SyntheticCredit(f, 10000);
+  balance = await f.balance();
+  assert.equal(balance.grantedMicros, 105 * RUB);
+  assert.equal(balance.spentMicros, 8 * RUB);
+  assert.equal(balance.availableMicros, 97 * RUB);
+  assert.equal(balance.outstandingDebtMicros, 0);
+  const paidLot = async () =>
+    (
+      await f.db.query<{
+        gross: string;
+        spent: string;
+        held: string;
+      }>(
+        "select gross_micros::text as gross,spent_micros::text as spent,held_micros::text as held from credit_source_lots where paid_operation_id=$1 and user_id=$2",
+        [payment.operationId, f.user.id],
+      )
+    ).rows[0]!;
+  assert.deepEqual(await paidLot(), {
+    gross: String(100 * RUB),
+    spent: String(3 * RUB),
+    held: "0",
+  });
+  assert.deepEqual(
+    (
+      await f.db.query(
+        `select r.amount_micros::text as repaid,l.paid_operation_id as payment from credit_debt_repayments r
+        join credit_source_lots l on l.id=r.source_lot_id where r.debt_hold_id=$1 and r.user_id=$2`,
+        [firstCharge.hold_id, f.user.id],
+      )
+    ).rows,
+    [{ repaid: String(3 * RUB), payment: payment.operationId }],
+  );
+  const afterPayment = await admissionSnapshot(f);
+  await payment.ledger.topUpConfirmed(
+    f.user.id,
+    payment.operationId,
+    payment.receipt,
+  );
+  // A provider notification replay can use a new local UUID, but never credits
+  // or applies debt repayment a second time for the same verified payment.
+  await payment.ledger.topUpConfirmed(f.user.id, randomUUID(), payment.receipt);
+  assert.deepEqual(await admissionSnapshot(f), afterPayment);
+  assert.equal((await f.balance()).outstandingDebtMicros, 0);
+  assert.equal(f.state.posts, 1);
+  assert.equal(f.state.gets, 1);
+  assert.match((await f.send()).body, /"type":"done"/);
+  balance = await f.balance();
+  assert.equal(balance.grantedMicros, 105 * RUB);
+  assert.equal(balance.spentMicros, 16 * RUB);
+  assert.equal(balance.availableMicros, 89 * RUB);
+  assert.equal(balance.heldMicros, 0);
+  assert.equal(balance.outstandingDebtMicros, 0);
+  assert.equal(balance.pending?.length, 0);
+  assert.equal((await paidLot()).spent, String(11 * RUB));
+  assert.equal(f.state.posts, 2);
+  assert.equal(f.state.gets, 2);
+});
+
+test("fixed5 pending cost blocks another request and owned thread despite a positive free balance", async (t) => {
+  const f = await fixture(
+    t,
+    6 * RUB,
+    "routerai_citygo_10x",
+    "fixed5_overdraft",
+  );
+  await fundFixed5SyntheticCredit(f, 10000);
+  f.state.cost = "0.8";
+  f.state.costDown = true;
+  assert.match((await f.send()).body, /"type":"done"/);
+  let balance = await f.balance();
+  assert.equal(balance.heldMicros, 5 * RUB);
+  assert.equal(balance.availableMicros, 95 * RUB);
+  assert.equal(balance.spentMicros, 0);
+  assert.equal(balance.outstandingDebtMicros, 0);
+  assert.equal(balance.pending?.length, 1);
+  const pending = balance.pending![0]!;
+  assert.equal(pending.amountMicros, 5 * RUB);
+  assert.equal(pending.responseComplete, true);
+  const beforeDenied = await admissionSnapshot(f);
+  assert.match((await f.send()).body, /"type":"error"/);
+  assert.deepEqual(await admissionSnapshot(f), beforeDenied);
+  // The schema allows one open thread per account. Closing this synthetic
+  // thread must not make its unresolved monetary hold cease to protect the user.
+  await f.db.query("update agent_threads set status='closed' where id=$1", [
+    f.user.thread,
+  ]);
+  const other = (
+    await f.db.query<{ id: string }>(
+      "insert into agent_threads(user_id,agent_key) values ($1,'housing') returning id::text",
+      [f.user.id],
+    )
+  ).rows[0]!.id;
+  assert.match((await f.send(randomUUID(), other)).body, /"type":"error"/);
+  assert.deepEqual(await admissionSnapshot(f), beforeDenied);
+  assert.equal(f.state.posts, 1);
+  assert.equal(f.state.gets, 1);
+  f.state.costDown = false;
+  const response = await f.call(
+    "POST",
+    "/v1/admin/ai/credit/reconcile",
+    f.admin.token,
+    {
+      userId: f.user.id,
+      holdId: pending.holdId,
+      confirmReconcile: true,
+    },
+  );
+  assert.equal(response.statusCode, 200, response.body);
+  balance = await f.balance();
+  assert.equal(balance.spentMicros, 8 * RUB);
+  assert.equal(balance.availableMicros, 92 * RUB);
+  assert.equal(balance.outstandingDebtMicros, 0);
+  assert.equal(balance.heldMicros, 0);
+  assert.equal(balance.pending?.length, 0);
+  assert.equal(f.state.posts, 1);
+  assert.equal(f.state.gets, 2);
+});
+
+test("fixed5 application recreation preserves an old full reservation snapshot", async (t) => {
+  const f = await fixture(t, 10 * RUB, "routerai_citygo_10x");
+  await fundSynthetic100Rub(f);
+  f.state.cost = "8";
+  f.state.costDown = true;
+  assert.match((await f.send()).body, /"type":"done"/);
+  const pending = (await f.balance()).pending![0]!;
+  assert.equal(pending.amountMicros, 100 * RUB);
+  const snapshot = async () =>
+    (
+      await f.db.query<{ value: Record<string, unknown> }>(
+        "select row_to_json(c) as value from ai_credit_charges c where c.hold_id=$1",
+        [pending.holdId],
+      )
+    ).rows[0]!.value;
+  const original = await snapshot();
+  assert.equal(original.reservation_mode, "full");
+  const switched = await buildApp({
+    db: f.db,
+    config: { ...f.config, AI_CREDIT_RESERVATION_MODE: "fixed5_overdraft" },
+    provider: f.provider,
+    testing: true,
+  });
+  try {
+    const call = (
+      method: "GET" | "POST",
+      path: string,
+      token: string,
+      body?: object,
+    ) =>
+      switched.inject({
+        method,
+        url: path,
+        headers: { origin: "http://localhost:3000", cookie: "citygo=" + token },
+        ...(body ? { payload: body } : {}),
+      });
+    const before = (
+      await call("GET", "/v1/ai/credit", f.user.token)
+    ).json<AiCredit>();
+    assert.equal(before.reservationMode, "fixed5_overdraft");
+    assert.equal(before.heldMicros, 100 * RUB);
+    assert.deepEqual(await snapshot(), original);
+    f.state.costDown = false;
+    const response = await call(
+      "POST",
+      "/v1/admin/ai/credit/reconcile",
+      f.admin.token,
+      {
+        userId: f.user.id,
+        holdId: pending.holdId,
+        confirmReconcile: true,
+      },
+    );
+    assert.equal(response.statusCode, 200, response.body);
+    const final = await snapshot();
+    assert.deepEqual({ ...final, receipt: null }, original);
+    const after = (
+      await call("GET", "/v1/ai/credit", f.user.token)
+    ).json<AiCredit>();
+    assert.equal(after.spentMicros, 80 * RUB);
+    assert.equal(after.availableMicros, 20 * RUB);
+    assert.equal(after.heldMicros, 0);
+    assert.equal(after.outstandingDebtMicros, 0);
+    assert.equal(after.pending?.length, 0);
+    assert.equal(f.state.posts, 1);
+    assert.equal(f.state.gets, 2);
+  } finally {
+    await switched.close();
+  }
+});
+
+test("fixed5 still rejects exact external cost above the saved real ceiling without a blind debit or retry", async (t) => {
+  const f = await fixture(
+    t,
+    6 * RUB,
+    "routerai_citygo_10x",
+    "fixed5_overdraft",
+  );
+  await fundFixed5SyntheticCredit(f, 500);
+  f.state.cost = "6.0000001";
+  assert.match((await f.send()).body, /"type":"done"/);
+  const balance = await f.balance();
+  assert.equal(balance.spentMicros, 0);
+  assert.equal(balance.heldMicros, 5 * RUB);
+  assert.equal(balance.availableMicros, 0);
+  assert.equal(balance.outstandingDebtMicros, 0);
+  assert.equal(balance.pending?.length, 1);
+  assert.equal((await budgetStatus(f)).settings.enabled, false);
+  const charge = (
+    await f.db.query<{ receipt: unknown; response_complete: boolean }>(
+      "select receipt,response_complete from ai_credit_charges where user_id=$1",
+      [f.user.id],
+    )
+  ).rows[0]!;
+  assert.equal(charge.receipt, null);
+  assert.equal(charge.response_complete, true);
+  assert.equal(
+    balance.history.filter((entry) => entry.kind === "settle").length,
+    0,
+  );
+  assert.equal(
+    balance.history.filter((entry) => entry.kind === "release").length,
+    0,
+  );
+  assert.match((await f.send()).body, /AI_BUDGET_UNAVAILABLE/);
+  assert.equal(f.state.posts, 1);
+  assert.equal(f.state.gets, 1);
+});
+
+test("fixed5 admission refuses a real ceiling above six before changing counters or calling the provider", async (t) => {
+  const f = await fixture(
+    t,
+    7 * RUB,
+    "routerai_citygo_10x",
+    "fixed5_overdraft",
+  );
+  await fundFixed5SyntheticCredit(f, 10000);
+  const before = await admissionSnapshot(f);
+  assert.match((await f.send()).body, /"type":"error"/);
+  assert.deepEqual(await admissionSnapshot(f), before);
+  assert.equal(f.state.posts, 0);
+  assert.equal(f.state.gets, 0);
+});
+
+test("fixed5 admission still requires the full five CityGo initial balance", async (t) => {
+  const f = await fixture(
+    t,
+    6 * RUB,
+    "routerai_citygo_10x",
+    "fixed5_overdraft",
+  );
+  await fundFixed5SyntheticCredit(f, 499);
+  const before = await admissionSnapshot(f);
+  assert.match((await f.send()).body, /AI_CREDIT_EXHAUSTED/);
+  assert.deepEqual(await admissionSnapshot(f), before);
+  const balance = await f.balance();
+  assert.equal(balance.availableMicros, 4990000);
+  assert.equal(balance.minimumRequestBalanceMicros, 5 * RUB);
+  assert.equal(balance.outstandingDebtMicros, 0);
+  assert.equal(balance.heldMicros, 0);
+  assert.equal(f.state.posts, 0);
+  assert.equal(f.state.gets, 0);
+});
+
+test("fixed5 interrupted transport keeps its unresolved five CityGo hold without free release or retry", async (t) => {
+  const f = await fixture(
+    t,
+    6 * RUB,
+    "routerai_citygo_10x",
+    "fixed5_overdraft",
+  );
+  await fundFixed5SyntheticCredit(f, 10000);
+  f.state.interrupted = true;
+  assert.match((await f.send()).body, /"type":"error"/);
+  const balance = await f.balance();
+  assert.equal(balance.spentMicros, 0);
+  assert.equal(balance.heldMicros, 5 * RUB);
+  assert.equal(balance.availableMicros, 95 * RUB);
+  assert.equal(balance.outstandingDebtMicros, 0);
+  assert.equal(balance.pending?.length, 1);
+  assert.equal(balance.pending![0]!.responseComplete, false);
+  assert.equal(
+    balance.history.filter((entry) => entry.kind === "release").length,
+    0,
+  );
+  const reconciliation = await f.call(
+    "POST",
+    "/v1/admin/ai/credit/reconcile",
+    f.admin.token,
+    {
+      userId: f.user.id,
+      holdId: balance.pending![0]!.holdId,
+      confirmReconcile: true,
+    },
+  );
+  assert.equal(reconciliation.statusCode, 409, reconciliation.body);
+  const beforeDenied = await admissionSnapshot(f);
+  assert.match((await f.send()).body, /"type":"error"/);
+  assert.deepEqual(await admissionSnapshot(f), beforeDenied);
+  assert.equal(f.state.posts, 1);
+  assert.equal(f.state.gets, 0);
+});
+
+test("fixed5 paid chat rejects unaware clients before reserving chat while a free human handoff still works", async (t) => {
+  const f = await fixture(
+    t,
+    6 * RUB,
+    "routerai_citygo_10x",
+    "fixed5_overdraft",
+  );
+  await fundFixed5SyntheticCredit(f, 500);
+  const before = await admissionSnapshot(f);
+  const chatRows = async () => ({
+    messages: (await f.db.query("select * from messages order by id")).rows,
+    requests: (
+      await f.db.query(
+        "select * from chat_requests order by thread_id,request_id",
+      )
+    ).rows,
+  });
+  const oldChat = await chatRows();
+  const path = `/v1/threads/${f.user.thread}/messages`;
+  for (const creditReservationMode of [undefined, "full"] as const) {
+    const response = await f.call("POST", path, f.user.token, {
+      text: "Как выбрать квартиру?",
+      requestId: randomUUID(),
+      policyId: f.user.policyId,
+      ...(creditReservationMode ? { creditReservationMode } : {}),
+    });
+    assert.equal(response.statusCode, 409, response.body);
+    assert.match(response.headers["content-type"]!, /^application\/json/);
+    assert.deepEqual(await admissionSnapshot(f), before);
+    assert.deepEqual(await chatRows(), oldChat);
+    assert.equal(f.state.posts, 0);
+    assert.equal(f.state.gets, 0);
+  }
+  const human = await f.call("POST", path, f.user.token, {
+    text: "Нужен живой риелтор",
+    requestId: randomUUID(),
+    policyId: f.user.policyId,
+  });
+  assert.match(human.body, /"type":"done"/);
+  assert.deepEqual(await admissionSnapshot(f), before);
+  assert.equal(f.state.posts, 0);
+  assert.equal(f.state.gets, 0);
+  f.state.cost = "0.1";
+  assert.match((await f.send()).body, /"type":"done"/);
+  assert.equal(f.state.posts, 1);
+  assert.equal((await f.balance()).spentMicros, RUB);
+});
+
+test("a persisted model attempt cannot be relabeled as a pre-dispatch credit refusal", async (t) => {
+  const f = await fixture(t);
+  await f.grant();
+  const request = randomUUID();
+  assert.match((await f.send(request)).body, /"type":"done"/);
+  const lease = randomUUID();
+  await f.db.query(
+    "update agent_threads set lease_token=$2,busy_until=now()+interval '3 minutes' where id=$1",
+    [f.user.thread, lease],
+  );
+  const snapshot = async () => {
+    const result = [];
+    for (const sql of [
+      "select lease_token::text,busy_until::text from agent_threads where id=$1",
+      "select request_id::text,status from chat_requests where thread_id=$1 order by request_id",
+      "select id::text,content,metadata from messages where thread_id=$1 order by id",
+      "select * from ai_model_attempts where thread_id=$1 order by request_id,attempt_number",
+      "select * from ai_credit_charges where thread_id=$1 order by hold_id",
+    ])
+      result.push((await f.db.query(sql, [f.user.thread])).rows);
+    for (const sql of [
+      "select * from ai_credit_entries order by id",
+      "select * from ai_credit_accounts order by user_id",
+      "select * from ai_budget order by id",
+      "select * from ai_budget_daily order by usage_day",
+    ])
+      result.push((await f.db.query(sql)).rows);
+    return result;
+  };
+  const before = await snapshot();
+  assert.equal(before[3]!.length, 1, "the fixture has a real attempt row");
+  assert.equal(before[4]!.length, 1, "the fixture has a real charge row");
+  await assert.rejects(
+    new Repository(f.db).finishChat(
+      f.user.thread,
+      request,
+      lease,
+      "housing",
+      "false refusal",
+      false,
+      false,
+      undefined,
+      undefined,
+      "AI_CREDIT_EXHAUSTED",
+    ),
+    /Причина отказа не соответствует существующей попытке ИИ/,
+  );
+  assert.deepEqual(await snapshot(), before);
+  assert.equal(f.state.posts, 1);
+  assert.equal(f.state.gets, 1);
 });
 
 test("lost cost lookup keeps hold; owner-only reconciliation survives object recreation and is idempotent", async (t) => {
@@ -420,6 +1235,32 @@ test("interrupted transport is never free, never retried and cannot be automatic
     409,
   );
   assert.equal(f.state.gets, 0);
+  const message = (await f.call("GET", "/v1/dashboard", f.user.token))
+    .json<Dashboard>()
+    .thread!.messages.at(-1)!;
+  assert.equal(message.status, "interrupted");
+  assert.equal(message.content, "Проверьте условия аренды.");
+  assert.ok(message.generation);
+  assert.ok(!message.failureCode);
+});
+
+test("an empty response after provider dispatch is not relabeled as a free credit refusal", async (t) => {
+  const f = await fixture(t);
+  await f.grant();
+  f.state.emptyResponse = true;
+  const response = await f.send();
+  assert.match(response.body, /"type":"error"/);
+  assert.doesNotMatch(response.body, /AI_CREDIT_EXHAUSTED/);
+  assert.equal(f.state.posts, 1);
+  assert.equal(f.state.gets, 0);
+  assert.equal((await f.balance()).heldMicros, 100 * RUB);
+  const message = (await f.call("GET", "/v1/dashboard", f.user.token))
+    .json<Dashboard>()
+    .thread!.messages.at(-1)!;
+  assert.equal(message.status, "interrupted");
+  assert.equal(message.content, "");
+  assert.ok(message.generation);
+  assert.ok(!message.failureCode);
 });
 
 test("parallel requests cannot overspend one user credit; failed reservation rolls back operator money and attempts", async (t) => {
@@ -471,6 +1312,12 @@ test("proven no adapter entry releases user hold; an unknown provider outcome do
   assert.equal((await f.balance()).heldMicros, 0);
   assert.equal((await f.balance()).availableMicros, 500 * RUB);
   assert.equal((await f.balance()).history[0]!.kind, "release");
+  const message = (await f.call("GET", "/v1/dashboard", f.user.token))
+    .json<Dashboard>()
+    .thread!.messages.at(-1)!;
+  assert.equal(message.status, "interrupted");
+  assert.ok(message.generation);
+  assert.ok(!message.failureCode);
 });
 
 test("cost overrun never overcharges the user and closes the operator budget", async (t) => {

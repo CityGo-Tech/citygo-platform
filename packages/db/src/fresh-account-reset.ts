@@ -28,6 +28,8 @@ const tables = [
   "citygo_migration_lock",
   "citygo_migrations",
   "consent_events",
+  "credit_charge_debts",
+  "credit_debt_repayments",
   "credit_hold_allocations",
   "credit_refund_allocations",
   "credit_source_lots",
@@ -75,6 +77,12 @@ const protectedRefunds = [
 // Even an untrusted wake-up hint belongs to a bound external payment/refund.
 // Do not erase pending reconciliation or its completion history in this tool.
 const protectedNotifications = ["payment_notification_inbox"] as const;
+// Even fully repaid debt is immutable financial history, not resettable test
+// data. These FK children may join TRUNCATE only while empty under table locks.
+const protectedDebt = [
+  "credit_charge_debts",
+  "credit_debt_repayments",
+] as const;
 // Admission history has immutable TRUNCATE guards, even when empty. Its
 // singleton/configuration is retained verbatim, never reset with test money.
 const protectedAdmission = [
@@ -86,6 +94,7 @@ const protectedEmpty = [
   ...protectedNpd,
   ...protectedRefunds,
   ...protectedNotifications,
+  ...protectedDebt,
 ] as const;
 const preserved = [
   "citygo_migration_lock",
@@ -380,6 +389,15 @@ async function inspect(tx: Sql, options: Options) {
     blockers.push({
       code: "PAYMENT_NOTIFICATION_HISTORY_PRESENT",
       count: notificationHistoryCount,
+    });
+  const debtHistoryCount = protectedDebt.reduce(
+    (count, name) => count + snapshot.counts[name]!,
+    0,
+  );
+  if (debtHistoryCount)
+    blockers.push({
+      code: "CREDIT_DEBT_HISTORY_PRESENT",
+      count: debtHistoryCount,
     });
   const admissionHistoryCount =
     snapshot.counts.payment_admission_commands! +

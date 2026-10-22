@@ -71,7 +71,7 @@ test("real local API: favorite own and assistant messages survives reload; remov
   ).toHaveCount(2);
 });
 
-test("late favorite response cannot reappear after logout", async ({
+test("late valid favorite response cannot reappear after logout", async ({
   page,
 }) => {
   let release = () => {};
@@ -97,7 +97,7 @@ test("late favorite response cannot reappear after logout", async ({
       try {
         await route.fulfill({
           json: {
-            userId: "2",
+            userId: "1",
             messages: [
               {
                 id: "8",
@@ -105,7 +105,7 @@ test("late favorite response cannot reappear after logout", async ({
                 role: "user",
                 agentKey: "support",
                 status: "complete",
-                content: "FOREIGN PRIVATE MESSAGE",
+                content: "LATE PRIVATE MESSAGE",
               },
             ],
             nextBefore: null,
@@ -128,13 +128,98 @@ test("late favorite response cannot reappear after logout", async ({
   await expect.poll(() => reads).toBe(1);
   await page.getByRole("button", { name: "Выйти", exact: true }).click();
   release();
-  await expect(page.getByText("FOREIGN PRIVATE MESSAGE")).toHaveCount(0);
+  await expect(page.getByText("LATE PRIVATE MESSAGE")).toHaveCount(0);
   await expect(
     page.getByRole("heading", { name: "Избранные сообщения" }),
   ).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: "Создать аккаунт", exact: true }),
   ).toBeVisible();
+});
+
+test("favorites page through exact bigint IDs, remove only a bookmark and reload", async ({
+  page,
+}) => {
+  const firstIds = Array.from({ length: 20 }, (_, index) =>
+    (9007199254741030n - BigInt(index)).toString(),
+  );
+  const secondIds = ["100", "99"];
+  const removed = new Set<string>();
+  const cursors: (string | null)[] = [];
+  await page.route("**/api/v1/**", async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname === "/api/v1/dashboard")
+      return route.fulfill({
+        json: {
+          user: { id: "1", email: "owner@example.test" },
+          profile: null,
+          quests: [],
+          xp: 0,
+          thread: null,
+          provider: "unconfigured",
+          aiAccess: { policy: null, granted: false, dailyLimit: 0 },
+        } satisfies Dashboard,
+      });
+    const mutation = url.pathname.match(
+      /^\/api\/v1\/messages\/(\d+)\/favorite$/,
+    );
+    if (mutation) {
+      expect(route.request().postDataJSON()).toEqual({ saved: false });
+      removed.add(mutation[1]!);
+      return route.fulfill({ json: { messageId: mutation[1], saved: false } });
+    }
+    if (url.pathname === "/api/v1/messages/favorites") {
+      const before = url.searchParams.get("before");
+      cursors.push(before);
+      const ids = before ? secondIds : firstIds;
+      return route.fulfill({
+        json: {
+          userId: "1",
+          messages: ids
+            .filter((id) => !removed.has(id))
+            .map((id) => ({
+              id,
+              threadId: "1",
+              role: "assistant",
+              agentKey: "support",
+              status: id === "99" ? "interrupted" : "complete",
+              content: "Saved answer " + id,
+            })),
+          nextBefore: before ? null : firstIds.at(-1),
+        },
+      });
+    }
+    throw new Error("Unexpected favorites request: " + url.pathname);
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Избранное", exact: true }).click();
+  const panel = page.getByRole("region", {
+    name: "Избранные сообщения",
+    exact: true,
+  });
+  const entries = panel.getByRole("article");
+  await expect(entries).toHaveCount(20);
+  await entries
+    .first()
+    .getByRole("button", { name: "Убрать из избранного", exact: true })
+    .click();
+  await expect(entries).toHaveCount(19);
+  await panel
+    .getByRole("button", { name: "Показать ещё", exact: true })
+    .click();
+  await expect(entries).toHaveCount(21);
+  await expect(entries.last()).toContainText("Saved answer 99");
+  await expect(entries.last()).toContainText("Ответ прерван");
+  await expect(
+    panel.getByRole("button", { name: "Показать ещё", exact: true }),
+  ).toHaveCount(0);
+  expect(cursors).toEqual([null, firstIds.at(-1)]);
+  await page.reload();
+  await page.getByRole("button", { name: "Избранное", exact: true }).click();
+  await expect(entries).toHaveCount(19);
+  await expect(
+    panel.getByText("Saved answer " + firstIds[0], { exact: true }),
+  ).toHaveCount(0);
 });
 
 test("an active favorite panel rejects another owner's page without rendering its content", async ({

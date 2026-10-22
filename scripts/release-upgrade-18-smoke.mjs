@@ -1,4 +1,4 @@
-// Synthetic-only 18→22 rehearsal for the disposable pilot harness, while its
+// Synthetic-only 18→24 rehearsal for the disposable pilot harness, while its
 // PostgreSQL container is the sole project member. Never a production rollback
 // or migration tool; a successful receipt cannot authorize public traffic.
 import assert from "node:assert/strict";
@@ -38,11 +38,47 @@ export function upgrade18RewindSql() {
     "create function",
     "create or replace function",
   );
+  const legacyNpdFunctions = readFileSync(
+    join(root, "packages/db/migrations/0016_npd_receipts.sql"),
+    "utf8",
+  ).match(
+    /create function (?:citygo_guard_npd_receipt_task|citygo_create_npd_receipt_task)\(\) returns trigger[\s\S]*?\$\$;/g,
+  );
+  assert.equal(
+    legacyNpdFunctions?.length,
+    2,
+    "Both original manual receipt functions must be available",
+  );
   return `begin;
     drop table payment_admission_commands,payment_admission_reconciliation_events,payment_admission;
     drop function citygo_guard_payment_admission_history();
+    -- Restore the genuine fully prepaid 18-era shape before seeding it.
+    drop trigger credit_source_debt_repayment on credit_source_lots;
+    drop trigger credit_source_debt_check on credit_source_lots;
+    drop trigger ai_credit_charge_reservation_guard on ai_credit_charges;
+    drop trigger credit_receipt_debt_check on ai_credit_charges;
+    drop trigger credit_account_debt_check on ai_credit_accounts;
+    drop table credit_debt_repayments,credit_charge_debts;
+    drop function citygo_guard_credit_debt_identity();
+    drop function citygo_guard_charge_reservation_mode();
+    drop function citygo_apply_credit_debt_repayments(bigint);
+    drop function citygo_repay_credit_debt_from_new_source();
+    drop function citygo_check_credit_debt_conservation();
+    alter table ai_credit_charges drop constraint ai_credit_fixed5_scope,drop column reservation_mode;
+    alter table ai_credit_accounts drop constraint ai_credit_bounded_overdraft,
+      add constraint ai_credit_accounts_check check(held_micros+spent_micros<=granted_micros);
     drop table payment_notification_inbox;
     drop function citygo_guard_payment_notification();
+    drop trigger payment_topup_receipt_immutable on payment_topup_orders;
+    drop trigger payment_refund_receipt_immutable on payment_refunds;
+    drop trigger payment_refund_receipt_source on payment_refunds;
+    drop function citygo_guard_payment_receipt_snapshot();
+    drop function citygo_guard_refund_receipt_source();
+    alter table payment_topup_orders drop constraint payment_topup_receipt_snapshot,
+      drop column payload_version,drop column receipt_email,drop column receipt_profile;
+    alter table payment_refunds drop constraint payment_refund_receipt_snapshot,
+      drop column payload_version,drop column receipt_email,drop column receipt_profile;
+    ${legacyNpdFunctions.map((sql) => sql.replace("create function", "create or replace function")).join("\n")}
     alter table ai_budget drop constraint ai_budget_mode_limits,
       drop constraint ai_budget_enabled_rule,drop constraint ai_budget_reserved_safe_integer,
       drop column mode,
@@ -57,7 +93,7 @@ export function upgrade18RewindSql() {
     alter table payment_topup_orders add constraint payment_topup_orders_test_check check(test);
     ${legacyFunction}
     delete from citygo_migrations where name in (
-      '0019_yookassa_live_orders.sql','0020_ai_budget_provider_balance.sql','0021_payment_notifications.sql','0022_payment_admission.sql');
+      '0019_yookassa_live_orders.sql','0020_ai_budget_provider_balance.sql','0021_payment_notifications.sql','0022_payment_admission.sql','0023_payment_receipt_snapshots.sql','0024_ai_credit_overdraft.sql');
     commit`;
 }
 
@@ -237,6 +273,8 @@ export async function releaseUpgrade18Smoke({
       "0020_ai_budget_provider_balance.sql",
       "0021_payment_notifications.sql",
       "0022_payment_admission.sql",
+      "0023_payment_receipt_snapshots.sql",
+      "0024_ai_credit_overdraft.sql",
     ],
   );
   const expectedJournal = migrations.map(({ name }) => ({
@@ -277,7 +315,7 @@ export async function releaseUpgrade18Smoke({
       `select jsonb_build_object(${preservedTables
         .map(
           (table) =>
-            `'${table}',(select jsonb_agg(to_jsonb(t)${table === "ai_budget" ? "-'mode'" : ""} order by to_jsonb(t)::text) from ${table} t)`,
+            `'${table}',(select jsonb_agg(to_jsonb(t)${table === "ai_budget" ? "-'mode'" : table === "payment_topup_orders" ? "-'payload_version'-'receipt_email'-'receipt_profile'" : ""} order by to_jsonb(t)::text) from ${table} t)`,
         )
         .join(",")})::text`,
     );
@@ -365,6 +403,15 @@ export async function releaseUpgrade18Smoke({
   assert.equal(result.grantsSha256, digest(grants));
   assert.deepEqual(journal(), expectedJournal);
   assert.equal(snapshot(), before, "Preserve schema-18 history and money");
+  assert.equal(
+    psql(
+      "select payload_version=1 and receipt_email is null and receipt_profile is null from payment_topup_orders where id='" +
+        orderId +
+        "'",
+    ),
+    "t",
+    "Historical order remains receipt-free v1",
+  );
   assertClosedPaymentAdmission(psql);
   assertPaymentAdmissionAcls(psql);
   assert.equal(budget().mode, "fixed", "Migration cannot opt in to spending");
@@ -403,6 +450,6 @@ export async function releaseUpgrade18Smoke({
   );
   assert.deepEqual(journal(), expectedJournal);
   console.log(
-    "Exact synthetic 18→22 rehearsal passed: four migrations + ACLs, late-ACL transactional rollback, preserved fixed budget/counters/test order/source hold; least-privilege runtime, closed checkout, no production authorization or provider calls",
+    "Exact synthetic 18→24 rehearsal passed: six migrations + ACLs, late-ACL transactional rollback, preserved fixed budget/counters/test order/source hold and receipt-free v1 identity; least-privilege runtime, closed checkout, no production authorization or provider calls",
   );
 }

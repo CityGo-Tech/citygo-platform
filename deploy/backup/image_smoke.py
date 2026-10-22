@@ -13,7 +13,7 @@ import target as t
 def main():
     b.require(os.environ.get("CI") == "true" and len(sys.argv) == 3
               and sys.argv[1] == "--disposable", "disposable-required")
-    path = Path(sys.argv[2]); fixture = b.read_json(path)
+    path = Path(sys.argv[2]); fixture = t.strict_json(t.read_file(path, private=True))
     address = fixture["address"]
     b.require(t.matches(address, r"127\.0\.0\.1:[1-9][0-9]{0,4}")
               and t.matches(fixture["sha"], t.SHA), "disposable-required")
@@ -31,6 +31,25 @@ def main():
             return value
     store = Loopback(path.parent)
     roles = sorted(t.ROLES)
+    # Actual content-addressed metadata read back from the loopback registry.
+    # This also exercises the protected, offline bridge from containerd CI IDs
+    # to a classic Docker config ID; it cannot grant a release approval.
+    cache = path.parent / "image-content"
+    cache.mkdir(mode=0o700)
+    for role in roles:
+        b.require(type(fixture["content"][role]["blobs"]) is dict
+                  and 2 <= len(fixture["content"][role]["blobs"]) <= 3, "fixture-content")
+        for digest, text in fixture["content"][role]["blobs"].items():
+            b.require(t.matches(digest, t.DIGEST) and type(text) is str, "fixture-content")
+            raw = text.encode()
+            g.content(raw, digest)
+            destination = cache / (digest.split(":")[1] + ".json")
+            if destination.exists():
+                b.require(t.read_file(destination, private=True) == raw, "fixture-content")
+            else:
+                fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                with os.fdopen(fd, "wb") as output:
+                    output.write(raw)
     for role in roles:
         ref, tested = fixture["images"][role], fixture["ids"][role]
         proof = g.verify_image(store, ref, tested, fixture["sha"])
@@ -53,28 +72,33 @@ def main():
         # CI currently uses classic Docker. Exercise the containerd inspection
         # contract using REAL registry manifest/config bytes from the same image,
         # but simulated .Id/Descriptor and blob transport. Not a daemon upgrade.
-        blobs = fixture["content"][role]
-        manifest_id = ref.split("@")[1]
-        raw_manifest = blobs["manifest"].encode()
-        manifest = g.content(raw_manifest, manifest_id)
-        raw_config = blobs["config"].encode()
+        blobs = {key: value.encode() for key, value in fixture["content"][role]["blobs"].items()}
+        root_id = ref.split("@")[1]
+        raw_root = blobs[root_id]
+        root = g.content(raw_root, root_id)
+        manifest_id = g.platform_manifest(root)["digest"] if root["mediaType"] in g.INDEX_TYPES else root_id
+        manifest = g.content(blobs[manifest_id], manifest_id)
         config_id = manifest["config"]["digest"]
-        g.content(raw_config, config_id)
+        g.content(blobs[config_id], config_id)
         class ContentStore:
             corrupt = False
-            local_id = manifest_id
+            local_id = root_id
+            classic = False
             def inspect(self, expected_ref):
                 value = store.inspect(expected_ref)
                 value["Id"] = self.local_id
-                value["Descriptor"] = {"digest": manifest_id, "size": len(raw_manifest), "mediaType": manifest["mediaType"]}
+                value["Descriptor"] = None if self.classic else {"digest": root_id, "size": len(raw_root), "mediaType": root["mediaType"]}
                 return value
             def blob(self, digest):
-                value = {manifest_id: raw_manifest, config_id: raw_config}[digest]
+                value = blobs[digest]
                 return value + b" " if self.corrupt else value
         projected = ContentStore()
-        for local_id in (config_id, manifest_id):
+        for local_id in (config_id, manifest_id, root_id):
             projected.local_id = local_id
             b.require(g.verify_image(projected, ref, tested, fixture["sha"])["config_id"] == config_id, "fixture-content")
+        projected.classic, projected.local_id = True, config_id
+        b.require(g.verify_image(projected, ref, tested, fixture["sha"])["config_id"] == config_id, "fixture-content")
+        projected.classic = False
         projected.corrupt = True
         try:
             g.verify_image(projected, ref, tested, fixture["sha"])
@@ -97,6 +121,7 @@ def main():
     b.require(proof["postgres"]["local_id"] == postgres["id"], "fixture-postgres")
     print(json.dumps({"ok": True, "roles": roles, "missing_and_wrong_rejected": True,
                       "real_content_simulated_containerd": True, "real_postgres_binding": True,
+                      "protected_metadata_bridge_verified": True,
                       "migration_authorized": False}))
 
 

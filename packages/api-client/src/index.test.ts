@@ -72,6 +72,39 @@ test("client sends explicit consent actions and the viewed policy ID with chat",
     globalThis.fetch = original;
   }
 });
+
+test("stream echoes the displayed fixed-reserve capability once without changing the user's message", async () => {
+  const original = globalThis.fetch;
+  const bodies: unknown[] = [];
+  globalThis.fetch = async (_url, options) => {
+    bodies.push(JSON.parse(String(options?.body)));
+    return new Response('data: {"type":"done","messageId":"1"}\n\n', {
+      headers: { "Content-Type": "text/event-stream" },
+    });
+  };
+  try {
+    const policyId = "a".repeat(64);
+    await createClient("http://test").stream(
+      "1",
+      "last question",
+      "synthetic-request",
+      () => {},
+      undefined,
+      policyId,
+      "fixed5_overdraft",
+    );
+    assert.deepEqual(bodies, [
+      {
+        text: "last question",
+        requestId: "synthetic-request",
+        policyId,
+        creditReservationMode: "fixed5_overdraft",
+      },
+    ]);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
 test("SSE decoder preserves split UTF-8, multiple events and terminal state", async () => {
   const original = globalThis.fetch;
   const bytes = new TextEncoder().encode(
@@ -221,6 +254,64 @@ test("checkout client preserves the explicit server mode without activating chec
     );
     assert.equal(requests.length, 1);
   }
+});
+
+test("checkout client sends the caller's explicit receipt email without deriving contact from the session", async () => {
+  const requests: unknown[] = [];
+  const client = createClient("/api", {
+    fetch: async (_url, init) => {
+      requests.push(JSON.parse(String(init?.body)));
+      return Response.json(paymentOrder);
+    },
+  });
+  const input = {
+    requestId: "356c6b57-eb44-43c6-af7c-7e392a315aeb",
+    amountKopeks: 10000,
+    receiptEmail: "receipt-buyer@synthetic-citygo-mail.ru",
+  };
+  await client.createTopup(input);
+  await client.createTopup(input);
+  assert.deepEqual(requests, [input, input]);
+  for (const receiptEmail of [
+    "not-an-email",
+    "admin@bootstrap.invalid",
+    "receipt@example.test",
+    "",
+  ]) {
+    assert.throws(() => client.createTopup({ ...input, receiptEmail }));
+  }
+  assert.equal(requests.length, 2);
+});
+
+test("checkout attempt recovery is an authenticated read-only lookup without buyer contact or automatic payment creation", async () => {
+  const requests: { url: string; method: string; body: unknown }[] = [];
+  const client = createClient("/api", {
+    token: () => "synthetic-session",
+    fetch: async (url, init) => {
+      requests.push({
+        url: String(url),
+        method: init?.method ?? "GET",
+        body: init?.body,
+      });
+      assert.equal(init?.credentials, "include");
+      assert.equal(
+        (init?.headers as Record<string, string>).Authorization,
+        "Bearer synthetic-session",
+      );
+      return Response.json(paymentOrder);
+    },
+  });
+  const requestId = "356c6b57-eb44-43c6-af7c-7e392a315aeb";
+  assert.deepEqual(await client.topupAttempt(requestId), paymentOrder);
+  assert.deepEqual(requests, [
+    {
+      url: "/api/v1/payments/topup-attempts/" + requestId,
+      method: "GET",
+      body: undefined,
+    },
+  ]);
+  assert.throws(() => client.topupAttempt("../other-owner"));
+  assert.equal(requests.length, 1);
 });
 
 test("checkout client rejects unsafe payment links, invalid sums and malformed mode flags", async () => {

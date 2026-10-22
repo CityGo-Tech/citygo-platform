@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { aiPolicyIdSchema, type AiPolicy } from "./ai-access.js";
+import { CITYGO_MAX_AMOUNT_MICROS } from "./citygo-tariff.js";
 
 // Integer millionths of the selected currency, not provider billing data.
 export const MONEY_SCALE = 1_000_000;
@@ -125,6 +126,16 @@ export function formatMoneyMicros(amount: number): string {
   if (!Number.isSafeInteger(amount) || amount < 0 || amount > MAX_MONEY_MICROS)
     throw new Error("Invalid money amount");
   return formatMoneyCounterMicros(amount);
+}
+// Net CityGo balances may be negative after a confirmed charge. This separate
+// display helper does not relax payment inputs, operator budgets or source lots.
+export function formatSignedMoneyMicros(amount: number): string {
+  if (
+    !Number.isSafeInteger(amount) ||
+    Math.abs(amount) > CITYGO_MAX_AMOUNT_MICROS
+  )
+    throw new Error("Invalid signed money amount");
+  return (amount < 0 ? "-" : "") + formatMoneyCounterMicros(Math.abs(amount));
 }
 // Cumulative reservation audit can exceed a single bounded money input. Keep
 // that display exact without relaxing parseMoneyMicros or payment ceilings.

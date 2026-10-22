@@ -4,6 +4,7 @@ import {
   mkdirSync,
   writeFileSync,
   readFileSync,
+  readdirSync,
   rmSync,
   copyFileSync,
 } from "node:fs";
@@ -16,6 +17,16 @@ import { containerSpec } from "./container-runtime.mjs";
 import { renderNginx } from "../deploy/render-pilot.mjs";
 
 const db = "postgresql://synthetic:test@127.0.0.1:1/not-used";
+
+test("production container smoke expects the complete checked-in migration inventory", () => {
+  const count = readdirSync(join(root, "packages/db/migrations")).filter(
+    (name) => /^\d{4}_[a-z0-9_]+\.sql$/.test(name),
+  ).length;
+  const smoke = readFileSync(join(root, "scripts/container-smoke.mjs"), "utf8");
+  const expected = /assert\.equal\(migrations, "(\d+)"\)/.exec(smoke);
+  assert.ok(expected, "Keep the smoke migration target explicit and reviewed");
+  assert.equal(Number(expected[1]), count);
+});
 
 test("release jobs include only the reviewed PostgreSQL grants build input", () => {
   const ignore = readFileSync(join(root, ".dockerignore"), "utf8");
@@ -157,6 +168,7 @@ for (const [marker, file] of [
       { ROUTERAI_MODEL: value.ROUTERAI_MODEL },
       { LLM_USER_DAILY_REQUEST_LIMIT: "999" },
       { AI_CREDIT_MODE: "disabled" },
+      { AI_CREDIT_RESERVATION_MODE: "fixed5_overdraft" },
       { YOOKASSA_MODE: "disabled" },
       { YOOKASSA_SHOP_ID: "123456" },
       { YOOKASSA_SECRET_KEY: "test_ambient-hidden" },
@@ -231,7 +243,7 @@ for (const [marker, file] of [
     );
   });
 
-for (const [marker, file, rejectedCountry] of [
+const liveMountedProfiles = [
   [
     "routerai-citygo-10x-yookassa-live-v1",
     "routerai-citygo-10x-yookassa-live-profile.fixture.json",
@@ -242,7 +254,18 @@ for (const [marker, file, rejectedCountry] of [
     "routerai-citygo-10x-yookassa-live-cn-profile.fixture.json",
     "us",
   ],
-])
+  [
+    "routerai-citygo-10x-yookassa-live-cn-fiscal-v2",
+    "routerai-citygo-10x-yookassa-live-cn-fiscal-profile.fixture.json",
+    "us",
+  ],
+  [
+    "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-v1",
+    "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-profile.fixture.json",
+    "us",
+  ],
+];
+for (const [marker, file, rejectedCountry] of liveMountedProfiles)
   test(`live YooKassa ${marker} requires its exact API-only profile and never inherits credentials`, (t) => {
     const directory = fixture(t);
     const value = JSON.parse(
@@ -277,10 +300,15 @@ for (const [marker, file, rejectedCountry] of [
     for (const patch of [
       { AI_CREDIT_MODE: "disabled" },
       { AI_CREDIT_MODE: "routerai_at_cost" },
+      { AI_CREDIT_RESERVATION_MODE: "full" },
+      { AI_CREDIT_RESERVATION_MODE: "fixed5_overdraft " },
       { YOOKASSA_MODE: "test" },
       { YOOKASSA_MODE: "disabled" },
       { YOOKASSA_RECEIPT_MODE: "disabled" },
       { YOOKASSA_RECEIPT_MODE: "npd_partner" },
+      { YOOKASSA_FISCAL_PROFILE: "disabled" },
+      { YOOKASSA_FISCAL_PROFILE: "unknown" },
+      { YOOKASSA_TAX_SYSTEM_CODE: "1" },
       { YOOKASSA_SHOP_ID: "0" },
       { YOOKASSA_SHOP_ID: "000123" },
       { YOOKASSA_SHOP_ID: "1".repeat(21) },
@@ -334,15 +362,18 @@ for (const [marker, file, rejectedCountry] of [
       { YOOKASSA_SECRET_KEY: value.YOOKASSA_SECRET_KEY },
       { ROUTERAI_API_KEY: value.ROUTERAI_API_KEY },
       { YOOKASSA_MODE: "live" },
+      { AI_CREDIT_MODE: value.AI_CREDIT_MODE },
+      { AI_CREDIT_RESERVATION_MODE: "fixed5_overdraft" },
+      { AI_CREDIT_UNREVIEWED_SETTING: "ambient-hidden" },
     ])
       assert.throws(() => spec(extra), /Invalid container AI profile/);
     for (const profile of [
       undefined,
       "routerai-credit-v1",
       "routerai-citygo-10x-v1",
-      marker === "routerai-citygo-10x-yookassa-live-v1"
-        ? "routerai-citygo-10x-yookassa-live-cn-v1"
-        : "routerai-citygo-10x-yookassa-live-v1",
+      ...liveMountedProfiles
+        .map(([profile]) => profile)
+        .filter((profile) => profile !== marker),
     ])
       assert.throws(
         () => spec({ CITYGO_AI_PROFILE: profile }),
@@ -356,6 +387,27 @@ for (const [marker, file, rejectedCountry] of [
     });
     assert.equal(spec().env.YOOKASSA_SECRET_KEY.length, 8197);
   });
+
+test("overdraft profile changes only explicit billing-risk mode, never legacy markers or receipts", () => {
+  const read = (name) =>
+    JSON.parse(readFileSync(join(root, "deploy/fixtures", name), "utf8"));
+  const legacy = read(
+    "routerai-citygo-10x-yookassa-live-cn-fiscal-profile.fixture.json",
+  );
+  const overdraft = read(
+    "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-profile.fixture.json",
+  );
+  assert.deepEqual(overdraft, {
+    ...legacy,
+    AI_CREDIT_RESERVATION_MODE: "fixed5_overdraft",
+  });
+  assert.equal(legacy.AI_CREDIT_RESERVATION_MODE, undefined);
+  assert.equal(
+    overdraft.YOOKASSA_FISCAL_PROFILE,
+    "citygo_service_full_payment_v1",
+  );
+  assert.equal(overdraft.ROUTERAI_MAX_OUTPUT_TOKENS, "4096");
+});
 
 test("Nginx rendering rejects directives and sets bounded streaming/header rules", () => {
   for (const host of [

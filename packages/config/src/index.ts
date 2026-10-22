@@ -121,18 +121,29 @@ export const serverConfigSchema = z.object({
   AI_CREDIT_MODE: z
     .enum(["disabled", "routerai_at_cost", "routerai_citygo_10x"])
     .default("disabled"),
+  // New overdraft semantics are an explicit runtime opt-in. Existing attempts
+  // retain their durable full-prepayment snapshots regardless of this setting.
+  AI_CREDIT_RESERVATION_MODE: z
+    .enum(["full", "fixed5_overdraft"])
+    .default("full"),
   YOOKASSA_MODE: z.enum(["disabled", "test", "live"]).default("disabled"),
   YOOKASSA_SHOP_ID: optionalSetting,
   YOOKASSA_SECRET_KEY: optionalSetting,
   // Technical workflow selection, not a tax opinion or provider contract.
   // Live acceptance remains an independent release/merchant decision.
   YOOKASSA_RECEIPT_MODE: z.enum(["disabled", "npd_manual"]).default("disabled"),
+  // Explicit operator-selected transport fields, not a tax/legal approval.
+  // Disabled preserves historical order reconciliation, never new live POSTs.
+  YOOKASSA_FISCAL_PROFILE: z
+    .enum(["disabled", "citygo_service_full_payment_v1"])
+    .default("disabled"),
   // Development rehearsal only. This flag is not a production approval.
   R1_HOUSING_API_MODE: z.enum(["disabled", "synthetic"]).default("disabled"),
   TRUSTED_PROXY_CIDRS: trustedProxySchema,
 });
 export function readConfig(env: NodeJS.ProcessEnv = process.env) {
   const config = serverConfigSchema.parse(env);
+  validateCreditReservationConfig(config);
   validatePaymentConfig(config);
   if (
     config.NODE_ENV === "production" &&
@@ -155,6 +166,20 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env) {
   return config;
 }
 
+export function validateCreditReservationConfig(
+  config: z.infer<typeof serverConfigSchema>,
+) {
+  if (
+    !["full", "fixed5_overdraft"].includes(config.AI_CREDIT_RESERVATION_MODE) ||
+    (config.AI_CREDIT_RESERVATION_MODE === "fixed5_overdraft" &&
+      (config.AI_CREDIT_MODE !== "routerai_citygo_10x" ||
+        !["routerai", "disabled"].includes(config.LLM_PROVIDER ?? "")))
+  )
+    throw new Error(
+      "Fixed 5 CityGo overdraft requires the explicit CityGo 10x RouterAI profile",
+    );
+}
+
 // Reused before DB access for explicitly injected config too. Neither a live
 // key nor an untrusted provider response can select a payment mode implicitly.
 export function validatePaymentConfig(
@@ -162,6 +187,12 @@ export function validatePaymentConfig(
 ) {
   if (!["disabled", "test", "live"].includes(config.YOOKASSA_MODE))
     throw new Error("Unsupported YooKassa mode");
+  if (
+    !["disabled", "citygo_service_full_payment_v1"].includes(
+      config.YOOKASSA_FISCAL_PROFILE,
+    )
+  )
+    throw new Error("Unsupported YooKassa fiscal profile");
   if (config.YOOKASSA_MODE === "disabled") return;
   if (
     config.YOOKASSA_MODE === "test" &&

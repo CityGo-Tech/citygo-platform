@@ -18,6 +18,7 @@ import { questChecklist } from "@citygo/content";
 import { AiAccessPanel } from "./ai-access";
 import type { TopupActions } from "./test-topup";
 import { FavoriteButton } from "./message-favorites";
+import { EmptyAiCreditHint, messageInterruptionLabel } from "./chat-readiness";
 
 import { agentNames } from "./agent-names";
 export { agentNames } from "./agent-names";
@@ -416,7 +417,9 @@ export function Journey(props: JourneyProps) {
                     <p>{message.content || "Ответ не получен"}</p>
                   )}
                   {message.status === "interrupted" && (
-                    <small>Ответ не завершён</small>
+                    <small>
+                      {messageInterruptionLabel(message, "Ответ не завершён")}
+                    </small>
                   )}
                   <FavoriteButton
                     saved={message.favorite}
@@ -466,6 +469,7 @@ export function Journey(props: JourneyProps) {
               </div>
             )}
             <form onSubmit={props.onChat} className="journey-composer">
+              <EmptyAiCreditHint access={board.aiAccess} />
               <label className="sr-only" htmlFor="journey-message">
                 Сообщение помощнику
               </label>

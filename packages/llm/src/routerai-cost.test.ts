@@ -31,7 +31,7 @@ test("cost uses a fixed authenticated read endpoint and exact JSON decimal, roun
       "Bearer synthetic-not-live",
     );
     return new Response(
-      JSON.stringify(data).replace(
+      JSON.stringify({ data }).replace(
         '"total_cost":1.23',
         '"total_cost":1.234567999999999999',
       ),
@@ -76,7 +76,7 @@ test("mismatched and malformed receipts cannot become a customer charge", async 
     let calls = 0;
     const p = make(async () => {
       calls++;
-      return Response.json({ ...data, ...patch });
+      return Response.json({ data: { ...data, ...patch } });
     });
     await assert.rejects(
       p.readCharge("gen-test", reference, new AbortController().signal),
@@ -84,6 +84,59 @@ test("mismatched and malformed receipts cannot become a customer charge", async 
     );
     assert.equal(calls, 1);
   }
+});
+
+test("generation lookup requires an unambiguous data envelope", async () => {
+  for (const body of [
+    data,
+    null,
+    [],
+    { data: null },
+    { data: [] },
+    { data: "private" },
+    { data, error: "private" },
+    { ...data, data },
+    { data: { data } },
+  ]) {
+    const provider = make(async () => Response.json(body));
+    await assert.rejects(
+      provider.readCharge("gen-test", reference, new AbortController().signal),
+      /^Error: RouterAI cost could not be confirmed$/,
+    );
+  }
+});
+
+test("real CN Pro receipt shape preserves exact cost for the x10 tariff", async () => {
+  const provider = new RouterAIProvider(
+    "synthetic",
+    "deepseek/deepseek-v4-pro-0813",
+    {
+      upstream: "deepseek",
+      country: "cn",
+      fetch: async () =>
+        new Response(
+          JSON.stringify({
+            data: {
+              ...data,
+              model: "deepseek/deepseek-v4-pro-0813",
+              provider: "deepseek",
+              total_cost: 0.09573814426176,
+              created_at: "2026-10-20T04:50:56Z",
+              latency_ms: 2520,
+              usage: { prompt_tokens: 125, completion_tokens: 120 },
+            },
+          }),
+          { headers: { "content-type": "application/json" } },
+        ),
+    },
+  );
+  const receipt = await provider.readCharge(
+    "gen-test",
+    reference,
+    new AbortController().signal,
+  );
+  assert.equal(receipt.costRub, "0.09573814426176");
+  assert.equal(receipt.amountMicros, 95738);
 });
 
 test("cost lookup refuses redirects, invalid HTTP, oversized JSON and cancellation without retry", async () => {

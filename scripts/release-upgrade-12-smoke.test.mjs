@@ -52,13 +52,13 @@ test("the upgrade rehearsal rejects a production project before Docker or databa
   );
 });
 
-test("literal 12-era fixture rewinds current 22, rolls back late ACL failure and reapplies without losing data", async (t) => {
+test("literal 12-era fixture rewinds current 24, rolls back late ACL failure and reapplies without losing data", async (t) => {
   const db = new PGlite();
   t.after(() => db.close());
   await db.waitReady;
-  assert.equal(migrations.length, 22);
+  assert.equal(migrations.length, 24);
   assert.equal(migrations[11].name, "0012_housing_answer_history.sql");
-  assert.equal(migrations.at(-1).name, "0022_payment_admission.sql");
+  assert.equal(migrations.at(-1).name, "0024_ai_credit_overdraft.sql");
   await db.exec(
     "create role citygo_api; create role citygo_worker; create role citygo_backup; create table citygo_migrations(name text primary key,checksum text not null)",
   );
@@ -93,6 +93,15 @@ test("literal 12-era fixture rewinds current 22, rolls back late ACL failure and
   );
   assert.equal(rewind[1].includes("${"), false);
   await db.exec(rewind[1]);
+  assert.deepEqual(
+    (
+      await db.query(
+        "select to_regclass('credit_charge_debts')::text as debts,to_regclass('credit_debt_repayments')::text as repayments,exists(select 1 from information_schema.columns where table_schema='public' and table_name='ai_credit_charges' and column_name='reservation_mode') as overdraft,exists(select 1 from pg_constraint where conrelid='ai_credit_accounts'::regclass and conname='ai_credit_accounts_check') as fully_prepaid",
+      )
+    ).rows,
+    [{ debts: null, repayments: null, overdraft: false, fully_prepaid: true }],
+    "The historical fixture has no 0024 structures or relaxed account constraint",
+  );
   const journal = async () =>
     (
       await db.query(

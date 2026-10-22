@@ -724,7 +724,7 @@ test("existing least-privilege API grants can start/complete after identity trig
     );
 });
 
-test("container smoke's actual synthetic rewind/seed SQL upgrades from 9 to 22 and preserves populated history", async (t) => {
+test("container smoke's actual synthetic rewind/seed SQL upgrades from 9 to 24 and preserves populated history", async (t) => {
   const db = await fixture(t);
   // Read literal fixture SQL without importing/executing the Docker harness.
   // Fail if its representation changes; never evaluate JavaScript from a file.
@@ -738,6 +738,15 @@ test("container smoke's actual synthetic rewind/seed SQL upgrades from 9 to 22 a
   assert.equal(sql.length, 2);
   for (const literal of sql) assert.equal(literal.includes("${"), false);
   await db.exec(sql[0]!);
+  assert.deepEqual(
+    (
+      await db.query(
+        "select to_regclass('credit_charge_debts')::text as debts,to_regclass('credit_debt_repayments')::text as repayments,exists(select 1 from information_schema.columns where table_schema='public' and table_name='ai_credit_charges' and column_name='reservation_mode') as overdraft,exists(select 1 from pg_constraint where conrelid='ai_credit_accounts'::regclass and conname='ai_credit_accounts_check') as fully_prepaid",
+      )
+    ).rows,
+    [{ debts: null, repayments: null, overdraft: false, fully_prepaid: true }],
+    "Rewinding the disposable fixture also removes the actual overdraft schema",
+  );
   assert.equal(
     (await db.query("select name from citygo_migrations")).rows.length,
     9,
@@ -748,8 +757,8 @@ test("container smoke's actual synthetic rewind/seed SQL upgrades from 9 to 22 a
   const expectedNames = (await readdir(directory))
     .filter((name) => name.endsWith(".sql"))
     .sort();
-  assert.equal(expectedNames.length, 22);
-  assert.equal(expectedNames.at(-1), "0022_payment_admission.sql");
+  assert.equal(expectedNames.length, 24);
+  assert.equal(expectedNames.at(-1), "0024_ai_credit_overdraft.sql");
   assert.deepEqual(
     (await db.query("select name from citygo_migrations order by name")).rows,
     expectedNames.map((name) => ({ name })),

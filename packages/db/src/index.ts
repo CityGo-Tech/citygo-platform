@@ -3,7 +3,10 @@ import pg from "pg";
 export { Repository, DomainError } from "./repository.js";
 export { MessageFavorites } from "./message-favorites.js";
 export { AiCreditLedger } from "./ai-credit.js";
-export { AiCreditCharges } from "./ai-credit-charges.js";
+export {
+  AiCreditCharges,
+  type AiCreditReservationMode,
+} from "./ai-credit-charges.js";
 export {
   PaymentAdmission,
   assertLiveCheckoutAdmission,
@@ -59,6 +62,7 @@ export {
 export {
   PaymentTopupOrders,
   type PaymentTopupOrder,
+  type PaymentReceiptOptions,
 } from "./payment-topup-orders.js";
 export {
   assertRealAiDatabaseSafety,

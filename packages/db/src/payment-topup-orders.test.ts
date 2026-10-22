@@ -795,7 +795,7 @@ test("0019 preserves an existing succeeded sandbox order, exact payload, proof a
     returnUrl,
   );
   const payment = randomUUID();
-  await new AiCreditLedger(db).topUpConfirmed(user, order.id, {
+  const oldProof = {
     providerPaymentId: payment,
     paidKopeks: 10_000,
     merchantId: "synthetic-shop",
@@ -803,6 +803,24 @@ test("0019 preserves an existing succeeded sandbox order, exact payload, proof a
     verifiedAt: "2026-10-18T00:00:00.000Z",
     verification: "server_get_succeeded",
     currency: "RUB",
+  };
+  // Reproduce the pre-0019 posting directly. Today's ledger requires 0024;
+  // running it against historical schema would not test this migration.
+  await db.transaction(async (tx) => {
+    await tx.query(
+      "insert into ai_credit_accounts(user_id,granted_micros) values($1,100000000)",
+      [user],
+    );
+    await tx.query(
+      "insert into ai_credit_entries(user_id,operation_id,kind,amount_micros) values($1,$2,'topup',100000000)",
+      [user, order.id],
+    );
+    await tx.query(
+      `insert into ai_credit_topups(provider_payment_id,operation_id,user_id,paid_kopeks,
+       credited_micros,merchant_id,test,verified_at,verification_receipt)
+       values($1,$2,$3,10000,100000000,'synthetic-shop',true,$4,$5)`,
+      [payment, order.id, user, oldProof.verifiedAt, JSON.stringify(oldProof)],
+    );
   });
   const before = await orders.recordProvider(user, order.id, {
     providerPaymentId: payment,

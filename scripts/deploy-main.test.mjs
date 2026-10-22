@@ -78,10 +78,16 @@ test("request contains identity plus temporary read token, never commands or ser
 });
 test("opaque Bearer tokens match the shared server grammar without header injection", () => {
   const tokens = JSON.parse(
-    readFileSync(new URL("./fixtures/deploy-bearer-tokens.json", import.meta.url), "utf8"),
+    readFileSync(
+      new URL("./fixtures/deploy-bearer-tokens.json", import.meta.url),
+      "utf8",
+    ),
   );
   for (const token of [...tokens.accepted, "x".repeat(4096)])
-    assert.equal(deploymentRequest({ ...env, GH_TOKEN: token }).github_token, token);
+    assert.equal(
+      deploymentRequest({ ...env, GH_TOKEN: token }).github_token,
+      token,
+    );
   for (const token of [...tokens.rejected, "x".repeat(4097)])
     assert.throws(() => deploymentRequest({ ...env, GH_TOKEN: token }));
 });

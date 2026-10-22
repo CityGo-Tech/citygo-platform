@@ -68,11 +68,26 @@ const citygo10xLiveCnFixed = {
   ROUTERAI_MAX_OUTPUT_TOKENS: "4096",
   LLM_MAX_INPUT_BYTES: "8192",
 };
+// Do not reinterpret already-approved receipt-free profiles. The receipt
+// transport is a new independently pinned release/configuration identity.
+const citygo10xLiveCnFiscalFixed = {
+  ...citygo10xLiveCnFixed,
+  YOOKASSA_FISCAL_PROFILE: "citygo_service_full_payment_v1",
+};
+// An independently mounted billing-risk profile. Old profile markers cannot
+// silently acquire partial prepayment or a negative customer balance.
+const citygo10xLiveCnFiscalOverdraftFixed = {
+  ...citygo10xLiveCnFiscalFixed,
+  AI_CREDIT_RESERVATION_MODE: "fixed5_overdraft",
+};
 const routerAiProfiles = {
   "routerai-credit-v1": routerAiFixed,
   "routerai-citygo-10x-v1": citygo10xFixed,
   "routerai-citygo-10x-yookassa-live-v1": citygo10xLiveFixed,
   "routerai-citygo-10x-yookassa-live-cn-v1": citygo10xLiveCnFixed,
+  "routerai-citygo-10x-yookassa-live-cn-fiscal-v2": citygo10xLiveCnFiscalFixed,
+  "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-v1":
+    citygo10xLiveCnFiscalOverdraftFixed,
 };
 const routerAiKeys = (fixed) => [
   "DATABASE_URL",
@@ -136,9 +151,7 @@ export function containerSpec(
       Object.keys(inherited).some(
         (key) =>
           key !== "LLM_PROVIDER" &&
-          /^(OPENAI_|GIGACHAT_|ROUTERAI_|LLM_|YOOKASSA_|AI_CREDIT_MODE$)/.test(
-            key,
-          ),
+          /^(OPENAI_|GIGACHAT_|ROUTERAI_|LLM_|YOOKASSA_|AI_CREDIT_)/.test(key),
       ))
   )
     throw new Error("Invalid container AI profile (contents hidden)");

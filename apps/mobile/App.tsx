@@ -25,11 +25,16 @@ import {
   credentialsSchema,
   loginSchema,
   formatMoneyMicros,
+  formatSignedMoneyMicros,
   type Dashboard,
 } from "@citygo/contracts";
 import { tokens } from "@citygo/design-tokens";
 import { Button, Card, Field } from "@citygo/ui-native";
 import { questChecklist } from "@citygo/content";
+import {
+  hasEmptyChargeBalance,
+  messageInterruptionLabel,
+} from "./src/chat-readiness";
 import {
   allQuestsCompleted,
   canStopChat,
@@ -86,6 +91,23 @@ export default function App() {
     [confirmed, setConfirmed] = useState(false),
     [notice, setNotice] = useState("");
   const abort = useRef<AbortController | null>(null);
+  const contentScroll = useRef<ScrollView | null>(null);
+  const balanceSection = useRef<View | null>(null);
+  const scrollOffset = useRef(0);
+  function showBalance() {
+    const scroll = contentScroll.current;
+    const target = balanceSection.current;
+    const viewport = scroll?.getNativeScrollRef();
+    if (!scroll || !target || !viewport) return;
+    viewport.measureInWindow((_x, viewportY) => {
+      target.measureInWindow((_targetX, targetY) => {
+        scroll.scrollTo({
+          y: Math.max(0, scrollOffset.current + targetY - viewportY),
+          animated: true,
+        });
+      });
+    });
+  }
   function clearUserState(owner?: string) {
     lifetime.reset(owner);
     abort.current?.abort();
@@ -312,6 +334,11 @@ export default function App() {
         >
           <StatusBar barStyle="dark-content" />
           <ScrollView
+            ref={contentScroll}
+            onScroll={(event) => {
+              scrollOffset.current = event.nativeEvent.contentOffset.y;
+            }}
+            scrollEventThrottle={16}
             contentContainerStyle={styles.content}
             keyboardShouldPersistTaps="handled"
           >
@@ -567,7 +594,11 @@ export default function App() {
                   )}
                   <Text style={styles.title}>Передача данных AI</Text>
                   {board.aiAccess?.credit && (
-                    <View>
+                    <View
+                      ref={balanceSection}
+                      collapsable={false}
+                      testID="citygo-balance"
+                    >
                       <Text style={styles.title}>
                         {board.aiAccess.credit.chargingStatus ===
                         "routerai_citygo_10x"
@@ -585,7 +616,7 @@ export default function App() {
                       </Text>
                       <Text>
                         Доступно:{" "}
-                        {formatMoneyMicros(
+                        {formatSignedMoneyMicros(
                           board.aiAccess.credit.availableMicros,
                         )}{" "}
                         ₽. В резерве:{" "}
@@ -594,6 +625,27 @@ export default function App() {
                         {formatMoneyMicros(board.aiAccess.credit.spentMicros)}{" "}
                         ₽.
                       </Text>
+                      {board.aiAccess.credit.reservationMode ===
+                        "fixed5_overdraft" && (
+                        <Text>
+                          Перед платным запросом резервируется 5 ₽ CityGo. Это
+                          не итоговая цена: спишется полная подтверждённая
+                          стоимость модели ×10. Если средств не хватит, баланс
+                          станет отрицательным. Новые платные запросы доступны
+                          после пополнения до 5 ₽ свободного баланса; пополнение
+                          сначала погашает задолженность.
+                        </Text>
+                      )}
+                      {(board.aiAccess.credit.outstandingDebtMicros ?? 0) >
+                        0 && (
+                        <Text>
+                          Задолженность:{" "}
+                          {formatSignedMoneyMicros(
+                            board.aiAccess.credit.outstandingDebtMicros!,
+                          )}{" "}
+                          ₽ CityGo. Она будет погашена из следующих пополнений.
+                        </Text>
+                      )}
                       <Text>
                         {board.aiAccess.credit.chargingStatus ===
                         "routerai_citygo_10x"
@@ -602,7 +654,10 @@ export default function App() {
                               "routerai_at_cost"
                             ? "Ответы RouterAI — по подтверждённой стоимости без наценки. Неизвестная стоимость остаётся в резерве до сверки. Доли микрорубля округляются вниз."
                             : "Автоматическое списание за ответы пока не подключено."}{" "}
-                        Пополнение пока недоступно. Баланс не включает ИИ.
+                        {board.aiAccess.credit.topUpAvailable
+                          ? "Для пополнения воспользуйтесь веб-кабинетом CityGo. В мобильном приложении оплата пока не подключена."
+                          : "Пополнение пока недоступно."}{" "}
+                        Баланс не включает ИИ.
                       </Text>
                       {board.aiAccess.credit.pending?.map((item) => (
                         <Text key={item.holdId}>
@@ -676,10 +731,29 @@ export default function App() {
                         {m.role === "user" ? "Вы" : m.agentKey}
                       </Text>
                       <Text>{m.content || "Ответ не получен"}</Text>
-                      {m.status === "interrupted" && <Text>Ответ прерван</Text>}
+                      {m.status === "interrupted" && (
+                        <Text>{messageInterruptionLabel(m)}</Text>
+                      )}
                     </View>
                   ))}
                   {!!draft && <Text>{draft}</Text>}
+                  {hasEmptyChargeBalance(board.aiAccess) && (
+                    <View>
+                      <Text>
+                        {board.aiAccess.credit?.reservationMode ===
+                        "fixed5_overdraft"
+                          ? "Для нового платного ответа ИИ нужно не менее 5 ₽ CityGo доступного баланса. Пополнение сначала погашает задолженность. Проверку резерва выполняет сервер."
+                          : "На балансе недостаточно доступных средств для платного ответа ИИ. Необходимый резерв проверяется сервером."}
+                      </Text>
+                      <Text
+                        accessibilityRole="link"
+                        onPress={showBalance}
+                        style={{ textDecorationLine: "underline" }}
+                      >
+                        Баланс и пополнение
+                      </Text>
+                    </View>
+                  )}
                   <Field
                     label="Сообщение помощнику"
                     value={text}
@@ -718,6 +792,7 @@ export default function App() {
                             },
                             controller.signal,
                             board.aiAccess.policy?.id,
+                            board.aiAccess.credit?.reservationMode,
                           );
                         } catch (e) {
                           // A stale consent or quota rejection must not discard

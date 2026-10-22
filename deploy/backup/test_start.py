@@ -242,7 +242,8 @@ class Validation(unittest.TestCase):
         self.assertEqual(s.PROFILE_VERSIONS[profile], 5)
         self.assertEqual({k: value[k] for k in s.ROUTERAI_LIMITS}, dict.fromkeys(s.ROUTERAI_LIMITS, "0"))
         self.assertEqual(s.CLOSED_ONLY_PROFILES,
-                         {s.CITYGO_10X_YOOKASSA_LIVE_PROFILE, profile})
+                         {s.CITYGO_10X_YOOKASSA_LIVE_PROFILE, profile, s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_PROFILE,
+                          s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_PROFILE})
         for key in value:
             missing = dict(value); del missing[key]
             with self.subTest(missing=key), self.assertRaises(b.BackupError): validate(missing)
@@ -287,7 +288,86 @@ class Validation(unittest.TestCase):
         self.assertNotIn("ports", spec["services"]["api"])
 
 
+    def test_cn_fiscal_v6_is_exact_closed_and_distinct_from_receipt_free_profiles(self):
+        profile = s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_PROFILE
+        value = routerai_fixture(profile)
+        def validate(data, selected=profile):
+            with patch.object(t, "read_file", return_value=encoded(data)):
+                return s.api_secret("/unused", selected)
+        self.assertEqual(validate(value), encoded(value))
+        self.assertEqual(s.PROFILE_VERSIONS[profile], 6)
+        self.assertIn(profile, s.CLOSED_ONLY_PROFILES)
+        for key in value:
+            missing = dict(value); del missing[key]
+            with self.subTest(missing=key), self.assertRaises(b.BackupError): validate(missing)
+        for change in ({"YOOKASSA_FISCAL_PROFILE": "disabled"}, {"YOOKASSA_FISCAL_PROFILE": "unknown"},
+                       {"YOOKASSA_FISCAL_PROFILE": " citygo_service_full_payment_v1"},
+                       {"YOOKASSA_TAX_SYSTEM_CODE": "1"}, {"ROUTERAI_COUNTRY": "us"},
+                       {"YOOKASSA_MODE": "test"}, {"YOOKASSA_RECEIPT_MODE": "disabled"}):
+            with self.subTest(change=change), self.assertRaises(b.BackupError): validate({**value, **change})
+        for old in set(s.PROFILE_VERSIONS)-{profile}:
+            with self.subTest(old_profile=old), self.assertRaises(b.BackupError): validate(value, old)
+            if old != s.PROFILE:
+                with self.subTest(old_secret=old), self.assertRaises(b.BackupError): validate(routerai_fixture(old))
+        self.assertEqual(s.profile_environment(profile), {"LLM_PROVIDER": "routerai",
+                         "CITYGO_AI_PROFILE": "routerai-citygo-10x-yookassa-live-cn-fiscal-v2"})
+        image = {"local_id": "sha256:"+"c"*64, "config_id": "sha256:"+"c"*64}
+        spec=s.compose_spec("citygo-fixture", ORIGIN, {"api":image,"web":image}, "/tmp/api.json", profile)
+        self.assertNotIn("CITYGO_AI_PROFILE", spec["services"]["web"]["environment"])
+        self.assertNotIn("secrets", spec["services"]["web"])
+
+
+    def test_cn_fiscal_overdraft_v7_requires_explicit_exact_new_scope_and_keeps_legacy_immutable(self):
+        profile = s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_PROFILE
+        value = routerai_fixture(profile)
+        legacy = routerai_fixture(s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_PROFILE)
+        self.assertEqual(value, {**legacy, "AI_CREDIT_RESERVATION_MODE": "fixed5_overdraft"})
+        self.assertNotIn("AI_CREDIT_RESERVATION_MODE", legacy)
+        self.assertEqual(s.PROFILE_VERSIONS[profile], 7)
+        self.assertIn(profile, s.CLOSED_ONLY_PROFILES)
+        def validate(data, selected=profile):
+            with patch.object(t, "read_file", return_value=encoded(data)):
+                return s.api_secret("/unused", selected)
+        self.assertEqual(validate(value), encoded(value))
+        for key in value:
+            missing = dict(value); del missing[key]
+            with self.subTest(missing=key), self.assertRaises(b.BackupError): validate(missing)
+        for change in ({"AI_CREDIT_RESERVATION_MODE": "full"}, {"AI_CREDIT_RESERVATION_MODE": "fixed5_overdraft "},
+                       {"AI_CREDIT_RESERVATION_MODE": True}, {"AI_CREDIT_MODE": "routerai_at_cost"},
+                       {"AI_CREDIT_UNREVIEWED_SETTING": "synthetic-hidden"},
+                       {"YOOKASSA_FISCAL_PROFILE": "disabled"}, {"YOOKASSA_RECEIPT_MODE": "disabled"},
+                       {"ROUTERAI_COUNTRY": "us"}, {"ROUTERAI_MAX_OUTPUT_TOKENS": "4097"},
+                       {"LLM_MAX_INPUT_BYTES": "8193"}):
+            with self.subTest(change=change), self.assertRaises(b.BackupError): validate({**value, **change})
+        for old in set(s.PROFILE_VERSIONS)-{profile}:
+            with self.subTest(old_profile=old), self.assertRaises(b.BackupError): validate(value, old)
+            if old != s.PROFILE:
+                with self.subTest(old_secret=old), self.assertRaises(b.BackupError): validate(routerai_fixture(old))
+        self.assertEqual(s.profile_environment(profile), {"LLM_PROVIDER": "routerai",
+            "CITYGO_AI_PROFILE": "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-v1"})
+        image = {"local_id": "sha256:" + "c" * 64, "config_id": "sha256:" + "c" * 64}
+        value = preparation_fixture.container("api"); value["Image"] = image["local_id"]; value["State"]["Dead"] = False
+        base = detail(value, "api", image, "/tmp/api.json", profile)
+        args = ("api", image, "citygo-fixture", ORIGIN, "/tmp/api.json", {"web_api": WEB_NETWORK, "database": "e" * 64})
+        s.runtime(base, *args, profile)
+        for old in set(s.PROFILE_VERSIONS)-{profile}:
+            with self.subTest(old_marker=old), self.assertRaises(b.BackupError): s.runtime(base, *args, old)
+        for extra in ("AI_CREDIT_RESERVATION_MODE=fixed5_overdraft", "YOOKASSA_SECRET_KEY=live_synthetic-not-live"):
+            bad = copy.deepcopy(base); bad["Config"]["Env"].append(extra)
+            with self.subTest(extra=extra.split("=")[0]), self.assertRaises(b.BackupError): s.runtime(bad, *args, profile)
+        spec = s.compose_spec("citygo-fixture", ORIGIN, {"api": image, "web": image}, "/tmp/api.json", profile)
+        self.assertNotIn("CITYGO_AI_PROFILE", spec["services"]["web"]["environment"])
+        self.assertNotIn("AI_CREDIT_RESERVATION_MODE", spec["services"]["web"]["environment"])
+        self.assertNotIn("secrets", spec["services"]["web"])
+
+
 def routerai_fixture(profile=s.ROUTERAI_PROFILE):
+    if profile == s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_PROFILE:
+        return json.loads((Path(__file__).resolve().parent.parent / "fixtures" /
+                           "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-profile.fixture.json").read_bytes())
+    if profile == s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_PROFILE:
+        return json.loads((Path(__file__).resolve().parent.parent / "fixtures" /
+                           "routerai-citygo-10x-yookassa-live-cn-fiscal-profile.fixture.json").read_bytes())
     if profile == s.CITYGO_10X_YOOKASSA_LIVE_CN_PROFILE:
         return json.loads((Path(__file__).resolve().parent.parent / "fixtures" /
                            "routerai-citygo-10x-yookassa-live-cn-profile.fixture.json").read_bytes())
@@ -447,6 +527,24 @@ class Startup(unittest.TestCase):
             with self.subTest(keys=list(change)), self.assertRaises(b.BackupError): self.start()
             self.assertEqual(self.host.events, []); self.assertFalse(self.pending.exists())
             self.assertEqual(self.start_events, []); self.assertEqual(self.store.calls, [])
+
+    def test_cn_fiscal_v6_starts_closed_and_binds_fiscal_choice_before_stop(self):
+        profile=s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_PROFILE
+        enable_routerai_fixture(self,profile)
+        original=self.api.read_bytes()
+        self.api.write_bytes(encoded({**routerai_fixture(profile), "YOOKASSA_FISCAL_PROFILE":"disabled"}))
+        with self.assertRaises(b.BackupError): self.start()
+        self.assertEqual(self.host.events,[]); self.assertEqual(self.start_events,[])
+        self.assertFalse(self.pending.exists())
+        self.api.write_bytes(original)
+        self.start_approval=synthetic_start_approval(self.directory,self.authorization,self.api,profile=profile)
+        result=self.start()
+        self.assertEqual(self.runtime_profile,profile)
+        self.assertEqual(s.approval(self.start_approval.path.read_bytes(),time.time())["version"],6)
+        self.assertTrue(self.host.closed); self.assertTrue(self.pending.exists())
+        self.assertFalse(result["startup"]["traffic_authorized"])
+        self.assertFalse(result["startup"]["worker_authorized"])
+        self.assertFalse((self.state/w.ADMISSION).exists())
 
     def test_migration_approval_cannot_authorize_start(self):
         self.start_approval.path.write_bytes(self.authorization.path.read_bytes())

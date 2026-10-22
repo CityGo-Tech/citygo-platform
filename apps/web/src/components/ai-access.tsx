@@ -1,13 +1,15 @@
 "use client";
-import { useState } from "react";
+import * as React from "react";
 import {
   formatMoneyMicros,
+  formatSignedMoneyMicros,
   formatMoneyCounterMicros,
   type AiAccess,
   type AiConsentInput,
 } from "@citygo/contracts";
 import { Button, Card } from "@citygo/ui-web";
 import { TestTopupPanel, type TopupActions } from "./test-topup";
+import { chatBalanceTarget } from "./chat-readiness";
 
 export function AiAccessPanel({
   access,
@@ -22,7 +24,7 @@ export function AiAccessPanel({
   userId?: string;
   topups?: TopupActions;
 }) {
-  const [checked, setChecked] = useState(false);
+  const [checked, setChecked] = React.useState(false);
   const policy = access.policy;
   const citygoTariff = access.credit?.chargingStatus === "routerai_citygo_10x";
   const description = policy && (
@@ -42,6 +44,8 @@ export function AiAccessPanel({
     <Card className="ai-access">
       {access.credit && (
         <section
+          id={chatBalanceTarget}
+          tabIndex={-1}
           aria-label={citygoTariff ? "Баланс CityGo" : "Бесплатный баланс AI"}
         >
           <h2>{citygoTariff ? "Баланс CityGo" : "Бесплатный баланс AI"}</h2>
@@ -54,13 +58,31 @@ export function AiAccessPanel({
                 : "Разовый бонус 500 ₽ ещё не выдан. Обратитесь к владельцу пилота."}
           </p>
           <p>
-            Доступно: {formatMoneyMicros(access.credit.availableMicros)} ₽. В
-            резерве: {formatMoneyMicros(access.credit.heldMicros)} ₽. Учтено
-            списаний: {formatMoneyMicros(access.credit.spentMicros)} ₽.
+            Доступно: {formatSignedMoneyMicros(access.credit.availableMicros)}{" "}
+            ₽. В резерве: {formatMoneyMicros(access.credit.heldMicros)} ₽.
+            Учтено списаний: {formatMoneyMicros(access.credit.spentMicros)} ₽.
           </p>
+          {access.credit.reservationMode === "fixed5_overdraft" && (
+            <p role="note">
+              Перед платным запросом резервируется 5 ₽ CityGo. Это не итоговая
+              цена: спишется полная подтверждённая стоимость модели ×10. Если
+              средств не хватит, баланс станет отрицательным. Новые платные
+              запросы доступны после пополнения до 5 ₽ свободного баланса;
+              пополнение сначала погашает задолженность.
+            </p>
+          )}
+          {(access.credit.outstandingDebtMicros ?? 0) > 0 && (
+            <p role="status">
+              Задолженность:{" "}
+              {formatSignedMoneyMicros(access.credit.outstandingDebtMicros!)} ₽
+              CityGo. Она будет погашена из следующих пополнений.
+            </p>
+          )}
           <p>
             {citygoTariff
-              ? "Расход модели 1 ₽ соответствует списанию 10 ₽ CityGo. Оплата 100 ₽ пополняет баланс на 100 ₽ CityGo. Перед запросом резервируется верхняя оценка; неизвестная стоимость остаётся на сверке."
+              ? access.credit.reservationMode === "fixed5_overdraft"
+                ? "Расход модели 1 ₽ соответствует списанию 10 ₽ CityGo. Оплата 100 ₽ пополняет баланс на 100 ₽ CityGo. Неизвестная стоимость остаётся на сверке; её нельзя считать нулевой."
+                : "Расход модели 1 ₽ соответствует списанию 10 ₽ CityGo. Оплата 100 ₽ пополняет баланс на 100 ₽ CityGo. Перед запросом резервируется верхняя оценка; неизвестная стоимость остаётся на сверке."
               : access.credit.chargingStatus === "routerai_at_cost"
                 ? "Ответы RouterAI — по подтверждённой стоимости без наценки. Перед запросом сумма резервируется; при неизвестной стоимости резерв остаётся на сверке. Доли микрорубля округляются вниз."
                 : "Автоматическое списание за ответы пока не подключено."}{" "}
@@ -69,12 +91,13 @@ export function AiAccessPanel({
               : "Пополнение пока недоступно."}{" "}
             Бонус не включает ИИ и не заменяет общий бюджет сервиса.
           </p>
-          {access.credit.topUpAvailable === true && userId && topups && (
+          {userId && topups && (
             <TestTopupPanel
               key={userId}
               userId={userId}
               actions={topups}
               disabled={busy}
+              canCreate={access.credit.topUpAvailable === true}
             />
           )}
           {!!access.credit.pending?.length && (

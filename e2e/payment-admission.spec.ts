@@ -175,17 +175,28 @@ const open = (page: Page) =>
   });
 const close = (page: Page) =>
   page.getByRole("button", { name: "Закрыть новые пополнения", exact: true });
+const acceptanceNotice =
+  "Серверный допуск и исправная сверка не подтверждают, что ЮKassa примет платёж или что данные чека совместимы с настройками магазина. Отдельная приёмка запуска включает реальную оплату, полный возврат и проверку чекового пути.";
+const fiscalNotice =
+  "Принятие ответственности за ручные НПД-чеки не настраивает фискальные параметры магазина ЮKassa.";
 
 test("super admin explicitly loads admission, acknowledges manual NPD, and sends exact CAS commands without runtime bindings", async ({
   page,
 }) => {
   const state = await fixture(page);
   await expect(load(page)).toBeVisible();
+  await expect(page.getByText(acceptanceNotice, { exact: true })).toBeVisible();
+  await expect(page.getByText(fiscalNotice, { exact: true })).toBeVisible();
   expect(state.reads).toBe(0);
   await expect(details(page)).toHaveCount(0);
   expect(state.writes).toEqual([]);
   await load(page).click();
   await expect(details(page)).toBeVisible();
+  await expect(details(page).getByRole("status")).toContainText(
+    "новые пополнения недоступны",
+  );
+  await expect(page.getByText(acceptanceNotice, { exact: true })).toBeVisible();
+  await expect(page.getByText(fiscalNotice, { exact: true })).toBeVisible();
   await expect(details(page)).toContainText(
     "Одна задача может входить в несколько категорий",
   );
@@ -197,6 +208,11 @@ test("super admin explicitly loads admission, acknowledges manual NPD, and sends
   await expect(
     details(page).getByText("Принята ответственным", { exact: true }),
   ).toBeVisible();
+  await expect(details(page).getByRole("status")).toContainText(
+    "серверный допуск новых пополнений открыт",
+  );
+  await expect(page.getByText(acceptanceNotice, { exact: true })).toBeVisible();
+  await expect(page.getByText(fiscalNotice, { exact: true })).toBeVisible();
   expect(state.writes[0]).toEqual({
     requestId: expect.any(String),
     expectedRevision: 7,
@@ -209,6 +225,8 @@ test("super admin explicitly loads admission, acknowledges manual NPD, and sends
   await expect(details(page).getByRole("status")).toContainText(
     "новые пополнения недоступны",
   );
+  await expect(page.getByText(acceptanceNotice, { exact: true })).toBeVisible();
+  await expect(page.getByText(fiscalNotice, { exact: true })).toBeVisible();
   await page
     .getByRole("button", {
       name: "Приостановить серверную сверку",

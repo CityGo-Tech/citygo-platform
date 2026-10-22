@@ -50,7 +50,11 @@ import {
   HousingStoredDataError,
   verifyHousingReadiness,
 } from "@citygo/db";
-import { readConfig, effectiveLlmLimits } from "@citygo/config";
+import {
+  readConfig,
+  effectiveLlmLimits,
+  validateCreditReservationConfig,
+} from "@citygo/config";
 import { instructions, profileContext, routeAgent } from "@citygo/agents";
 import { redactPaths } from "@citygo/observability";
 import {
@@ -62,6 +66,7 @@ import { createAiControl } from "./ai-control.js";
 import type { ProviderMap } from "./provider.js";
 import { createAiExecution } from "./ai-execution.js";
 import { ApiDrain, registerDrain } from "./shutdown.js";
+import { buildConversationContext } from "./conversation-context.js";
 import { registerSyntheticHousingApi } from "./housing.js";
 import {
   preparePayments,
@@ -105,6 +110,7 @@ export async function buildApp(options: {
 }) {
   const drain = options.drain ?? new ApiDrain();
   const config = options.config ?? readConfig();
+  validateCreditReservationConfig(config);
   if (
     options.paymentReconcileScheduler &&
     (config.NODE_ENV !== "test" || options.testing !== true)
@@ -165,16 +171,28 @@ export async function buildApp(options: {
     : undefined;
   const topUpAvailable = async () =>
     !!paymentClient &&
+    (config.YOOKASSA_MODE !== "live" ||
+      config.YOOKASSA_FISCAL_PROFILE === "citygo_service_full_payment_v1") &&
     (paymentAdmission ? (await paymentAdmission.statusUser()).available : true);
   const repo = new Repository(
     options.db,
     creditCharging,
     tariff,
     topUpAvailable,
+    config.AI_CREDIT_RESERVATION_MODE,
   );
   const accounts = new AccountAccess(options.db);
-  const credit = new AiCreditLedger(options.db, chargingStatus, topUpAvailable);
-  const charges = new AiCreditCharges(options.db, tariff);
+  const credit = new AiCreditLedger(
+    options.db,
+    chargingStatus,
+    topUpAvailable,
+    config.AI_CREDIT_RESERVATION_MODE,
+  );
+  const charges = new AiCreditCharges(
+    options.db,
+    tariff,
+    config.AI_CREDIT_RESERVATION_MODE,
+  );
   const providers: ProviderMap = { ...options.providers };
   if (options.provider) providers[options.provider.name] = options.provider;
   // Quarantine survives process restarts and changing YOOKASSA_MODE back to
@@ -387,9 +405,9 @@ export async function buildApp(options: {
   app.get("/ready", async () => {
     try {
       const result = await options.db.query(
-        "select name from citygo_migrations where name in ('0006_ai_budget.sql','0007_ai_user_daily_budget.sql','0008_ai_credit.sql','0009_ai_credit_charges.sql','0010_quest_plan_expand.sql','0011_quest_plan_validate.sql','0013_account_access.sql','0014_citygo_credit.sql','0015_yookassa_orders.sql','0016_npd_receipts.sql','0017_credit_source_lots.sql','0018_payment_refunds.sql','0019_yookassa_live_orders.sql','0020_ai_budget_provider_balance.sql','0021_payment_notifications.sql','0022_payment_admission.sql')",
+        "select name from citygo_migrations where name in ('0006_ai_budget.sql','0007_ai_user_daily_budget.sql','0008_ai_credit.sql','0009_ai_credit_charges.sql','0010_quest_plan_expand.sql','0011_quest_plan_validate.sql','0013_account_access.sql','0014_citygo_credit.sql','0015_yookassa_orders.sql','0016_npd_receipts.sql','0017_credit_source_lots.sql','0018_payment_refunds.sql','0019_yookassa_live_orders.sql','0020_ai_budget_provider_balance.sql','0021_payment_notifications.sql','0022_payment_admission.sql','0023_payment_receipt_snapshots.sql','0024_ai_credit_overdraft.sql')",
       );
-      if (result.rows.length !== 16) throw new Error("Pending migration");
+      if (result.rows.length !== 18) throw new Error("Pending migration");
       if (config.R1_HOUSING_API_MODE === "synthetic")
         await verifyHousingReadiness(options.db);
     } catch {
@@ -679,6 +697,15 @@ export async function buildApp(options: {
       const user = await authenticate(request);
       const threadId = questParams.parse(request.params).id;
       const input = chatInputSchema.parse(request.body);
+      if (
+        config.AI_CREDIT_RESERVATION_MODE === "fixed5_overdraft" &&
+        input.creditReservationMode !== "fixed5_overdraft" &&
+        !routeAgent(input.text, "support").human
+      )
+        throw new DomainError(
+          409,
+          "Условия списания изменились: резерв 5 ₽ CityGo не является итоговой ценой, возможен отрицательный остаток. Обновите приложение перед платным запросом.",
+        );
       // Immutable snapshot for this admission. A concurrent switch is caught by
       // the repository lock/revision check before any message or quota is stored.
       const { provider, policy: aiPolicy, current } = await currentAi();
@@ -800,30 +827,21 @@ export async function buildApp(options: {
             "Запрос на помощь человека сохранён. Живой риелтор пока не подключён к CityGo; это не отправка сообщения внешнему специалисту. Не переводите деньги и не отправляйте документы до независимой проверки.";
           send({ type: "delta", text: content });
         } else {
-          const messages = reservation.messages
-            .filter((m) => m.status === "complete")
-            .slice(-20)
-            .map((m) => ({ role: m.role, content: m.content }));
-          const modelInstructions = instructions(routing.to);
-          const modelMessages = [
-            profileContext(reservation.profile),
-            ...messages,
-          ];
-          if (
-            Buffer.byteLength(
-              JSON.stringify({
-                instructions: modelInstructions,
-                messages: modelMessages,
-              }),
-              "utf8",
-            ) > config.LLM_MAX_INPUT_BYTES
-          ) {
-            attemptError = new DomainError(
-              413,
-              "Контекст диалога превышает подтверждённый лимит AI. Обратитесь к администратору.",
-            );
-            throw attemptError;
+          let modelContext: ReturnType<typeof buildConversationContext>;
+          try {
+            modelContext = buildConversationContext({
+              instructions: instructions(routing.to),
+              profile: profileContext(reservation.profile),
+              history: reservation.messages,
+              currentQuestion: input.text,
+              maxInputBytes: config.LLM_MAX_INPUT_BYTES,
+            });
+          } catch (error) {
+            if (error instanceof DomainError) attemptError = error;
+            throw error;
           }
+          const { instructions: modelInstructions, messages: modelMessages } =
+            modelContext;
           // Bound context and reserve both attempt + money before adapter/OAuth.
           // No automatic refund: even a failed request may have been billed.
           await reserveAttempt();
@@ -904,6 +922,16 @@ export async function buildApp(options: {
           await charges
             .releaseBeforeTransport(user.id, creditHoldId)
             .catch(() => {});
+        const creditRefusedBeforeDispatch =
+          attemptError?.code === "AI_CREDIT_EXHAUSTED" &&
+          !adapterEntered &&
+          !creditHoldId &&
+          !generation &&
+          content.length === 0 &&
+          !routing.human;
+        const persistedContent = creditRefusedBeforeDispatch
+          ? "Недостаточно средств на балансе CityGo для отправки запроса ИИ. Пополните баланс, чтобы продолжить. Запрос не отправлен ИИ, деньги не списаны."
+          : content;
         let persistenceFailed = false;
         if (!saved)
           await repo
@@ -912,10 +940,12 @@ export async function buildApp(options: {
               input.requestId,
               reservation.lease,
               routing.to,
-              content,
+              persistedContent,
               false,
-              !routing.human,
+              creditRefusedBeforeDispatch ? false : !routing.human,
               generation,
+              undefined,
+              creditRefusedBeforeDispatch ? "AI_CREDIT_EXHAUSTED" : undefined,
             )
             .catch(() => {
               persistenceFailed = true;

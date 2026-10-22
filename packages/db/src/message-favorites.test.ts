@@ -125,3 +125,84 @@ test("favorites paginate by exact message ID, include closed threads, exclude to
     false,
   );
 });
+
+test("favorites keep numeric order across decimal boundaries and bigint IDs", async (t) => {
+  const db = await connectDatabase("pglite://:memory:");
+  t.after(() => db.close());
+  await migrate(db);
+  const owner = await new Repository(db).register(
+    "bigint@example.test",
+    "synthetic",
+  );
+  const thread = (
+    await db.query<{ id: string }>(
+      "insert into agent_threads(user_id,agent_key) values($1,'support') returning id::text",
+      [owner],
+    )
+  ).rows[0]!.id;
+  const ids = ["9", "10", "99", "100", "9007199254740992", "9007199254740993"];
+  for (const id of ids)
+    await db.query(
+      "insert into messages(id,thread_id,role,content,metadata) overriding system value values($1,$2,'user','synthetic','{\"citygoFavorite\":true}')",
+      [id, thread],
+    );
+  const store = new MessageFavorites(db);
+  assert.deepEqual(
+    (await store.list(owner)).messages.map((m) => m.id),
+    [...ids].reverse(),
+  );
+  assert.deepEqual(
+    (await store.list(owner, "9007199254740993")).messages.map((m) => m.id),
+    ids.slice(0, -1).reverse(),
+  );
+  assert.deepEqual(
+    (await store.list(owner, "100")).messages.map((m) => m.id),
+    ["99", "10", "9"],
+  );
+});
+
+test("favorite byte pagination preserves full escaped Unicode text without skipping messages", async (t) => {
+  const db = await connectDatabase("pglite://:memory:");
+  t.after(() => db.close());
+  await migrate(db);
+  const owner = await new Repository(db).register(
+    "bytes@example.test",
+    "synthetic",
+  );
+  const thread = (
+    await db.query<{ id: string }>(
+      "insert into agent_threads(user_id,agent_key) values($1,'support') returning id::text",
+      [owner],
+    )
+  ).rows[0]!.id;
+  const content = "\u0001".repeat(350000) + "Москва 🏙️";
+  const ids = [
+    "9007199254741001",
+    "9007199254741002",
+    "9007199254741003",
+    "9007199254741004",
+    "9007199254741005",
+  ];
+  for (const id of ids)
+    await db.query(
+      "insert into messages(id,thread_id,role,content,metadata) overriding system value values($1,$2,'user',$3,'{\"citygoFavorite\":true}')",
+      [id, thread, content],
+    );
+  const store = new MessageFavorites(db);
+  const first = await store.list(owner);
+  const second = await store.list(owner, first.nextBefore!);
+  const third = await store.list(owner, second.nextBefore!);
+  assert.deepEqual(
+    [first.messages.length, second.messages.length, third.messages.length],
+    [2, 2, 1],
+  );
+  assert.equal(third.nextBefore, null);
+  assert.deepEqual(
+    [first, second, third].flatMap((page) => page.messages.map((m) => m.id)),
+    [...ids].reverse(),
+  );
+  for (const page of [first, second, third]) {
+    assert.ok(Buffer.byteLength(JSON.stringify(page)) < 6 * 1024 * 1024);
+    assert.ok(page.messages.every((message) => message.content === content));
+  }
+});

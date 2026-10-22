@@ -37,6 +37,7 @@ function settings() {
     YOOKASSA_SHOP_ID: shop,
     YOOKASSA_SECRET_KEY: "live_SYNTHETIC-NOT-A-REAL-KEY",
     YOOKASSA_RECEIPT_MODE: "npd_manual",
+    YOOKASSA_FISCAL_PROFILE: "citygo_service_full_payment_v1",
     WEB_ORIGIN: origin,
   });
 }
@@ -263,6 +264,7 @@ async function fixture(t: TestContext, clock?: Clock) {
       call("POST", "/v1/payments/topups", buyer.token, {
         requestId,
         amountKopeks: 10_000,
+        receiptEmail: "receipt-buyer@synthetic-citygo-mail.ru",
       }),
     intercept: (hook: () => Promise<void>) => {
       beforeTransaction = hook;
@@ -343,6 +345,13 @@ test("runtime policy excludes keys/technical quotas and binds live merchant/orig
       LLM_USER_DAILY_REQUEST_LIMIT: 1,
     }),
     binding,
+  );
+  assert.notEqual(
+    createPaymentAdmissionBinding({
+      ...config,
+      YOOKASSA_FISCAL_PROFILE: "disabled",
+    })!.runtimePolicyId,
+    binding.runtimePolicyId,
   );
   assert.notEqual(
     createPaymentAdmissionBinding({ ...config, YOOKASSA_SHOP_ID: "654321" })!
@@ -780,14 +789,14 @@ test("shutdown cleanup of an old pending check cannot release a different replac
     await pending.app.close();
   }
 });
-test("readiness requires admission migration22 and fake schedulers cannot escape the isolated test harness", async (t) => {
+test("readiness requires receipt migration23 and fake schedulers cannot escape the isolated test harness", async (t) => {
   const f = await fixture(t);
   assert.equal(
     (await f.app.inject({ method: "GET", url: "/ready" })).statusCode,
     200,
   );
   await f.db.query(
-    "delete from citygo_migrations where name='0022_payment_admission.sql'",
+    "delete from citygo_migrations where name='0023_payment_receipt_snapshots.sql'",
   );
   assert.equal(
     (await f.app.inject({ method: "GET", url: "/ready" })).statusCode,

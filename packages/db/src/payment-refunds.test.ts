@@ -136,6 +136,34 @@ test("refund reserve pins paid source, replay, FIFO availability and cannot cash
   );
 });
 
+test("fiscal registration metadata neither settles create responses nor overrides verified refund money", async (t) => {
+  const f = await fixture(t),
+    created = await f.create();
+  const prepared = await f.store.prepareDispatch(f.admin, created.refund.id, {
+    merchantId: "123456",
+    test: false,
+  });
+  const proof = f.proof(created.refund.id, { receiptRegistration: "canceled" });
+  await f.store.recordCreate(created.refund.id, prepared.dispatch!.token, {
+    ...proof,
+    observation: "create_response",
+  });
+  assert.equal((await f.ledger.status(f.buyerId)).heldMicros, 25_000_000);
+  await f.store.recordObservation(created.refund.id, proof);
+  const detail = await f.store.detailAdmin(f.admin, created.refund.id);
+  assert.equal(detail.refund.status, "succeeded");
+  assert.equal((await f.ledger.status(f.buyerId)).heldMicros, 0);
+  assert.equal((await f.ledger.status(f.buyerId)).availableMicros, 75_000_000);
+  assert.equal(JSON.stringify(detail).includes("receiptRegistration"), false);
+  await assert.rejects(
+    f.store.recordObservation(created.refund.id, {
+      ...proof,
+      unexpected: "not-allowed",
+    } as PaymentRefundObservation),
+    error(400),
+  );
+});
+
 test("separate GET posts money exactly once and atomically creates the NPD correction obligation", async (t) => {
   const f = await fixture(t);
   const created = await f.create(),

@@ -5,6 +5,7 @@ import { randomBytes } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { collectImageMetadata } from "./image-content.mjs";
 import {
   candidateDir,
   command,
@@ -27,7 +28,7 @@ const name = `citygo-registry-smoke-${randomBytes(8).toString("hex")}`;
 const config = mkdtempSync(join(tmpdir(), "citygo-registry-fixture-"));
 const docker = (args, options) =>
   command("docker", ["--config", config, ...args], options);
-let container;
+let container, verifiedMetadata;
 try {
   console.log(
     `Docker server version: ${docker(["version", "--format", "{{.Server.Version}}"])}`,
@@ -129,26 +130,35 @@ try {
     const response = await fetch(`http://${address}/v2/${path}`, {
       headers: {
         accept:
-          "application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json",
+          "application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json",
       },
       redirect: "error",
       signal: AbortSignal.timeout(10000),
     });
     assert.equal(response.status, 200);
-    const text = await response.text();
-    assert.ok(Buffer.byteLength(text) <= 262144);
-    return text;
+    const reader = response.body.getReader(),
+      chunks = [];
+    let size = 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        size += value.length;
+        assert.ok(size <= 262144);
+        chunks.push(Buffer.from(value));
+      }
+    } finally {
+      await reader.cancel();
+    }
+    return Buffer.concat(chunks).toString("utf8");
   };
   for (const role of roles) {
     const name = `fixture/citygo-platform-${role}`;
     const digest = images[role].split("@")[1];
-    const manifest = await registryJson(`${name}/manifests/${digest}`);
-    const configDigest = JSON.parse(manifest).config.digest;
-    assert.match(configDigest, /^sha256:[a-f0-9]{64}$/);
-    content[role] = {
-      manifest,
-      config: await registryJson(`${name}/blobs/${configDigest}`),
-    };
+    content[role] = await collectImageMetadata(
+      (kind, hash) => registryJson(`${name}/${kind}/${hash}`),
+      digest,
+    );
   }
   const fixture = join(config, "image-fixture.json");
   writeFileSync(
@@ -187,6 +197,7 @@ try {
   assert.equal(imageProof.missing_and_wrong_rejected, true);
   assert.equal(imageProof.real_content_simulated_containerd, true);
   assert.equal(imageProof.real_postgres_binding, true);
+  assert.equal(imageProof.protected_metadata_bridge_verified, true);
   assert.equal(imageProof.migration_authorized, false);
   console.log(
     "Local release image gate passed: real Docker digest inspection; missing/wrong images rejected; containerd contract tested with real manifest/config bytes and simulated backend, not a real containerd daemon; no deploy/pull/AI by verifier.",
@@ -194,6 +205,16 @@ try {
   console.log(
     "Registry rehearsal passed for all three tested images; no external publication or release manifest.",
   );
+  verifiedMetadata = {
+    version: 1,
+    kind: "tested-image-metadata-v1",
+    sourceSha: sha,
+    images: evidence.images,
+    roots: Object.fromEntries(
+      roles.map((role) => [role, images[role].split("@")[1]]),
+    ),
+    content,
+  };
 } catch (error) {
   console.error(failureSummary(error));
   process.exitCode = 1;
@@ -206,3 +227,11 @@ try {
     rmSync(config, { recursive: true, force: true });
   }
 }
+// Emit only after every content gate AND fixture cleanup passed. These are
+// content-addressed build metadata, not credentials or release authority.
+if (verifiedMetadata && !process.exitCode)
+  writeFileSync(
+    join(candidateDir, "tested-metadata.json"),
+    JSON.stringify(verifiedMetadata, null, 2) + "\n",
+    { flag: "wx", mode: 0o600 },
+  );

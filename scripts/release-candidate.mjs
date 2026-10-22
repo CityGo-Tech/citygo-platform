@@ -71,6 +71,7 @@ export const runtimeFiles = [
   "docs/runbooks/release-finish.md",
   "docs/runbooks/release-operator.md",
   "docs/runbooks/release-candidate.md",
+  "docs/runbooks/operator-local-release.md",
   "docs/runbooks/routerai-deployment-profile.md",
 ];
 // Only messages created here are safe to expose. Never serialize upstream errors,
@@ -304,16 +305,17 @@ export async function gate(
 }
 export function prepareBases(env = process.env) {
   const bases = {};
+  const keepPostgres = ["automatic-main", "operator-local"].includes(
+    env.RELEASE_MODE,
+  );
   for (const [name, tag] of [
     ["node", "node:24-bookworm-slim"],
     ["postgres", "postgres:17-alpine"],
   ]) {
     // Automatic app releases must never upgrade the running database image.
     const ref =
-      name === "postgres" && env.RELEASE_MODE === "automatic-main"
-        ? env.CITYGO_POSTGRES_IMAGE
-        : tag;
-    if (name === "postgres" && env.RELEASE_MODE === "automatic-main") {
+      name === "postgres" && keepPostgres ? env.CITYGO_POSTGRES_IMAGE : tag;
+    if (name === "postgres" && keepPostgres) {
       requireValue(
         typeof ref === "string" &&
           ref.startsWith(`${tag}@`) &&
@@ -357,6 +359,34 @@ export function createManifest({
   images,
   directory = root,
 }) {
+  requireValue(
+    /^[1-9][0-9]*$/.test(String(runId)) &&
+      /^[1-9][0-9]*$/.test(String(attempt)),
+    "release identity",
+  );
+  return manifestContents({
+    sha,
+    evidence,
+    images,
+    directory,
+    identity: {
+      version: 1,
+      kind: "candidate-not-deployed",
+      releaseId: `${sha}-${runId}-${attempt}`,
+      run: { id: String(runId), attempt: String(attempt), checks },
+    },
+  });
+}
+
+// Inventory hashing is shared, not authorization. The normal publisher still
+// requires genuine GitHub run/check identities and its original live gate.
+export function manifestContents({
+  sha,
+  evidence,
+  images,
+  directory = root,
+  identity,
+}) {
   validateEvidence(evidence, sha);
   keys(images, roles);
   for (const role of roles) {
@@ -368,11 +398,6 @@ export function createManifest({
       "published image digest",
     );
   }
-  requireValue(
-    /^[1-9][0-9]*$/.test(String(runId)) &&
-      /^[1-9][0-9]*$/.test(String(attempt)),
-    "release identity",
-  );
   const migrations = readdirSync(
     join(directory, "packages/db/migrations"),
   ).sort();
@@ -401,13 +426,10 @@ export function createManifest({
     requireValue(total <= budget.remaining, "migration total size");
   }
   const manifest = {
-    version: 1,
-    kind: "candidate-not-deployed",
+    ...identity,
     repository,
     sourceSha: sha,
-    releaseId: `${sha}-${runId}-${attempt}`,
     platform: "linux/amd64",
-    run: { id: String(runId), attempt: String(attempt), checks },
     bases: evidence.bases,
     images,
     imageIds: evidence.images,

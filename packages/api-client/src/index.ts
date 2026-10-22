@@ -438,6 +438,14 @@ export function createClient(
       paymentRequest("/v1/payments/topups/" + encodeURIComponent(orderId), {
         orderId,
       }),
+    topupAttempt: (requestId: string) =>
+      paymentRequest(
+        "/v1/payments/topup-attempts/" +
+          encodeURIComponent(
+            createTopupSchema.shape.requestId.parse(requestId),
+          ),
+        {},
+      ),
     reconcileTopup: (orderId: string) =>
       paymentRequest(
         "/v1/payments/topups/" + encodeURIComponent(orderId) + "/reconcile",
@@ -474,6 +482,7 @@ export function createClient(
       onEvent: (event: StreamEvent) => void,
       signal?: AbortSignal,
       policyId?: string,
+      creditReservationMode?: "full" | "fixed5_overdraft",
     ) {
       const path = "/v1/threads/" + encodeURIComponent(threadId) + "/messages";
       const op = operation(
@@ -486,7 +495,7 @@ export function createClient(
         response = await fetchResponse(
           path,
           op,
-          { text, requestId, policyId },
+          { text, requestId, policyId, creditReservationMode },
           true,
         );
         await checkStatus(response, path, op);
