@@ -17,8 +17,10 @@ import type {
   ApiErrorCode,
   QuestPlanReference,
   CityGoTariffSnapshot,
+  ConversationList,
+  ConversationSummary,
 } from "@citygo/contracts";
-import { LEGACY_AT_COST_TARIFF } from "@citygo/contracts";
+import { LEGACY_AT_COST_TARIFF, conversationIdSchema } from "@citygo/contracts";
 import { randomUUID } from "node:crypto";
 import { canTransitionQuest } from "@citygo/domain";
 import { DomainError } from "./errors.js";
@@ -46,7 +48,12 @@ const fail = (
   throw new DomainError(status, message, code, currentVersion);
 };
 type User = { id: string; email: string; password_hash: string };
-type Thread = { id: string; agent_key: AgentKey; busy_until: string | null };
+type Thread = {
+  id: string;
+  agent_key: AgentKey;
+  conversation_agent_key: AgentKey | null;
+  busy_until: string | null;
+};
 export class Repository {
   constructor(
     public db: Database,
@@ -478,7 +485,7 @@ export class Repository {
       ).rows;
       const thread = (
         await tx.query<Thread>(
-          "select id::text,agent_key from agent_threads where user_id=$1 and status<>'closed'",
+          "select id::text,agent_key,conversation_agent_key from agent_threads where user_id=$1 and status<>'closed' and conversation_agent_key is null",
           [user.id],
         )
       ).rows[0];
@@ -489,7 +496,13 @@ export class Repository {
         xp,
         quests,
         thread: thread
-          ? { id: thread.id, agentKey: thread.agent_key, messages }
+          ? {
+              id: thread.id,
+              agentKey: thread.agent_key,
+              assistantKey: null,
+              closed: false,
+              messages,
+            }
           : null,
         provider,
         aiAccess: {
@@ -510,6 +523,77 @@ export class Repository {
             : false,
           dailyLimit,
         },
+      };
+    });
+  }
+  async conversations(
+    userId: string,
+    beforeId?: string,
+  ): Promise<ConversationList> {
+    if (
+      !conversationIdSchema.safeParse(userId).success ||
+      (beforeId !== undefined &&
+        !conversationIdSchema.safeParse(beforeId).success)
+    )
+      fail(400, "Недопустимый идентификатор диалога");
+    // One bounded owner-scoped statement. The cursor is the original bigint ID,
+    // not a timestamp, OFFSET or a JavaScript Number. Closed history is retained.
+    const rows = (
+      await this.db.query<ConversationSummary>(
+        `select t.id::text,t.agent_key as "agentKey",t.conversation_agent_key as "assistantKey",
+          (t.status='closed') as closed,
+          to_char(t.updated_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "updatedAt",
+          coalesce((select left(m.content,240) from messages m where m.thread_id=t.id
+            and m.role in ('user','assistant') order by m.id desc limit 1),'') as preview
+         from agent_threads t where t.user_id=$1 and ($2::bigint is null or t.id<$2::bigint)
+         order by t.id desc limit 21`,
+        [userId, beforeId ?? null],
+      )
+    ).rows;
+    const conversations = rows.slice(0, 20).map((row) => {
+      // SQL left() counts Unicode codepoints; JS/contracts count UTF-16 units.
+      // Preserve whole codepoints while bounding the public preview to 240 units.
+      let preview = "";
+      for (const point of row.preview) {
+        if (preview.length + point.length > 240) break;
+        preview += point;
+      }
+      return { ...row, preview };
+    });
+    return {
+      userId,
+      conversations,
+      nextCursor: rows.length > 20 ? conversations.at(-1)!.id : null,
+    };
+  }
+  async conversation(userId: string, threadId: string) {
+    if (
+      !conversationIdSchema.safeParse(userId).success ||
+      !conversationIdSchema.safeParse(threadId).success
+    )
+      fail(400, "Недопустимый идентификатор диалога");
+    return this.db.transaction(async (tx) => {
+      // Same owner -> thread order as creation/admission. A thread share lock
+      // keeps the header and its bounded message history mutually consistent.
+      await tx.query("select id from users where id=$1 for share", [userId]);
+      const thread = (
+        await tx.query<{
+          id: string;
+          agentKey: AgentKey;
+          assistantKey: AgentKey | null;
+          closed: boolean;
+        }>(
+          `select t.id::text,t.agent_key as "agentKey",t.conversation_agent_key as "assistantKey",
+            (t.status='closed') as closed
+           from agent_threads t join users u on u.id=t.user_id
+           where t.id=$2 and u.id=$1 for share of t`,
+          [userId, threadId],
+        )
+      ).rows[0];
+      if (!thread) fail(404, "Чат не найден");
+      return {
+        userId,
+        thread: { ...thread, messages: await this.history(tx, threadId) },
       };
     });
   }
@@ -632,7 +716,7 @@ export class Repository {
       );
       const thread = (
         await tx.query<{ id: string }>(
-          "insert into agent_threads(user_id,agent_key) values ($1,'housing') on conflict (user_id) where status<>'closed' do update set agent_key=case when $2 then 'housing' else agent_threads.agent_key end,updated_at=now() returning id::text",
+          "insert into agent_threads(user_id,agent_key) values ($1,'housing') on conflict (user_id) where status<>'closed' and conversation_agent_key is null do update set agent_key=case when $2 then 'housing' else agent_threads.agent_key end,updated_at=now() returning id::text",
           [userId, quest.state === "available"],
         )
       ).rows[0]!;
@@ -703,7 +787,7 @@ export class Repository {
       const thread =
         (
           await tx.query<Thread>(
-            "select id::text,agent_key,busy_until from agent_threads where id=$1 and user_id=$2 and status<>'closed' for update",
+            "select id::text,agent_key,conversation_agent_key,busy_until from agent_threads where id=$1 and user_id=$2 and status<>'closed' for update",
             [threadId, userId],
           )
         ).rows[0] ?? fail(404, "Чат не найден");

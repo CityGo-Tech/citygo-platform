@@ -74,9 +74,10 @@ async function fixture(t: TestContext) {
   const names = (await readdir(directory))
     .filter((n) => n.endsWith(".sql"))
     .sort();
-  assert.equal(names.length, 24, "Update the literal schema23 upgrade fixture");
+  assert.equal(names.length, 25, "Update the literal schema23 upgrade fixture");
   assert.equal(names[22], "0023_payment_receipt_snapshots.sql");
   assert.equal(names[23], "0024_ai_credit_overdraft.sql");
+  assert.equal(names[24], "0025_assistant_conversations.sql");
   await db.exec(
     "create table citygo_migration_lock(id integer primary key); insert into citygo_migration_lock values(1); create table citygo_migrations(name text primary key,checksum text not null,applied_at timestamptz not null default now())",
   );
@@ -127,7 +128,7 @@ async function history(db: Database) {
   for (const [table, order] of snapshotTables)
     snapshot[table] = (
       await db.query<{ row: unknown }>(
-        `select row_to_json(t) as row from ${table} t order by ${order}`,
+        `select ${table === "agent_threads" ? "to_jsonb(t)-'conversation_agent_key'" : "to_jsonb(t)"} as row from ${table} t order by ${order}`,
       )
     ).rows.map(({ row }) => row);
   snapshot.ai_credit_charges = (
@@ -368,7 +369,11 @@ test("23→24 preserves paid money, exact historical receipts, pending full hold
     oldJournal,
     "Original checksum and applied_at remain intact",
   );
-  assert.equal(upgradedJournal.at(-1)!.name, "0024_ai_credit_overdraft.sql");
+  assert.equal(upgradedJournal[23]!.name, "0024_ai_credit_overdraft.sql");
+  assert.equal(
+    upgradedJournal.at(-1)!.name,
+    "0025_assistant_conversations.sql",
+  );
   assert.deepEqual(
     (await db.query("select distinct reservation_mode from ai_credit_charges"))
       .rows,

@@ -15,6 +15,9 @@ import {
   messageIdSchema,
   setMessageFavoriteSchema,
   favoriteMessagesQuerySchema,
+  conversationStartSchema,
+  conversationListQuerySchema,
+  conversationIdSchema,
   questionnaireSchema,
   aiConsentSchema,
   aiRoutingInputSchema,
@@ -405,9 +408,9 @@ export async function buildApp(options: {
   app.get("/ready", async () => {
     try {
       const result = await options.db.query(
-        "select name from citygo_migrations where name in ('0006_ai_budget.sql','0007_ai_user_daily_budget.sql','0008_ai_credit.sql','0009_ai_credit_charges.sql','0010_quest_plan_expand.sql','0011_quest_plan_validate.sql','0013_account_access.sql','0014_citygo_credit.sql','0015_yookassa_orders.sql','0016_npd_receipts.sql','0017_credit_source_lots.sql','0018_payment_refunds.sql','0019_yookassa_live_orders.sql','0020_ai_budget_provider_balance.sql','0021_payment_notifications.sql','0022_payment_admission.sql','0023_payment_receipt_snapshots.sql','0024_ai_credit_overdraft.sql')",
+        "select name from citygo_migrations where name in ('0006_ai_budget.sql','0007_ai_user_daily_budget.sql','0008_ai_credit.sql','0009_ai_credit_charges.sql','0010_quest_plan_expand.sql','0011_quest_plan_validate.sql','0013_account_access.sql','0014_citygo_credit.sql','0015_yookassa_orders.sql','0016_npd_receipts.sql','0017_credit_source_lots.sql','0018_payment_refunds.sql','0019_yookassa_live_orders.sql','0020_ai_budget_provider_balance.sql','0021_payment_notifications.sql','0022_payment_admission.sql','0023_payment_receipt_snapshots.sql','0024_ai_credit_overdraft.sql','0025_assistant_conversations.sql')",
       );
-      if (result.rows.length !== 18) throw new Error("Pending migration");
+      if (result.rows.length !== 19) throw new Error("Pending migration");
       if (config.R1_HOUSING_API_MODE === "synthetic")
         await verifyHousingReadiness(options.db);
     } catch {
@@ -603,7 +606,20 @@ export async function buildApp(options: {
   });
   app.post("/v1/conversations/start", async (request) => {
     const user = await authenticate(request);
-    return ensureConversation(options.db, user.id);
+    const input = conversationStartSchema.parse(request.body ?? {});
+    return ensureConversation(options.db, user.id, input.agentKey);
+  });
+  app.get("/v1/conversations", async (request) => {
+    const user = await authenticate(request);
+    const query = conversationListQuerySchema.parse(request.query);
+    return repo.conversations(user.id, query.before);
+  });
+  app.get("/v1/conversations/:id", async (request) => {
+    const user = await authenticate(request);
+    const id = conversationIdSchema.parse(
+      (request.params as { id: string }).id,
+    );
+    return repo.conversation(user.id, id);
   });
   const favorites = new MessageFavorites(options.db);
   app.get("/v1/messages/favorites", async (request) => {
@@ -747,6 +763,13 @@ export async function buildApp(options: {
         },
       );
       const routing = routeAgent(input.text, reservation.thread.agent_key);
+      // A chosen assistant is a conversation boundary, not a keyword hint.
+      // Keep the established human-escalation path; legacy unpinned threads
+      // retain their existing automatic specialist routing.
+      if (!routing.human && reservation.thread.conversation_agent_key) {
+        routing.to = reservation.thread.conversation_agent_key;
+        routing.reason = "Пользователь выбрал этого помощника";
+      }
       const abort = new AbortController();
       const signal = AbortSignal.any([
         abort.signal,

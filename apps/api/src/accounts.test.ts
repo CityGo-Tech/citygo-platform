@@ -453,10 +453,39 @@ test("a fresh user's conversation starts without questionnaire and opening it ag
   const before = await f.call("GET", "/v1/dashboard", user.token);
   assert.equal(before.statusCode, 200, before.body);
   assert.equal(before.json<Dashboard>().thread, null);
-  const created = await f.call("POST", "/v1/conversations/start", user.token, {
+  const conversationState = async () => {
+    const snapshot: Record<string, unknown[]> = {};
+    for (const table of [
+      "agent_threads",
+      "relocation_profiles",
+      "questionnaire_answers",
+      "relocation_plans",
+      "user_quests",
+      "xp_events",
+      "messages",
+      "chat_requests",
+      "ai_model_attempts",
+      "ai_credit_accounts",
+      "ai_credit_entries",
+      "ai_credit_charges",
+    ])
+      snapshot[table] = (await f.db.query("select * from " + table)).rows;
+    return snapshot;
+  };
+  const unchanged = await conversationState();
+  const forged = await f.call("POST", "/v1/conversations/start", user.token, {
     userId: f.bootstrap.id,
     agentKey: "housing",
   });
+  assert.equal(forged.statusCode, 400, forged.body);
+  assert.deepEqual(await conversationState(), unchanged);
+  assert.equal(f.provider.calls.length, 0);
+  const created = await f.call(
+    "POST",
+    "/v1/conversations/start",
+    user.token,
+    {},
+  );
   assert.equal(created.statusCode, 200, created.body);
   assert.equal(created.json().agentKey, "support");
   const id = created.json<{ id: string }>().id;

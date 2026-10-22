@@ -5,9 +5,11 @@ export { apiErrorResponseSchema } from "./protocol.js";
 import {
   accountUserSchema,
   agentKeySchema,
+  conversationIdSchema,
   profileSchema,
   questPlanReferenceSchema,
   type Dashboard,
+  type ConversationList,
   type StreamEvent,
 } from "./platform.js";
 import { aiProviderIdSchema } from "./llm.js";
@@ -56,7 +58,12 @@ export const adminUsersResponseSchema = z.object({
   users: z.array(accountUserSchema).max(200),
 });
 export const accountUserResponseSchema = z.object({ user: accountUserSchema });
-export const startResponseSchema = z.object({ id });
+export const startResponseSchema = z.object({
+  id,
+  agentKey: agentKeySchema.optional(),
+  assistantKey: agentKeySchema.nullable().optional(),
+  closed: z.boolean().optional(),
+});
 export const completionResponseSchema = z.object({ awarded: count });
 
 const policy = z.object({
@@ -228,6 +235,8 @@ export const dashboardResponseSchema = z.object({
     .object({
       id,
       agentKey: agentKeySchema,
+      assistantKey: agentKeySchema.nullable().optional(),
+      closed: z.boolean().optional(),
       messages: z
         .array(
           z
@@ -274,6 +283,43 @@ export const dashboardResponseSchema = z.object({
     credit: aiCreditResponseSchema.optional(),
   }),
 }) satisfies z.ZodType<Dashboard>;
+
+export const conversationListResponseSchema = z.object({
+  userId: conversationIdSchema,
+  conversations: z
+    .array(
+      z
+        .object({
+          id: conversationIdSchema,
+          agentKey: agentKeySchema,
+          assistantKey: agentKeySchema.nullable(),
+          closed: z.boolean(),
+          updatedAt: dateTime,
+          preview: z.string().max(240),
+        })
+        .refine(
+          (value) =>
+            value.assistantKey === null ||
+            value.agentKey === value.assistantKey,
+        ),
+    )
+    .max(20),
+  nextCursor: conversationIdSchema.nullable(),
+}) satisfies z.ZodType<ConversationList>;
+export const conversationDetailResponseSchema = z.object({
+  userId: conversationIdSchema,
+  thread: dashboardResponseSchema.shape.thread
+    .unwrap()
+    .extend({
+      id: conversationIdSchema,
+      assistantKey: agentKeySchema.nullable(),
+      closed: z.boolean(),
+    })
+    .refine(
+      (value) =>
+        value.assistantKey == null || value.agentKey === value.assistantKey,
+    ),
+});
 
 export const adminOverviewResponseSchema = z.object({
   counts: z.object({ users: count, completed: count, xp: count }),

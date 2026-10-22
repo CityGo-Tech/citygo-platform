@@ -38,6 +38,11 @@ import {
   setMessageFavoriteSchema,
   messageFavoriteResultSchema,
   favoriteMessagesPageSchema,
+  conversationStartSchema,
+  conversationListQuerySchema,
+  conversationIdSchema,
+  conversationListResponseSchema,
+  conversationDetailResponseSchema,
   CONTRACT_VERSION,
   CONTRACT_VERSION_HEADER,
   supportsContractVersion,
@@ -56,6 +61,7 @@ import {
   type ReconcilePaymentRefundInput,
   type PaymentAdmissionCommand,
   type Questionnaire,
+  type AgentKey,
   type StreamEvent,
 } from "@citygo/contracts";
 import {
@@ -420,8 +426,68 @@ export function createClient(
         );
       return result;
     },
-    startConversation: () =>
-      request("/v1/conversations/start", startResponseSchema, {}),
+    startConversation: async (agentKey?: AgentKey) => {
+      const input = conversationStartSchema.parse(
+        agentKey === undefined ? {} : { agentKey },
+      );
+      const result = await request(
+        "/v1/conversations/start",
+        startResponseSchema,
+        input,
+      );
+      if (
+        input.agentKey !== undefined &&
+        (result.agentKey !== input.agentKey ||
+          result.assistantKey !== input.agentKey ||
+          result.closed !== false)
+      )
+        throw new ApiError(
+          200,
+          "Ответ сервера не соответствует выбранному помощнику",
+          "invalid_response",
+        );
+      return result;
+    },
+    conversations: async (before?: string) => {
+      const query = conversationListQuerySchema.parse(
+        before === undefined ? {} : { before },
+      );
+      const result = await request(
+        "/v1/conversations" +
+          (query.before !== undefined ? "?before=" + query.before : ""),
+        conversationListResponseSchema,
+      );
+      if (
+        result.conversations.some(
+          (thread, index, rows) =>
+            (query.before !== undefined &&
+              BigInt(thread.id) >= BigInt(query.before)) ||
+            (index > 0 && BigInt(thread.id) >= BigInt(rows[index - 1]!.id)),
+        ) ||
+        (result.nextCursor !== null &&
+          result.nextCursor !== result.conversations.at(-1)?.id)
+      )
+        throw new ApiError(
+          200,
+          "Ответ сервера не соответствует странице диалогов",
+          "invalid_response",
+        );
+      return result;
+    },
+    conversation: async (conversationId: string) => {
+      const id = conversationIdSchema.parse(conversationId);
+      const result = await request(
+        "/v1/conversations/" + id,
+        conversationDetailResponseSchema,
+      );
+      if (result.thread.id !== id)
+        throw new ApiError(
+          200,
+          "Ответ сервера не соответствует выбранному диалогу",
+          "invalid_response",
+        );
+      return result;
+    },
     aiConsent: (input: AiConsentInput) =>
       request("/v1/ai/consent", okResponseSchema, input),
     aiControl: () => request("/v1/admin/ai", aiControlResponseSchema),

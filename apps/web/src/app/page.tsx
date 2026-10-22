@@ -9,12 +9,28 @@ import {
   subscribeBrowserSessionChange,
   type SessionTicket,
 } from "@citygo/api-client";
-import type { AgentKey, Dashboard } from "@citygo/contracts";
+import type {
+  AgentKey,
+  Dashboard,
+  ConversationSummary,
+} from "@citygo/contracts";
 import { Button, Card, Field, Badge } from "@citygo/ui-web";
 import { Journey } from "../components/journey";
 import { ConversationHome } from "../components/conversation-home";
 import { OwnerReceiptsPanel } from "../components/owner-receipts";
 import { MessageFavoritesPanel } from "../components/message-favorites";
+import {
+  readConversationSelection,
+  writeConversationSelection,
+} from "../components/conversation-selection";
+
+function conversationStorage() {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
 
 export default function Home() {
   const [session] = useState(createSessionGuard);
@@ -30,12 +46,26 @@ export default function Home() {
   const [passwordOpen, setPasswordOpen] = useState(false);
   const [receiptsOpen, setReceiptsOpen] = useState(false);
   const [favoritesOpen, setFavoritesOpen] = useState(false);
+  const [conversationView, setConversationView] = useState(false);
   const [text, setText] = useState("");
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [pending, setPending] = useState("");
   const [streamAgent, setStreamAgent] = useState<AgentKey | null>(null);
   const abort = useRef<AbortController | null>(null);
+  const selectedConversation = useRef<{ owner: string; id: string } | null>(
+    null,
+  );
+  const visibleThread = useRef<string | null>(null);
+  const conversationEpoch = useRef(0);
+  const conversationSwitch = useRef(false);
+  const conversationDrafts = useRef(new Map<string, string>());
+  const [conversations, setConversations] = useState<
+    ConversationSummary[] | null
+  >(null);
+  const [conversationNextCursor, setConversationNextCursor] = useState<
+    string | null
+  >(null);
   const api = useMemo(
     () =>
       createClient("/api", {
@@ -67,6 +97,15 @@ export default function Home() {
     setPasswordOpen(false);
     setReceiptsOpen(false);
     setFavoritesOpen(false);
+    setConversationView(false);
+    selectedConversation.current = null;
+    visibleThread.current = null;
+    conversationDrafts.current.clear();
+    conversationSwitch.current = false;
+    conversationEpoch.current++;
+    refreshVersion.current++;
+    setConversations(null);
+    setConversationNextCursor(null);
     setFormVersion((value) => value + 1);
     window.history.replaceState(
       null,
@@ -76,24 +115,191 @@ export default function Home() {
   }
   async function refresh(ticket = session.capture()) {
     ticket.check();
-    const version = ++refreshVersion.current;
-    const next = await api.dashboard();
+    let version = ++refreshVersion.current;
+    let next = await api.dashboard();
     ticket.check();
-    if (version !== refreshVersion.current) return;
+    if (version !== refreshVersion.current) return false;
     if (session.ownerChanged(next.user.id)) {
       notifyBrowserSessionChange();
       clearUserState(next.user.id);
-      setBoard(next);
-      ticket.check(); // Do not run the previous owner's continuation.
+      // The old owner's continuation remains invalid. Only this new ticket may
+      // restore the new owner's non-secret selection, after server authorization.
+      ticket = session.capture();
+      version = ++refreshVersion.current;
     }
+    const preferred =
+      selectedConversation.current?.owner === next.user.id
+        ? selectedConversation.current.id
+        : readConversationSelection(next.user.id, conversationStorage());
+    if (preferred && !next.user.mustChangePassword) {
+      try {
+        const detail = await api.conversation(preferred);
+        ticket.check();
+        if (version !== refreshVersion.current) return false;
+        if (detail.userId !== next.user.id) {
+          clearUserState();
+          return false;
+        }
+        next = { ...next, thread: detail.thread };
+        selectedConversation.current = { owner: next.user.id, id: preferred };
+        setConversationView(true);
+      } catch (error) {
+        ticket.check();
+        if (version !== refreshVersion.current) return false;
+        if (!(
+          error &&
+          typeof error === "object" &&
+          "status" in error &&
+          error.status === 404
+        ))
+          throw error;
+        selectedConversation.current = null;
+        writeConversationSelection(next.user.id, null, conversationStorage());
+        // A removed/inaccessible selection cannot carry its draft into the
+        // legacy fallback. Never reinterpret unsent text as a different chat.
+        setText("");
+      }
+    }
+    ticket.check();
+    if (version !== refreshVersion.current) return false;
+    visibleThread.current = next.thread?.id ?? null;
     setBoard(next);
+    return true;
+  }
+  function rememberConversation(owner: string, id: string) {
+    selectedConversation.current = { owner, id };
+    setConversationView(true);
+    writeConversationSelection(owner, id, conversationStorage());
+  }
+  async function beginConversation(agentKey?: AgentKey) {
+    if (!board || busy || sending || conversationSwitch.current) return false;
+    conversationSwitch.current = true;
+    const epoch = ++conversationEpoch.current;
+    const version = ++refreshVersion.current;
+    if (board.thread) conversationDrafts.current.set(board.thread.id, text);
+    let opened = false;
+    try {
+      const completed = await act(async (ticket) => {
+        const started = await api.startConversation(agentKey);
+        ticket.check();
+        if (
+          epoch !== conversationEpoch.current ||
+          version !== refreshVersion.current
+        )
+          return;
+        // Commit the selection only after the authorized history was read.
+        // A failed GET must never route the previous thread's draft into this one.
+        const detail = await api.conversation(started.id);
+        ticket.check();
+        if (
+          epoch !== conversationEpoch.current ||
+          version !== refreshVersion.current
+        )
+          return;
+        if (detail.userId !== board.user.id) {
+          clearUserState();
+          return;
+        }
+        rememberConversation(board.user.id, detail.thread.id);
+        visibleThread.current = detail.thread.id;
+        setBoard((current) =>
+          current?.user.id === board.user.id
+            ? { ...current, thread: detail.thread }
+            : current,
+        );
+        setText(conversationDrafts.current.get(detail.thread.id) ?? "");
+        setDraft("");
+        setPending("");
+        setStreamAgent(null);
+        opened = true;
+      });
+      return completed && opened;
+    } finally {
+      if (epoch === conversationEpoch.current)
+        conversationSwitch.current = false;
+    }
+  }
+  async function openConversation(id: string) {
+    if (!board || busy || sending || conversationSwitch.current) return false;
+    conversationSwitch.current = true;
+    const epoch = ++conversationEpoch.current;
+    const version = ++refreshVersion.current;
+    if (board.thread) conversationDrafts.current.set(board.thread.id, text);
+    let opened = false;
+    try {
+      const completed = await act(async (ticket) => {
+        const detail = await api.conversation(id);
+        ticket.check();
+        if (
+          epoch !== conversationEpoch.current ||
+          version !== refreshVersion.current
+        )
+          return;
+        if (detail.userId !== board.user.id) {
+          clearUserState();
+          return;
+        }
+        rememberConversation(board.user.id, detail.thread.id);
+        visibleThread.current = detail.thread.id;
+        setBoard((current) =>
+          current?.user.id === board.user.id
+            ? { ...current, thread: detail.thread }
+            : current,
+        );
+        setText(conversationDrafts.current.get(id) ?? "");
+        setDraft("");
+        setPending("");
+        setStreamAgent(null);
+        opened = true;
+      });
+      return completed && opened;
+    } finally {
+      if (epoch === conversationEpoch.current)
+        conversationSwitch.current = false;
+    }
+  }
+  function loadConversations(before?: string) {
+    if (!board || busy || sending) return;
+    void act(async (ticket) => {
+      const page = await api.conversations(before);
+      ticket.check();
+      if (page.userId !== board.user.id) {
+        clearUserState();
+        return;
+      }
+      setConversations((current) =>
+        before
+          ? [...(current ?? []), ...page.conversations].filter(
+              (item, index, all) =>
+                all.findIndex((other) => other.id === item.id) === index,
+            )
+          : page.conversations,
+      );
+      setConversationNextCursor(page.nextCursor);
+    });
   }
   useEffect(() => {
     const unsubscribe = subscribeBrowserSessionChange(() => clearUserState());
     const onFocus = () => {
       // Detect a changed HttpOnly session after returning from another tab,
       // including browsers with disabled storage. Do not auto-restore a logout.
-      if (session.hasOwner()) void refresh(session.capture()).catch(() => {});
+      if (!session.hasOwner()) return;
+      if (conversationSwitch.current || abort.current) {
+        // A focus event must still detect a replaced HttpOnly session while
+        // streaming, but must not overwrite a pending conversation selection.
+        const probe = session.capture();
+        void api
+          .dashboard()
+          .then((next) => {
+            probe.check();
+            if (session.ownerChanged(next.user.id)) {
+              notifyBrowserSessionChange();
+              clearUserState(next.user.id);
+              void refresh(session.capture()).catch(() => {});
+            }
+          })
+          .catch(() => {});
+      } else void refresh(session.capture()).catch(() => {});
     };
     window.addEventListener("focus", onFocus);
     const ticket = session.capture();
@@ -195,9 +401,19 @@ export default function Home() {
   }
   async function chat(event: FormEvent) {
     event.preventDefault();
-    if (!board?.thread || !board.aiAccess?.granted || !text.trim() || busy)
+    if (
+      !board?.thread ||
+      board.thread.closed ||
+      !board.aiAccess?.granted ||
+      !text.trim() ||
+      busy ||
+      sending ||
+      conversationSwitch.current
+    )
       return;
     const message = text;
+    const threadId = board.thread.id;
+    const epoch = conversationEpoch.current;
     const ticket = session.capture();
     setText("");
     setDraft("");
@@ -209,11 +425,16 @@ export default function Home() {
     const succeeded = await act(async () => {
       try {
         await api.stream(
-          board.thread!.id,
+          threadId,
           message,
           crypto.randomUUID(),
           (event) => {
-            if (!ticket.active()) return;
+            if (
+              !ticket.active() ||
+              epoch !== conversationEpoch.current ||
+              visibleThread.current !== threadId
+            )
+              return;
             if (event.type === "delta") setDraft((value) => value + event.text);
             if (event.type === "handoff") {
               setNotice(event.reason);
@@ -229,10 +450,11 @@ export default function Home() {
         if (!controller.signal.aborted) throw e;
         setNotice("Ответ остановлен. Полученная часть останется в истории.");
       } finally {
-        if (ticket.active()) await refresh(ticket);
+        if (ticket.active() && epoch === conversationEpoch.current)
+          await refresh(ticket);
       }
     });
-    if (!ticket.active()) return;
+    if (!ticket.active() || epoch !== conversationEpoch.current) return;
     if (!succeeded) setText(message);
     setDraft("");
     setPending("");
@@ -240,7 +462,10 @@ export default function Home() {
     setStreamAgent(null);
     abort.current = null;
   }
-  const Experience = board?.profile ? Journey : ConversationHome;
+  const Experience =
+    board?.profile && !board.thread?.assistantKey && !conversationView
+      ? Journey
+      : ConversationHome;
   const topups = {
     createTopup: async (input: Parameters<typeof api.createTopup>[0]) => {
       const ticket = session.capture();
@@ -266,7 +491,9 @@ export default function Home() {
       ticket.check();
       return order;
     },
-    onCredited: () => refresh(session.capture()),
+    onCredited: async () => {
+      await refresh(session.capture());
+    },
   };
   return (
     <div
@@ -284,6 +511,21 @@ export default function Home() {
         {board ? (
           <div className="account">
             <Badge>{board.xp} XP</Badge>
+            {board.profile &&
+              !board.user.mustChangePassword &&
+              !passwordOpen && (
+                <Button
+                  variant="ghost"
+                  disabled={busy || sending}
+                  onClick={() => {
+                    setConversationView(true);
+                    setFavoritesOpen(false);
+                    setReceiptsOpen(false);
+                  }}
+                >
+                  Диалоги и помощники
+                </Button>
+              )}
             {!board.user.mustChangePassword && !passwordOpen && (
               <Button
                 variant="ghost"
@@ -530,12 +772,11 @@ export default function Home() {
                   })
                 }
                 topups={topups}
-                onBegin={() =>
-                  void act(async (ticket) => {
-                    await api.startConversation();
-                    await refresh(ticket);
-                  })
-                }
+                onBegin={beginConversation}
+                conversations={conversations}
+                conversationNextCursor={conversationNextCursor}
+                onConversations={loadConversations}
+                onOpenConversation={openConversation}
                 onConsent={(input) =>
                   void act(async (ticket) => {
                     try {
