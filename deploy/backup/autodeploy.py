@@ -191,6 +191,8 @@ def unpack(raw, artifact, value, checks):
             files[entry.filename] = archive.read(entry)
     b.require(set(files) == t.FILES | {"release.json"}, "artifact-files")
     manifest = t.manifest(files["release.json"])
+    # Operator-local provenance is never eligible for the standing GitHub path.
+    b.require(manifest["version"] == 1 and manifest["kind"] == "candidate-not-deployed", "artifact-github-provenance")
     b.require(manifest["sourceSha"] == value["sha"] and manifest["run"]["id"] == value["run_id"]
               and manifest["run"]["attempt"] == value["run_attempt"]
               and sorted(manifest["run"]["checks"], key=lambda c: c["workflow"]) == sorted(checks, key=lambda c: c["workflow"]),

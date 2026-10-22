@@ -17,7 +17,7 @@ import finish as f
 import target as t
 import test_finish as fixture
 from test_prepare import ORIGIN
-from test_target import encoded, manifest_fixture
+from test_target import encoded, manifest_fixture, local_manifest
 
 
 def request():
@@ -57,6 +57,17 @@ def responses():
 
 
 class Validation(unittest.TestCase):
+    def test_standing_autodeploy_rejects_valid_local_manifest(self):
+        manifest = local_manifest(manifest_fixture())
+        output = io.BytesIO()
+        with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as bundle:
+            for entry in manifest["runtimeFiles"]:
+                bundle.writestr(entry["path"], b"# synthetic fixture, never executed\n")
+            bundle.writestr("release.json", encoded(manifest))
+        raw = output.getvalue()
+        artifact = {"size_in_bytes": len(raw), "digest": "sha256:" + t.sha256(raw)}
+        with self.assertRaisesRegex(b.BackupError, "artifact-github-provenance"):
+            a.unpack(raw, artifact, request(), [])
     def test_all_live_profiles_reject_standing_authorization_before_config_network_or_apply(self):
         fields = {"version", "purpose", "enabled", "repository", "origin", "profile", "config_path",
             "ingress_directory", "bundles_directory", "initial_bundle", "initial_manifest_sha256", "registry_config",

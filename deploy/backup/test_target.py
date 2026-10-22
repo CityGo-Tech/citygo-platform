@@ -48,6 +48,17 @@ def approval_fixture(now=None):
             "approved_at": now - 1, "expires_at": now + 3600, "allow_preparation": True, "allow_migration": False}
 
 
+def local_manifest(value):
+    value = copy.deepcopy(value)
+    del value["run"]
+    value.update(version=2, kind="operator-local-candidate-not-deployed",
+                 releaseId=value["sourceSha"] + "-local-" + "a" * 32,
+                 local={"kind": "operator-local-linux-v1", "id": "a" * 32,
+                        "receiptSha256": "d" * 64, "sourceTree": "c" * 40,
+                        "sourceDigest": "e" * 64, "checks": ["ci", "container-smoke"]})
+    return value
+
+
 def synthetic_selection(directory, config, images, origin=ORIGIN):
     """Only disposable tests import this writer; it is absent from runtime bundle."""
     current, target = directory / "current-bundle", directory / "target-bundle"
@@ -71,6 +82,26 @@ def synthetic_selection(directory, config, images, origin=ORIGIN):
 
 
 class Validation(unittest.TestCase):
+    def test_local_provenance_cannot_impersonate_a_github_run(self):
+        good = local_manifest(manifest_fixture())
+        self.assertEqual(t.manifest(encoded(good)), good)
+        for change in ({"version": 1}, {"kind": "candidate-not-deployed"}, {"run": {"id": "123"}},
+                       {"local": {**good["local"], "checks": ["ci"]}},
+                       {"local": {**good["local"], "receiptSha256": ""}},
+                       {"releaseId": good["sourceSha"] + "-123-1"}):
+            with self.subTest(change=change), self.assertRaises(b.BackupError):
+                t.manifest(encoded({**good, **change}))
+
+    def test_local_preparation_approval_is_explicit_separate_and_still_cannot_migrate(self):
+        good = approval_fixture(2000000000)
+        good.update(version=3, purpose="citygo-operator-local-preparation", artifact_id="local:" + "a" * 32,
+                    target_release_id="b" * 40 + "-local-" + "a" * 32,
+                    retained_jobs=[], local_receipt_sha256="d" * 64)
+        self.assertEqual(t.approval(encoded(good), 2000000000), good)
+        for change in ({"version": 2}, {"purpose": "citygo-release-preparation"}, {"artifact_id": "123"},
+                       {"local_receipt_sha256": ""}, {"allow_migration": True}, {"expires_at": 2000000000}):
+            with self.subTest(change=change), self.assertRaises(b.BackupError):
+                t.approval(encoded({**good, **change}), 2000000000)
     def test_strict_json_rejects_duplicate_keys_constants_and_unbounded_input(self):
         for data in (b'{"version":1,"version":1}', b'{"nested":{"a":1,"a":2}}', b'{"x":NaN}', b'{"x":Infinity}',
                      b"[" * 2000, b"x" * (t.LIMIT + 1), b"\xff", b"not json"):
@@ -131,6 +162,40 @@ class Files(unittest.TestCase):
 
     def verify(self):
         return self.selection.verify(self.config, "b" * 40, ORIGIN, IMAGES)
+
+    def make_local(self, *, receipt="d" * 64, artifact="local:" + "a" * 32):
+        path = self.selection.target_directory / "release.json"
+        value = local_manifest(json.loads(path.read_bytes()))
+        path.write_bytes(encoded(value))
+        self.rewrite(self.selection.approval_file, lambda v: v.update(
+            version=3, purpose="citygo-operator-local-preparation", artifact_id=artifact,
+            target_release_id=value["releaseId"], retained_jobs=[], local_receipt_sha256=receipt,
+            target_manifest_sha256=t.sha256(encoded(value))))
+
+    def test_local_selection_reuses_all_binding_and_immutability_guards(self):
+        self.make_local()
+        before = {str(p): p.read_bytes() for p in self.directory.rglob("*") if p.is_file()}
+        result = self.verify()
+        self.assertNotIn("run", result)
+        self.assertEqual(result["local"]["receiptSha256"], "d" * 64)
+        self.assertFalse(result["migration_authorized"])
+        self.assertEqual(before, {str(p): p.read_bytes() for p in self.directory.rglob("*") if p.is_file()})
+
+    def test_local_selection_rejects_unapproved_receipt_or_operation(self):
+        self.make_local(receipt="e" * 64)
+        with self.assertRaisesRegex(b.BackupError, "target-local-approval"): self.verify()
+
+    def test_local_approval_cannot_admit_an_ordinary_github_target(self):
+        self.make_local()
+        self.rewrite(self.selection.target_directory / "release.json", lambda v: v.clear() or v.update(manifest_fixture()))
+        self.approve_target_bytes()
+        with self.assertRaisesRegex(b.BackupError, "target-provenance-approval"): self.verify()
+
+    def test_local_target_still_rejects_rewritten_migration_history(self):
+        self.make_local()
+        self.rewrite(self.selection.target_directory / "release.json", lambda v: v["migrations"][0].update(sha256="1" * 64))
+        self.approve_target_bytes()
+        with self.assertRaisesRegex(b.BackupError, "target-migration-history"): self.verify()
 
     def rewrite(self, path, change):
         value = json.loads(path.read_bytes()); change(value); path.write_bytes(encoded(value))
