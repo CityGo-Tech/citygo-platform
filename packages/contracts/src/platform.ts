@@ -114,6 +114,8 @@ export type Message = {
   agentKey: AgentKey;
   status: "complete" | "interrupted";
   generation?: ModelGeneration | null;
+  // Additive persisted reason for a proven refusal before any model dispatch.
+  failureCode?: "AI_CREDIT_EXHAUSTED" | null;
 };
 export type Dashboard = {
   user: AccountUser;

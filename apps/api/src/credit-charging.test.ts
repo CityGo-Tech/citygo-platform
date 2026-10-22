@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import {
   AiCreditCharges,
   AiCreditLedger,
+  Repository,
   connectDatabase,
   migrate,
   type Database,
@@ -78,6 +79,7 @@ async function fixture(
     cost: "1.23456789",
     costDown: false,
     interrupted: false,
+    emptyResponse: false,
     sameId: false,
   };
   const references = new Map<string, string>();
@@ -113,7 +115,9 @@ async function fixture(
         model: "test/model",
         choices: [{ index: 0, delta: { content }, finish_reason }],
       });
-      const events: unknown[] = [chunk("Проверьте условия аренды.")];
+      const events: unknown[] = state.emptyResponse
+        ? []
+        : [chunk("Проверьте условия аренды.")];
       if (!state.interrupted) events.push(chunk("", "stop"), "[DONE]");
       return new Response(
         events
@@ -220,13 +224,43 @@ async function fixture(
 
 test("RouterAI bonus admission, exact at-cost debit, request replay and history", async (t) => {
   const f = await fixture(t);
-  const blocked = await f.send();
+  const blockedId = randomUUID();
+  const blocked = await f.send(blockedId);
   assert.match(blocked.body, /AI_CREDIT_EXHAUSTED/);
   assert.equal(f.state.posts, 0);
+  assert.equal(f.state.gets, 0);
   assert.equal(
     (await f.db.query("select * from ai_model_attempts")).rows.length,
     0,
   );
+  for (const table of ["ai_credit_charges", "ai_credit_entries"])
+    assert.equal(
+      (await f.db.query(`select count(*)::int as count from ${table}`)).rows[0]!
+        .count,
+      0,
+    );
+  const readBoard = async () =>
+    (await f.call("GET", "/v1/dashboard", f.user.token)).json<Dashboard>();
+  const refused = (await readBoard()).thread!.messages.at(-1)!;
+  assert.equal(refused.role, "assistant");
+  assert.equal(refused.status, "interrupted");
+  assert.equal(refused.failureCode, "AI_CREDIT_EXHAUSTED");
+  assert.ok(!refused.generation);
+  assert.match(refused.content, /Недостаточно средств.*Пополните баланс/);
+  assert.match(refused.content, /Запрос не отправлен ИИ, деньги не списаны/);
+  assert.deepEqual((await readBoard()).thread!.messages.at(-1), refused);
+  const metadata = (
+    await f.db.query<{ metadata: Record<string, unknown> }>(
+      "select metadata from messages where id=$1 and thread_id=$2",
+      [refused.id, f.user.thread],
+    )
+  ).rows[0]!.metadata;
+  assert.equal(metadata.source, "system");
+  assert.equal(metadata.failureCode, "AI_CREDIT_EXHAUSTED");
+  assert.equal(Object.hasOwn(metadata, "generation"), false);
+  assert.equal((await f.send(blockedId)).statusCode, 409);
+  assert.equal(f.state.posts, 0);
+  assert.equal(f.state.gets, 0);
   assert.equal(
     Number(
       (await f.db.query("select total_reserved_micros from ai_budget")).rows[0]!
@@ -259,6 +293,10 @@ test("RouterAI bonus admission, exact at-cost debit, request replay and history"
     await f.db.query("select receipt,response_complete from ai_credit_charges")
   ).rows[0]!;
   assert.equal(charge.response_complete, true);
+  const completed = (await readBoard()).thread!.messages.at(-1)!;
+  assert.equal(completed.status, "complete");
+  assert.ok(completed.generation);
+  assert.ok(!completed.failureCode);
   assert.equal((charge.receipt as { costRub: string }).costRub, "1.23456789");
   assert.equal(
     Number(
@@ -336,6 +374,58 @@ test("CityGo 10x mode credits payment 1:1, debits the exact raw price and never 
     await f.call("GET", "/v1/dashboard", f.user.token)
   ).json<Dashboard>();
   assert.equal(board.aiAccess.credit!.chargingStatus, "routerai_citygo_10x");
+});
+
+test("a persisted model attempt cannot be relabeled as a pre-dispatch credit refusal", async (t) => {
+  const f = await fixture(t);
+  await f.grant();
+  const request = randomUUID();
+  assert.match((await f.send(request)).body, /"type":"done"/);
+  const lease = randomUUID();
+  await f.db.query(
+    "update agent_threads set lease_token=$2,busy_until=now()+interval '3 minutes' where id=$1",
+    [f.user.thread, lease],
+  );
+  const snapshot = async () => {
+    const result = [];
+    for (const sql of [
+      "select lease_token::text,busy_until::text from agent_threads where id=$1",
+      "select request_id::text,status from chat_requests where thread_id=$1 order by request_id",
+      "select id::text,content,metadata from messages where thread_id=$1 order by id",
+      "select * from ai_model_attempts where thread_id=$1 order by request_id,attempt_number",
+      "select * from ai_credit_charges where thread_id=$1 order by hold_id",
+    ])
+      result.push((await f.db.query(sql, [f.user.thread])).rows);
+    for (const sql of [
+      "select * from ai_credit_entries order by id",
+      "select * from ai_credit_accounts order by user_id",
+      "select * from ai_budget order by id",
+      "select * from ai_budget_daily order by usage_day",
+    ])
+      result.push((await f.db.query(sql)).rows);
+    return result;
+  };
+  const before = await snapshot();
+  assert.equal(before[3]!.length, 1, "the fixture has a real attempt row");
+  assert.equal(before[4]!.length, 1, "the fixture has a real charge row");
+  await assert.rejects(
+    new Repository(f.db).finishChat(
+      f.user.thread,
+      request,
+      lease,
+      "housing",
+      "false refusal",
+      false,
+      false,
+      undefined,
+      undefined,
+      "AI_CREDIT_EXHAUSTED",
+    ),
+    /Причина отказа не соответствует существующей попытке ИИ/,
+  );
+  assert.deepEqual(await snapshot(), before);
+  assert.equal(f.state.posts, 1);
+  assert.equal(f.state.gets, 1);
 });
 
 test("lost cost lookup keeps hold; owner-only reconciliation survives object recreation and is idempotent", async (t) => {
@@ -420,6 +510,32 @@ test("interrupted transport is never free, never retried and cannot be automatic
     409,
   );
   assert.equal(f.state.gets, 0);
+  const message = (await f.call("GET", "/v1/dashboard", f.user.token))
+    .json<Dashboard>()
+    .thread!.messages.at(-1)!;
+  assert.equal(message.status, "interrupted");
+  assert.equal(message.content, "Проверьте условия аренды.");
+  assert.ok(message.generation);
+  assert.ok(!message.failureCode);
+});
+
+test("an empty response after provider dispatch is not relabeled as a free credit refusal", async (t) => {
+  const f = await fixture(t);
+  await f.grant();
+  f.state.emptyResponse = true;
+  const response = await f.send();
+  assert.match(response.body, /"type":"error"/);
+  assert.doesNotMatch(response.body, /AI_CREDIT_EXHAUSTED/);
+  assert.equal(f.state.posts, 1);
+  assert.equal(f.state.gets, 0);
+  assert.equal((await f.balance()).heldMicros, 100 * RUB);
+  const message = (await f.call("GET", "/v1/dashboard", f.user.token))
+    .json<Dashboard>()
+    .thread!.messages.at(-1)!;
+  assert.equal(message.status, "interrupted");
+  assert.equal(message.content, "");
+  assert.ok(message.generation);
+  assert.ok(!message.failureCode);
 });
 
 test("parallel requests cannot overspend one user credit; failed reservation rolls back operator money and attempts", async (t) => {
@@ -471,6 +587,12 @@ test("proven no adapter entry releases user hold; an unknown provider outcome do
   assert.equal((await f.balance()).heldMicros, 0);
   assert.equal((await f.balance()).availableMicros, 500 * RUB);
   assert.equal((await f.balance()).history[0]!.kind, "release");
+  const message = (await f.call("GET", "/v1/dashboard", f.user.token))
+    .json<Dashboard>()
+    .thread!.messages.at(-1)!;
+  assert.equal(message.status, "interrupted");
+  assert.ok(message.generation);
+  assert.ok(!message.failureCode);
 });
 
 test("cost overrun never overcharges the user and closes the operator budget", async (t) => {

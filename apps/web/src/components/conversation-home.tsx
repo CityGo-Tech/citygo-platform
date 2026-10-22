@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Button, Card, Badge, AssistantMessage } from "@citygo/ui-web";
 import { AiAccessPanel } from "./ai-access";
 import { agentNames, type JourneyProps } from "./journey";
+import { EmptyAiCreditHint, messageInterruptionLabel } from "./chat-readiness";
 
 const helpers = [
   [
@@ -201,7 +202,9 @@ export function ConversationHome(props: JourneyProps) {
                       <AssistantMessage content={message.content} />
                     )}
                     {message.status === "interrupted" && (
-                      <small>Ответ прерван</small>
+                      <small>
+                        {messageInterruptionLabel(message, "Ответ прерван")}
+                      </small>
                     )}
                   </article>
                 ))}
@@ -224,6 +227,7 @@ export function ConversationHome(props: JourneyProps) {
                 </Button>
               ) : (
                 <form onSubmit={props.onChat}>
+                  <EmptyAiCreditHint access={board.aiAccess} />
                   <label htmlFor="conversation-message">
                     Сообщение помощнику
                   </label>

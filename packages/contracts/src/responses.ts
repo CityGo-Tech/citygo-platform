@@ -230,24 +230,36 @@ export const dashboardResponseSchema = z.object({
       agentKey: agentKeySchema,
       messages: z
         .array(
-          z.object({
-            id,
-            role: z.enum(["user", "assistant"]),
-            content: z.string().max(1024 * 1024),
-            agentKey: agentKeySchema,
-            status: z.enum(["complete", "interrupted"]),
-            generation: z
-              .object({
-                provider: aiProviderIdSchema,
-                requestedModel: text,
-                model: text.optional(),
-                usage: z
-                  .object({ inputTokens: count, outputTokens: count })
-                  .optional(),
-              })
-              .nullable()
-              .optional(),
-          }),
+          z
+            .object({
+              id,
+              role: z.enum(["user", "assistant"]),
+              content: z.string().max(1024 * 1024),
+              agentKey: agentKeySchema,
+              status: z.enum(["complete", "interrupted"]),
+              generation: z
+                .object({
+                  provider: aiProviderIdSchema,
+                  requestedModel: text,
+                  model: text.optional(),
+                  usage: z
+                    .object({ inputTokens: count, outputTokens: count })
+                    .optional(),
+                })
+                .nullable()
+                .optional(),
+              failureCode: z
+                .literal("AI_CREDIT_EXHAUSTED")
+                .nullable()
+                .optional(),
+            })
+            .refine(
+              (message) =>
+                !message.failureCode ||
+                (message.role === "assistant" &&
+                  message.status === "interrupted" &&
+                  !message.generation),
+            ),
         )
         .max(1000),
     })

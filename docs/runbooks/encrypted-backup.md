@@ -154,6 +154,7 @@ python3 -B /opt/citygo/releases/APPROVED_SHA/deploy/backup/backup.py check --con
 
 Рекомендации PostgreSQL Best Practices сохранены: backup только читает БД,
 восстановление изолировано и не требует расширять права рабочего API.
+
 ## Координация с Worker
 
 Новая версия `backup.py` использует общий операторский lock и устойчивый pending
