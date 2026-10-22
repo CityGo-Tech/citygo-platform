@@ -57,6 +57,20 @@ def responses():
 
 
 class Validation(unittest.TestCase):
+    def test_all_live_profiles_reject_standing_authorization_before_config_network_or_apply(self):
+        fields = {"version", "purpose", "enabled", "repository", "origin", "profile", "config_path",
+            "ingress_directory", "bundles_directory", "initial_bundle", "initial_manifest_sha256", "registry_config",
+            "postgres_image", "secret_files", "secret_sha256", "allow_new_migrations", "nginx_config", "nginx_sha256"}
+        value = {**dict.fromkeys(fields, None), "version": 1, "purpose": "citygo-main-standing-authorization",
+                 "enabled": True, "repository": t.REPOSITORY, "allow_new_migrations": True}
+        for profile in (a.s.CITYGO_10X_YOOKASSA_LIVE_PROFILE, a.s.CITYGO_10X_YOOKASSA_LIVE_CN_PROFILE):
+            with self.subTest(profile=profile), patch.object(t, "read_file", return_value=encoded({**value, "profile": profile})), \
+                 patch.object(a.b, "load_config") as load, patch.object(a, "GitHub") as github, \
+                 patch.object(a, "resume") as resume, patch.object(ctl, "apply") as apply:
+                with self.assertRaisesRegex(b.BackupError, "autodeploy-live-profile-closed-only"):
+                    a.apply(request(), policy_path="/unused")
+                load.assert_not_called(); github.assert_not_called(); resume.assert_not_called(); apply.assert_not_called()
+
     def test_opaque_bearer_tokens_match_client_without_header_injection(self):
         path = Path(__file__).resolve().parents[2] / "scripts/fixtures/deploy-bearer-tokens.json"
         tokens = json.loads(path.read_text(encoding="utf-8"))
@@ -272,14 +286,15 @@ class Capabilities(unittest.TestCase):
     def test_live_profile_cannot_be_selected_by_standing_autodeploy_or_reopen_traffic(self):
         policy_path = self.entrypoint_fixture()
         value = t.strict_json(policy_path.read_bytes())
-        value["profile"] = a.s.CITYGO_10X_YOOKASSA_LIVE_PROFILE
-        policy_path.write_bytes(encoded(value))
-        with self.assertRaisesRegex(b.BackupError, "autodeploy-live-profile-closed-only"):
-            a.policy(policy_path)
-        with patch.object(a, "resume") as resume, patch.object(ctl, "apply") as apply:
+        for profile in (a.s.CITYGO_10X_YOOKASSA_LIVE_PROFILE, a.s.CITYGO_10X_YOOKASSA_LIVE_CN_PROFILE):
+            value["profile"] = profile
+            policy_path.write_bytes(encoded(value))
             with self.assertRaisesRegex(b.BackupError, "autodeploy-live-profile-closed-only"):
-                a.apply(request(), policy_path=policy_path)
-            resume.assert_not_called(); apply.assert_not_called()
+                a.policy(policy_path)
+            with patch.object(a, "resume") as resume, patch.object(ctl, "apply") as apply:
+                with self.assertRaisesRegex(b.BackupError, "autodeploy-live-profile-closed-only"):
+                    a.apply(request(), policy_path=policy_path)
+                resume.assert_not_called(); apply.assert_not_called()
         self.assertFalse(self.pending.exists()); self.assertEqual(self.host.events, [])
         self.assertFalse((self.state / "autodeploy/pending.json").exists())
 

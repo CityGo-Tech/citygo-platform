@@ -10,6 +10,7 @@ import {
   connectDatabase,
   migrate,
   DomainError,
+  PaymentAdmission,
   type Database,
   type PaymentRefundDispatchInput,
   type PaymentRefundObservation,
@@ -17,6 +18,8 @@ import {
 import { readConfig } from "@citygo/config";
 import { buildApp } from "./app.js";
 import { YooKassaClient } from "./yookassa.js";
+import { createPaymentAdmissionBinding } from "./payment-admission.js";
+import { tokenHash } from "./auth.js";
 
 // Entirely local synthetic merchant. The real transport is exercised through an
 // injected fetch, never the network, a .env file, a real key, AI or a payment API.
@@ -180,6 +183,38 @@ async function fixture(mode: "live" | "test" = "live") {
   }
   const user = await register();
   const other = await register();
+  // These legacy checkout/settlement scenarios explicitly establish their
+  // synthetic live admission. Default-closed behavior has separate tests.
+  if (mode === "live") {
+    const operator = await register();
+    await db.query("update users set role='super_admin' where id=$1", [
+      operator.id,
+    ]);
+    const admission = new PaymentAdmission(
+      db,
+      createPaymentAdmissionBinding(config)!,
+    );
+    const actor = {
+      userId: operator.id,
+      sessionTokenHash: tokenHash(operator.token),
+    };
+    await admission.command(actor, {
+      requestId: randomUUID(),
+      expectedRevision: 1,
+      action: "set_reconciliation",
+      enabled: true,
+    });
+    const run = await admission.beginReconciliation();
+    assert.ok(run);
+    await admission.completeReconciliation({ ...run, success: true });
+    await admission.command(actor, {
+      requestId: randomUUID(),
+      expectedRevision: 2,
+      action: "open",
+      mode: "continuous",
+      manualNpdResponsibilityAccepted: true,
+    });
+  }
   const create = (requestId = randomUUID()) =>
     call("POST", "/v1/payments/topups", user.token, {
       requestId,

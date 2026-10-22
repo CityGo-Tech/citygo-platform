@@ -135,7 +135,9 @@ export class YooKassaRefundClient {
         currency: "RUB",
       },
       description:
-        this.#mode === "test" ? "Тестовый возврат CityGo" : "Возврат CityGo",
+        this.#mode === "test"
+          ? "Тестовый возврат CityGo"
+          : "Возврат средств CityGo",
       metadata: { citygo_refund_id: input.refundRequestId },
     };
     if (

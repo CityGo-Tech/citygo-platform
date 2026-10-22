@@ -39,6 +39,7 @@ import {
   AiCreditLedger,
   AiCreditCharges,
   PaymentRefunds,
+  PaymentAdmission,
   assertRealAiDatabaseSafety,
   assertTestPaymentsDatabaseSafety,
   type Database,
@@ -78,6 +79,12 @@ import {
   PAYMENT_NOTIFICATION_PATH,
   registerPaymentNotifications,
 } from "./payment-notifications.js";
+import {
+  createPaymentAdmissionBinding,
+  registerPaymentAdmission,
+  registerPaymentReconciliation,
+} from "./payment-admission.js";
+import type { PaymentReconcileScheduler } from "./payment-reconciler.js";
 
 export async function buildApp(options: {
   db: Database;
@@ -90,9 +97,17 @@ export async function buildApp(options: {
   syntheticPermissions?: R1SyntheticPermissionHttpOptions;
   paymentClient?: PaymentClient;
   refundClient?: RefundClient;
+  paymentReconcileScheduler?: PaymentReconcileScheduler;
 }) {
   const drain = options.drain ?? new ApiDrain();
   const config = options.config ?? readConfig();
+  if (
+    options.paymentReconcileScheduler &&
+    (config.NODE_ENV !== "test" || options.testing !== true)
+  )
+    throw new Error(
+      "Synthetic payment scheduler requires the isolated test harness",
+    );
   const paymentClient = preparePayments(config, {
     testing: options.testing,
     client: options.paymentClient,
@@ -140,18 +155,21 @@ export async function buildApp(options: {
     config.AI_CREDIT_MODE === "disabled"
       ? "not_connected"
       : config.AI_CREDIT_MODE;
+  const paymentBinding = createPaymentAdmissionBinding(config);
+  const paymentAdmission = paymentBinding
+    ? new PaymentAdmission(options.db, paymentBinding)
+    : undefined;
+  const topUpAvailable = async () =>
+    !!paymentClient &&
+    (paymentAdmission ? (await paymentAdmission.statusUser()).available : true);
   const repo = new Repository(
     options.db,
     creditCharging,
     tariff,
-    !!paymentClient,
+    topUpAvailable,
   );
   const accounts = new AccountAccess(options.db);
-  const credit = new AiCreditLedger(
-    options.db,
-    chargingStatus,
-    !!paymentClient,
-  );
+  const credit = new AiCreditLedger(options.db, chargingStatus, topUpAvailable);
   const charges = new AiCreditCharges(options.db, tariff);
   const providers: ProviderMap = { ...options.providers };
   if (options.provider) providers[options.provider.name] = options.provider;
@@ -365,9 +383,9 @@ export async function buildApp(options: {
   app.get("/ready", async () => {
     try {
       const result = await options.db.query(
-        "select name from citygo_migrations where name in ('0006_ai_budget.sql','0007_ai_user_daily_budget.sql','0008_ai_credit.sql','0009_ai_credit_charges.sql','0010_quest_plan_expand.sql','0011_quest_plan_validate.sql','0013_account_access.sql','0014_citygo_credit.sql','0015_yookassa_orders.sql','0016_npd_receipts.sql','0017_credit_source_lots.sql','0018_payment_refunds.sql','0019_yookassa_live_orders.sql','0020_ai_budget_provider_balance.sql','0021_payment_notifications.sql')",
+        "select name from citygo_migrations where name in ('0006_ai_budget.sql','0007_ai_user_daily_budget.sql','0008_ai_credit.sql','0009_ai_credit_charges.sql','0010_quest_plan_expand.sql','0011_quest_plan_validate.sql','0013_account_access.sql','0014_citygo_credit.sql','0015_yookassa_orders.sql','0016_npd_receipts.sql','0017_credit_source_lots.sql','0018_payment_refunds.sql','0019_yookassa_live_orders.sql','0020_ai_budget_provider_balance.sql','0021_payment_notifications.sql','0022_payment_admission.sql')",
       );
-      if (result.rows.length !== 15) throw new Error("Pending migration");
+      if (result.rows.length !== 16) throw new Error("Pending migration");
       if (config.R1_HOUSING_API_MODE === "synthetic")
         await verifyHousingReadiness(options.db);
     } catch {
@@ -393,6 +411,12 @@ export async function buildApp(options: {
     config,
     client: paymentClient,
     authenticate,
+  });
+  registerPaymentAdmission(app, {
+    admission: paymentAdmission,
+    sessionName,
+    authenticate,
+    topUpAvailable,
   });
   registerNpdReceipts(app, {
     db: options.db,
@@ -443,8 +467,16 @@ export async function buildApp(options: {
       },
     });
     registerPaymentNotifications(app, inbox);
-    // Bounded, authenticated drain. Scheduling it requires a separate reviewed
-    // release capability, never the existing unprivileged Worker DB role.
+    registerPaymentReconciliation(app, {
+      admission: paymentAdmission!,
+      inbox,
+      drain,
+      testing: options.testing === true,
+      scheduler: options.paymentReconcileScheduler,
+    });
+    // This bounded manual settlement drain remains usable when checkout or
+    // background reconciliation is closed. The separate API lifecycle above
+    // requires its explicit shared DB flag/lease, never Worker DB privileges.
     app.post(
       "/v1/admin/payments/notifications/reconcile",
       {

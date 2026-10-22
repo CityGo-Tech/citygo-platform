@@ -12,7 +12,7 @@
     "dev": "node scripts/run.mjs dev",
     "lint": "node scripts/with-env.mjs build pnpm exec turbo run lint --concurrency=3 && node scripts/with-env.mjs build pnpm exec eslint scripts e2e playwright.config.ts",
     "test": "node scripts/with-env.mjs test pnpm exec turbo run test --concurrency=3 && pnpm test:env",
-    "test:env": "node scripts/with-env.mjs test node --test scripts/env.test.mjs",
+    "test:env": "node scripts/with-env.mjs test node --test scripts/env.test.mjs scripts/routerai-route-check.test.mjs",
     "ai:policy:preview": "node scripts/with-env.mjs api pnpm exec tsx apps/api/src/preview-policy.ts",
     "test:containers": "node scripts/with-env.mjs test node --test scripts/container-runtime.test.mjs scripts/container-stop-check.test.mjs scripts/ingress-maintenance.test.mjs",
     "test:release": "node scripts/with-env.mjs test node --test scripts/release-candidate.test.mjs scripts/deploy-main.test.mjs scripts/release-upgrade-12-smoke.test.mjs scripts/release-upgrade-18-smoke.test.mjs",

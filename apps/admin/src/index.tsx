@@ -14,6 +14,7 @@ import { AiCreditControls } from "./ai-credit.js";
 import { AccountsControl } from "./accounts-control.js";
 import { NpdReceiptsControl } from "./npd-receipts.js";
 import { PaymentRefundsControl } from "./payment-refunds.js";
+import { PaymentAdmissionControl } from "./payment-admission.js";
 export function AdminOverview() {
   const [session] = useState(createSessionGuard);
   const api = useMemo(
@@ -233,6 +234,18 @@ export function AdminOverview() {
             администратора не позволяют выдавать роли.
           </p>
         </Card>
+      )}
+      {viewer?.role === "super_admin" && (
+        <PaymentAdmissionControl
+          key={`admission-${viewer.id}-${refreshVersion}`}
+          viewerId={viewer.id}
+          onAccessLost={() => {
+            invalidate();
+            setError(
+              "Допуск оплаты доступен только текущему super admin. Сессия или права изменились; обновите сводку.",
+            );
+          }}
+        />
       )}
       {viewer && (
         <NpdReceiptsControl

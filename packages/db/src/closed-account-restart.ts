@@ -38,6 +38,9 @@ const tables = [
   "npd_receipt_evidence",
   "npd_receipt_tasks",
   "npd_refund_observations",
+  "payment_admission",
+  "payment_admission_commands",
+  "payment_admission_reconciliation_events",
   "payment_notification_inbox",
   "payment_refund_events",
   "payment_refunds",
@@ -63,6 +66,9 @@ const retainedTables = [
   "payment_refund_events",
   "payment_refunds",
   "payment_notification_inbox",
+  "payment_admission",
+  "payment_admission_commands",
+  "payment_admission_reconciliation_events",
   "ai_budget",
   "ai_budget_daily",
   "ai_credit_accounts",
@@ -187,6 +193,8 @@ async function lockedSnapshot(
   );
   await tx.query("select id from users order by id for update");
   const snapshot = await takeSnapshot(tx);
+  if (snapshot.counts.payment_admission !== 1)
+    refuse("Состояние допуска оплаты не готово", 503);
   if (snapshot.counts.users! > 1000)
     refuse("Слишком много аккаунтов для закрытого тестового перехода");
   return { snapshot, bootstrapCompleted: state.bootstrap_completed };
@@ -283,6 +291,21 @@ async function inspect(tx: Sql, options: Options) {
     const count = (await tx.query<{ count: number }>(sql)).rows[0]!.count;
     if (count) blockers.push({ code, count });
   };
+  const admissionHistoryCount =
+    snapshot.counts.payment_admission_commands! +
+    snapshot.counts.payment_admission_reconciliation_events!;
+  if (admissionHistoryCount)
+    blockers.push({
+      code: "PAYMENT_ADMISSION_HISTORY_PRESENT",
+      count: admissionHistoryCount,
+    });
+  await block(
+    "PAYMENT_ADMISSION_LINKED_OR_ACTIVE",
+    `select count(*)::int as count from payment_admission where owner_user_id is not null
+     or accepting_new_checkouts or mode<>'closed' or reconciliation_enabled
+     or reconciliation_run_id is not null or reconciliation_run_revision is not null
+     or reconciliation_run_until is not null`,
+  );
   await block(
     "ACTIVE_CHAT_REQUESTS",
     "select count(*)::int as count from chat_requests where status='running'",

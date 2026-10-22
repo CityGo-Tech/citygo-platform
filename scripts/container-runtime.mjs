@@ -60,10 +60,19 @@ const citygo10xLiveFixed = {
   YOOKASSA_MODE: "live",
   YOOKASSA_RECEIPT_MODE: "npd_manual",
 };
+// New recipient/limits require a different mounted marker and release approval.
+// Keep all legacy profile values unchanged; this is not an activation switch.
+const citygo10xLiveCnFixed = {
+  ...citygo10xLiveFixed,
+  ROUTERAI_COUNTRY: "cn",
+  ROUTERAI_MAX_OUTPUT_TOKENS: "4096",
+  LLM_MAX_INPUT_BYTES: "8192",
+};
 const routerAiProfiles = {
   "routerai-credit-v1": routerAiFixed,
   "routerai-citygo-10x-v1": citygo10xFixed,
   "routerai-citygo-10x-yookassa-live-v1": citygo10xLiveFixed,
+  "routerai-citygo-10x-yookassa-live-cn-v1": citygo10xLiveCnFixed,
 };
 const routerAiKeys = (fixed) => [
   "DATABASE_URL",
@@ -73,7 +82,7 @@ const routerAiKeys = (fixed) => [
   "ROUTERAI_PRODUCTION_POLICY_ID",
   ...Object.keys(fixed),
   ...Object.keys(routerAiLimits),
-  ...(fixed === citygo10xLiveFixed
+  ...(fixed.YOOKASSA_MODE === "live"
     ? ["YOOKASSA_SHOP_ID", "YOOKASSA_SECRET_KEY"]
     : []),
 ];
@@ -101,7 +110,7 @@ function validateRouterAi(value, fixed) {
     !/^[a-f0-9]{64}$/.test(value.ROUTERAI_PRODUCTION_POLICY_ID) ||
     value.ROUTERAI_DATA_NOTICE.length > 4000 ||
     value.ROUTERAI_API_KEY.length > 8192 ||
-    (fixed === citygo10xLiveFixed &&
+    (fixed.YOOKASSA_MODE === "live" &&
       (!/^[1-9][0-9]{0,19}$/.test(value.YOOKASSA_SHOP_ID) ||
         !/^live_[A-Za-z0-9_=-]{8,8192}$/.test(value.YOOKASSA_SECRET_KEY)))
   )

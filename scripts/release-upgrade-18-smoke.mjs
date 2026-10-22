@@ -1,4 +1,4 @@
-// Synthetic-only 18→21 rehearsal for the disposable pilot harness, while its
+// Synthetic-only 18→22 rehearsal for the disposable pilot harness, while its
 // PostgreSQL container is the sole project member. Never a production rollback
 // or migration tool; a successful receipt cannot authorize public traffic.
 import assert from "node:assert/strict";
@@ -12,6 +12,10 @@ import {
 } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { root } from "./env.mjs";
+import {
+  assertClosedPaymentAdmission,
+  assertPaymentAdmissionAcls,
+} from "./payment-admission-smoke.mjs";
 
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const userId = 900018;
@@ -35,6 +39,8 @@ export function upgrade18RewindSql() {
     "create or replace function",
   );
   return `begin;
+    drop table payment_admission_commands,payment_admission_reconciliation_events,payment_admission;
+    drop function citygo_guard_payment_admission_history();
     drop table payment_notification_inbox;
     drop function citygo_guard_payment_notification();
     alter table ai_budget drop constraint ai_budget_mode_limits,
@@ -51,7 +57,7 @@ export function upgrade18RewindSql() {
     alter table payment_topup_orders add constraint payment_topup_orders_test_check check(test);
     ${legacyFunction}
     delete from citygo_migrations where name in (
-      '0019_yookassa_live_orders.sql','0020_ai_budget_provider_balance.sql','0021_payment_notifications.sql');
+      '0019_yookassa_live_orders.sql','0020_ai_budget_provider_balance.sql','0021_payment_notifications.sql','0022_payment_admission.sql');
     commit`;
 }
 
@@ -172,6 +178,8 @@ export async function releaseUpgrade18Smoke({
     "payment_refunds",
     "npd_receipt_tasks",
     "payment_notification_inbox",
+    "payment_admission_commands",
+    "payment_admission_reconciliation_events",
   ];
   for (const table of emptyTables)
     assert.equal(psql(`select count(*) from ${table}`), "0");
@@ -228,6 +236,7 @@ export async function releaseUpgrade18Smoke({
       "0019_yookassa_live_orders.sql",
       "0020_ai_budget_provider_balance.sql",
       "0021_payment_notifications.sql",
+      "0022_payment_admission.sql",
     ],
   );
   const expectedJournal = migrations.map(({ name }) => ({
@@ -356,6 +365,8 @@ export async function releaseUpgrade18Smoke({
   assert.equal(result.grantsSha256, digest(grants));
   assert.deepEqual(journal(), expectedJournal);
   assert.equal(snapshot(), before, "Preserve schema-18 history and money");
+  assertClosedPaymentAdmission(psql);
+  assertPaymentAdmissionAcls(psql);
   assert.equal(budget().mode, "fixed", "Migration cannot opt in to spending");
   assert.equal(
     psql(
@@ -392,6 +403,6 @@ export async function releaseUpgrade18Smoke({
   );
   assert.deepEqual(journal(), expectedJournal);
   console.log(
-    "Exact synthetic 18→21 rehearsal passed: three migrations + ACLs, late-ACL transactional rollback, preserved fixed budget/counters/test order/source hold; least-privilege runtime, no production authorization or provider calls",
+    "Exact synthetic 18→22 rehearsal passed: four migrations + ACLs, late-ACL transactional rollback, preserved fixed budget/counters/test order/source hold; least-privilege runtime, closed checkout, no production authorization or provider calls",
   );
 }

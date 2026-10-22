@@ -13,6 +13,7 @@ import type { AgentKey, Dashboard } from "@citygo/contracts";
 import { Button, Card, Field, Badge } from "@citygo/ui-web";
 import { Journey } from "../components/journey";
 import { ConversationHome } from "../components/conversation-home";
+import { OwnerReceiptsPanel } from "../components/owner-receipts";
 
 export default function Home() {
   const [session] = useState(createSessionGuard);
@@ -26,6 +27,7 @@ export default function Home() {
   const [busy, setBusy] = useState(false);
   const [mode, setMode] = useState<"register" | "login">("register");
   const [passwordOpen, setPasswordOpen] = useState(false);
+  const [receiptsOpen, setReceiptsOpen] = useState(false);
   const [text, setText] = useState("");
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
@@ -36,14 +38,15 @@ export default function Home() {
     () =>
       createClient("/api", {
         signal: () => session.capture().signal,
-        onUnauthorized: () => {
-          if (session.hasOwner()) notifyBrowserSessionChange();
-          clearUserState();
-          setNotice("Сессия завершилась. Войдите снова.");
-        },
+        onUnauthorized: requireLogin,
       }),
     [session],
   );
+  function requireLogin() {
+    if (session.hasOwner()) notifyBrowserSessionChange();
+    clearUserState();
+    setNotice("Сессия завершилась. Войдите снова.");
+  }
   function clearUserState(owner?: string) {
     session.reset(owner);
     abort.current?.abort();
@@ -60,6 +63,7 @@ export default function Home() {
     setLoading(false);
     setLogoutUnconfirmed(false);
     setPasswordOpen(false);
+    setReceiptsOpen(false);
     setFormVersion((value) => value + 1);
     window.history.replaceState(
       null,
@@ -270,6 +274,15 @@ export default function Home() {
         {board ? (
           <div className="account">
             <Badge>{board.xp} XP</Badge>
+            {!board.user.mustChangePassword && !passwordOpen && (
+              <Button
+                variant="ghost"
+                disabled={busy || sending}
+                onClick={() => setReceiptsOpen(true)}
+              >
+                Мои чеки
+              </Button>
+            )}
             <Button variant="ghost" onClick={() => setPasswordOpen(true)}>
               Пароль
             </Button>
@@ -436,56 +449,75 @@ export default function Home() {
             )}
           </Card>
         ) : (
-          <Experience
-            key={board.user.id}
-            board={board}
-            busy={busy}
-            sending={sending}
-            draft={draft}
-            pending={pending}
-            streamAgent={streamAgent}
-            text={text}
-            onText={setText}
-            onChat={chat}
-            onStop={() => abort.current?.abort()}
-            onPassword={() => setPasswordOpen(true)}
-            topups={topups}
-            onBegin={() =>
-              void act(async (ticket) => {
-                await api.startConversation();
-                await refresh(ticket);
-              })
-            }
-            onConsent={(input) =>
-              void act(async (ticket) => {
-                try {
-                  await api.aiConsent(input);
-                } finally {
-                  if (ticket.active()) await refresh(ticket);
+          <>
+            {receiptsOpen ? (
+              <section aria-label="Чеки личного кабинета">
+                <Button
+                  variant="secondary"
+                  onClick={() => setReceiptsOpen(false)}
+                >
+                  Вернуться в приложение
+                </Button>
+                <OwnerReceiptsPanel
+                  key={board.user.id + ":receipts:" + formVersion}
+                  userId={board.user.id}
+                  sessionSignal={session.capture().signal}
+                  onAccessDenied={requireLogin}
+                />
+              </section>
+            ) : (
+              <Experience
+                key={board.user.id}
+                board={board}
+                busy={busy}
+                sending={sending}
+                draft={draft}
+                pending={pending}
+                streamAgent={streamAgent}
+                text={text}
+                onText={setText}
+                onChat={chat}
+                onStop={() => abort.current?.abort()}
+                onPassword={() => setPasswordOpen(true)}
+                topups={topups}
+                onBegin={() =>
+                  void act(async (ticket) => {
+                    await api.startConversation();
+                    await refresh(ticket);
+                  })
                 }
-              })
-            }
-            onStart={(id) =>
-              act(async (ticket) => {
-                await api.start(id);
-                await refresh(ticket);
-                ticket.check();
-                setNotice("");
-              })
-            }
-            onComplete={(id) =>
-              act(async (ticket) => {
-                const result = await api.complete(id);
-                await refresh(ticket);
-                ticket.check();
-                setNotice(
-                  result.awarded
-                    ? `+${result.awarded} XP — квест завершён!`
-                    : "Этот квест уже завершён",
-                );
-              })
-            }
-          />
+                onConsent={(input) =>
+                  void act(async (ticket) => {
+                    try {
+                      await api.aiConsent(input);
+                    } finally {
+                      if (ticket.active()) await refresh(ticket);
+                    }
+                  })
+                }
+                onStart={(id) =>
+                  act(async (ticket) => {
+                    await api.start(id);
+                    await refresh(ticket);
+                    ticket.check();
+                    setNotice("");
+                  })
+                }
+                onComplete={(id) =>
+                  act(async (ticket) => {
+                    const result = await api.complete(id);
+                    await refresh(ticket);
+                    ticket.check();
+                    setNotice(
+                      result.awarded
+                        ? `+${result.awarded} XP — квест завершён!`
+                        : "Этот квест уже завершён",
+                    );
+                  })
+                }
+              />
+            )}
+          </>
         )}
       </main>
       <footer>

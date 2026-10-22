@@ -32,6 +32,89 @@ const proof = (paymentId = randomUUID(), kopeks = 10_000) => ({
   currency: "RUB" as const,
 });
 
+test("ledger top-up availability supports legacy booleans and fresh async status without caching", async (t) => {
+  const db = await connectDatabase("pglite://:memory:");
+  t.after(() => db.close());
+  await migrate(db);
+  const user = await new Repository(db).register(
+    "availability@example.test",
+    "SYNTHETIC-HASH",
+  );
+  assert.equal(
+    (await new AiCreditLedger(db, "not_connected", true).status(user))
+      .topUpAvailable,
+    true,
+  );
+  assert.equal(
+    (await new AiCreditLedger(db).status(user)).topUpAvailable,
+    false,
+  );
+  let available = false,
+    calls = 0;
+  const ledger = new AiCreditLedger(db, "routerai_citygo_10x", async () => {
+    calls++;
+    await db.query("select 1");
+    return available;
+  });
+  assert.equal((await ledger.status(user)).topUpAvailable, false);
+  available = true;
+  assert.equal((await ledger.status(user)).topUpAvailable, true);
+  assert.equal(calls, 2);
+  const unavailable = new AiCreditLedger(db, "not_connected", async () => {
+    throw new Error("synthetic admission unavailable");
+  });
+  await assert.rejects(
+    unavailable.status(user),
+    /synthetic admission unavailable/,
+  );
+});
+
+test("dashboard resolves async admission before its snapshot transaction and passes a boolean to ledger", async (t) => {
+  const db = await connectDatabase("pglite://:memory:");
+  t.after(() => db.close());
+  await migrate(db);
+  const user = await new Repository(db).register(
+    "dashboard-availability@example.test",
+    "SYNTHETIC-HASH",
+  );
+  let inTransaction = false,
+    available = false,
+    calls = 0;
+  const wrapped: Database = {
+    exec: (sql) => db.exec(sql),
+    query: (sql, params) => db.query(sql, params),
+    close: () => db.close(),
+    transaction: (work) =>
+      db.transaction(async (tx) => {
+        inTransaction = true;
+        try {
+          return await work(tx);
+        } finally {
+          inTransaction = false;
+        }
+      }),
+  };
+  const repo = new Repository(wrapped, false, CITYGO_10X_TARIFF, async () => {
+    calls++;
+    assert.equal(inTransaction, false);
+    await db.query("select 1");
+    return available;
+  });
+  const account = { id: user, email: "dashboard-availability@example.test" };
+  assert.equal(
+    (await repo.dashboard(account, "unconfigured", null, 20)).aiAccess.credit!
+      .topUpAvailable,
+    false,
+  );
+  available = true;
+  assert.equal(
+    (await repo.dashboard(account, "unconfigured", null, 20)).aiAccess.credit!
+      .topUpAvailable,
+    true,
+  );
+  assert.equal(calls, 2);
+});
+
 test("0014 upgrades existing receipts without changing postings or repricing legacy operations", async (t) => {
   const db = await connectDatabase("pglite://:memory:");
   t.after(() => db.close());

@@ -41,7 +41,7 @@ export class AiCreditLedger {
   constructor(
     private db: Database,
     private chargingStatus: AiCredit["chargingStatus"] = "not_connected",
-    private topUpAvailable = false,
+    private topUpAvailable: boolean | (() => Promise<boolean>) = false,
   ) {}
 
   private async lock(tx: Sql, userId: string, actorId?: string) {
@@ -78,6 +78,13 @@ export class AiCreditLedger {
 
   async status(userId: string, sql: Sql = this.db): Promise<AiCredit> {
     creditUserIdSchema.parse(userId);
+    // A status hint, never checkout authorization. The order transaction checks
+    // live admission again. Resolve before the balance snapshot; no provider I/O
+    // belongs in this callback. Callers owning a transaction pre-resolve it.
+    const topUpAvailable =
+      typeof this.topUpAvailable === "function"
+        ? await this.topUpAvailable()
+        : this.topUpAvailable;
     // One statement snapshot: concurrent grants/holds cannot mix totals/history.
     const row = (
       await sql.query<{
@@ -117,7 +124,7 @@ export class AiCreditLedger {
       history: row.history,
       chargingStatus: this.chargingStatus,
       pending: row.pending,
-      topUpAvailable: this.topUpAvailable,
+      topUpAvailable,
     };
   }
 

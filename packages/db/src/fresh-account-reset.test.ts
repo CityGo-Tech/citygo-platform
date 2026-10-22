@@ -104,6 +104,9 @@ test("explicit full reset deletes accounts, all money/attempt history and knowle
     "citygo_migrations",
     "quests",
     "ai_routing",
+    "payment_admission",
+    "payment_admission_commands",
+    "payment_admission_reconciliation_events",
   ];
   const preserved = await captureRestartRows(db, preservedNames);
   const budgetBefore = (await db.query("select * from ai_budget")).rows[0]!;
@@ -448,3 +451,95 @@ test("unexpected bootstrap trigger changing preserved routing rolls back entire 
   await assert.rejects(reset.apply(input), /конфигурация изменились/);
   assert.deepEqual(await captureRestartRows(db), before);
 });
+
+for (const kind of [
+  "owner",
+  "continuous",
+  "reconciliation",
+  "run",
+  "command",
+  "event",
+] as const)
+  test(`fresh reset refuses ${kind} admission state/history without deleting or unlinking it`, async (t) => {
+    const { db, data, reset } = await fixture(t);
+    const stale = await prepared(reset);
+    if (kind === "owner")
+      await db.query("update payment_admission set owner_user_id=$1", [
+        data.user,
+      ]);
+    if (kind === "continuous")
+      await db.query(
+        "update payment_admission set owner_user_id=$1,merchant_id='123456',runtime_policy_id=repeat('a',64),mode='continuous',accepting_new_checkouts=true,manual_npd_responsibility_accepted=true",
+        [data.user],
+      );
+    if (kind === "reconciliation")
+      await db.exec(
+        "update payment_admission set merchant_id='123456',runtime_policy_id=repeat('a',64),reconciliation_enabled=true",
+      );
+    if (kind === "run")
+      await db.exec(
+        "update payment_admission set reconciliation_run_id='0af9b212-c46b-42df-b923-e57d639b620b',reconciliation_run_revision=1,reconciliation_run_until=clock_timestamp()-interval '1 hour'",
+      );
+    if (kind === "command")
+      await db.query(
+        "insert into payment_admission_commands(request_id,actor_user_id,merchant_id,runtime_policy_id,payload,result_revision,result) values('58b8a462-17db-4ce8-b731-c7c6bec3e091',$1,'123456',repeat('a',64),'{\"action\":\"close\"}',2,'{}')",
+        [data.user],
+      );
+    if (kind === "event")
+      await db.exec(
+        "insert into payment_admission_reconciliation_events(run_id,admission_revision,merchant_id,runtime_policy_id,success) values('0af9b212-c46b-42df-b923-e57d639b620b',1,'123456',repeat('a',64),false)",
+      );
+    const before = await captureRestartRows(db);
+    const plan = await reset.plan({
+      expectedUserCount: 2,
+      maintenanceConfirmed: true,
+    });
+    assert.ok(
+      plan.blockers.some(
+        (item) =>
+          item.code ===
+          (kind === "command" || kind === "event"
+            ? "PAYMENT_ADMISSION_HISTORY_PRESENT"
+            : "PAYMENT_ADMISSION_LINKED_OR_ACTIVE"),
+      ),
+    );
+    for (const name of [
+      "payment_admission",
+      "payment_admission_commands",
+      "payment_admission_reconciliation_events",
+    ]) {
+      assert.equal(plan.erasedTables.includes(name), false);
+      assert.equal(plan.preservedTables.includes(name), true);
+    }
+    assert.notEqual(
+      plan.snapshotFingerprint,
+      stale.expectedSnapshotFingerprint,
+    );
+    await assert.rejects(reset.apply(stale), /изменились/);
+    await assert.rejects(reset.apply(await prepared(reset)), /заблокирован/);
+    assert.deepEqual(await captureRestartRows(db), before);
+  });
+
+for (const effect of ["failure", "admission", "knowledge"] as const)
+  test(`fresh reset user DELETE ${effect} trigger rolls back child erasure and preserves admission`, async (t) => {
+    const { db, reset } = await fixture(t);
+    const body =
+      effect === "failure"
+        ? "raise exception 'Synthetic user DELETE failure';"
+        : effect === "admission"
+          ? "update payment_admission set revision=revision+1;"
+          : "insert into knowledge_sources(slug,title) values ('resurrected-'||old.id::text,'PRIVATE-RESURRECTED');";
+    await db.exec(`create function synthetic_fresh_user_delete() returns trigger language plpgsql as $$ begin ${body} return old; end $$;
+      create trigger synthetic_fresh_user_delete before delete on users for each row execute function synthetic_fresh_user_delete()`);
+    const input = await prepared(reset);
+    const before = await captureRestartRows(db);
+    await assert.rejects(
+      reset.apply(input),
+      effect === "failure"
+        ? /Synthetic user DELETE failure/
+        : effect === "admission"
+          ? /конфигурация изменились/
+          : /История восстановлена/,
+    );
+    assert.deepEqual(await captureRestartRows(db), before);
+  });

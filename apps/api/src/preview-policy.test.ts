@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { readConfig } from "@citygo/config";
@@ -51,6 +52,52 @@ test("policy preview ignores inherited credentials, approvals and runtime config
     }),
   );
   assert.doesNotMatch(result.stdout, /canary/);
+});
+
+test("owner-approved CN public snapshot is pinned explicitly and preview does not inherit activation or secrets", () => {
+  const fields = JSON.parse(
+    readFileSync(
+      new URL(
+        "../../../docs/operations/routerai-pro-cn-policy.approved.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  ) as Record<string, string>;
+  assert.deepEqual(Object.keys(fields).sort(), [
+    "ROUTERAI_COUNTRY",
+    "ROUTERAI_DATA_NOTICE",
+    "ROUTERAI_MODEL",
+    "ROUTERAI_PRODUCTION_POLICY_ID",
+    "ROUTERAI_UPSTREAM",
+  ]);
+  // Independently recorded after the owner's approval, never derived at startup.
+  const approvedId =
+    "6308c24a8c3eb9e0a2d5363ab7ec6f62dbf57ce6b7ad9ee31cfd2ca3b05b7615";
+  assert.equal(fields.ROUTERAI_PRODUCTION_POLICY_ID, approvedId);
+  assert.equal(fields.ROUTERAI_COUNTRY, "cn");
+  assert.equal(fields.ROUTERAI_UPSTREAM, "deepseek");
+  assert.equal(fields.ROUTERAI_MODEL, "deepseek/deepseek-v4-pro-0813");
+  const result = preview(fields);
+  assert.equal(result.status, 0, result.stderr);
+  const policy = JSON.parse(result.stdout);
+  assert.equal(policy.id, approvedId);
+  assert.equal(policy.version, "ai-recipient-v2");
+  assert.equal(policy.provider, "routerai");
+  assert.equal(policy.recipient, "RouterAI");
+  assert.ok(policy.data.endsWith(fields.ROUTERAI_DATA_NOTICE));
+  assert.doesNotMatch(result.stdout + result.stderr, /canary/);
+  for (const change of [
+    { ROUTERAI_COUNTRY: "us" },
+    { ROUTERAI_MODEL: "deepseek/deepseek-v4-flash" },
+    { ROUTERAI_DATA_NOTICE: "Changed or removed notice" },
+  ]) {
+    const changed = createAiPolicy(readConfig({ ...fields, ...change }), {
+      name: "routerai",
+      model: change.ROUTERAI_MODEL ?? fields.ROUTERAI_MODEL!,
+    })!;
+    assert.notEqual(changed.id, approvedId);
+  }
 });
 
 test("policy preview rejects missing or invalid public metadata without printing inputs", () => {

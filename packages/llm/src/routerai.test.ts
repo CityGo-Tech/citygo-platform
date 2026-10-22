@@ -130,46 +130,53 @@ test("RouterAI Astra uses an explicit total-output cap and native reasoning effo
   assert.equal(calls, 1);
 });
 
-test("RouterAI DeepSeek Pro pins its own recipient and uses max_tokens with reasoning", async () => {
-  let calls = 0;
-  const model = "deepseek/deepseek-v4-pro-0813";
-  const provider = new RouterAIProvider("synthetic-not-live", model, {
-    upstream: "deepseek",
-    country: "us",
-    maxOutputTokens: 32768,
-    reasoningEffort: "high",
-    timeoutMs: 240000,
-    fetch: async (url, init) => {
-      calls++;
-      assert.equal(url, "https://routerai.ru/api/v1/chat/completions");
-      assert.equal(init?.redirect, "error");
-      assert.deepEqual(JSON.parse(String(init?.body)), {
-        model,
-        messages: [
-          { role: "system", content: "Housing instructions" },
-          { role: "user", content: "Квартира" },
-        ],
-        stream: true,
-        stream_options: { include_usage: true },
-        max_tokens: 32768,
-        reasoning: { effort: "high" },
-        provider: { only: ["deepseek"], allow_fallbacks: false, country: "us" },
-      });
-      return sse([
-        { ...chunk({ reasoning: "private reasoning", content: null }), model },
-        { ...delta, model },
-        { ...stop, model },
-        { ...usage, model },
-        "[DONE]",
-      ]);
-    },
+for (const [country, maxOutputTokens] of [
+  ["us", 32768],
+  ["cn", 4096],
+] as const)
+  test(`RouterAI DeepSeek Pro ${country} pins its own recipient and uses max_tokens with reasoning`, async () => {
+    let calls = 0;
+    const model = "deepseek/deepseek-v4-pro-0813";
+    const provider = new RouterAIProvider("synthetic-not-live", model, {
+      upstream: "deepseek",
+      country,
+      maxOutputTokens,
+      reasoningEffort: "high",
+      timeoutMs: 240000,
+      fetch: async (url, init) => {
+        calls++;
+        assert.equal(url, "https://routerai.ru/api/v1/chat/completions");
+        assert.equal(init?.redirect, "error");
+        assert.deepEqual(JSON.parse(String(init?.body)), {
+          model,
+          messages: [
+            { role: "system", content: "Housing instructions" },
+            { role: "user", content: "Квартира" },
+          ],
+          stream: true,
+          stream_options: { include_usage: true },
+          max_tokens: maxOutputTokens,
+          reasoning: { effort: "high" },
+          provider: { only: ["deepseek"], allow_fallbacks: false, country },
+        });
+        return sse([
+          {
+            ...chunk({ reasoning: "private reasoning", content: null }),
+            model,
+          },
+          { ...delta, model },
+          { ...stop, model },
+          { ...usage, model },
+          "[DONE]",
+        ]);
+      },
+    });
+    assert.deepEqual(await collect(provider), [
+      { type: "delta", text: "Ответ 🏠" },
+      { type: "complete", model, usage: { inputTokens: 23, outputTokens: 7 } },
+    ]);
+    assert.equal(calls, 1);
   });
-  assert.deepEqual(await collect(provider), [
-    { type: "delta", text: "Ответ 🏠" },
-    { type: "complete", model, usage: { inputTokens: 23, outputTokens: 7 } },
-  ]);
-  assert.equal(calls, 1);
-});
 
 test("RouterAI legacy models keep max_tokens and omit reasoning unless explicitly configured", async () => {
   for (const configured of [false, true]) {
@@ -218,7 +225,11 @@ test("pinned RouterAI quality models permit a visible answer above the legacy ca
     const provider = new RouterAIProvider("test-key", model, {
       upstream: "test-upstream",
       fetch: async () =>
-        sse([chunk({ content: "x".repeat(24001) }), stop, "[DONE]"]),
+        sse([
+          { ...chunk({ content: "x".repeat(24001) }), model },
+          { ...stop, model },
+          "[DONE]",
+        ]),
     });
     if (model !== "qwen/qwen3.7-flash") {
       const events = await collect(provider);
@@ -231,25 +242,152 @@ test("pinned RouterAI quality models permit a visible answer above the legacy ca
 
 test("DeepSeek reasoning can exceed the legacy stream budget but visible output remains bounded", async () => {
   const model = "deepseek/deepseek-v4-pro-0813";
-  const reasoning = Array.from({ length: 20 }, () =>
-    chunk({ reasoning: "r".repeat(60000) }),
-  );
+  const reasoning = Array.from({ length: 20 }, () => ({
+    ...chunk({ reasoning: "r".repeat(60000) }),
+    model,
+  }));
   const provider = new RouterAIProvider("test-key", model, {
     upstream: "deepseek",
-    fetch: async () => sse([...reasoning, delta, stop, "[DONE]"]),
+    fetch: async () =>
+      sse([...reasoning, { ...delta, model }, { ...stop, model }, "[DONE]"]),
   });
   assert.equal((await collect(provider)).at(-1)!.type, "complete");
   const oversized = new RouterAIProvider("test-key", model, {
     upstream: "deepseek",
     fetch: async () =>
       sse([
-        chunk({ content: "x".repeat(64000) }),
-        chunk({ content: "x".repeat(64001) }),
-        stop,
+        { ...chunk({ content: "x".repeat(64000) }), model },
+        { ...chunk({ content: "x".repeat(64001) }), model },
+        { ...stop, model },
         "[DONE]",
       ]),
   });
   await assert.rejects(collect(oversized), /RouterAI generation failed/);
+});
+
+test("DeepSeek Pro rejects Flash, aliases, absent and late changed declarations before their text without retry", async () => {
+  const model = "deepseek/deepseek-v4-pro-0813";
+  const generation = "synthetic_pro_rejected_generation";
+  for (const [label, chunks, expectedText] of [
+    [
+      "Flash",
+      [
+        {
+          ...chunk({ content: "must-not-publish" }),
+          model: "deepseek/deepseek-v4-flash",
+          id: generation,
+        },
+      ],
+      [],
+    ],
+    [
+      "alias",
+      [
+        {
+          ...chunk({ content: "must-not-publish" }),
+          model: "deepseek/deepseek-v4-pro-latest",
+          id: generation,
+        },
+      ],
+      [],
+    ],
+    [
+      "absent",
+      [
+        {
+          choices: chunk({ content: "must-not-publish" }).choices,
+          id: generation,
+        },
+      ],
+      [],
+    ],
+    [
+      "late changed",
+      [
+        {
+          ...chunk({ content: "approved-declaration-text" }),
+          model,
+          id: generation,
+        },
+        {
+          ...chunk({ content: "must-not-publish" }),
+          model: "deepseek/deepseek-v4-flash",
+          id: generation,
+        },
+      ],
+      ["approved-declaration-text"],
+    ],
+  ] as const) {
+    let calls = 0,
+      retries = 0,
+      cancelled = false;
+    const identities: string[] = [];
+    const received: ModelStreamEvent[] = [];
+    const provider = new RouterAIProvider("synthetic-not-live", model, {
+      upstream: "deepseek",
+      country: "cn",
+      reasoningEffort: "high",
+      maxOutputTokens: 4096,
+      timeoutMs: 240000,
+      fetch: async (_url, init) => {
+        calls++;
+        const request = JSON.parse(String(init?.body));
+        assert.equal(request.model, model);
+        assert.deepEqual(request.provider, {
+          only: ["deepseek"],
+          allow_fallbacks: false,
+          country: "cn",
+        });
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(
+                new TextEncoder().encode(
+                  encode([...chunks, { ...stop, model }, "[DONE]"]),
+                ),
+              );
+            },
+            cancel() {
+              cancelled = true;
+            },
+          }),
+          { headers: { "content-type": "text/event-stream" } },
+        );
+      },
+    });
+    await assert.rejects(
+      async () => {
+        for await (const event of provider.stream(
+          "synthetic",
+          [],
+          new AbortController().signal,
+          {
+            beforeRetry: async () => {
+              retries++;
+            },
+            billing: {
+              reference: "synthetic_hold",
+              onGeneration: async (id) => {
+                identities.push(id);
+              },
+            },
+          },
+        ))
+          received.push(event);
+      },
+      { message: "RouterAI generation failed or was interrupted" },
+      label,
+    );
+    assert.deepEqual(
+      received,
+      expectedText.map((text) => ({ type: "delta", text })),
+      label,
+    );
+    assert.deepEqual(identities, [generation], label);
+    assert.equal(calls, 1, label);
+    assert.equal(retries, 0, label);
+    assert.equal(cancelled, true, label);
+  }
 });
 
 test("RouterAI does not invent usage or country and ignores reasoning fields", async () => {

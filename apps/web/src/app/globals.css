@@ -502,7 +502,23 @@ footer {
   }
   .topbar {
     justify-content: space-between;
-    height: 72px;
+    height: auto;
+    min-height: 72px;
+  }
+  .shell-onboarding .topbar {
+    height: auto;
+    min-height: 72px;
+  }
+  .topbar .account {
+    min-width: 0;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .topbar .account .cg-button {
+    flex-shrink: 0;
+    padding: 8px 10px;
+    white-space: nowrap;
   }
   .welcome-grid,
   .onboarding {
@@ -536,7 +552,7 @@ footer {
     padding: 20px 16px 35px;
   }
   .topbar {
-    padding: 0 16px;
+    padding: 8px 16px;
   }
   .topbar > .cg-badge {
     font-size: 9px;

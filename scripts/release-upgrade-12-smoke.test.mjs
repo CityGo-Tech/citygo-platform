@@ -52,13 +52,13 @@ test("the upgrade rehearsal rejects a production project before Docker or databa
   );
 });
 
-test("literal 12-era fixture rewinds current 21, rolls back late ACL failure and reapplies without losing data", async (t) => {
+test("literal 12-era fixture rewinds current 22, rolls back late ACL failure and reapplies without losing data", async (t) => {
   const db = new PGlite();
   t.after(() => db.close());
   await db.waitReady;
-  assert.equal(migrations.length, 21);
+  assert.equal(migrations.length, 22);
   assert.equal(migrations[11].name, "0012_housing_answer_history.sql");
-  assert.equal(migrations.at(-1).name, "0021_payment_notifications.sql");
+  assert.equal(migrations.at(-1).name, "0022_payment_admission.sql");
   await db.exec(
     "create role citygo_api; create role citygo_worker; create role citygo_backup; create table citygo_migrations(name text primary key,checksum text not null)",
   );
@@ -84,7 +84,7 @@ test("literal 12-era fixture rewinds current 21, rolls back late ACL failure and
   await apply(migrations);
 
   const rewind =
-    /psql\(\s*`(begin;\s*drop table payment_notification_inbox;[\s\S]*?commit)`/.exec(
+    /psql\(\s*`(begin;\s*drop table payment_admission_commands,payment_admission_reconciliation_events,payment_admission;[\s\S]*?commit)`/.exec(
       source,
     );
   assert.ok(

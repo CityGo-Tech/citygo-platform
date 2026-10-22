@@ -240,6 +240,9 @@ test(
       "citygo_migrations",
       "citygo_migration_lock",
       "ai_routing",
+      "payment_admission",
+      "payment_admission_commands",
+      "payment_admission_reconciliation_events",
     ];
     const before = await captureRestartRows(db, retained);
     const budget = (await db.query("select * from ai_budget")).rows[0]!;
@@ -280,6 +283,70 @@ test(
     const after = await captureRestartRows(db);
     await assert.rejects(reset.apply(await input(reset, 1)), /заблокирован/);
     assert.deepEqual(await captureRestartRows(db), after);
+  },
+);
+
+test(
+  "PostgreSQL fresh reset preserves linked/active admission and append-only command/reconciliation history",
+  pgOnly,
+  async (t) => {
+    for (const kind of ["owner", "command", "event", "run"] as const)
+      await t.test(kind, async (t) => {
+        const { db, data, reset } = await fixture(t);
+        const stale = await input(reset);
+        if (kind === "owner")
+          await db.query("update payment_admission set owner_user_id=$1", [
+            data.user,
+          ]);
+        if (kind === "command")
+          await db.query(
+            "insert into payment_admission_commands(request_id,actor_user_id,merchant_id,runtime_policy_id,payload,result_revision,result) values($1,$2,'123456',repeat('a',64),'{\"action\":\"close\"}',2,'{}')",
+            [randomUUID(), data.user],
+          );
+        if (kind === "event")
+          await db.query(
+            "insert into payment_admission_reconciliation_events(run_id,admission_revision,merchant_id,runtime_policy_id,success) values($1,1,'123456',repeat('a',64),false)",
+            [randomUUID()],
+          );
+        if (kind === "run")
+          await db.query(
+            "update payment_admission set reconciliation_run_id=$1,reconciliation_run_revision=1,reconciliation_run_until=clock_timestamp()-interval '1 hour'",
+            [randomUUID()],
+          );
+        const before = await captureRestartRows(db);
+        const plan = await reset.plan({
+          expectedUserCount: 2,
+          maintenanceConfirmed: true,
+        });
+        assert.ok(
+          plan.blockers.some(
+            (item) =>
+              item.code ===
+              (kind === "command" || kind === "event"
+                ? "PAYMENT_ADMISSION_HISTORY_PRESENT"
+                : "PAYMENT_ADMISSION_LINKED_OR_ACTIVE"),
+          ),
+        );
+        await assert.rejects(reset.apply(stale), /изменились/);
+        await assert.rejects(reset.apply(await input(reset)), /заблокирован/);
+        assert.deepEqual(await captureRestartRows(db), before);
+      });
+  },
+);
+
+test(
+  "PostgreSQL fresh reset user DELETE trigger cannot mutate retained admission after child TRUNCATE",
+  pgOnly,
+  async (t) => {
+    const { db, reset } = await fixture(t);
+    await db.exec(`create function synthetic_fresh_delete_admission() returns trigger language plpgsql as $$ begin
+      update payment_admission set revision=revision+1; return old; end $$;
+      create trigger synthetic_fresh_delete_admission before delete on users for each row
+      execute function synthetic_fresh_delete_admission()`);
+    const pinned = await input(reset);
+    const before = await captureRestartRows(db);
+    await assert.rejects(reset.apply(pinned), /конфигурация изменились/);
+    assert.deepEqual(await captureRestartRows(db), before);
   },
 );
 

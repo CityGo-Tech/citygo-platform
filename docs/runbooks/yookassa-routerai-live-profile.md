@@ -1,5 +1,9 @@
 # Закрытый runtime профиль ЮKassa и RouterAI
 
+Это исторический профиль **v4** с `country=us`. Решение владельца от 19 октября
+реализуется отдельным [CN-профилем v5](routerai-pro-cn-profile.md). Не менять
+значения v4 и не переиспользовать его разрешения для нового маршрута.
+
 Профиль `citygo-api-web-routerai-citygo-10x-yookassa-live-v1` позволяет закрыто
 запустить production API с боевым транспортом ЮKassa и тарифом CityGo ×10.
 Он требует startup approval **v4** и отдельного выпуска

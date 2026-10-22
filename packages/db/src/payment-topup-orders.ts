@@ -4,6 +4,10 @@ import { creditUserIdSchema } from "@citygo/contracts";
 import type { Database, Sql } from "./index.js";
 import { DomainError } from "./errors.js";
 import { lockPaymentMode } from "./payment-isolation.js";
+import {
+  assertLiveCheckoutAdmission,
+  type PaymentAdmissionBinding,
+} from "./payment-admission.js";
 
 const idSchema = z.uuid();
 const amountSchema = z.number().int().min(100).max(1_000_000);
@@ -78,7 +82,21 @@ type StoredOrder = Omit<PaymentTopupOrder, "amountKopeks"> & {
 // from a return URL, and no money is created by this class. Only the separately
 // verified AiCreditLedger posting can make an order credited/succeeded.
 export class PaymentTopupOrders {
-  constructor(private db: Database) {}
+  private admissionBinding?: PaymentAdmissionBinding;
+  constructor(
+    private db: Database,
+    admissionBinding?: PaymentAdmissionBinding,
+  ) {
+    // Trusted server configuration only. Legacy/internal database primitives
+    // without a binding remain usable on historical schemas before migration22;
+    // the live HTTP transport must always construct this class with a binding.
+    this.admissionBinding = admissionBinding
+      ? {
+          merchantId: admissionBinding.merchantId,
+          runtimePolicyId: admissionBinding.runtimePolicyId,
+        }
+      : undefined;
+  }
 
   private async lockUser(tx: Sql, userId: string) {
     creditUserIdSchema.parse(userId);
@@ -134,8 +152,21 @@ export class PaymentTopupOrders {
     merchantSchema.parse(merchantId);
     z.boolean().parse(test);
     returnUrlSchema.parse(returnUrl);
+    if (
+      !test &&
+      this.admissionBinding &&
+      merchantId !== this.admissionBinding.merchantId
+    )
+      throw new DomainError(
+        503,
+        "Платёжный магазин не соответствует допуску оплаты",
+      );
     return this.db.transaction(async (tx) => {
       await lockPaymentMode(tx, test ? "test" : "real");
+      // Shared lock order: account security -> admission -> payer -> order.
+      // Replays also pass this gate. No provider I/O while holding these locks.
+      if (!test && this.admissionBinding)
+        await assertLiveCheckoutAdmission(tx, this.admissionBinding);
       await this.lockUser(tx, userId);
       const existing = (
         await tx.query<{ id: string }>(

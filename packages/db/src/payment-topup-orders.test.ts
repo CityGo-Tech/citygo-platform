@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { PaymentTopupOrders } from "./payment-topup-orders.js";
 import { AiCreditLedger } from "./ai-credit.js";
+import { PaymentAdmission } from "./payment-admission.js";
 import { assertRealAiDatabaseSafety } from "./payment-isolation.js";
 import {
   connectDatabase,
@@ -48,6 +49,134 @@ async function fixture(testPayment = true) {
   };
   return { db, user, other, orders, create, credit };
 }
+
+test("bound live orders default closed, open continuously with fresh health, and close blocks replay but not settlement", async (t) => {
+  const f = await fixture(false);
+  t.after(() => f.db.close());
+  const binding = { merchantId: "12345", runtimePolicyId: "a".repeat(64) };
+  const admission = new PaymentAdmission(f.db, binding);
+  const orders = new PaymentTopupOrders(f.db, binding);
+  await f.db.query("update users set role='super_admin' where id=$1", [
+    f.other,
+  ]);
+  const ctx = { userId: f.other, sessionTokenHash: "a".repeat(64) };
+  await f.db.query(
+    "insert into sessions(token_hash,user_id,expires_at) values($1,$2,clock_timestamp()+interval '1 day')",
+    [ctx.sessionTokenHash, ctx.userId],
+  );
+  const request = randomUUID();
+  const create = () =>
+    orders.create(
+      f.user,
+      request,
+      10_000,
+      binding.merchantId,
+      false,
+      returnUrl,
+    );
+  await assert.rejects(create(), /Новые пополнения временно недоступны/);
+  assert.equal(
+    (await f.db.query("select * from payment_topup_orders")).rows.length,
+    0,
+  );
+  assert.equal(
+    (
+      await f.db.query<{ real_ai_admitted: boolean }>(
+        "select real_ai_admitted from account_security_state",
+      )
+    ).rows[0]!.real_ai_admitted,
+    false,
+  );
+  await admission.command(ctx, {
+    requestId: randomUUID(),
+    expectedRevision: 1,
+    action: "set_reconciliation",
+    enabled: true,
+  });
+  const run = await admission.beginReconciliation();
+  assert.ok(run);
+  await admission.completeReconciliation({ ...run, success: true });
+  await admission.command(ctx, {
+    requestId: randomUUID(),
+    expectedRevision: 2,
+    action: "open",
+    mode: "continuous",
+    manualNpdResponsibilityAccepted: true,
+  });
+  const order = await create();
+  assert.equal(order.test, false);
+  assert.equal((await create()).id, order.id);
+  await admission.command(ctx, {
+    requestId: randomUUID(),
+    expectedRevision: 3,
+    action: "close",
+  });
+  await assert.rejects(create(), /Новые пополнения временно недоступны/);
+  await assert.rejects(
+    orders.create(
+      f.user,
+      randomUUID(),
+      10_000,
+      binding.merchantId,
+      false,
+      returnUrl,
+    ),
+    /Новые пополнения временно недоступны/,
+  );
+  assert.equal((await orders.get(f.user, order.id)).id, order.id);
+  const paymentId = randomUUID();
+  await orders.recordProvider(f.user, order.id, {
+    providerPaymentId: paymentId,
+    status: "pending",
+    confirmationUrl,
+  });
+  await new AiCreditLedger(f.db).topUpConfirmed(f.user, order.id, {
+    providerPaymentId: paymentId,
+    paidKopeks: 10_000,
+    merchantId: binding.merchantId,
+    test: false,
+    verifiedAt: "2026-10-18T00:00:00.000Z",
+    verification: "server_get_succeeded",
+    currency: "RUB",
+  });
+  const settled = await orders.recordProvider(f.user, order.id, {
+    providerPaymentId: paymentId,
+    status: "succeeded",
+  });
+  assert.equal(settled.credited, true);
+  assert.equal(
+    (await new AiCreditLedger(f.db).status(f.user)).availableMicros,
+    100_000_000,
+  );
+  assert.equal(
+    (await f.db.query("select * from npd_receipt_tasks")).rows.length,
+    1,
+  );
+});
+
+test("bound order merchant cannot differ from admitted merchant, sandbox still uses its independent isolation", async (t) => {
+  const f = await fixture();
+  t.after(() => f.db.close());
+  const binding = { merchantId: "12345", runtimePolicyId: "a".repeat(64) };
+  const orders = new PaymentTopupOrders(f.db, binding);
+  await assert.rejects(
+    orders.create(f.user, randomUUID(), 10_000, "54321", false, returnUrl),
+    /не соответствует допуску/,
+  );
+  const order = await orders.create(
+    f.user,
+    randomUUID(),
+    10_000,
+    binding.merchantId,
+    true,
+    returnUrl,
+  );
+  assert.equal(order.test, true);
+  assert.equal(
+    (await new PaymentAdmission(f.db, binding).statusUser()).available,
+    false,
+  );
+});
 
 test("checkout create persists deterministic exact provider payload and DB time", async (t) => {
   const f = await fixture();

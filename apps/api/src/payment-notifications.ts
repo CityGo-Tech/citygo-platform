@@ -26,6 +26,11 @@ const rowSchema = z.strictObject({
   attemptCount: z.number().int().nonnegative(),
   leaseToken: z.uuid(),
 });
+// The immutable inbox guard compares provider text to PostgreSQL's canonical
+// UUID text. Do not cast malformed/uppercase legacy identities or silently
+// rewrite their financial binding; they require a separate operator review.
+const canonicalProviderIdPattern =
+  "^(?:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$";
 export type PaymentNotification = z.infer<typeof rowSchema> & {
   kind: "payment" | "refund";
 };
@@ -88,6 +93,81 @@ export class PaymentNotificationInbox {
       [event, object.id, this.#merchantId, this.#test],
     );
     return known.rows.length ? "duplicate" : "ignored";
+  }
+
+  async enqueueKnownPending(limit = 10): Promise<number> {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 25)
+      throw new DomainError(400, "Недопустимый размер поиска платежей");
+    // Recover lost webhooks from existing DB-owned identities, not from client
+    // metadata. Excluding every already represented object prevents old pending
+    // or immutable processed hints from starving later missing notifications.
+    // Filter legacy IDs BEFORE LIMIT so poison rows cannot occupy every batch.
+    const candidates = await this.#db.query<{
+      kind: "payment" | "refund";
+      objectId: string;
+    }>(
+      `select kind,object_id as "objectId" from (
+         select 'payment' as kind,p.id,p.provider_payment_id as object_id,p.updated_at
+         from payment_topup_orders p
+         where p.merchant_id=$1 and p.test=$2 and p.status in ('queued','pending')
+           and p.provider_payment_id is not null and p.provider_payment_id ~ $4
+           and not exists(select 1 from payment_notification_inbox n
+             where n.payment_order_id=p.id and n.merchant_id=p.merchant_id and n.test=p.test)
+         union all
+         select 'refund' as kind,r.id,r.provider_refund_id as object_id,r.updated_at
+         from payment_refunds r
+         where r.merchant_id=$1 and r.test=$2 and r.status in ('pending','unknown')
+           and r.provider_refund_id is not null and r.provider_refund_id ~ $4
+           and not exists(select 1 from payment_notification_inbox n
+             where n.refund_id=r.id and n.merchant_id=r.merchant_id and n.test=r.test)
+       ) known order by updated_at,id,kind limit $3`,
+      [this.#merchantId, this.#test, limit, canonicalProviderIdPattern],
+    );
+    let queued = 0;
+    for (const candidate of candidates.rows) {
+      // Defense in depth for legacy/corrupt adapters. No arbitrary string is
+      // passed to the UUID-casting enqueue query or a provider callback.
+      if (
+        !["payment", "refund"].includes(candidate.kind) ||
+        !z.uuid().safeParse(candidate.objectId).success ||
+        candidate.objectId !== candidate.objectId.toLowerCase()
+      )
+        continue;
+      const outcome = await this.enqueue({
+        type: "notification",
+        event:
+          candidate.kind === "payment"
+            ? "payment.succeeded"
+            : "refund.succeeded",
+        object: { id: candidate.objectId },
+      });
+      if (outcome === "queued") queued++;
+    }
+    return queued;
+  }
+
+  async hasUnresolvedVerificationFailures(): Promise<boolean> {
+    const observed = await this.#db.query<{ failed: boolean }>(
+      `select
+         exists(select 1 from payment_notification_inbox n
+           where n.merchant_id=$1 and n.test=$2 and n.status<>'processed'
+             and n.last_reason='verification_failed')
+         or exists(select 1 from payment_topup_orders p
+           where p.merchant_id=$1 and p.test=$2 and (p.status='review_required'
+             or (p.status in ('queued','pending') and p.provider_payment_id is not null
+               and p.provider_payment_id !~ $3)))
+         or exists(select 1 from payment_refunds r
+           where r.merchant_id=$1 and r.test=$2 and (r.status='review_required'
+             or r.review_reason is not null
+             or (r.status in ('pending','unknown') and r.provider_refund_id is not null
+               and r.provider_refund_id !~ $3))) as failed`,
+      [this.#merchantId, this.#test, canonicalProviderIdPattern],
+    );
+    const failed = observed.rows[0]?.failed;
+    if (typeof failed !== "boolean")
+      throw new Error("Invalid payment verification health response");
+    // Normal provider pending/retry_required is not a failed authenticated GET.
+    return failed;
   }
 
   async processPending(limit = 10) {

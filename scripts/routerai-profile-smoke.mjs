@@ -21,6 +21,10 @@ export async function routerAiProfileSmoke({
       "routerai-citygo-10x-yookassa-live-v1",
       "routerai-citygo-10x-yookassa-live-profile.fixture.json",
     ],
+    [
+      "routerai-citygo-10x-yookassa-live-cn-v1",
+      "routerai-citygo-10x-yookassa-live-cn-profile.fixture.json",
+    ],
   ])
     await mountedProfileSmoke({
       project,

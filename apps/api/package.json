@@ -12,7 +12,7 @@
     "dev": "node ../../scripts/with-env.mjs api pnpm exec tsx watch src/dev.ts",
     "lint": "eslint src",
     "start": "node ../../scripts/with-env.mjs api node dist/server.js",
-    "test": "node --import tsx --test src/**/*.test.ts",
+    "test": "node --import tsx --test --test-concurrency=3 src/**/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

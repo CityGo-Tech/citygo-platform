@@ -27,6 +27,9 @@ import {
   paymentRefundIdSchema,
   createPaymentRefundSchema,
   reconcilePaymentRefundSchema,
+  paymentAdmissionCommandSchema,
+  paymentAdmissionStatusSchema,
+  paymentAdmissionUserStatusSchema,
   completionResponseSchema,
   dashboardResponseSchema,
   okResponseSchema,
@@ -47,6 +50,7 @@ import {
   type PaymentRefundListQuery,
   type CreatePaymentRefundInput,
   type ReconcilePaymentRefundInput,
+  type PaymentAdmissionCommand,
   type Questionnaire,
   type StreamEvent,
 } from "@citygo/contracts";
@@ -302,6 +306,27 @@ export function createClient(
       receiptRequest(taskId, command),
     npdReceipts: () =>
       request("/v1/payments/receipts", ownerNpdReceiptListSchema),
+    paymentAdmission: () =>
+      request("/v1/admin/payments/admission", paymentAdmissionStatusSchema),
+    commandPaymentAdmission: async (input: PaymentAdmissionCommand) => {
+      const parsed = paymentAdmissionCommandSchema.safeParse(input);
+      if (!parsed.success)
+        throw new Error("Некорректная команда допуска оплаты");
+      const result = await request(
+        "/v1/admin/payments/admission/commands",
+        paymentAdmissionStatusSchema,
+        parsed.data,
+      );
+      if (result.revision <= parsed.data.expectedRevision)
+        throw new ApiError(
+          200,
+          "Ответ сервера не подтверждает новую ревизию допуска оплаты. Обновите состояние перед повтором действия.",
+          "invalid_response",
+        );
+      return result;
+    },
+    paymentAvailability: () =>
+      request("/v1/payments/availability", paymentAdmissionUserStatusSchema),
     adminPaymentRefunds: (input: Partial<PaymentRefundListQuery> = {}) => {
       const query = refundInput(paymentRefundListQuerySchema, input);
       const search = new URLSearchParams({ limit: String(query.limit) });

@@ -55,6 +55,9 @@ const retained = [
   "ai_model_attempts",
   "ai_credit_entries",
   "ai_credit_charges",
+  "payment_admission",
+  "payment_admission_commands",
+  "payment_admission_reconciliation_events",
   "operational_ai_audit",
   "server_secrets",
   "backups_and_external_storage",
@@ -133,6 +136,18 @@ export class AccountReset {
         "audit_log_owned_or_acted",
         "select count(*)::int as count from audit_log where actor_user_id=any($1::bigint[]) or (entity_type in ('account','ai-credit') and entity_id=any($1::text[]))",
       );
+      // A retained singleton and append-only audit, not a deletion whitelist.
+      // Security lock above serializes the supported admission writers.
+      for (const table of [
+        "payment_admission",
+        "payment_admission_commands",
+        "payment_admission_reconciliation_events",
+      ])
+        counts[table] = (
+          await tx.query<{ count: number }>(
+            `select count(*)::int as count from ${table}`,
+          )
+        ).rows[0]!.count;
       const blockers: AccountResetBlocker[] = [
         { code: "RESET_APPLY_NOT_IMPLEMENTED", count: 1 },
       ];
@@ -142,11 +157,36 @@ export class AccountReset {
         blockers.push({ code: "EXPECTED_USER_COUNT_MISMATCH", count: 1 });
       if (options.maintenanceConfirmed !== true)
         blockers.push({ code: "MAINTENANCE_NOT_CONFIRMED", count: 1 });
-      const block = async (code: string, query: string) => {
-        const value = (await tx.query<{ count: number }>(query, [ids])).rows[0]!
-          .count;
+      const block = async (
+        code: string,
+        query: string,
+        params: unknown[] = [ids],
+      ) => {
+        const value = (await tx.query<{ count: number }>(query, params))
+          .rows[0]!.count;
         if (value) blockers.push({ code, count: value });
       };
+      if (counts.payment_admission !== 1)
+        blockers.push({
+          code: "PAYMENT_ADMISSION_STATE_UNAVAILABLE",
+          count: 1,
+        });
+      const admissionHistoryCount =
+        counts.payment_admission_commands! +
+        counts.payment_admission_reconciliation_events!;
+      if (admissionHistoryCount)
+        blockers.push({
+          code: "PAYMENT_ADMISSION_HISTORY_PRESENT",
+          count: admissionHistoryCount,
+        });
+      await block(
+        "PAYMENT_ADMISSION_LINKED_OR_ACTIVE",
+        `select count(*)::int as count from payment_admission where
+         (owner_user_id is not null or accepting_new_checkouts or mode<>'closed'
+          or reconciliation_enabled or reconciliation_run_id is not null
+          or reconciliation_run_revision is not null or reconciliation_run_until is not null)`,
+        [],
+      );
       await block(
         "ACTIVE_CHAT_REQUESTS",
         "select count(*)::int as count from chat_requests r join agent_threads t on t.id=r.thread_id where t.user_id=any($1::bigint[]) and r.status='running'",
