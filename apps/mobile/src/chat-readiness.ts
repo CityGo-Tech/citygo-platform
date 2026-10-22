@@ -11,11 +11,17 @@ export function messageInterruptionLabel(message: Message) {
 // This is explanatory UI only, never a replacement for the server's reservation.
 export function hasEmptyChargeBalance(access?: AiAccess) {
   const credit = access?.credit;
+  const minimum =
+    credit?.minimumRequestBalanceMicros ??
+    (credit?.reservationMode === "fixed5_overdraft" ? 5_000_000 : null);
   return (
     !!credit &&
     ["routerai_at_cost", "routerai_citygo_10x"].includes(
       credit.chargingStatus,
     ) &&
-    credit.availableMicros === 0
+    ((credit.outstandingDebtMicros ?? 0) > 0 ||
+      (minimum === null
+        ? credit.availableMicros <= 0
+        : credit.availableMicros < minimum))
   );
 }

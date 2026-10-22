@@ -410,10 +410,18 @@ test("migration snapshots old funds as nonrefundable, pins known old holds and p
     other = await repo.register("drift@example.test", "synthetic"),
     oldPaid = await repo.register("legacy-paid@example.test", "synthetic"),
     ledger = new AiCreditLedger(db);
-  await ledger.grantWelcome(user, other);
-  await ledger.grantWelcome(other, user);
+  // Seed the actual pre-0017 shape, not today's ledger/status implementation
+  // against a schema that does not yet contain source/debt accounting.
+  await db.query(
+    "insert into ai_credit_accounts(user_id,granted_micros) values($1,500000000),($2,500000000),($3,100000000)",
+    [user, other, oldPaid],
+  );
+  await db.query(
+    "insert into ai_credit_entries(user_id,operation_id,kind,amount_micros,actor_user_id) values($1,$2,'bonus',500000000,$3),($3,$4,'bonus',500000000,$1)",
+    [user, randomUUID(), other, randomUUID()],
+  );
   const oldPayment = randomUUID();
-  await ledger.topUpConfirmed(oldPaid, oldPayment, {
+  const oldProof = {
     providerPaymentId: randomUUID(),
     merchantId: "synthetic-shop",
     test: false,
@@ -421,7 +429,23 @@ test("migration snapshots old funds as nonrefundable, pins known old holds and p
     verifiedAt: "2026-10-18T00:00:00.000Z",
     verification: "server_get_succeeded",
     currency: "RUB",
-  });
+  };
+  await db.query(
+    "insert into ai_credit_entries(user_id,operation_id,kind,amount_micros) values($1,$2,'topup',100000000)",
+    [oldPaid, oldPayment],
+  );
+  await db.query(
+    `insert into ai_credit_topups(provider_payment_id,operation_id,user_id,paid_kopeks,credited_micros,merchant_id,test,verified_at,verification_receipt)
+     values($1,$2,$3,10000,100000000,$4,false,$5,$6)`,
+    [
+      oldProof.providerPaymentId,
+      oldPayment,
+      oldPaid,
+      oldProof.merchantId,
+      oldProof.verifiedAt,
+      JSON.stringify(oldProof),
+    ],
+  );
   // The pre-0017 ledger is seeded directly; new code must not be used before its schema.
   const hold = randomUUID();
   await db.query(
@@ -447,6 +471,12 @@ test("migration snapshots old funds as nonrefundable, pins known old holds and p
   );
   assert.equal((await listPaidSourceLots(db, user)).length, 0);
   assert.equal((await listPaidSourceLots(db, oldPaid)).length, 0);
+  // Verify the 0017 backfill first, then finish the historical fixture before
+  // using current runtime helpers. Production code never skips debt guards.
+  for (const name of (await readdir(directory))
+    .filter((n) => n.endsWith(".sql") && n > "0017_credit_source_lots.sql")
+    .sort())
+    await db.exec(await readFile(new URL(name, directory), "utf8"));
   await assert.rejects(
     sourceTransaction(db, oldPaid, (tx) =>
       reservePaidRefund(tx, oldPaid, oldPayment, randomUUID(), 100),

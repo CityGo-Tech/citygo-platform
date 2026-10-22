@@ -82,6 +82,9 @@ export const chatInputSchema = z.object({
   requestId: z.uuid(),
   // Missing IDs from old clients fail closed at admission, without sending data.
   policyId: aiPolicyIdSchema.optional(),
+  // Capability echo from the displayed balance. Old clients must not silently
+  // acquire an overdraft they do not know how to render.
+  creditReservationMode: z.enum(["full", "fixed5_overdraft"]).optional(),
 });
 // Concrete persisted plan version; this is NOT an R1 resource revision.
 export const questPlanReferenceSchema = z.object({

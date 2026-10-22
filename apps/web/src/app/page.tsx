@@ -219,6 +219,7 @@ export default function Home() {
           },
           controller.signal,
           board.aiAccess.policy?.id,
+          board.aiAccess.credit?.reservationMode,
         );
       } catch (e) {
         if (!ticket.active()) return;

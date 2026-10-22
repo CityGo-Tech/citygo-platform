@@ -25,6 +25,7 @@ import {
   credentialsSchema,
   loginSchema,
   formatMoneyMicros,
+  formatSignedMoneyMicros,
   type Dashboard,
 } from "@citygo/contracts";
 import { tokens } from "@citygo/design-tokens";
@@ -615,7 +616,7 @@ export default function App() {
                       </Text>
                       <Text>
                         Доступно:{" "}
-                        {formatMoneyMicros(
+                        {formatSignedMoneyMicros(
                           board.aiAccess.credit.availableMicros,
                         )}{" "}
                         ₽. В резерве:{" "}
@@ -624,6 +625,27 @@ export default function App() {
                         {formatMoneyMicros(board.aiAccess.credit.spentMicros)}{" "}
                         ₽.
                       </Text>
+                      {board.aiAccess.credit.reservationMode ===
+                        "fixed5_overdraft" && (
+                        <Text>
+                          Перед платным запросом резервируется 5 ₽ CityGo. Это
+                          не итоговая цена: спишется полная подтверждённая
+                          стоимость модели ×10. Если средств не хватит, баланс
+                          станет отрицательным. Новые платные запросы доступны
+                          после пополнения до 5 ₽ свободного баланса; пополнение
+                          сначала погашает задолженность.
+                        </Text>
+                      )}
+                      {(board.aiAccess.credit.outstandingDebtMicros ?? 0) >
+                        0 && (
+                        <Text>
+                          Задолженность:{" "}
+                          {formatSignedMoneyMicros(
+                            board.aiAccess.credit.outstandingDebtMicros!,
+                          )}{" "}
+                          ₽ CityGo. Она будет погашена из следующих пополнений.
+                        </Text>
+                      )}
                       <Text>
                         {board.aiAccess.credit.chargingStatus ===
                         "routerai_citygo_10x"
@@ -718,8 +740,10 @@ export default function App() {
                   {hasEmptyChargeBalance(board.aiAccess) && (
                     <View>
                       <Text>
-                        На балансе нет доступных средств для платного ответа ИИ.
-                        Необходимый резерв проверяется сервером.
+                        {board.aiAccess.credit?.reservationMode ===
+                        "fixed5_overdraft"
+                          ? "Для нового платного ответа ИИ нужно не менее 5 ₽ CityGo доступного баланса. Пополнение сначала погашает задолженность. Проверку резерва выполняет сервер."
+                          : "На балансе недостаточно доступных средств для платного ответа ИИ. Необходимый резерв проверяется сервером."}
                       </Text>
                       <Text
                         accessibilityRole="link"
@@ -768,6 +792,7 @@ export default function App() {
                             },
                             controller.signal,
                             board.aiAccess.policy?.id,
+                            board.aiAccess.credit?.reservationMode,
                           );
                         } catch (e) {
                           // A stale consent or quota rejection must not discard

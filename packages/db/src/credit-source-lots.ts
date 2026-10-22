@@ -6,6 +6,7 @@ import {
 } from "@citygo/contracts";
 import type { Sql } from "./index.js";
 import { DomainError } from "./errors.js";
+import { assertCreditDebtPaid, repayCreditDebt } from "./credit-debt.js";
 
 const uuid = z.uuid().transform((value) => value.toLowerCase());
 const money = z.number().int().min(0).max(CITYGO_MAX_AMOUNT_MICROS);
@@ -151,6 +152,7 @@ export async function reserveCreditSources(
       "Резерв источников не соответствует исходной операции AI",
     );
   await usable(tx, userId);
+  await assertCreditDebtPaid(tx, userId);
   const previous = (
     await tx.query<{ amount: string }>(
       "select sum(reserved_micros)::text as amount from credit_hold_allocations where hold_id=$1",
@@ -315,6 +317,7 @@ export async function reservePaidRefund(
     return previous;
   }
   await usable(tx, userId);
+  await assertCreditDebtPaid(tx, userId);
   const lot = (
     await tx.query<Lot>(
       `select ${selectLot} from credit_source_lots where paid_operation_id=$1 and user_id=$2 for update`,
@@ -395,6 +398,7 @@ async function resolvePaidRefund(
     "update credit_refund_allocations set state=$2 where refund_id=$1",
     [refundId, state],
   );
+  await repayCreditDebt(tx, userId);
   return { ...previous, state };
 }
 export function settlePaidRefund(tx: Sql, userId: string, refundId: string) {

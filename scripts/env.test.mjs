@@ -24,6 +24,7 @@ const canaries = {
   ROUTERAI_DATA_NOTICE: "Synthetic public operator notice",
   ROUTERAI_PRODUCTION_POLICY_ID: "a".repeat(64),
   AI_CREDIT_MODE: "routerai_at_cost",
+  AI_CREDIT_RESERVATION_MODE: "fixed5_overdraft",
   YOOKASSA_MODE: "test",
   YOOKASSA_SHOP_ID: "12345",
   YOOKASSA_SECRET_KEY: "test_synthetic_canary",
@@ -74,6 +75,10 @@ test("API gets only known API settings; worker/migrator get no LLM or API settin
   assert.equal(api.ROUTERAI_API_KEY, canaries.ROUTERAI_API_KEY);
   assert.equal(api.ROUTERAI_DATA_NOTICE, canaries.ROUTERAI_DATA_NOTICE);
   assert.equal(api.AI_CREDIT_MODE, canaries.AI_CREDIT_MODE);
+  assert.equal(
+    api.AI_CREDIT_RESERVATION_MODE,
+    canaries.AI_CREDIT_RESERVATION_MODE,
+  );
   assert.equal(api.YOOKASSA_MODE, canaries.YOOKASSA_MODE);
   assert.equal(api.YOOKASSA_SHOP_ID, canaries.YOOKASSA_SHOP_ID);
   assert.equal(api.YOOKASSA_SECRET_KEY, canaries.YOOKASSA_SECRET_KEY);

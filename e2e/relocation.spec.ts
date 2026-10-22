@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import type { Dashboard } from "@citygo/contracts";
 
 async function register(page: Page, password = "123456") {
   const email = "e2e-" + crypto.randomUUID() + "@example.test";
@@ -103,6 +104,64 @@ test("six-character registration → conversation without questionnaire → save
   ).toBeTruthy();
   await page.screenshot({
     path: testInfo.outputPath("conversation-without-questionnaire.png"),
+    fullPage: true,
+  });
+});
+
+test("six consecutive synthetic replies preserve numeric chat order and the last question after reload", async ({
+  page,
+}, testInfo) => {
+  await register(page);
+  await page
+    .getByRole("button", { name: "Начать диалог", exact: true })
+    .click();
+  await page
+    .getByRole("checkbox", {
+      name: "Разрешаю передачу указанных данных этому получателю для рекомендаций.",
+    })
+    .check();
+  await page.getByRole("button", { name: "Подтвердить получателя AI" }).click();
+  const questions: string[] = [];
+  for (let turn = 1; turn <= 6; turn++) {
+    const question = `Вымышленный вопрос ${turn}: помоги подготовить переезд`;
+    questions.push(question);
+    await page.getByLabel("Сообщение помощнику").fill(question);
+    await page.getByRole("button", { name: "Отправить", exact: true }).click();
+    await expect(page.getByLabel("Сообщение помощнику")).toBeEnabled();
+    await expect(page.getByLabel("Сообщение помощнику")).toHaveValue("");
+    await expect(page.getByRole("log").locator("article")).toHaveCount(
+      turn * 2,
+    );
+  }
+  const read = async () => {
+    const response = await page.request.get("/api/v1/dashboard");
+    expect(response.ok()).toBeTruthy();
+    return response.json() as Promise<Dashboard>;
+  };
+  const before = (await read()).thread!.messages;
+  expect(before).toHaveLength(12);
+  expect(before.map((m) => BigInt(m.id))).toEqual(
+    before
+      .map((m) => BigInt(m.id))
+      .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)),
+  );
+  expect(before.filter((m) => m.role === "user").map((m) => m.content)).toEqual(
+    questions,
+  );
+  expect(before.at(-2)?.content).toBe(questions.at(-1));
+  expect(before.at(-1)?.role).toBe("assistant");
+  expect(before.at(-1)?.status).toBe("complete");
+  await page.reload();
+  await expect(page.getByRole("log").locator("article")).toHaveCount(12);
+  const rendered = await page
+    .getByRole("log")
+    .locator("article")
+    .allTextContents();
+  for (let i = 0; i < questions.length; i++)
+    expect(rendered[i * 2]).toContain(questions[i]);
+  expect((await read()).thread!.messages).toEqual(before);
+  await page.screenshot({
+    path: testInfo.outputPath("numeric-history-after-reload.png"),
     fullPage: true,
   });
 });

@@ -16,6 +16,8 @@ import {
   seedRestartNpdObligation,
   seedRestartRefundHistory,
   seedRestartPaymentNotification,
+  seedRestartCreditDebt,
+  seedRestartUnreconciledCharge,
 } from "./closed-account-restart-fixture.js";
 
 async function fixture(t: TestContext) {
@@ -276,8 +278,8 @@ test("closed retirement cannot mutate preserved admission through a user-update 
   assert.deepEqual(await captureRestartRows(db), before);
 });
 
-test("full fingerprint catches changed private data, receipt, audit and schema even at the same account count", async (t) => {
-  const { db, restart } = await fixture(t);
+test("full fingerprint catches changed private data, confirmed receipt, audit and schema even at the same account count", async (t) => {
+  const { db, data, restart } = await fixture(t);
   const options = await prepared(restart);
   await db.query("update messages set content='DIFFERENT-PRIVATE-CHAT'");
   const next = await restart.plan({
@@ -292,11 +294,37 @@ test("full fingerprint catches changed private data, receipt, audit and schema e
   await assert.rejects(restart.apply(options));
   assert.deepEqual(await captureRestartRows(db), before);
   const previous = next.snapshotFingerprint;
-  await db.query(
-    "update ai_credit_charges set receipt=jsonb_set(receipt,'{costRub}','\"0.1200000\"')",
+  await assert.rejects(
+    db.query(
+      "update ai_credit_charges set receipt=jsonb_set(receipt,'{costRub}','\"0.1200000\"')",
+    ),
+    /cannot be rewritten/,
   );
+  const pending = await seedRestartUnreconciledCharge(
+    db,
+    data.user,
+    data.thread,
+  );
+  await db.query(
+    "update ai_credit_charges set response_complete=true where hold_id=$1",
+    [pending.hold],
+  );
+  const beforeReceipt = await restart.plan({ expectedUserCount: 2 });
+  await pending.charges.settle(data.user, pending.hold, {
+    reference: pending.hold,
+    generationId: pending.generationId,
+    model: "synthetic-pending-model",
+    upstream: "synthetic",
+    currency: "RUB",
+    costRub: "0.012",
+    amountMicros: 12_000,
+  });
   const changedReceipt = await restart.plan({ expectedUserCount: 2 });
   assert.notEqual(changedReceipt.snapshotFingerprint, previous);
+  assert.notEqual(
+    changedReceipt.snapshotFingerprint,
+    beforeReceipt.snapshotFingerprint,
+  );
   await db.query(
     "update audit_log set payload=payload || '{\"reviewed\":true}'::jsonb",
   );
@@ -347,6 +375,52 @@ test("closed restart preserves source lots, resolved allocations and monetary re
   assert.equal(plan.counts.credit_refund_allocations, 1);
   assert.equal(plan.counts.payment_refunds, 1);
   assert.equal(plan.counts.payment_refund_events, 2);
+  await restart.apply(await prepared(restart));
+  assert.deepEqual(
+    await captureRestartRows(db, retainedFinancialTables),
+    before,
+  );
+});
+
+test("closed retirement refuses outstanding fixed5 debt without changing its immutable financial history", async (t) => {
+  const { db, data, restart } = await fixture(t);
+  const stale = await prepared(restart);
+  await seedRestartCreditDebt(db, data.ids[1]!);
+  const before = await captureRestartRows(db);
+  const plan = await restart.plan({
+    expectedUserCount: 2,
+    maintenanceConfirmed: true,
+  });
+  assert.equal(plan.counts.credit_charge_debts, 1);
+  assert.equal(plan.counts.credit_debt_repayments, 0);
+  assert.ok(
+    plan.blockers.some(
+      (item) => item.code === "OUTSTANDING_CREDIT_DEBT" && item.count === 1,
+    ),
+  );
+  for (const name of ["credit_charge_debts", "credit_debt_repayments"])
+    assert.ok(plan.retained.includes(name));
+  assert.notEqual(plan.snapshotFingerprint, stale.expectedSnapshotFingerprint);
+  assert.doesNotMatch(
+    JSON.stringify(plan),
+    /PRIVATE-|@example\.test|synthetic-debt-/,
+  );
+  await assert.rejects(restart.apply(stale), /изменились/);
+  await assert.rejects(restart.apply(await prepared(restart)), /заблокирован/);
+  assert.deepEqual(await captureRestartRows(db), before);
+});
+
+test("closed retirement preserves repaid debt and its source-bound repayments byte-for-byte", async (t) => {
+  const { db, data, restart } = await fixture(t);
+  await seedRestartCreditDebt(db, data.ids[1]!, { repaid: true });
+  const before = await captureRestartRows(db, retainedFinancialTables);
+  const plan = await restart.plan({
+    expectedUserCount: 2,
+    maintenanceConfirmed: true,
+  });
+  assert.equal(plan.counts.credit_charge_debts, 1);
+  assert.equal(plan.counts.credit_debt_repayments, 1);
+  assert.deepEqual(plan.blockers, []);
   await restart.apply(await prepared(restart));
   assert.deepEqual(
     await captureRestartRows(db, retainedFinancialTables),
@@ -421,7 +495,7 @@ test("each unsafe blocker prevents the whole restart without changing accounting
       "update agent_threads set busy_until=now()+interval '1 minute'",
     ],
     ["held balance", "update ai_credit_accounts set held_micros=1"],
-    ["missing receipt", "update ai_credit_charges set receipt=null"],
+    ["missing receipt", ""],
     [
       "external artifact",
       "insert into generated_artifacts(user_id,kind,storage_key) select min(id),'resume','PRIVATE-EXTERNAL-OBJECT' from users",
@@ -433,8 +507,10 @@ test("each unsafe blocker prevents the whole restart without changing accounting
   ] as const;
   for (const [name, statement] of cases)
     await t.test(name, async (t) => {
-      const { db, restart } = await fixture(t);
-      await db.exec(statement);
+      const { db, data, restart } = await fixture(t);
+      if (name === "missing receipt")
+        await seedRestartUnreconciledCharge(db, data.user, data.thread);
+      else await db.exec(statement);
       const plan = await restart.plan({
         expectedUserCount: 2,
         maintenanceConfirmed: true,

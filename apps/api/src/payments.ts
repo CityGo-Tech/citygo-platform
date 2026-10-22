@@ -105,6 +105,7 @@ export function registerPaymentTopups(
     options.db,
     "routerai_citygo_10x",
     !!options.client,
+    options.config.AI_CREDIT_RESERVATION_MODE,
   );
   const returnUrl = new URL("/", options.config.WEB_ORIGIN).href;
   function available() {

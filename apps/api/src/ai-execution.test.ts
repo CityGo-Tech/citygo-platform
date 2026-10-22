@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readConfig } from "@citygo/config";
 import { createAiPolicy } from "./ai-policy.js";
 import { createAiExecution } from "./ai-execution.js";
@@ -85,4 +86,37 @@ test("RouterAI output override changes only its own money approval key", () => {
       assert.equal(after.maxOutputTokens, 1400);
     }
   }
+});
+
+test("partial prepayment needs a new money approval while full mode and recipient consent keep their identities", () => {
+  const common = {
+    LLM_PROVIDER: "routerai",
+    AI_CREDIT_MODE: "routerai_citygo_10x",
+  };
+  const full = readConfig(common);
+  const fixed = readConfig({
+    ...common,
+    AI_CREDIT_RESERVATION_MODE: "fixed5_overdraft",
+  });
+  const provider = { name: "routerai" as const, model: "synthetic/model" };
+  const policy = createAiPolicy(full, provider)!;
+  assert.deepEqual(createAiPolicy(fixed, provider), policy);
+  const original = createAiExecution(full, policy);
+  assert.equal(
+    original.key,
+    createHash("sha256")
+      .update(
+        JSON.stringify({
+          version: "ai-reserve-v1",
+          policyId: policy.id,
+          maxInputBytes: original.maxInputBytes,
+          maxOutputTokens: original.maxOutputTokens,
+        }),
+      )
+      .digest("hex"),
+  );
+  const updated = createAiExecution(fixed, policy);
+  assert.notEqual(updated.key, original.key);
+  assert.equal(updated.maxInputBytes, original.maxInputBytes);
+  assert.equal(updated.maxOutputTokens, original.maxOutputTokens);
 });

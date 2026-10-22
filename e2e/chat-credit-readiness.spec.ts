@@ -220,6 +220,47 @@ test("zero credit guidance does not disable an explicit free service handoff", a
   expect(calls.unexpected).toEqual([]);
 });
 
+test("fixed-reserve negative balance stays visible after reload without automatic topup or replay", async ({
+  page,
+}) => {
+  const { board, calls } = await install(page, { human: true });
+  board.aiAccess.credit = {
+    ...board.aiAccess.credit!,
+    reservationMode: "fixed5_overdraft",
+    minimumRequestBalanceMicros: 5_000_000,
+    outstandingDebtMicros: 3_000_000,
+    grantedMicros: 5_000_000,
+    spentMicros: 8_000_000,
+    availableMicros: -3_000_000,
+  };
+  await page.goto("/");
+  await expect(
+    page.getByRole("heading", { name: "Давайте начнём с того, что волнует" }),
+  ).toBeVisible();
+  const balance = page.locator("#citygo-balance");
+  await expect(balance).toContainText("-3");
+  await expect(balance).toContainText("5");
+  await expect(page.locator("form .chat-credit-hint")).toBeVisible();
+  await page
+    .getByRole("link", { name: "Баланс и пополнение", exact: true })
+    .click();
+  await expect(balance).toBeFocused();
+  await page.reload();
+  await expect(balance).toContainText("-3");
+  await page.getByLabel("Сообщение помощнику").fill("Нужна помощь человека");
+  await expect(
+    page.getByRole("button", { name: "Отправить", exact: true }),
+  ).toBeEnabled();
+  await page.getByRole("button", { name: "Отправить", exact: true }).click();
+  await expect(page.getByRole("log")).toContainText(
+    "Запрос на помощь человека сохранён",
+  );
+  expect(calls.messages).toBe(1);
+  expect(calls.payments).toBe(0);
+  expect(calls.external).toBe(0);
+  expect(calls.unexpected).toEqual([]);
+});
+
 test("legacy journey keeps unknown interruptions generic and focuses balance without leaving the chat route", async ({
   page,
 }) => {

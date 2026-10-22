@@ -46,7 +46,11 @@ import {
   HousingStoredDataError,
   verifyHousingReadiness,
 } from "@citygo/db";
-import { readConfig, effectiveLlmLimits } from "@citygo/config";
+import {
+  readConfig,
+  effectiveLlmLimits,
+  validateCreditReservationConfig,
+} from "@citygo/config";
 import { instructions, profileContext, routeAgent } from "@citygo/agents";
 import { redactPaths } from "@citygo/observability";
 import {
@@ -101,6 +105,7 @@ export async function buildApp(options: {
 }) {
   const drain = options.drain ?? new ApiDrain();
   const config = options.config ?? readConfig();
+  validateCreditReservationConfig(config);
   if (
     options.paymentReconcileScheduler &&
     (config.NODE_ENV !== "test" || options.testing !== true)
@@ -169,10 +174,20 @@ export async function buildApp(options: {
     creditCharging,
     tariff,
     topUpAvailable,
+    config.AI_CREDIT_RESERVATION_MODE,
   );
   const accounts = new AccountAccess(options.db);
-  const credit = new AiCreditLedger(options.db, chargingStatus, topUpAvailable);
-  const charges = new AiCreditCharges(options.db, tariff);
+  const credit = new AiCreditLedger(
+    options.db,
+    chargingStatus,
+    topUpAvailable,
+    config.AI_CREDIT_RESERVATION_MODE,
+  );
+  const charges = new AiCreditCharges(
+    options.db,
+    tariff,
+    config.AI_CREDIT_RESERVATION_MODE,
+  );
   const providers: ProviderMap = { ...options.providers };
   if (options.provider) providers[options.provider.name] = options.provider;
   // Quarantine survives process restarts and changing YOOKASSA_MODE back to
@@ -385,9 +400,9 @@ export async function buildApp(options: {
   app.get("/ready", async () => {
     try {
       const result = await options.db.query(
-        "select name from citygo_migrations where name in ('0006_ai_budget.sql','0007_ai_user_daily_budget.sql','0008_ai_credit.sql','0009_ai_credit_charges.sql','0010_quest_plan_expand.sql','0011_quest_plan_validate.sql','0013_account_access.sql','0014_citygo_credit.sql','0015_yookassa_orders.sql','0016_npd_receipts.sql','0017_credit_source_lots.sql','0018_payment_refunds.sql','0019_yookassa_live_orders.sql','0020_ai_budget_provider_balance.sql','0021_payment_notifications.sql','0022_payment_admission.sql','0023_payment_receipt_snapshots.sql')",
+        "select name from citygo_migrations where name in ('0006_ai_budget.sql','0007_ai_user_daily_budget.sql','0008_ai_credit.sql','0009_ai_credit_charges.sql','0010_quest_plan_expand.sql','0011_quest_plan_validate.sql','0013_account_access.sql','0014_citygo_credit.sql','0015_yookassa_orders.sql','0016_npd_receipts.sql','0017_credit_source_lots.sql','0018_payment_refunds.sql','0019_yookassa_live_orders.sql','0020_ai_budget_provider_balance.sql','0021_payment_notifications.sql','0022_payment_admission.sql','0023_payment_receipt_snapshots.sql','0024_ai_credit_overdraft.sql')",
       );
-      if (result.rows.length !== 17) throw new Error("Pending migration");
+      if (result.rows.length !== 18) throw new Error("Pending migration");
       if (config.R1_HOUSING_API_MODE === "synthetic")
         await verifyHousingReadiness(options.db);
     } catch {
@@ -665,6 +680,15 @@ export async function buildApp(options: {
       const user = await authenticate(request);
       const threadId = questParams.parse(request.params).id;
       const input = chatInputSchema.parse(request.body);
+      if (
+        config.AI_CREDIT_RESERVATION_MODE === "fixed5_overdraft" &&
+        input.creditReservationMode !== "fixed5_overdraft" &&
+        !routeAgent(input.text, "support").human
+      )
+        throw new DomainError(
+          409,
+          "Условия списания изменились: резерв 5 ₽ CityGo не является итоговой ценой, возможен отрицательный остаток. Обновите приложение перед платным запросом.",
+        );
       // Immutable snapshot for this admission. A concurrent switch is caught by
       // the repository lock/revision check before any message or quota is stored.
       const { provider, policy: aiPolicy, current } = await currentAi();

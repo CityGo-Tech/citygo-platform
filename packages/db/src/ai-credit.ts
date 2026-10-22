@@ -5,6 +5,9 @@ import {
   CITYGO_MAX_AMOUNT_MICROS,
   citygoTopUpMicrosFromPaidKopeks,
   creditUserIdSchema,
+  citygoDebitFromRealCostRub,
+  citygoTariffSnapshotSchema,
+  routerAiChargeSchema,
   type AiCredit,
 } from "@citygo/contracts";
 import type { Database, Sql } from "./index.js";
@@ -14,6 +17,14 @@ import {
   reserveCreditSources,
   resolveCreditSources,
 } from "./credit-source-lots.js";
+import {
+  assertCreditDebtPaid,
+  assertFixed5Admission,
+  FIXED_CITYGO_HOLD_MICROS,
+  MAX_OVERDRAFT_REAL_CEILING_MICROS,
+  repayCreditDebt,
+  type AiCreditReservationMode,
+} from "./credit-debt.js";
 
 const amountSchema = z.number().int().min(0).max(CITYGO_MAX_AMOUNT_MICROS);
 const operationSchema = z.uuid();
@@ -42,6 +53,7 @@ export class AiCreditLedger {
     private db: Database,
     private chargingStatus: AiCredit["chargingStatus"] = "not_connected",
     private topUpAvailable: boolean | (() => Promise<boolean>) = false,
+    private reservationMode: AiCreditReservationMode = "full",
   ) {}
 
   private async lock(tx: Sql, userId: string, actorId?: string) {
@@ -94,6 +106,7 @@ export class AiCreditLedger {
         bonus_granted: boolean;
         history: AiCredit["history"];
         pending: NonNullable<AiCredit["pending"]>;
+        outstanding_debt: string;
       }>(
         `select coalesce(a.granted_micros,0)::text as granted,
       coalesce(a.held_micros,0)::text as held,coalesce(a.spent_micros,0)::text as spent,
@@ -105,7 +118,11 @@ export class AiCreditLedger {
         from (select c.hold_id,e.amount_micros,c.response_complete from ai_credit_charges c
           join ai_credit_entries e on e.operation_id=c.hold_id where c.user_id=$1
           and not exists(select 1 from ai_credit_entries r where r.hold_id=c.hold_id)
-          order by c.created_at desc limit 20) p),'[]'::jsonb) as pending
+          order by c.created_at desc limit 20) p),'[]'::jsonb) as pending,
+      (select coalesce(sum(d.principal_micros-coalesce(r.paid,0)),0)::text
+        from credit_charge_debts d left join
+          (select debt_hold_id,sum(amount_micros) as paid from credit_debt_repayments where user_id=$1 group by debt_hold_id) r
+          on r.debt_hold_id=d.hold_id where d.user_id=$1) as outstanding_debt
       from users u left join ai_credit_accounts a on a.user_id=u.id where u.id=$1`,
         [userId],
       )
@@ -125,6 +142,16 @@ export class AiCreditLedger {
       chargingStatus: this.chargingStatus,
       pending: row.pending,
       topUpAvailable,
+      ...(this.reservationMode === "fixed5_overdraft"
+        ? {
+            reservationMode: this.reservationMode,
+            minimumRequestBalanceMicros: FIXED_CITYGO_HOLD_MICROS,
+          }
+        : {}),
+      ...(this.reservationMode === "fixed5_overdraft" ||
+      Number(row.outstanding_debt) > 0
+        ? { outstandingDebtMicros: Number(row.outstanding_debt) }
+        : {}),
     };
   }
 
@@ -286,6 +313,11 @@ export class AiCreditLedger {
           "Операция баланса уже использована с другими параметрами",
         );
       }
+      if (this.reservationMode === "fixed5_overdraft") {
+        if (amountMicros !== FIXED_CITYGO_HOLD_MICROS)
+          throw new DomainError(400, "Fixed5 требует ровно 5 ₽ CityGo резерва");
+        await assertFixed5Admission(tx, userId);
+      } else await assertCreditDebtPaid(tx, userId);
       const result = await tx.query(
         "update ai_credit_accounts set held_micros=held_micros+$2 where user_id=$1 and granted_micros-held_micros-spent_micros >= $2 returning user_id",
         [userId, amountMicros],
@@ -350,17 +382,80 @@ export class AiCreditLedger {
       );
       if (finished.rows.length)
         throw new DomainError(409, "Резерв уже завершён");
-      if (resolution.amountMicros > Number(held.amount_micros))
-        throw new DomainError(409, "Списание превышает подтверждённый резерв");
-      await resolveCreditSources(tx, userId, holdId, resolution);
+      const heldAmount = Number(held.amount_micros);
+      const extra = Math.max(0, resolution.amountMicros - heldAmount);
+      if (extra > 0) {
+        const charge = (
+          await tx.query<{
+            reservation_mode: string;
+            real_ceiling_micros: string;
+            tariff_snapshot: unknown;
+            receipt: unknown;
+            generation_id: string | null;
+            model: string;
+            upstream: string;
+            dispatched: boolean;
+            response_complete: boolean;
+          }>(
+            `select reservation_mode,real_ceiling_micros::text,tariff_snapshot,receipt,generation_id,
+              model,upstream,dispatched,response_complete from ai_credit_charges where hold_id=$1 and user_id=$2`,
+            [holdId, userId],
+          )
+        ).rows[0];
+        if (
+          !charge ||
+          charge.reservation_mode !== "fixed5_overdraft" ||
+          heldAmount !== FIXED_CITYGO_HOLD_MICROS ||
+          !charge.dispatched ||
+          !charge.response_complete ||
+          Number(charge.real_ceiling_micros) < 500_000 ||
+          Number(charge.real_ceiling_micros) > MAX_OVERDRAFT_REAL_CEILING_MICROS
+        )
+          throw new DomainError(
+            409,
+            "Списание превышает подтверждённый резерв",
+          );
+        const receipt = routerAiChargeSchema.parse(charge.receipt);
+        const tariff = citygoTariffSnapshotSchema.parse(charge.tariff_snapshot);
+        const exact = (
+          await tx.query<{ within: boolean }>(
+            "select $1::numeric*1000000 <= $2::bigint as within",
+            [receipt.costRub, charge.real_ceiling_micros],
+          )
+        ).rows[0]!.within;
+        if (
+          tariff.version !== "citygo-10x-v1" ||
+          receipt.reference !== holdId ||
+          receipt.generationId !== charge.generation_id ||
+          receipt.model !== charge.model ||
+          receipt.upstream !== charge.upstream ||
+          !exact ||
+          citygoDebitFromRealCostRub(receipt.costRub, tariff)
+            .citygoDebitMicros !== resolution.amountMicros
+        )
+          throw new DomainError(
+            409,
+            "Долг не подтверждён точной стоимостью попытки",
+          );
+      }
+      await resolveCreditSources(tx, userId, holdId, {
+        ...resolution,
+        amountMicros: Math.min(resolution.amountMicros, heldAmount),
+      });
       await tx.query(
         "insert into ai_credit_entries(user_id,operation_id,kind,amount_micros,hold_id) values ($1,$2,$3,$4,$5)",
         [userId, operationId, resolution.kind, resolution.amountMicros, holdId],
       );
+      if (extra > 0)
+        await tx.query(
+          "insert into credit_charge_debts(hold_id,user_id,principal_micros) values($1,$2,$3)",
+          [holdId, userId, extra],
+        );
       await tx.query(
         "update ai_credit_accounts set held_micros=held_micros-$2,spent_micros=spent_micros+$3 where user_id=$1",
-        [userId, Number(held.amount_micros), resolution.amountMicros],
+        [userId, heldAmount, resolution.amountMicros],
       );
+      await repayCreditDebt(tx, userId);
     };
     if (transaction) await work(transaction);
     else await this.db.transaction(work);

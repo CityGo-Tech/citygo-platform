@@ -14,6 +14,8 @@ import {
   seedRestartFixture,
   seedRestartRefundHistory,
   seedRestartPaymentNotification,
+  seedRestartCreditDebt,
+  seedRestartUnreconciledCharge,
 } from "./closed-account-restart-fixture.js";
 
 async function fixture(t: TestContext) {
@@ -291,6 +293,45 @@ test("any new NPD obligation blocks full reset without erasing receipt history o
   assert.deepEqual(await captureRestartRows(db), before);
 });
 
+for (const repaid of [false, true])
+  test(`fresh reset protects ${repaid ? "repaid" : "outstanding"} debt and refuses deleting its financial history`, async (t) => {
+    const { db, data, reset } = await fixture(t);
+    const stale = await prepared(reset);
+    await seedRestartCreditDebt(db, data.ids[1]!, { repaid });
+    const before = await captureRestartRows(db);
+    const plan = await reset.plan({
+      expectedUserCount: 2,
+      maintenanceConfirmed: true,
+    });
+    assert.equal(plan.counts.credit_charge_debts, 1);
+    assert.equal(plan.counts.credit_debt_repayments, repaid ? 1 : 0);
+    assert.ok(
+      plan.blockers.some(
+        (item) =>
+          item.code === "CREDIT_DEBT_HISTORY_PRESENT" &&
+          item.count === (repaid ? 2 : 1),
+      ),
+    );
+    for (const name of ["credit_charge_debts", "credit_debt_repayments"]) {
+      assert.equal(plan.erasedTables.includes(name), false);
+      assert.equal(plan.preservedTables.includes(name), true);
+    }
+    // The unpaid case has no new payment/NPD task: debt is independently a
+    // blocker, not an accidental side effect of an existing fiscal guard.
+    assert.equal(plan.counts.npd_receipt_tasks, repaid ? 1 : 0);
+    assert.notEqual(
+      plan.snapshotFingerprint,
+      stale.expectedSnapshotFingerprint,
+    );
+    assert.doesNotMatch(
+      JSON.stringify(plan),
+      /PRIVATE-|@example\.test|synthetic-debt-/,
+    );
+    await assert.rejects(reset.apply(stale), /изменились/);
+    await assert.rejects(reset.apply(await prepared(reset)), /заблокирован/);
+    assert.deepEqual(await captureRestartRows(db), before);
+  });
+
 for (const journal of [false, true])
   test(`refund ${journal ? "journal and events" : "allocation alone"} blocks full reset without financial erasure`, async (t) => {
     const { db, data, reset } = await fixture(t);
@@ -401,12 +442,8 @@ for (const active of ["request", "lease", "busy"] as const)
   });
 
 test("unresolved historical hold and missing provider receipt are intentionally erased under full reset authority", async (t) => {
-  const { db, reset } = await fixture(t);
-  await db.exec(
-    "update ai_credit_charges set receipt=null,response_complete=false",
-  );
-  await db.exec("delete from ai_credit_entries where kind='settle'");
-  await db.exec("update ai_credit_accounts set held_micros=1000000");
+  const { db, data, reset } = await fixture(t);
+  await seedRestartUnreconciledCharge(db, data.user, data.thread);
   const plan = await reset.plan({
     expectedUserCount: 2,
     maintenanceConfirmed: true,
