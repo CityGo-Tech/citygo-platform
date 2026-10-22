@@ -17,15 +17,11 @@ import {
 import { questChecklist } from "@citygo/content";
 import { AiAccessPanel } from "./ai-access";
 import type { TopupActions } from "./test-topup";
+import { FavoriteButton } from "./message-favorites";
 import { EmptyAiCreditHint, messageInterruptionLabel } from "./chat-readiness";
 
-export const agentNames: Record<AgentKey, string> = {
-  housing: "Housing Navigator",
-  "job-search": "Job Search Mentor",
-  "resume-builder": "Resume Builder Expert",
-  "digital-mentor": "Digital Mentor",
-  support: "Support Assistant",
-};
+import { agentNames } from "./agent-names";
+export { agentNames } from "./agent-names";
 const stateLabels: Record<Quest["state"], string> = {
   locked: "Откроется после предыдущего шага",
   available: "Можно начинать",
@@ -48,6 +44,8 @@ export type JourneyProps = {
   onComplete: (id: string) => Promise<boolean>;
   onBegin?: () => void;
   onPassword?: () => void;
+  onFavorites?: () => void;
+  onFavorite?: (messageId: string, saved: boolean) => void;
   topups?: TopupActions;
 };
 
@@ -423,6 +421,13 @@ export function Journey(props: JourneyProps) {
                       {messageInterruptionLabel(message, "Ответ не завершён")}
                     </small>
                   )}
+                  <FavoriteButton
+                    saved={message.favorite}
+                    disabled={busy || sending}
+                    onClick={() =>
+                      props.onFavorite?.(message.id, !message.favorite)
+                    }
+                  />
                 </article>
               ))}
               {sending && pending && (

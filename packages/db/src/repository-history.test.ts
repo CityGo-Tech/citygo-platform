@@ -102,6 +102,7 @@ async function insertMessage(
     status: metadata.status ?? "complete",
     generation: metadata.generation ?? null,
     failureCode: metadata.failureCode ?? null,
+    favorite: metadata.citygoFavorite === true,
   };
 }
 
@@ -134,7 +135,12 @@ test("chat history returns the latest 100 eligible numeric IDs ascending with un
     const role = id === 101 || id % 2 === 0 ? "assistant" : "user";
     const metadata =
       id === 100
-        ? { agentKey: "work", status: "complete", generation }
+        ? {
+            agentKey: "work",
+            status: "complete",
+            generation,
+            citygoFavorite: true,
+          }
         : id === 101
           ? { agentKey: "housing", status: "interrupted", generation }
           : id === 102
@@ -143,6 +149,7 @@ test("chat history returns the latest 100 eligible numeric IDs ascending with un
                 status: "interrupted",
                 source: "system",
                 failureCode: "AI_CREDIT_EXHAUSTED",
+                citygoFavorite: true,
               }
             : {};
     expected.push(

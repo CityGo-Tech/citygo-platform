@@ -60,6 +60,8 @@ grant update on users, relocation_plans, user_quests, agent_threads,
   chat_requests, ai_consents, ai_usage_daily, ai_user_usage_daily, ai_routing,
   ai_model_attempt_daily, ai_user_model_attempt_daily, ai_budget, ai_budget_daily,
   ai_credit_accounts, ai_credit_charges to citygo_api;
+-- Private bookmarks change only message metadata, never text/role/ownership.
+grant update(metadata) on messages to citygo_api;
 -- Runtime may observe a provider response, not rewrite the checkout identity,
 -- requested amount, immutable create payload or the provider idempotency window.
 grant update (provider_payment_id,status,confirmation_url,updated_at)

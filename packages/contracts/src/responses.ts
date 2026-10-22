@@ -237,6 +237,7 @@ export const dashboardResponseSchema = z.object({
               content: z.string().max(1024 * 1024),
               agentKey: agentKeySchema,
               status: z.enum(["complete", "interrupted"]),
+              favorite: z.boolean().optional(),
               generation: z
                 .object({
                   provider: aiProviderIdSchema,
