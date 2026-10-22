@@ -640,19 +640,20 @@ test("the latest numeric history window reaches the model in order with the curr
   assert.equal(reply.statusCode, 200, reply.body);
   assert.match(reply.body, /"type":"done"/);
   assert.equal(f.provider.calls.length, 1);
-  // history() first selects the latest 100 records numerically. The API then
-  // keeps completed records, selects the last 20 and prepends profile context.
+  // history() first selects the latest 100 records numerically. Model context
+  // keeps the latest nine whole completed rounds, never orphaned failed-turn
+  // users, and always ends with this exact new question. Full UI history stays.
   const expected = [
-    ...seeded.slice(-99),
-    { role: "user" as const, content: currentQuestion, status: "complete" },
-  ]
-    .filter((m) => m.status === "complete")
-    .slice(-20)
-    .map(({ role, content }) => ({ role, content }));
+    ...[93, 97, 99, 103, 105, 109, 111, 115, 117].flatMap((number) => [
+      { role: "user", content: `synthetic-history-${number}` },
+      { role: "assistant", content: `synthetic-history-${number + 1}` },
+    ]),
+    { role: "user", content: currentQuestion },
+  ];
   const sent = f.provider.calls[0]!.messages;
   assert.deepEqual(sent.slice(1), expected);
   assert.deepEqual(sent.at(-1), { role: "user", content: currentQuestion });
-  assert.equal(sent.length, 21);
+  assert.equal(sent.length, 20);
   assert.ok(!JSON.stringify(sent).includes("FOREIGN-PRIVATE-"));
   const after = (
     await f.call("GET", "/v1/dashboard", user.token)
