@@ -41,7 +41,7 @@ const migrations = readdirSync(migrationDirectory)
 const withoutTransaction = (sql) =>
   sql.replace(/^begin;\s*/i, "").replace(/commit;\s*$/i, "");
 
-test("18→22 rehearsal rejects a production project before fixture I/O", async () => {
+test("18→23 rehearsal rejects a production project before fixture I/O", async () => {
   const unexpected = () => assert.fail("No I/O before ownership guards");
   await assert.rejects(
     releaseUpgrade18Smoke({
@@ -55,11 +55,11 @@ test("18→22 rehearsal rejects a production project before fixture I/O", async 
   );
 });
 
-test("literal schema-18 fixture preserves budgets/orders/holds, rolls back late ACLs and reapplies only 19–22", async (t) => {
+test("literal schema-18 fixture preserves budgets/orders/holds, rolls back late ACLs and reapplies only 19–23", async (t) => {
   const db = new PGlite();
   t.after(() => db.close());
   await db.waitReady;
-  assert.equal(migrations.length, 22);
+  assert.equal(migrations.length, 23);
   assert.equal(migrations[17].name, "0018_payment_refunds.sql");
   assert.deepEqual(
     migrations.slice(18).map(({ name }) => name),
@@ -68,6 +68,7 @@ test("literal schema-18 fixture preserves budgets/orders/holds, rolls back late 
       "0020_ai_budget_provider_balance.sql",
       "0021_payment_notifications.sql",
       "0022_payment_admission.sql",
+      "0023_payment_receipt_snapshots.sql",
     ],
   );
   await db.exec(
@@ -135,7 +136,7 @@ test("literal schema-18 fixture preserves budgets/orders/holds, rolls back late 
       'entries',(select jsonb_agg(to_jsonb(t) order by id) from ai_credit_entries t),
       'lots',(select jsonb_agg(to_jsonb(t) order by id) from credit_source_lots t),
       'holds',(select jsonb_agg(to_jsonb(t) order by hold_id) from credit_hold_allocations t),
-      'orders',(select jsonb_agg(to_jsonb(t) order by id) from payment_topup_orders t),
+      'orders',(select jsonb_agg(to_jsonb(t)-'payload_version'-'receipt_email'-'receipt_profile' order by id) from payment_topup_orders t),
       'isolation',(select jsonb_agg(to_jsonb(t) order by id) from account_security_state t),
       'budget',(select jsonb_agg(to_jsonb(t)-'mode' order by id) from ai_budget t),
       'daily',(select jsonb_agg(to_jsonb(t) order by usage_day) from ai_budget_daily t)) as snapshot`)
@@ -205,6 +206,22 @@ test("literal schema-18 fixture preserves budgets/orders/holds, rolls back late 
       )
     ).rows,
     [{ test_only: false }],
+  );
+  assert.deepEqual(
+    (
+      await db.query(
+        "select payload_version,receipt_email,receipt_profile,create_payload?'receipt' as has_receipt from payment_topup_orders order by id",
+      )
+    ).rows,
+    [
+      {
+        payload_version: 1,
+        receipt_email: null,
+        receipt_profile: null,
+        has_receipt: false,
+      },
+    ],
+    "Migration23 must not retrofit an existing receipt-free request",
   );
   assert.deepEqual(
     (

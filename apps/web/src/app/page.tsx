@@ -250,6 +250,12 @@ export default function Home() {
       ticket.check();
       return order;
     },
+    topupAttempt: async (requestId: string) => {
+      const ticket = session.capture();
+      const order = await api.topupAttempt(requestId);
+      ticket.check();
+      return order;
+    },
     reconcileTopup: async (orderId: string) => {
       const ticket = session.capture();
       const order = await api.reconcileTopup(orderId);

@@ -11,6 +11,7 @@ import {
   migrate,
   DomainError,
   PaymentAdmission,
+  PaymentTopupOrders,
   type Database,
   type PaymentRefundDispatchInput,
   type PaymentRefundObservation,
@@ -34,10 +35,11 @@ function settings(mode: "live" | "test" = "live") {
     YOOKASSA_SHOP_ID: shop,
     YOOKASSA_SECRET_KEY: `${mode}_SYNTHETIC-NOT-A-REAL-KEY`,
     YOOKASSA_RECEIPT_MODE: mode === "live" ? "npd_manual" : "disabled",
+    YOOKASSA_FISCAL_PROFILE: "citygo_service_full_payment_v1",
     WEB_ORIGIN: origin,
   });
 }
-async function fixture(mode: "live" | "test" = "live") {
+async function fixture(mode: "live" | "test" = "live", fiscal = true) {
   const db = await connectDatabase("pglite://:memory:");
   await migrate(db);
   const state = {
@@ -118,8 +120,12 @@ async function fixture(mode: "live" | "test" = "live") {
       );
     },
   });
-  const config = settings(mode);
+  const config = {
+    ...settings(mode),
+    ...(fiscal ? {} : { YOOKASSA_FISCAL_PROFILE: "disabled" as const }),
+  };
   const refundIds = new Map<string, string>();
+  const refundInputs: PaymentRefundDispatchInput[] = [];
   function refundProof(
     payload: PaymentRefundDispatchInput,
     observation: PaymentRefundObservation["observation"],
@@ -150,6 +156,7 @@ async function fixture(mode: "live" | "test" = "live") {
     refundClient: {
       createRefund: async (payload) => {
         state.refundCreates++;
+        refundInputs.push(structuredClone(payload));
         return refundProof(payload, "create_response");
       },
       getRefund: async (id, payload) => {
@@ -219,6 +226,7 @@ async function fixture(mode: "live" | "test" = "live") {
     call("POST", "/v1/payments/topups", user.token, {
       requestId,
       amountKopeks: 10_000,
+      receiptEmail: "receipt-buyer@synthetic-citygo-mail.ru",
     });
   const reconcile = (id: string, token = user.token, body: object = {}) =>
     call("POST", `/v1/payments/topups/${id}/reconcile`, token, body);
@@ -230,6 +238,8 @@ async function fixture(mode: "live" | "test" = "live") {
     config,
     client,
     state,
+    records,
+    refundInputs,
     user,
     other,
     call,
@@ -242,6 +252,161 @@ async function fixture(mode: "live" | "test" = "live") {
     },
   };
 }
+
+test("live fiscal request is immutable, owner-scoped and does not expose receipt contact", async (t) => {
+  const f = await fixture();
+  t.after(f.close);
+  const requestId = randomUUID();
+  const reply = await f.create(requestId);
+  assert.equal(reply.statusCode, 200, reply.body);
+  const created = topupOrderSchema.parse(reply.json());
+  const stored = (
+    await f.db.query<{
+      create_payload: { receipt: unknown };
+      receipt_email: string;
+      payload_version: number;
+    }>(
+      "select create_payload,receipt_email,payload_version from payment_topup_orders where id=$1",
+      [created.orderId],
+    )
+  ).rows[0]!;
+  assert.equal(stored.payload_version, 2);
+  assert.equal(stored.receipt_email, "receipt-buyer@synthetic-citygo-mail.ru");
+  const receipt = stored.create_payload.receipt as {
+    customer: { email: string };
+    items: {
+      vat_code: number;
+      payment_subject: string;
+      payment_mode: string;
+      amount: { value: string };
+    }[];
+  };
+  assert.equal(receipt.customer.email, stored.receipt_email);
+  assert.equal(receipt.items[0]!.vat_code, 1);
+  assert.equal(receipt.items[0]!.payment_subject, "service");
+  assert.equal(receipt.items[0]!.payment_mode, "full_payment");
+  assert.equal(receipt.items[0]!.amount.value, "100.00");
+  assert.doesNotMatch(JSON.stringify(receipt), /tax_system_code/);
+  assert.doesNotMatch(reply.body, /receipt|synthetic-citygo-mail/);
+  const path = `/v1/payments/topup-attempts/${requestId}`;
+  const own = await f.call("GET", path, f.user.token);
+  assert.equal(own.statusCode, 200, own.body);
+  assert.equal(own.json().orderId, created.orderId);
+  assert.doesNotMatch(own.body, /receipt|synthetic-citygo-mail/);
+  assert.equal((await f.call("GET", path, f.other.token)).statusCode, 404);
+  assert.equal((await f.call("GET", path)).statusCode, 401);
+  assert.equal(f.state.posts, 1);
+  assert.equal(f.state.gets, 0);
+  const changed = await f.call("POST", "/v1/payments/topups", f.user.token, {
+    requestId,
+    amountKopeks: 10_000,
+    receiptEmail: "other-buyer@synthetic-citygo-mail.ru",
+  });
+  assert.equal(changed.statusCode, 409, changed.body);
+  assert.doesNotMatch(changed.body, /receipt-buyer|other-buyer/);
+  assert.equal(f.state.posts, 1);
+  assert.deepEqual(
+    (
+      await f.db.query<{ create_payload: unknown }>(
+        "select create_payload from payment_topup_orders where id=$1",
+        [created.orderId],
+      )
+    ).rows[0]!.create_payload,
+    stored.create_payload,
+  );
+});
+
+test("fiscal checkout rejects absent or fake email and caller-supplied receipt fields before persisting or POST", async (t) => {
+  const f = await fixture();
+  t.after(f.close);
+  for (const extra of [
+    {},
+    { receiptEmail: "admin@citygo.invalid" },
+    { receiptEmail: "private-invalid-email" },
+    {
+      receiptEmail: "buyer@synthetic-citygo-mail.ru",
+      receipt: { tax_system_code: 2 },
+    },
+  ]) {
+    const reply = await f.call("POST", "/v1/payments/topups", f.user.token, {
+      requestId: randomUUID(),
+      amountKopeks: 10_000,
+      ...extra,
+    });
+    assert.equal(reply.statusCode, 400, reply.body);
+    assert.doesNotMatch(reply.body, /admin@|private-invalid|tax_system_code/);
+  }
+  assert.equal(f.state.posts, 0);
+  assert.equal(
+    (await f.db.query("select 1 from payment_topup_orders")).rows.length,
+    0,
+  );
+});
+
+test("legacy live runtime remains readable but cannot create new receipt-free payments", async (t) => {
+  const f = await fixture("live", false);
+  t.after(f.close);
+  assert.equal((await f.balance()).topUpAvailable, false);
+  const orders = new PaymentTopupOrders(
+    f.db,
+    createPaymentAdmissionBinding(f.config),
+  );
+  const requestId = randomUUID();
+  const legacy = await orders.create(
+    f.user.id,
+    requestId,
+    10_000,
+    shop,
+    false,
+    origin + "/",
+  );
+  const read = await f.call(
+    "GET",
+    `/v1/payments/topup-attempts/${requestId}`,
+    f.user.token,
+  );
+  assert.equal(read.statusCode, 200, read.body);
+  assert.equal(read.json().orderId, legacy.id);
+  assert.equal((await f.create()).statusCode, 503);
+  assert.equal(f.state.posts, 0);
+  assert.equal(f.state.gets, 0);
+});
+
+test("fiscal runtime never rewrites or re-POSTs an old receipt-free request", async (t) => {
+  const f = await fixture();
+  t.after(f.close);
+  const requestId = randomUUID();
+  const orders = new PaymentTopupOrders(
+    f.db,
+    createPaymentAdmissionBinding(f.config),
+  );
+  const legacy = await orders.create(
+    f.user.id,
+    requestId,
+    10_000,
+    shop,
+    false,
+    origin + "/",
+  );
+  const reply = await f.create(requestId);
+  assert.equal(reply.statusCode, 409, reply.body);
+  assert.equal(f.state.posts, 0);
+  assert.equal(f.state.gets, 0);
+  assert.deepEqual(
+    (await orders.get(f.user.id, legacy.id)).createPayload,
+    legacy.createPayload,
+  );
+  assert.equal(
+    (
+      await f.call(
+        "GET",
+        `/v1/payments/topup-attempts/${requestId}`,
+        f.user.token,
+      )
+    ).statusCode,
+    200,
+  );
+});
 
 test("live checkout: 100 RUB credits exactly 100 CityGo once, with one paid refundable source and pending NPD duty", async (t) => {
   const f = await fixture();
@@ -301,7 +466,7 @@ test("live checkout: 100 RUB credits exactly 100 CityGo once, with one paid refu
   );
 });
 
-test("live create succeeded response alone never credits money or claims an NPD receipt", async (t) => {
+test("live create alone never credits; canceled fiscal registration cannot cancel a verified paid payment", async (t) => {
   const f = await fixture();
   t.after(f.close);
   f.state.createSucceeded = true;
@@ -314,6 +479,7 @@ test("live create succeeded response alone never credits money or claims an NPD 
     0,
   );
   f.state.succeeded = true;
+  f.state.patch = { receipt_registration: "canceled" };
   assert.equal((await f.reconcile(created.orderId)).statusCode, 200);
   assert.equal((await f.balance()).availableMicros, 100_000_000);
 });
@@ -364,6 +530,11 @@ test("live paid lot supports authorized partial refund, GET-only settlement and 
     assert.equal(settled.json().refund.status, "succeeded");
   }
   assert.equal(f.state.refundCreates, 1);
+  assert.equal(
+    f.refundInputs[0]!.receipt!.customer.email,
+    "receipt-buyer@synthetic-citygo-mail.ru",
+  );
+  assert.equal(f.refundInputs[0]!.receipt!.items[0]!.amount.value, "25.00");
   assert.equal(f.state.refundGets, 2);
   const balance = await f.balance();
   assert.equal(balance.availableMicros, 75_000_000);
@@ -399,6 +570,52 @@ test("live paid lot supports authorized partial refund, GET-only settlement and 
     ).rows,
     [{ refunded: "25000000", reserved: "0" }],
   );
+});
+
+test("full live refund omits receipt and keeps the original paid contact snapshot", async (t) => {
+  const f = await fixture();
+  t.after(f.close);
+  const created = topupOrderSchema.parse((await f.create()).json());
+  f.state.succeeded = true;
+  assert.equal((await f.reconcile(created.orderId)).statusCode, 200);
+  await f.db.query("update users set role='super_admin' where id=$1", [
+    f.other.id,
+  ]);
+  const base = "/v1/admin/payments/refunds";
+  const reserved = await f.call("POST", base, f.other.token, {
+    requestId: randomUUID(),
+    paymentOperationId: created.orderId,
+    amountKopeks: 10_000,
+  });
+  assert.equal(reserved.statusCode, 200, reserved.body);
+  const submitted = await f.call(
+    "POST",
+    `${base}/${reserved.json().refund.id}/submit`,
+    f.other.token,
+    {},
+  );
+  assert.equal(submitted.statusCode, 200, submitted.body);
+  assert.equal(f.refundInputs.length, 1);
+  assert.equal(f.refundInputs[0]!.receipt, undefined);
+  assert.equal(
+    Object.hasOwn(f.refundInputs[0]!.createPayload as object, "receipt"),
+    false,
+  );
+  const settled = await f.call(
+    "POST",
+    `${base}/${reserved.json().refund.id}/reconcile`,
+    f.other.token,
+    {},
+  );
+  assert.equal(settled.statusCode, 200, settled.body);
+  assert.equal((await f.balance()).availableMicros, 0);
+  const task = (
+    await f.db.query<{ buyer_email: string }>(
+      "select buyer_email from npd_receipt_tasks where id=$1",
+      [created.orderId],
+    )
+  ).rows[0]!;
+  assert.equal(task.buyer_email, "receipt-buyer@synthetic-citygo-mail.ru");
 });
 
 test("live reconciliation rejects sandbox/shop/order/amount drift without any credit or receipt", async (t) => {
@@ -520,6 +737,7 @@ test("live injected configuration cannot bypass manual-receipt, fixed-origin or 
   const paymentClient = { create: touch, get: touch };
   for (const patch of [
     { YOOKASSA_RECEIPT_MODE: "disabled" },
+    { YOOKASSA_FISCAL_PROFILE: "unreviewed" },
     { YOOKASSA_SECRET_KEY: "test_SYNTHETIC-NOT-A-REAL-KEY" },
     { YOOKASSA_SHOP_ID: "not-a-shop" },
     { LLM_PROVIDER: "gigachat" },

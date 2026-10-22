@@ -41,6 +41,11 @@ test("pending checkout recovery preserves the original idempotency key and amoun
     JSON.stringify({ ...pending, amountKopeks: 0 }),
     JSON.stringify({ ...pending, orderId: "not-an-id" }),
     JSON.stringify({ ...pending, token: "untrusted" }),
+    JSON.stringify({ ...pending, receiptEmail: "receipt@example.test" }),
+    JSON.stringify({
+      ...pending,
+      receipt: { customer: { email: "receipt@example.test" } },
+    }),
     "x".repeat(1001),
   ]) {
     assert.throws(() => parsePaymentAttempt(value));

@@ -4,6 +4,12 @@
 // API schema: https://yookassa.ru/developers/api/yookassa-openapi-specification.yaml
 import { isDeepStrictEqual } from "node:util";
 import {
+  assertYooKassaReceiptTotal,
+  yooKassaReceiptRegistrationSchema,
+  type YooKassaReceipt,
+  type YooKassaReceiptRegistration,
+} from "@citygo/contracts";
+import {
   validYooKassaCredentials,
   type YooKassaClientOptions,
   type YooKassaMode,
@@ -29,6 +35,7 @@ export type YooKassaRefundInput = {
   // Runtime journal supplies the exact immutable POST body. Older standalone
   // transport fixtures may omit it; runtime endpoints never construct it here.
   createPayload?: unknown;
+  receipt?: YooKassaReceipt;
 };
 export type YooKassaTestRefundInput = YooKassaRefundInput;
 
@@ -47,6 +54,7 @@ export type YooKassaRefund = {
   status: "pending" | "succeeded" | "canceled";
   observation: "create_response" | "server_get";
   verifiedAt: string;
+  receiptRegistration?: YooKassaReceiptRegistration;
 };
 export type YooKassaTestRefund = YooKassaRefund & { test: true };
 
@@ -128,6 +136,21 @@ export class YooKassaRefundClient {
     this.validate(input);
     this.createWindow(input);
     const amount = BigInt(input.amountKopeks);
+    let receipt: YooKassaReceipt | undefined;
+    try {
+      if (input.receipt !== undefined)
+        receipt = assertYooKassaReceiptTotal(input.receipt, input.amountKopeks);
+    } catch {
+      throw new YooKassaTestRefundError("invalid_input");
+    }
+    if (
+      receipt &&
+      receipt.items[0]!.description !==
+        (this.#mode === "test"
+          ? "Пополнение тестового баланса CityGo"
+          : "Пополнение баланса CityGo")
+    )
+      throw new YooKassaTestRefundError("invalid_input");
     const body = {
       payment_id: input.paymentId,
       amount: {
@@ -139,6 +162,7 @@ export class YooKassaRefundClient {
           ? "Тестовый возврат CityGo"
           : "Возврат средств CityGo",
       metadata: { citygo_refund_id: input.refundRequestId },
+      ...(receipt ? { receipt } : {}),
     };
     if (
       input.createPayload !== undefined &&
@@ -265,6 +289,12 @@ export class YooKassaRefundClient {
     observation: YooKassaRefund["observation"],
     refundId?: string,
   ): YooKassaRefund {
+    const receiptRegistration =
+      object(raw) && raw.receipt_registration !== undefined
+        ? yooKassaReceiptRegistrationSchema.safeParse(raw.receipt_registration)
+        : undefined;
+    if (receiptRegistration && !receiptRegistration.success)
+      throw new YooKassaTestRefundError("invalid_response");
     if (
       !object(raw) ||
       typeof raw.id !== "string" ||
@@ -292,6 +322,9 @@ export class YooKassaRefundClient {
       status: raw.status,
       observation,
       verifiedAt: new Date().toISOString(),
+      ...(receiptRegistration?.success
+        ? { receiptRegistration: receiptRegistration.data }
+        : {}),
     };
   }
 

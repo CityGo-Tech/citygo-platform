@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
+import { buildYooKassaReceipt, type YooKassaReceipt } from "@citygo/contracts";
 import {
   YooKassaRefundClient,
   YooKassaRefundError,
@@ -45,6 +46,103 @@ const json = (value: unknown) =>
   new Response(JSON.stringify(value), {
     headers: { "Content-Type": "application/json; charset=utf-8" },
   });
+
+test("partial refund snapshots explicit receipt and complete persisted body before payment GET", async () => {
+  const i = input();
+  const receipt = buildYooKassaReceipt({
+    email: "buyer@citygo-mail.ru",
+    amountKopeks: i.amountKopeks,
+    test: true,
+  });
+  const saved = {
+    payment_id: i.paymentId,
+    amount: { value: "1.01", currency: "RUB" },
+    description: "Тестовый возврат CityGo",
+    metadata: { citygo_refund_id: i.refundRequestId },
+    receipt,
+  };
+  let release!: () => void;
+  const f = fixture([
+    async () => {
+      await new Promise<void>((ok) => {
+        release = ok;
+      });
+      return json(payment(i));
+    },
+    () => json(refund(i)),
+  ]);
+  const pending = f.client.createRefund({
+    ...i,
+    receipt,
+    createPayload: saved,
+  });
+  receipt.customer.email = "changed@citygo-mail.ru";
+  receipt.items[0]!.amount.value = "9.99";
+  saved.metadata.citygo_refund_id = randomUUID();
+  release();
+  await pending;
+  const sent = JSON.parse(String(f.calls[1]!.init.body));
+  assert.equal(sent.receipt.customer.email, "buyer@citygo-mail.ru");
+  assert.equal(sent.receipt.items[0].amount.value, "1.01");
+  assert.equal(sent.metadata.citygo_refund_id, i.refundRequestId);
+  assert.equal(
+    new Headers(f.calls[1]!.init.headers).get("Idempotence-Key"),
+    i.refundRequestId,
+  );
+});
+test("refund receipt total, strict profile and saved payload reject before payment GET or refund POST", async () => {
+  const i = input();
+  const receipt = buildYooKassaReceipt({
+    email: "PRIVATE@citygo-mail.ru",
+    amountKopeks: i.amountKopeks,
+  });
+  const f = fixture([]);
+  for (const invalid of [
+    { ...receipt, tax_system_code: 1 },
+    { ...receipt, customer: { email: "admin@citygo.invalid" } },
+    { ...receipt, items: [{ ...receipt.items[0], payment_mode: "advance" }] },
+    {
+      ...receipt,
+      items: [
+        { ...receipt.items[0], amount: { value: "1.00", currency: "RUB" } },
+      ],
+    },
+  ])
+    await rejected(
+      f.client.createRefund({ ...i, receipt: invalid as YooKassaReceipt }),
+      "invalid_input",
+    );
+  await rejected(
+    f.client.createRefund({ ...i, receipt, createPayload: { receipt } }),
+    "invalid_input",
+  );
+  assert.equal(f.calls.length, 0);
+});
+test("refund registration status is independent of monetary succeeded status", async () => {
+  const i = input();
+  for (const receipt_registration of [
+    "pending",
+    "succeeded",
+    "canceled",
+  ] as const) {
+    const f = fixture([
+      () => json({ ...refund(i, "succeeded"), receipt_registration }),
+      () => json(payment(i, "1.01")),
+    ]);
+    const observed = await f.client.getRefund(refundId, i);
+    assert.equal(observed.status, "succeeded");
+    assert.equal(observed.receiptRegistration, receipt_registration);
+  }
+  const f = fixture([
+    () => json({ ...refund(i), receipt_registration: "PRIVATE invalid" }),
+    () => json(payment(i)),
+  ]);
+  await rejected(
+    f.client.getRefund(refundId, i),
+    "invalid_response",
+    "observation_failed",
+  );
+});
 
 test("persisted monetary POST body cannot drift across explicit retries or code versions", async () => {
   const i = input();

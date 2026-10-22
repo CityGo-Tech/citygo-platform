@@ -242,6 +242,11 @@ for (const [marker, file, rejectedCountry] of [
     "routerai-citygo-10x-yookassa-live-cn-profile.fixture.json",
     "us",
   ],
+  [
+    "routerai-citygo-10x-yookassa-live-cn-fiscal-v2",
+    "routerai-citygo-10x-yookassa-live-cn-fiscal-profile.fixture.json",
+    "us",
+  ],
 ])
   test(`live YooKassa ${marker} requires its exact API-only profile and never inherits credentials`, (t) => {
     const directory = fixture(t);
@@ -281,6 +286,9 @@ for (const [marker, file, rejectedCountry] of [
       { YOOKASSA_MODE: "disabled" },
       { YOOKASSA_RECEIPT_MODE: "disabled" },
       { YOOKASSA_RECEIPT_MODE: "npd_partner" },
+      { YOOKASSA_FISCAL_PROFILE: "disabled" },
+      { YOOKASSA_FISCAL_PROFILE: "unknown" },
+      { YOOKASSA_TAX_SYSTEM_CODE: "1" },
       { YOOKASSA_SHOP_ID: "0" },
       { YOOKASSA_SHOP_ID: "000123" },
       { YOOKASSA_SHOP_ID: "1".repeat(21) },
@@ -343,6 +351,9 @@ for (const [marker, file, rejectedCountry] of [
       marker === "routerai-citygo-10x-yookassa-live-v1"
         ? "routerai-citygo-10x-yookassa-live-cn-v1"
         : "routerai-citygo-10x-yookassa-live-v1",
+      ...(marker !== "routerai-citygo-10x-yookassa-live-cn-fiscal-v2"
+        ? ["routerai-citygo-10x-yookassa-live-cn-fiscal-v2"]
+        : ["routerai-citygo-10x-yookassa-live-cn-v1"]),
     ])
       assert.throws(
         () => spec({ CITYGO_AI_PROFILE: profile }),

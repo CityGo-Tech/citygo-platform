@@ -1,6 +1,13 @@
 // Server-only transport. The caller explicitly chooses the shop mode; neither
 // the credentials nor a provider response can change it. A create response is
 // never proof authorizing balance credit: settlement requires a separate GET.
+import { isDeepStrictEqual } from "node:util";
+import {
+  assertYooKassaReceiptTotal,
+  yooKassaReceiptRegistrationSchema,
+  type YooKassaReceipt,
+  type YooKassaReceiptRegistration,
+} from "@citygo/contracts";
 const ENDPOINT = "https://api.yookassa.ru/v3";
 const MAX_RESPONSE_BYTES = 64 * 1024;
 const TIMEOUT_MS = 10_000;
@@ -21,6 +28,7 @@ export type YooKassaPayment = {
   paid: boolean;
   confirmationUrl?: string;
   verifiedAt: string;
+  receiptRegistration?: YooKassaReceiptRegistration;
 };
 export type YooKassaTestPayment = YooKassaPayment & { test: true };
 
@@ -48,21 +56,107 @@ export function validYooKassaCredentials(
   );
 }
 
+type YooKassaFailureClass =
+  | "configuration"
+  | "invalid_input"
+  | "transport"
+  | "timeout"
+  | "http"
+  | "invalid_response";
+const PROVIDER_ERROR_CODES = [
+  "invalid_request",
+  "invalid_credentials",
+  "forbidden",
+  "not_found",
+  "too_many_requests",
+  "internal_server_error",
+] as const;
+const PROVIDER_ERROR_PARAMETERS = [
+  "receipt",
+  "receipt.customer",
+  "receipt.customer.email",
+  "receipt.items",
+  "amount",
+  "amount.value",
+  "amount.currency",
+  "confirmation",
+  "confirmation.type",
+  "confirmation.return_url",
+  "capture",
+  "description",
+  "metadata",
+  "payment_method_data",
+  "Idempotence-Key",
+] as const;
+const FAILURE_CLASSES = [
+  "configuration",
+  "invalid_input",
+  "transport",
+  "timeout",
+  "http",
+  "invalid_response",
+] as const;
+export type YooKassaFailureDiagnostic = Readonly<{
+  failureClass: YooKassaFailureClass;
+  httpStatus: number | null;
+  providerCode: (typeof PROVIDER_ERROR_CODES)[number] | "unrecognized" | null;
+  parameter: (typeof PROVIDER_ERROR_PARAMETERS)[number] | "unrecognized" | null;
+}>;
+const failureDiagnostics = new WeakMap<object, YooKassaFailureDiagnostic>();
+function literal<T extends string>(value: unknown, allowed: readonly T[]) {
+  return typeof value === "string" && allowed.includes(value as T)
+    ? (value as T)
+    : "unrecognized";
+}
+
 export class YooKassaError extends Error {
   constructor(
-    readonly code:
-      | "configuration"
-      | "invalid_input"
-      | "transport"
-      | "timeout"
-      | "http"
-      | "invalid_response",
+    readonly code: YooKassaFailureClass,
+    diagnostic?: {
+      httpStatus?: number;
+      providerCode?: unknown;
+      parameter?: unknown;
+    },
   ) {
     super(
       "Не удалось выполнить операцию ЮKassa. Проверьте состояние перед повтором.",
     );
     this.name = "YooKassaError";
+    // Nothing from the provider is attached to the error. Even JSON.stringify,
+    // error serializers and later property mutation cannot reveal a raw body,
+    // description, headers, identifier, URL or credential through this record.
+    const failureClass = literal(code, FAILURE_CLASSES);
+    failureDiagnostics.set(
+      this,
+      Object.freeze({
+        failureClass:
+          failureClass === "unrecognized" ? "invalid_response" : failureClass,
+        httpStatus:
+          Number.isInteger(diagnostic?.httpStatus) &&
+          diagnostic!.httpStatus! >= 100 &&
+          diagnostic!.httpStatus! <= 599
+            ? diagnostic!.httpStatus!
+            : null,
+        providerCode:
+          diagnostic?.providerCode === undefined
+            ? null
+            : literal(diagnostic.providerCode, PROVIDER_ERROR_CODES),
+        parameter:
+          diagnostic?.parameter === undefined
+            ? null
+            : literal(diagnostic.parameter, PROVIDER_ERROR_PARAMETERS),
+      }),
+    );
   }
+}
+// Return only the immutable projection created by this module, never fields
+// supplied on an arbitrary Error or even on a lookalike subclass/prototype.
+export function yooKassaFailureDiagnostic(
+  error: unknown,
+): YooKassaFailureDiagnostic | undefined {
+  return typeof error === "object" && error !== null
+    ? failureDiagnostics.get(error)
+    : undefined;
 }
 // Kept as the same constructor so existing sandbox error handling remains valid.
 export { YooKassaError as YooKassaTestError };
@@ -124,13 +218,22 @@ export class YooKassaClient {
     orderId: string;
     amountKopeks: number;
     returnUrl: string;
+    receipt?: YooKassaReceipt;
+    createPayload?: unknown;
   }): Promise<YooKassaPayment> {
     input = Object.freeze({ ...input });
     this.validateExpected(input);
     const returnUrl = httpsUrl(input.returnUrl);
     if (!returnUrl) throw new YooKassaError("invalid_input");
     const amount = BigInt(input.amountKopeks);
-    return this.request("POST", "/payments", input, {
+    let receipt: YooKassaReceipt | undefined;
+    try {
+      if (input.receipt !== undefined)
+        receipt = assertYooKassaReceiptTotal(input.receipt, input.amountKopeks);
+    } catch {
+      throw new YooKassaError("invalid_input");
+    }
+    const body = {
       amount: {
         value: `${amount / 100n}.${(amount % 100n).toString().padStart(2, "0")}`,
         currency: "RUB",
@@ -142,7 +245,16 @@ export class YooKassaClient {
           ? "Пополнение тестового баланса CityGo"
           : "Пополнение баланса CityGo",
       metadata: { citygo_order_id: input.orderId },
-    });
+      ...(receipt ? { receipt } : {}),
+    };
+    if (receipt && receipt.items[0]!.description !== body.description)
+      throw new YooKassaError("invalid_input");
+    if (
+      input.createPayload !== undefined &&
+      !isDeepStrictEqual(input.createPayload, body)
+    )
+      throw new YooKassaError("invalid_input");
+    return this.request("POST", "/payments", input, body);
   }
 
   async get(
@@ -222,6 +334,11 @@ export class YooKassaClient {
     )
       throw invalid();
     let confirmationUrl: string | undefined;
+    const receiptRegistration =
+      raw.receipt_registration === undefined
+        ? undefined
+        : yooKassaReceiptRegistrationSchema.safeParse(raw.receipt_registration);
+    if (receiptRegistration && !receiptRegistration.success) throw invalid();
     if (raw.confirmation !== undefined) {
       if (
         !object(raw.confirmation) ||
@@ -241,6 +358,9 @@ export class YooKassaClient {
       paid: raw.paid,
       ...(confirmationUrl ? { confirmationUrl } : {}),
       verifiedAt: new Date().toISOString(),
+      ...(receiptRegistration?.success
+        ? { receiptRegistration: receiptRegistration.data }
+        : {}),
     };
   }
 
@@ -254,6 +374,8 @@ export class YooKassaClient {
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     let response: Response | undefined;
+    let responseStatus: number | undefined;
+    let httpFailure = false;
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     const deadline = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
@@ -285,9 +407,10 @@ export class YooKassaClient {
         return result;
       });
       response = await wait(pending);
+      responseStatus = response.status;
+      httpFailure = !response.ok;
       if (response.redirected || (response.url && response.url !== url))
         throw new YooKassaError("invalid_response");
-      if (!response.ok) throw new YooKassaError("http");
       if (
         response.headers
           .get("content-type")
@@ -323,11 +446,28 @@ export class YooKassaClient {
       } catch {
         throw new YooKassaError("invalid_response");
       }
+      if (httpFailure)
+        throw new YooKassaError("http", {
+          httpStatus: responseStatus,
+          providerCode: object(raw) ? raw.code : undefined,
+          parameter: object(raw) ? raw.parameter : undefined,
+        });
       return this.parse(raw, expected, paymentId);
     } catch (error) {
-      if (error instanceof YooKassaError) throw error;
+      if (error instanceof YooKassaError && error.code === "http") throw error;
+      const code =
+        error instanceof YooKassaError
+          ? error.code
+          : controller.signal.aborted
+            ? "timeout"
+            : "transport";
+      // Non-JSON/malformed/oversized HTTP errors still retain the status but
+      // never the response text. The same deadline also bounds error bodies.
       throw new YooKassaError(
-        controller.signal.aborted ? "timeout" : "transport",
+        httpFailure && code !== "timeout" ? "http" : code,
+        {
+          httpStatus: responseStatus,
+        },
       );
     } finally {
       if (timer) clearTimeout(timer);
@@ -350,6 +490,8 @@ export class YooKassaTestClient extends YooKassaClient {
     orderId: string;
     amountKopeks: number;
     returnUrl: string;
+    receipt?: YooKassaReceipt;
+    createPayload?: unknown;
   }): Promise<YooKassaTestPayment> {
     return super.create(input) as Promise<YooKassaTestPayment>;
   }

@@ -410,6 +410,14 @@ export function createClient(
       paymentRequest("/v1/payments/topups/" + encodeURIComponent(orderId), {
         orderId,
       }),
+    topupAttempt: (requestId: string) =>
+      paymentRequest(
+        "/v1/payments/topup-attempts/" +
+          encodeURIComponent(
+            createTopupSchema.shape.requestId.parse(requestId),
+          ),
+        {},
+      ),
     reconcileTopup: (orderId: string) =>
       paymentRequest(
         "/v1/payments/topups/" + encodeURIComponent(orderId) + "/reconcile",

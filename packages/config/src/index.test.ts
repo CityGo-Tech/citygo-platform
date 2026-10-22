@@ -11,6 +11,20 @@ const production = {
 
 test("YooKassa defaults disabled; test checkout cannot coexist with real AI or production", () => {
   assert.equal(readConfig({}).YOOKASSA_MODE, "disabled");
+  assert.equal(readConfig({}).YOOKASSA_FISCAL_PROFILE, "disabled");
+  assert.equal(
+    readConfig({ YOOKASSA_FISCAL_PROFILE: "citygo_service_full_payment_v1" })
+      .YOOKASSA_FISCAL_PROFILE,
+    "citygo_service_full_payment_v1",
+  );
+  for (const value of [
+    "automatic",
+    "npd_manual",
+    "true",
+    "full_prepayment",
+    "",
+  ])
+    assert.throws(() => readConfig({ YOOKASSA_FISCAL_PROFILE: value }));
   const isolated = {
     NODE_ENV: "test",
     LLM_PROVIDER: "disabled",
