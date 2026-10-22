@@ -1502,7 +1502,7 @@ test("money budget requires fresh approval for execution changes and rejects ove
   await f.approveBudget(user.token, small);
   assert.match(
     (await send(small, "Квартира " + "я".repeat(1200))).body,
-    /Контекст диалога превышает/,
+    /Текущий вопрос вместе с обязательным контекстом слишком длинный/,
   );
   assert.equal(calls, 1);
   const status = (

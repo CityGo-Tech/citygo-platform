@@ -62,6 +62,7 @@ import { createAiControl } from "./ai-control.js";
 import type { ProviderMap } from "./provider.js";
 import { createAiExecution } from "./ai-execution.js";
 import { ApiDrain, registerDrain } from "./shutdown.js";
+import { buildConversationContext } from "./conversation-context.js";
 import { registerSyntheticHousingApi } from "./housing.js";
 import {
   preparePayments,
@@ -810,30 +811,21 @@ export async function buildApp(options: {
             "Запрос на помощь человека сохранён. Живой риелтор пока не подключён к CityGo; это не отправка сообщения внешнему специалисту. Не переводите деньги и не отправляйте документы до независимой проверки.";
           send({ type: "delta", text: content });
         } else {
-          const messages = reservation.messages
-            .filter((m) => m.status === "complete")
-            .slice(-20)
-            .map((m) => ({ role: m.role, content: m.content }));
-          const modelInstructions = instructions(routing.to);
-          const modelMessages = [
-            profileContext(reservation.profile),
-            ...messages,
-          ];
-          if (
-            Buffer.byteLength(
-              JSON.stringify({
-                instructions: modelInstructions,
-                messages: modelMessages,
-              }),
-              "utf8",
-            ) > config.LLM_MAX_INPUT_BYTES
-          ) {
-            attemptError = new DomainError(
-              413,
-              "Контекст диалога превышает подтверждённый лимит AI. Обратитесь к администратору.",
-            );
-            throw attemptError;
+          let modelContext: ReturnType<typeof buildConversationContext>;
+          try {
+            modelContext = buildConversationContext({
+              instructions: instructions(routing.to),
+              profile: profileContext(reservation.profile),
+              history: reservation.messages,
+              currentQuestion: input.text,
+              maxInputBytes: config.LLM_MAX_INPUT_BYTES,
+            });
+          } catch (error) {
+            if (error instanceof DomainError) attemptError = error;
+            throw error;
           }
+          const { instructions: modelInstructions, messages: modelMessages } =
+            modelContext;
           // Bound context and reserve both attempt + money before adapter/OAuth.
           // No automatic refund: even a failed request may have been billed.
           await reserveAttempt();
