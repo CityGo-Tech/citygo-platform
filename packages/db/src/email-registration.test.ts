@@ -9,6 +9,8 @@ import {
   EmailRegistration,
   migrate,
   Repository,
+  type Database,
+  type EmailSendLimits,
 } from "./index.js";
 
 const hash = (value: string) =>
@@ -52,6 +54,248 @@ async function fixture(t: TestContext) {
     );
   return { db, store, repo, access, proof, ageQuota };
 }
+
+function trackQueries(db: Database) {
+  const statements: string[] = [];
+  const tracked: Database = {
+    ...db,
+    query: <T>(sql: string, params?: unknown[]) => {
+      statements.push(sql);
+      return db.query<T>(sql, params);
+    },
+    transaction: (work) =>
+      db.transaction((tx) =>
+        work({
+          exec: (sql) => tx.exec(sql),
+          query: <T>(sql: string, params?: unknown[]) => {
+            statements.push(sql);
+            return tx.query<T>(sql, params);
+          },
+        }),
+      ),
+  };
+  return { db: tracked, statements };
+}
+
+test("explicit unlimited email admission preserves events across failures/restarts without a global history count", async (t) => {
+  const f = await fixture(t),
+    tracked = trackQueries(f.db);
+  const limits: EmailSendLimits = { daily: null, total: null };
+  const frozen = new EmailRegistration(tracked.db, limits);
+  limits.daily = limits.total = 0;
+  for (let n = 0; n < 24; n++) {
+    const store =
+      n % 2
+        ? new EmailRegistration(tracked.db, { daily: null, total: null })
+        : frozen;
+    const value = input(
+      "unlimited-" + n + "@example.test",
+      "unlimited-ip-" + n,
+    );
+    await store.begin(value);
+    if (n % 2) await store.markSent(value.id, value.codeHash);
+    else await store.cancelDelivery(value.id, value.codeHash);
+    if (n === 11)
+      await f.db.query(
+        "update email_registration_rate_events set created_at=clock_timestamp()-interval '2 days'",
+      );
+  }
+  assert.equal(
+    (await f.db.query("select 1 from email_registrations")).rows.length,
+    24,
+  );
+  for (const kind of ["recipient", "ip"])
+    assert.equal(
+      (
+        await f.db.query(
+          "select 1 from email_registration_rate_events where kind=$1",
+          [kind],
+        )
+      ).rows.length,
+      24,
+    );
+  const quotaQueries = tracked.statements.filter(
+    (sql) =>
+      sql.includes("from email_registration_rate_events") &&
+      sql.trimStart().startsWith("select"),
+  );
+  assert.equal(quotaQueries.length, 24);
+  for (const sql of quotaQueries) {
+    assert.match(sql, /as recipient_count/);
+    assert.match(sql, /where created_at>clock_timestamp\(\)-interval '1 hour'/);
+    assert.doesNotMatch(sql, /as (?:daily|total)\b/);
+  }
+  // Events are retained even with unlimited admission, so a later bounded
+  // instance cannot forget earlier attempts or provider failures.
+  await assert.rejects(
+    new EmailRegistration(tracked.db, { daily: 2, total: 2 }).begin(
+      input("bounded-after-unlimited@example.test", "new-bounded-ip"),
+    ),
+    status(429),
+  );
+  assert.equal((await f.db.query("select 1 from users")).rows.length, 0);
+});
+
+test("a finite daily cap with unlimited total counts only the current UTC day", async (t) => {
+  const f = await fixture(t),
+    tracked = trackQueries(f.db);
+  const store = new EmailRegistration(tracked.db, { daily: 2, total: null });
+  const first = input("daily-only-one@example.test", "daily-ip-one");
+  await store.begin(first);
+  await store.cancelDelivery(first.id, first.codeHash);
+  await new EmailRegistration(tracked.db, { daily: 2, total: null }).begin(
+    input("daily-only-two@example.test", "daily-ip-two"),
+  );
+  await assert.rejects(
+    store.begin(input("daily-only-blocked@example.test", "daily-ip-three")),
+    status(429),
+  );
+  await f.db.query(
+    "update email_registration_rate_events set created_at=clock_timestamp()-interval '2 days'",
+  );
+  for (let n = 0; n < 2; n++)
+    await new EmailRegistration(tracked.db, { daily: 2, total: null }).begin(
+      input("daily-next-" + n + "@example.test", "daily-next-ip-" + n),
+    );
+  await assert.rejects(
+    store.begin(input("daily-next-blocked@example.test", "daily-next-ip")),
+    status(429),
+  );
+  const globalQueries = tracked.statements.filter((sql) =>
+    /as daily\b/.test(sql),
+  );
+  assert.equal(globalQueries.length, 6);
+  for (const sql of globalQueries) {
+    assert.match(sql, /and created_at>=date_trunc\('day'/);
+    assert.doesNotMatch(sql, /as total\b/);
+  }
+});
+
+test("unlimited daily admission still enforces a finite all-time cap across a new UTC day and restart", async (t) => {
+  const f = await fixture(t),
+    tracked = trackQueries(f.db);
+  const first = input("total-only-one@example.test", "total-ip-one");
+  const store = new EmailRegistration(tracked.db, { daily: null, total: 2 });
+  await store.begin(first);
+  await store.cancelDelivery(first.id, first.codeHash);
+  await new EmailRegistration(tracked.db, { daily: null, total: 2 }).begin(
+    input("total-only-two@example.test", "total-ip-two"),
+  );
+  await f.db.query(
+    "update email_registration_rate_events set created_at=clock_timestamp()-interval '2 days'",
+  );
+  await assert.rejects(
+    new EmailRegistration(tracked.db, { daily: null, total: 2 }).begin(
+      input("total-only-blocked@example.test", "total-ip-three"),
+    ),
+    status(429),
+  );
+  const globalQueries = tracked.statements.filter((sql) =>
+    /as total\b/.test(sql),
+  );
+  assert.equal(globalQueries.length, 3);
+  for (const sql of globalQueries) {
+    assert.doesNotMatch(sql, /as daily\b|date_trunc/);
+    assert.match(sql, /where kind='recipient'/);
+  }
+});
+
+test("unlimited global admission never removes recipient cooldown, three/hour or ten/IP/hour protections", async (t) => {
+  const f = await fixture(t);
+  const store = new EmailRegistration(f.db, { daily: null, total: null });
+  const value = input("unlimited-recipient@example.test", "recipient-ip");
+  await store.begin(value);
+  await store.cancelDelivery(value.id, value.codeHash);
+  await assert.rejects(
+    new EmailRegistration(f.db, { daily: null, total: null }).begin(
+      input(value.email, "different-recipient-ip"),
+    ),
+    status(429),
+  );
+  for (const code of ["second-unlimited", "third-unlimited"]) {
+    await f.ageQuota();
+    await new EmailRegistration(f.db, { daily: null, total: null }).resend({
+      id: value.id,
+      proofHash: value.proofHash,
+      codeHash: hash(code),
+      ipKey: value.ipKey,
+    });
+  }
+  await f.ageQuota();
+  await assert.rejects(
+    store.resend({
+      id: value.id,
+      proofHash: value.proofHash,
+      codeHash: hash("fourth-unlimited"),
+      ipKey: value.ipKey,
+    }),
+    status(429),
+  );
+  for (let n = 0; n < 10; n++)
+    await new EmailRegistration(f.db, { daily: null, total: null }).begin(
+      input("unlimited-shared-ip-" + n + "@example.test", "shared-ip"),
+    );
+  await assert.rejects(
+    store.begin(input("unlimited-ip-blocked@example.test", "shared-ip")),
+    status(429),
+  );
+  await store.begin(
+    input("unlimited-independent-ip@example.test", "independent-ip"),
+  );
+});
+
+test("zero remains deny in mixed modes; only explicit null or a bounded integer is a valid field", async (t) => {
+  const f = await fixture(t);
+  for (const limits of [
+    { daily: 0, total: null },
+    { daily: null, total: 0 },
+  ])
+    await assert.rejects(
+      new EmailRegistration(f.db, limits).begin(input()),
+      status(429),
+    );
+  assert.equal(
+    (await f.db.query("select 1 from email_registration_rate_events")).rows
+      .length,
+    0,
+  );
+  assert.equal(
+    (await f.db.query("select 1 from email_registrations")).rows.length,
+    0,
+  );
+  for (const invalid of [
+    undefined,
+    -1,
+    -Infinity,
+    NaN,
+    Infinity,
+    1.2,
+    1000001,
+    "unlimited",
+    "10",
+    false,
+    {},
+    [],
+  ])
+    for (const field of ["daily", "total"])
+      assert.throws(
+        () =>
+          new EmailRegistration(f.db, {
+            daily: null,
+            total: null,
+            [field]: invalid,
+          } as unknown as EmailSendLimits),
+        /Invalid email send admission limits/,
+      );
+  for (const invalid of [null, [], 0, {}, { daily: null }, { total: null }])
+    assert.throws(
+      () => new EmailRegistration(f.db, invalid as unknown as EmailSendLimits),
+      /Invalid email send admission limits/,
+    );
+  // The optional whole argument remains backward-compatible, unlike an
+  // undefined daily/total field in an explicit object.
+  assert.doesNotThrow(() => new EmailRegistration(f.db, undefined));
+});
 
 test("global email admissions survive failures/restart and cannot be increased by mutating config", async (t) => {
   const f = await fixture(t);

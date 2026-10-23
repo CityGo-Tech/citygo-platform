@@ -415,6 +415,45 @@ class Validation(unittest.TestCase):
                              for key in service["environment"]))
 
 
+    def test_email_v8_limits_accept_only_exact_unlimited_or_bounded_canonical_decimals(self):
+        profile = s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROFILE
+        value = routerai_fixture(profile)
+        def validate(data, selected=profile):
+            with patch.object(t, "read_file", return_value=encoded(data)):
+                return s.api_secret("/unused", selected)
+        for daily, total in (("unlimited", "unlimited"), ("unlimited", "1"), ("1", "unlimited"),
+                             ("unlimited", "1000000"), ("100000", "unlimited"),
+                             ("1", "1"), ("100000", "1000000")):
+            data = {**value, "EMAIL_SEND_DAILY_LIMIT": daily, "EMAIL_SEND_TOTAL_LIMIT": total}
+            with self.subTest(daily=daily, total=total):
+                self.assertEqual(validate(data), encoded(data))
+        for key, maximum in s.EMAIL_LIMITS.items():
+            missing = dict(value); del missing[key]
+            with self.subTest(missing=key), self.assertRaises(b.BackupError): validate(missing)
+            for invalid in ("", "UNLIMITED", "Unlimited", " unlimited", "unlimited ",
+                            "unlimited\n", "unlimited\0", "unlimited\u200b", "unlіmited",
+                            "Infinity", "NaN", "0", "-1", "+1", "01", "1.0", "1e3",
+                            "0x10", "١", "１", str(maximum + 1),
+                            0, 2, True, False, None, {}, [], ["unlimited"]):
+                with self.subTest(key=key, invalid=invalid), self.assertRaises(b.BackupError):
+                    validate({**value, key: invalid})
+        for key in ("PHONE_SMS_GLOBAL_DAILY_LIMIT", "PHONE_SMS_GLOBAL_TOTAL_LIMIT",
+                    "PHONE_VERIFICATION_MODE", "SMS_RU_MODE", *s.ROUTERAI_LIMITS):
+            with self.subTest(non_email=key), self.assertRaises(b.BackupError):
+                validate({**value, key: "unlimited"})
+        for old in set(s.PROFILE_VERSIONS) - {profile}:
+            legacy = ({"DATABASE_URL": value["DATABASE_URL"]} if old == s.PROFILE else routerai_fixture(old))
+            with self.subTest(unchanged_legacy=old):
+                self.assertEqual(validate(legacy, old), encoded(legacy))
+            for key in s.EMAIL_LIMITS:
+                with self.subTest(old=old, added_email=key), self.assertRaises(b.BackupError):
+                    validate({**legacy, key: "unlimited"}, old)
+            if old != s.PROFILE:
+                for key in s.ROUTERAI_LIMITS:
+                    with self.subTest(old=old, routing=key), self.assertRaises(b.BackupError):
+                        validate({**legacy, key: "unlimited"}, old)
+
+
 def routerai_fixture(profile=s.ROUTERAI_PROFILE):
     if profile == s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROFILE:
         return json.loads((Path(__file__).resolve().parent.parent / "fixtures" /

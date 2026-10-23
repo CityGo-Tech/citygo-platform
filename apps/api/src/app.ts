@@ -577,8 +577,14 @@ export async function buildApp(options: {
     sendLimits:
       config.EMAIL_DELIVERY_PROVIDER === "yandex_postbox"
         ? {
-            daily: config.EMAIL_SEND_DAILY_LIMIT,
-            total: config.EMAIL_SEND_TOTAL_LIMIT,
+            daily:
+              config.EMAIL_SEND_DAILY_LIMIT === "unlimited"
+                ? null
+                : config.EMAIL_SEND_DAILY_LIMIT,
+            total:
+              config.EMAIL_SEND_TOTAL_LIMIT === "unlimited"
+                ? null
+                : config.EMAIL_SEND_TOTAL_LIMIT,
           }
         : undefined,
     setSession: (reply, token) => {

@@ -156,10 +156,12 @@ function validateRouterAi(value, fixed) {
       (!/^[a-f0-9]{64}$/.test(value.EMAIL_REGISTRATION_SECRET) ||
         !/^[A-Za-z0-9_-]{8,128}$/.test(value.POSTBOX_ACCESS_KEY_ID) ||
         !/^[!-~]{16,256}$/.test(value.POSTBOX_SECRET_ACCESS_KEY) ||
+        // This exact email-only sentinel does not change AI/SMS quota policy.
         Object.entries(emailLimits).some(
           ([key, maximum]) =>
-            !/^[1-9][0-9]{0,6}$/.test(value[key]) ||
-            Number(value[key]) > maximum,
+            value[key] !== "unlimited" &&
+            (!/^[1-9][0-9]{0,6}$/.test(value[key]) ||
+              Number(value[key]) > maximum),
         )))
   )
     throw new Error();

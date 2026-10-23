@@ -82,21 +82,33 @@ async function accountExists(tx: Sql, email: string) {
     ).rows.length > 0
   );
 }
-export type EmailSendLimits = { daily: number; total: number };
+// null is explicit unlimited admission for this field; numeric zero still denies.
+// An omitted object preserves the historical recipient/IP-only configuration.
+export type EmailSendLimits = { daily: number | null; total: number | null };
 async function quota(
   tx: Sql,
   recipientKey: string,
   ipKey: string,
   global?: EmailSendLimits,
 ) {
-  if (global) {
+  if (global && (global.daily !== null || global.total !== null)) {
+    const daily = global.daily,
+      total = global.total;
     const row = (
-      await tx.query<{ daily: number; total: number }>(
-        `select count(*) filter(where created_at>=date_trunc('day',clock_timestamp() at time zone 'UTC') at time zone 'UTC')::int as daily,
-       count(*)::int as total from email_registration_rate_events where kind='recipient'`,
+      await tx.query<{ daily?: number; total?: number }>(
+        daily !== null && total !== null
+          ? `select count(*) filter(where created_at>=date_trunc('day',clock_timestamp() at time zone 'UTC') at time zone 'UTC')::int as daily,
+       count(*)::int as total from email_registration_rate_events where kind='recipient'`
+          : daily !== null
+            ? `select count(*)::int as daily from email_registration_rate_events where kind='recipient'
+       and created_at>=date_trunc('day',clock_timestamp() at time zone 'UTC') at time zone 'UTC'`
+            : "select count(*)::int as total from email_registration_rate_events where kind='recipient'",
       )
     ).rows[0]!;
-    if (row.daily >= global.daily || row.total >= global.total)
+    if (
+      (daily !== null && row.daily! >= daily) ||
+      (total !== null && row.total! >= total)
+    )
       throw new DomainError(
         429,
         "Общий лимит отправки писем исчерпан. Попробуйте позже",
@@ -135,15 +147,26 @@ export class EmailRegistration {
     private db: Database,
     sendLimits?: EmailSendLimits,
   ) {
-    if (
-      sendLimits &&
-      ![sendLimits.daily, sendLimits.total].every(
-        (value) =>
-          Number.isSafeInteger(value) && value >= 0 && value <= 1000000,
+    if (sendLimits !== undefined) {
+      if (
+        sendLimits === null ||
+        typeof sendLimits !== "object" ||
+        Array.isArray(sendLimits)
       )
-    )
-      throw new Error("Invalid email send admission limits");
-    this.sendLimits = sendLimits && Object.freeze({ ...sendLimits });
+        throw new Error("Invalid email send admission limits");
+      // Read each field once and validate the frozen snapshot, not the caller's
+      // mutable object. Undefined fields are not another spelling of unlimited.
+      const snapshot = { daily: sendLimits.daily, total: sendLimits.total };
+      if (
+        ![snapshot.daily, snapshot.total].every(
+          (value) =>
+            value === null ||
+            (Number.isSafeInteger(value) && value >= 0 && value <= 1000000),
+        )
+      )
+        throw new Error("Invalid email send admission limits");
+      this.sendLimits = Object.freeze(snapshot);
+    }
   }
 
   async begin(raw: EmailRegistrationBegin) {

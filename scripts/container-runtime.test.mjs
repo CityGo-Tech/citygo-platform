@@ -490,6 +490,142 @@ test("email-only mounted profile preserves v7 and rejects partial credentials, S
   assert.equal(maximum.env.EMAIL_SEND_TOTAL_LIMIT, "1000000");
 });
 
+test("email-only v8 accepts only exact unlimited or its bounded canonical decimal limits", (t) => {
+  const directory = fixture(t);
+  const marker =
+    "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-v1";
+  const value = JSON.parse(
+    readFileSync(
+      join(
+        root,
+        "deploy/fixtures/routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-profile.fixture.json",
+      ),
+      "utf8",
+    ),
+  );
+  const limits = {
+    EMAIL_SEND_DAILY_LIMIT: "100000",
+    EMAIL_SEND_TOTAL_LIMIT: "1000000",
+  };
+  const spec = (data, profile = marker) => {
+    writeFileSync(join(directory, "api.json"), JSON.stringify(data));
+    return containerSpec(
+      "api",
+      {
+        CITYGO_MOUNTED_CONFIG: "1",
+        ...(profile === null ? {} : { CITYGO_AI_PROFILE: profile }),
+        LLM_PROVIDER: profile ? "routerai" : "disabled",
+      },
+      directory,
+      directory,
+    );
+  };
+  for (const [daily, total] of [
+    ["unlimited", "unlimited"],
+    ["unlimited", "1"],
+    ["1", "unlimited"],
+    ["unlimited", limits.EMAIL_SEND_TOTAL_LIMIT],
+    [limits.EMAIL_SEND_DAILY_LIMIT, "unlimited"],
+    ["1", "1"],
+    Object.values(limits),
+  ]) {
+    const mounted = spec({
+      ...value,
+      EMAIL_SEND_DAILY_LIMIT: daily,
+      EMAIL_SEND_TOTAL_LIMIT: total,
+    });
+    assert.equal(mounted.env.EMAIL_SEND_DAILY_LIMIT, daily);
+    assert.equal(mounted.env.EMAIL_SEND_TOTAL_LIMIT, total);
+  }
+  for (const key of Object.keys(limits)) {
+    const missing = { ...value };
+    delete missing[key];
+    assert.throws(() => spec(missing), /Invalid mounted/);
+    for (const invalid of [
+      "",
+      "UNLIMITED",
+      "Unlimited",
+      " unlimited",
+      "unlimited ",
+      "unlimited\n",
+      "unlimited\0",
+      "unlimited\u200b",
+      "unlіmited",
+      "Infinity",
+      "NaN",
+      "0",
+      "-1",
+      "+1",
+      "01",
+      "1.0",
+      "1e3",
+      "0x10",
+      "١",
+      "１",
+      String(Number(limits[key]) + 1),
+      0,
+      2,
+      true,
+      false,
+      null,
+      {},
+      [],
+      ["unlimited"],
+    ])
+      assert.throws(
+        () => spec({ ...value, [key]: invalid }),
+        /Invalid mounted/,
+        `${key} must not reinterpret ${JSON.stringify(invalid)}`,
+      );
+  }
+  // The sentinel belongs only to the two email fields, not SMS or AI quotas.
+  for (const key of [
+    "PHONE_SMS_GLOBAL_DAILY_LIMIT",
+    "PHONE_SMS_GLOBAL_TOTAL_LIMIT",
+    "PHONE_VERIFICATION_MODE",
+    "SMS_RU_MODE",
+    "LLM_USER_DAILY_REQUEST_LIMIT",
+    "LLM_GLOBAL_DAILY_REQUEST_LIMIT",
+    "LLM_USER_DAILY_ATTEMPT_LIMIT",
+    "LLM_GLOBAL_DAILY_ATTEMPT_LIMIT",
+  ])
+    assert.throws(
+      () => spec({ ...value, [key]: "unlimited" }),
+      /Invalid mounted/,
+    );
+  for (const [oldMarker, file] of [
+    ["routerai-credit-v1", "routerai-profile.fixture.json"],
+    ["routerai-citygo-10x-v1", "routerai-citygo-10x-profile.fixture.json"],
+    ...liveMountedProfiles.filter(([profile]) => profile !== marker),
+  ]) {
+    const legacy = JSON.parse(
+      readFileSync(join(root, "deploy/fixtures", file), "utf8"),
+    );
+    assert.doesNotThrow(() => spec(legacy, oldMarker));
+    for (const key of Object.keys(limits))
+      assert.throws(
+        () => spec({ ...legacy, [key]: "unlimited" }, oldMarker),
+        /Invalid mounted/,
+      );
+    for (const key of [
+      "LLM_USER_DAILY_REQUEST_LIMIT",
+      "LLM_GLOBAL_DAILY_REQUEST_LIMIT",
+      "LLM_USER_DAILY_ATTEMPT_LIMIT",
+      "LLM_GLOBAL_DAILY_ATTEMPT_LIMIT",
+    ])
+      assert.throws(
+        () => spec({ ...legacy, [key]: "unlimited" }, oldMarker),
+        /Invalid mounted/,
+      );
+  }
+  assert.doesNotThrow(() => spec({ DATABASE_URL: db }, null));
+  for (const key of Object.keys(limits))
+    assert.throws(
+      () => spec({ DATABASE_URL: db, [key]: "unlimited" }, null),
+      /Invalid mounted/,
+    );
+});
+
 test("all mounted profiles, including disabled, refuse ambient verification prefixes", (t) => {
   const directory = fixture(t);
   for (const mode of ["api", "worker", "migrate"])

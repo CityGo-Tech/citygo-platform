@@ -15,6 +15,20 @@ const optionalIntegerSetting = (min: number, max: number) =>
     z.coerce.number().int().min(min).max(max).optional(),
   );
 
+// Only the two global email caps support an explicit unlimited choice. Zero
+// remains the default hard stop; no coercion from booleans, arrays or objects.
+// A cap choice is not approval for public sending or paid provider conditions.
+const emailSendLimit = (max: number) =>
+  z
+    .union([
+      z.literal("unlimited"),
+      z
+        .union([z.number(), z.string()])
+        .transform((value) => Number(value))
+        .pipe(z.number().int().min(0).max(max)),
+    ])
+    .default(0);
+
 const trustedProxySchema = z
   .string()
   .default("")
@@ -157,13 +171,8 @@ export const serverConfigSchema = z.object({
       .refine(isAsciiSenderEmail, "Invalid bare sender email")
       .optional(),
   ),
-  EMAIL_SEND_DAILY_LIMIT: z.coerce.number().int().min(0).max(100000).default(0),
-  EMAIL_SEND_TOTAL_LIMIT: z.coerce
-    .number()
-    .int()
-    .min(0)
-    .max(1000000)
-    .default(0),
+  EMAIL_SEND_DAILY_LIMIT: emailSendLimit(100000),
+  EMAIL_SEND_TOTAL_LIMIT: emailSendLimit(1000000),
   PHONE_VERIFICATION_MODE: z.enum(["disabled", "sms_ru"]).default("disabled"),
   PHONE_VERIFICATION_SECRET: optionalSetting.pipe(
     z
@@ -261,7 +270,7 @@ export function validateVerificationDeliveryConfig(
       !config.EMAIL_SEND_TOTAL_LIMIT)
   )
     throw new Error(
-      "Postbox requires explicit credentials, From, registration secret and positive email send caps",
+      "Postbox requires explicit credentials, From, registration secret and positive or explicit unlimited email send caps",
     );
   if (
     config.SMS_RU_MODE !== "disabled" &&

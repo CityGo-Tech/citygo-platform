@@ -118,10 +118,12 @@ def api_secret(path, profile=PROFILE):
             b.require(t.matches(value["YOOKASSA_SHOP_ID"], r"[1-9][0-9]{0,19}")
                       and t.matches(value["YOOKASSA_SECRET_KEY"], r"live_[A-Za-z0-9_=-]{8,8192}"), "start-secret")
         if email_keys:
+            # Exact email-only sentinel; zero and AI/SMS quotas keep their old meaning.
             b.require(t.matches(value["EMAIL_REGISTRATION_SECRET"], t.HASH)
                       and t.matches(value["POSTBOX_ACCESS_KEY_ID"], r"[A-Za-z0-9_-]{8,128}")
                       and t.matches(value["POSTBOX_SECRET_ACCESS_KEY"], r"[!-~]{16,256}")
-                      and all(t.matches(value[key], r"[1-9][0-9]{0,6}") and int(value[key]) <= maximum
+                      and all(value[key] == "unlimited" or
+                              (t.matches(value[key], r"[1-9][0-9]{0,6}") and int(value[key]) <= maximum)
                               for key, maximum in EMAIL_LIMITS.items()), "start-secret")
     url = value["DATABASE_URL"]
     b.require(type(url) is str and not any(ord(ch) <= 32 for ch in url), "start-secret")

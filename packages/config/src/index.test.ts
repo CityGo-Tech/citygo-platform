@@ -122,6 +122,106 @@ test("email registration defaults disabled and cannot be enabled by an implicit 
   assert.equal(pending.EMAIL_REGISTRATION_SECRET, undefined);
 });
 
+test("global email caps accept only explicit unlimited or bounded legacy numeric settings", () => {
+  const postbox = {
+    EMAIL_REGISTRATION_MODE: "required",
+    EMAIL_DELIVERY_PROVIDER: "yandex_postbox",
+    POSTBOX_ACCESS_KEY_ID: "synthetic-access",
+    POSTBOX_SECRET_ACCESS_KEY: "synthetic-secret",
+    POSTBOX_FROM_EMAIL: "sender@example.test",
+    EMAIL_REGISTRATION_SECRET: "a".repeat(64),
+    EMAIL_SEND_DAILY_LIMIT: "unlimited",
+    EMAIL_SEND_TOTAL_LIMIT: "unlimited",
+  };
+  const unlimited = readConfig(postbox);
+  assert.equal(unlimited.EMAIL_SEND_DAILY_LIMIT, "unlimited");
+  assert.equal(unlimited.EMAIL_SEND_TOTAL_LIMIT, "unlimited");
+  const numeric = readConfig({
+    ...postbox,
+    EMAIL_SEND_DAILY_LIMIT: 10,
+    EMAIL_SEND_TOTAL_LIMIT: 20,
+  } as unknown as NodeJS.ProcessEnv);
+  assert.equal(numeric.EMAIL_SEND_DAILY_LIMIT, 10);
+  assert.equal(numeric.EMAIL_SEND_TOTAL_LIMIT, 20);
+  for (const [daily, total] of [
+    ["unlimited", "20"],
+    ["10", "unlimited"],
+    ["100000", "1000000"],
+  ]) {
+    const config = readConfig({
+      ...postbox,
+      EMAIL_SEND_DAILY_LIMIT: daily,
+      EMAIL_SEND_TOTAL_LIMIT: total,
+    });
+    assert.equal(
+      config.EMAIL_SEND_DAILY_LIMIT,
+      daily === "unlimited" ? daily : Number(daily),
+    );
+    assert.equal(
+      config.EMAIL_SEND_TOTAL_LIMIT,
+      total === "unlimited" ? total : Number(total),
+    );
+  }
+  for (const name of ["EMAIL_SEND_DAILY_LIMIT", "EMAIL_SEND_TOTAL_LIMIT"]) {
+    for (const value of [
+      "Unlimited",
+      "UNLIMITED",
+      " unlimited",
+      "unlimited ",
+      "Infinity",
+      "NaN",
+      "-1",
+      "1.5",
+      "1000001",
+      "0",
+      "",
+      undefined,
+      0,
+      -1,
+      Infinity,
+      NaN,
+      true,
+      false,
+      null,
+      [],
+      [1],
+      {},
+    ])
+      assert.throws(() =>
+        readConfig({
+          ...postbox,
+          [name]: value,
+        } as unknown as NodeJS.ProcessEnv),
+      );
+  }
+  assert.throws(() =>
+    readConfig({ ...postbox, EMAIL_SEND_DAILY_LIMIT: "100001" }),
+  );
+  for (const name of [
+    "POSTBOX_ACCESS_KEY_ID",
+    "POSTBOX_SECRET_ACCESS_KEY",
+    "POSTBOX_FROM_EMAIL",
+    "EMAIL_REGISTRATION_SECRET",
+  ])
+    assert.throws(() => readConfig({ ...postbox, [name]: undefined }));
+  for (const name of [
+    "PHONE_SMS_GLOBAL_DAILY_LIMIT",
+    "PHONE_SMS_GLOBAL_TOTAL_LIMIT",
+  ])
+    assert.throws(() => readConfig({ [name]: "unlimited" }));
+  assert.equal(readConfig({}).EMAIL_SEND_DAILY_LIMIT, 0);
+  assert.equal(readConfig({}).EMAIL_SEND_TOTAL_LIMIT, 0);
+  assert.equal(
+    readConfig({ EMAIL_SEND_DAILY_LIMIT: "0" }).EMAIL_SEND_DAILY_LIMIT,
+    0,
+  );
+  assert.equal(
+    readConfig({ EMAIL_SEND_TOTAL_LIMIT: "0" }).EMAIL_SEND_TOTAL_LIMIT,
+    0,
+  );
+  assert.equal(readConfig({}).EMAIL_DELIVERY_PROVIDER, "disabled");
+});
+
 test("email OTP secret is blank-safe, purpose-specific configuration and exactly 32 hex bytes", () => {
   for (const blank of [undefined, "", " "])
     assert.equal(

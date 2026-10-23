@@ -222,13 +222,19 @@ test(
             input(`synthetic-ip-${n}@example.test`, "ip-test"),
           );
       const one = observe(
-        new EmailRegistration(tagged(db, prefix + "_first", gate)).begin(first),
+        new EmailRegistration(tagged(db, prefix + "_first", gate), {
+          daily: null,
+          total: null,
+        }).begin(first),
       );
       let two: Promise<unknown> | undefined;
       try {
         await within(gate.entered.promise);
         two = observe(
-          new EmailRegistration(tagged(db, prefix + "_second")).begin(second),
+          new EmailRegistration(tagged(db, prefix + "_second"), {
+            daily: null,
+            total: null,
+          }).begin(second),
         );
         await waitForLock(db, prefix + "_second", prefix + "_first");
       } finally {
@@ -246,6 +252,78 @@ test(
         ).rows.length,
         0,
       );
+    }
+  },
+);
+
+test(
+  "PostgreSQL mixed unlimited/finite global admissions share the same security lock and never exceed the finite field",
+  pgOnly,
+  async (t) => {
+    for (const limits of [
+      { daily: 1, total: null },
+      { daily: null, total: 1 },
+    ]) {
+      const db = await fixture(t),
+        prefix = "cg_email_global_" + randomUUID().replaceAll("-", ""),
+        gate = { entered: signal(), release: signal() };
+      const first = input(
+        "mixed-first-" + prefix + "@example.test",
+        "mixed-first-ip-" + prefix,
+      );
+      const second = input(
+        "mixed-second-" + prefix + "@example.test",
+        "mixed-second-ip-" + prefix,
+      );
+      const one = observe(
+        new EmailRegistration(
+          tagged(db, prefix + "_first", gate),
+          limits,
+        ).begin(first),
+      );
+      let two: Promise<unknown> | undefined;
+      try {
+        await within(gate.entered.promise);
+        two = observe(
+          new EmailRegistration(tagged(db, prefix + "_second"), limits).begin(
+            second,
+          ),
+        );
+        await waitForLock(db, prefix + "_second", prefix + "_first");
+      } finally {
+        gate.release.open();
+        await Promise.allSettled([one, ...(two ? [two] : [])]);
+      }
+      await one;
+      assert.ok(two);
+      await assert.rejects(two, status(429));
+      await new EmailRegistration(db, limits).cancelDelivery(
+        first.id,
+        first.codeHash,
+      );
+      await assert.rejects(
+        new EmailRegistration(db, limits).begin(
+          input(
+            "mixed-after-restart-" + prefix + "@example.test",
+            "mixed-after-restart-ip-" + prefix,
+          ),
+        ),
+        status(429),
+      );
+      assert.equal(
+        (await db.query("select 1 from email_registrations")).rows.length,
+        1,
+      );
+      for (const kind of ["recipient", "ip"])
+        assert.equal(
+          (
+            await db.query(
+              "select 1 from email_registration_rate_events where kind=$1",
+              [kind],
+            )
+          ).rows.length,
+          1,
+        );
     }
   },
 );
