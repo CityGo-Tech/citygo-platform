@@ -70,7 +70,9 @@ export function createPostboxDelivery(
   config: PostboxDeliveryConfig,
   options: { fetch?: typeof globalThis.fetch; clock?: () => Date } = {},
 ): (input: PostboxDeliveryInput) => Promise<PostboxAcceptedReceipt> {
-  const timeoutMs = config.timeoutMs ?? 5_000;
+  // The verified endpoint can take >5s even to validate an empty request.
+  // Leave finite room for delivery while retaining one attempt and no retry.
+  const timeoutMs = config.timeoutMs ?? 15_000;
   if (
     typeof config.accessKeyId !== "string" ||
     !/^[A-Za-z0-9_-]{1,128}$/.test(config.accessKeyId) ||
@@ -79,7 +81,7 @@ export function createPostboxDelivery(
     !isAsciiSenderEmail(config.fromEmail) ||
     !Number.isInteger(timeoutMs) ||
     timeoutMs < 1 ||
-    timeoutMs > 7_500
+    timeoutMs > 20_000
   ) {
     throw new PostboxDeliveryError("configuration");
   }

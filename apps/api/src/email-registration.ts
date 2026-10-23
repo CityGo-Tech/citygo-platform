@@ -70,10 +70,12 @@ export function registerEmailRegistration(
           signal: controller.signal,
         }),
         new Promise<never>((_, reject) => {
+          // Postbox's finite transport budget is <=20s. Keep this outer
+          // safeguard above it, and below the client's default 30s deadline.
           timeout = setTimeout(() => {
             controller.abort();
             reject(new Error("Delivery deadline"));
-          }, 8_000);
+          }, 25_000);
         }),
       ]);
       await state.markSent(id, codeHash);

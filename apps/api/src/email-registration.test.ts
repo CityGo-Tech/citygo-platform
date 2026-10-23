@@ -458,7 +458,49 @@ test("late failed delivery from an older HTTP resend cannot cancel the newly del
   assert.equal((await db.query("select 1 from sessions")).rows.length, 1);
 });
 
-test("an unresponsive sender reaches the eight-second deadline, aborts and cannot create an account after a late completion", async (t) => {
+test("a sender acknowledged after the former eight-second cutoff remains one delivery with the same quotas", async (t) => {
+  const entered = deferred<Parameters<RegistrationEmailDelivery>[0]>();
+  const sender = deferred<void>();
+  let sends = 0;
+  const { post, db } = await fixture(t, "required", async (input) => {
+    sends++;
+    entered.resolve(input);
+    await sender.promise;
+  });
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const pending = post("/v1/auth/email/register", { email, password });
+    const sent = await entered.promise;
+    t.mock.timers.tick(8_001);
+    assert.equal(sent.signal.aborted, false);
+    sender.resolve();
+    const accepted = await pending;
+    assert.equal(accepted.statusCode, 200);
+    assert.ok(
+      emailRegistrationChallengeSchema.safeParse(accepted.json()).success,
+    );
+    assert.equal(sends, 1);
+    assert.equal(
+      (
+        await db.query<{ delivery: string }>(
+          "select delivery from email_registrations",
+        )
+      ).rows[0]!.delivery,
+      "sent",
+    );
+    assert.equal(
+      (await db.query("select 1 from email_registration_rate_events")).rows
+        .length,
+      2,
+    );
+    assert.equal((await db.query("select 1 from users")).rows.length, 0);
+  } finally {
+    sender.resolve();
+    t.mock.timers.reset();
+  }
+});
+
+test("an unresponsive sender reaches the twenty-five-second deadline, aborts and cannot create an account after a late completion", async (t) => {
   const entered = deferred<Parameters<RegistrationEmailDelivery>[0]>();
   const sender = deferred<void>();
   const { post, db } = await fixture(t, "required", async (input) => {
@@ -469,7 +511,7 @@ test("an unresponsive sender reaches the eight-second deadline, aborts and canno
   try {
     const pending = post("/v1/auth/email/register", { email, password });
     const sent = await entered.promise;
-    t.mock.timers.tick(7_999);
+    t.mock.timers.tick(24_999);
     assert.equal(sent.signal.aborted, false);
     t.mock.timers.tick(1);
     assert.equal(sent.signal.aborted, true);

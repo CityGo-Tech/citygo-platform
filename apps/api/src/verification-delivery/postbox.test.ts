@@ -147,7 +147,9 @@ test("Postbox rejects unsafe configuration before creating a transport request",
       fromEmail: "no-reply@xn--c1ajazlh.xn--p1ai\r\nBcc: attacker@example.com",
     },
     { timeoutMs: 0 },
-    { timeoutMs: 7_501 },
+    { timeoutMs: 20_001 },
+    { timeoutMs: Infinity },
+    { timeoutMs: NaN },
     { timeoutMs: 1.5 },
   ]) {
     assert.throws(
@@ -155,6 +157,66 @@ test("Postbox rejects unsafe configuration before creating a transport request",
       (error: unknown) =>
         error instanceof PostboxDeliveryError && error.code === "configuration",
     );
+  }
+});
+
+test("Postbox permits only finite bounded timeout overrides without sending", () => {
+  for (const timeoutMs of [1, 15_000, 20_000])
+    assert.equal(
+      typeof createPostboxDelivery({ ...config, timeoutMs }),
+      "function",
+    );
+});
+
+test("Postbox default accepts a single acknowledgement after the former five-second cutoff", async (t) => {
+  let acknowledge!: (value: Response) => void;
+  let signal: AbortSignal | undefined;
+  let calls = 0;
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const send = createPostboxDelivery(config, {
+      clock,
+      fetch: transport(async (_url, init) => {
+        calls++;
+        signal = init.signal!;
+        return new Promise<Response>((resolve) => {
+          acknowledge = resolve;
+        });
+      }),
+    });
+    const pending = send(input());
+    t.mock.timers.tick(5_500);
+    assert.equal(signal?.aborted, false);
+    acknowledge(response());
+    assert.equal((await pending).accepted, true);
+    assert.equal(calls, 1);
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
+test("Postbox default still aborts at exactly fifteen seconds without retry", async (t) => {
+  let signal: AbortSignal | undefined;
+  let calls = 0;
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const send = createPostboxDelivery(config, {
+      clock,
+      fetch: transport(async (_url, init) => {
+        calls++;
+        signal = init.signal!;
+        return new Promise<Response>(() => {});
+      }),
+    });
+    const rejected = rejects(send(input()), "timeout");
+    t.mock.timers.tick(14_999);
+    assert.equal(signal?.aborted, false);
+    t.mock.timers.tick(1);
+    await rejected;
+    assert.equal(signal?.aborted, true);
+    assert.equal(calls, 1);
+  } finally {
+    t.mock.timers.reset();
   }
 });
 

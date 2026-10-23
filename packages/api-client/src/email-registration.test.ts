@@ -275,3 +275,65 @@ test("email resend deadlines do not retry when a transport ignores cancellation"
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
   assert.equal(calls, 1);
 });
+
+test("default email begin and resend wait beyond the server's twenty-five-second delivery budget", async (t) => {
+  for (const method of ["begin", "resend"] as const) {
+    const pending = deferred<Response>();
+    let calls = 0;
+    let signal: AbortSignal | undefined;
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    try {
+      const client = createClient("http://synthetic", {
+        fetch: async (_url, init) => {
+          calls++;
+          signal = init?.signal ?? undefined;
+          return pending.promise;
+        },
+      });
+      const result =
+        method === "begin"
+          ? client.beginEmailRegistration(user.email, "123456")
+          : client.resendEmailRegistration(challengeId, proof);
+      t.mock.timers.tick(25_001);
+      assert.equal(signal?.aborted, false);
+      pending.resolve(Response.json(challenge));
+      assert.deepEqual(await result, challenge);
+      assert.equal(calls, 1);
+    } finally {
+      t.mock.timers.reset();
+    }
+  }
+});
+
+test("default email begin and resend still time out at thirty seconds without retry", async (t) => {
+  for (const method of ["begin", "resend"] as const) {
+    const pending = deferred<Response>();
+    let calls = 0;
+    let signal: AbortSignal | undefined;
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    try {
+      const client = createClient("http://synthetic", {
+        fetch: async (_url, init) => {
+          calls++;
+          signal = init?.signal ?? undefined;
+          return pending.promise;
+        },
+      });
+      const result =
+        method === "begin"
+          ? client.beginEmailRegistration(user.email, "123456")
+          : client.resendEmailRegistration(challengeId, proof);
+      const rejected = assert.rejects(result, errorCode("timeout"));
+      t.mock.timers.tick(29_999);
+      assert.equal(signal?.aborted, false);
+      t.mock.timers.tick(1);
+      await rejected;
+      pending.resolve(Response.json(challenge));
+      await Promise.resolve();
+      assert.equal(signal?.aborted, true);
+      assert.equal(calls, 1);
+    } finally {
+      t.mock.timers.reset();
+    }
+  }
+});
