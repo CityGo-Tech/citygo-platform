@@ -29,6 +29,14 @@ export async function routerAiProfileSmoke({
       "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-v1",
       "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-profile.fixture.json",
     ],
+    [
+      "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-smsru-v1",
+      "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-smsru-profile.fixture.json",
+    ],
+    [
+      "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-v1",
+      "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-profile.fixture.json",
+    ],
   ])
     await mountedProfileSmoke({
       project,
@@ -168,7 +176,7 @@ async function mountedProfileSmoke({
       `import assert from 'node:assert/strict'; const ready=await fetch('http://127.0.0.1:4000/ready'); assert.equal(ready.status,200); assert.equal((await fetch('http://127.0.0.1:4000/v1/admin/ai')).status,401); console.log('profile-ready-auth-closed');`,
     ]);
     assert.equal(proof.trim(), "profile-ready-auth-closed");
-    if (marker.endsWith("-postbox-email-v1")) {
+    if (marker.includes("-postbox-email")) {
       const emailProof = docker([
         "exec",
         id,
@@ -186,6 +194,26 @@ async function mountedProfileSmoke({
         "phone_welcome_claims",
       ])
         assert.equal(psql(`select count(*) from ${table}`), "0");
+    }
+    if (
+      marker.endsWith("-postbox-email-smsru-v1") ||
+      marker.endsWith("-postbox-email-prostosms-v1")
+    ) {
+      const phoneProof = docker([
+        "exec",
+        id,
+        "node",
+        "--input-type=module",
+        "-e",
+        `import assert from 'node:assert/strict'; for(const path of ['policy','start']){const r=await fetch('http://127.0.0.1:4000/v1/phone-verification/'+path,path==='policy'?{}:{method:'POST',headers:{'content-type':'application/json',origin:'https://pilot.example.test','x-citygo-contract-version':'1'},body:JSON.stringify({phone:'+79990000000'})}); assert.equal(r.status,401);} console.log('phone-auth-closed-no-send');`,
+      ]);
+      assert.equal(phoneProof.trim(), "phone-auth-closed-no-send");
+      assert.equal(
+        psql(
+          "select count(*) from phone_verification_control where identity_key_fingerprint is not null",
+        ),
+        "0",
+      );
     }
     if (marker === "routerai-citygo-10x-v1")
       await closedPaymentsProof({ id, docker, psql });
@@ -206,7 +234,7 @@ async function mountedProfileSmoke({
     );
     assert.ok(
       !env.some((v) =>
-        /^(ROUTERAI_API_KEY|OPENAI_API_KEY|GIGACHAT_CREDENTIALS|DATABASE_URL|YOOKASSA_(?:SHOP_ID|SECRET_KEY)|EMAIL_REGISTRATION_SECRET|POSTBOX_(?:ACCESS_KEY_ID|SECRET_ACCESS_KEY))=/.test(
+        /^(ROUTERAI_API_KEY|OPENAI_API_KEY|GIGACHAT_CREDENTIALS|DATABASE_URL|YOOKASSA_(?:SHOP_ID|SECRET_KEY)|(?:EMAIL_|POSTBOX_|PHONE_|SMS_|PROSTOSMS_)[A-Z0-9_]+)=/.test(
           v,
         ),
       ),

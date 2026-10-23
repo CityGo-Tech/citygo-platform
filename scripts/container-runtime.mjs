@@ -94,6 +94,23 @@ const emailLimits = {
   EMAIL_SEND_DAILY_LIMIT: 100000,
   EMAIL_SEND_TOTAL_LIMIT: 1000000,
 };
+// Separate opt-in identity. The v8 email-only marker must never acquire SMS
+// credentials or make an already approved phone/gift policy live implicitly.
+const citygo10xLiveCnFiscalOverdraftEmailSmsFixed = {
+  ...citygo10xLiveCnFiscalOverdraftEmailFixed,
+  PHONE_VERIFICATION_MODE: "sms_ru",
+  SMS_RU_MODE: "live",
+};
+const phoneSmsLimits = {
+  PHONE_SMS_GLOBAL_DAILY_LIMIT: 100000,
+  PHONE_SMS_GLOBAL_TOTAL_LIMIT: 1000000,
+};
+// New provider identity, never a reinterpretation of prepared SMS.ru v9.
+const citygo10xLiveCnFiscalOverdraftEmailProstoFixed = {
+  ...citygo10xLiveCnFiscalOverdraftEmailFixed,
+  PHONE_VERIFICATION_MODE: "prosto_sms",
+  PROSTOSMS_MODE: "live",
+};
 const routerAiProfiles = {
   "routerai-credit-v1": routerAiFixed,
   "routerai-citygo-10x-v1": citygo10xFixed,
@@ -104,6 +121,10 @@ const routerAiProfiles = {
     citygo10xLiveCnFiscalOverdraftFixed,
   "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-v1":
     citygo10xLiveCnFiscalOverdraftEmailFixed,
+  "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-smsru-v1":
+    citygo10xLiveCnFiscalOverdraftEmailSmsFixed,
+  "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-v1":
+    citygo10xLiveCnFiscalOverdraftEmailProstoFixed,
 };
 const routerAiKeys = (fixed) => [
   "DATABASE_URL",
@@ -122,6 +143,22 @@ const routerAiKeys = (fixed) => [
         "POSTBOX_ACCESS_KEY_ID",
         "POSTBOX_SECRET_ACCESS_KEY",
         ...Object.keys(emailLimits),
+      ]
+    : []),
+  ...(fixed.PHONE_VERIFICATION_MODE === "sms_ru"
+    ? [
+        "PHONE_VERIFICATION_SECRET",
+        "SMS_RU_API_ID",
+        "SMS_RU_FROM",
+        ...Object.keys(phoneSmsLimits),
+      ]
+    : []),
+  ...(fixed.PHONE_VERIFICATION_MODE === "prosto_sms"
+    ? [
+        "PHONE_VERIFICATION_SECRET",
+        "PROSTOSMS_API_KEY",
+        "PROSTOSMS_SENDER",
+        ...Object.keys(phoneSmsLimits),
       ]
     : []),
 ];
@@ -162,6 +199,26 @@ function validateRouterAi(value, fixed) {
             value[key] !== "unlimited" &&
             (!/^[1-9][0-9]{0,6}$/.test(value[key]) ||
               Number(value[key]) > maximum),
+        ))) ||
+    (fixed.PHONE_VERIFICATION_MODE === "sms_ru" &&
+      (!/^[a-f0-9]{64}$/.test(value.PHONE_VERIFICATION_SECRET) ||
+        value.PHONE_VERIFICATION_SECRET === value.EMAIL_REGISTRATION_SECRET ||
+        !/^[A-Za-z0-9_-]{16,128}$/.test(value.SMS_RU_API_ID) ||
+        !/^[A-Za-z0-9][A-Za-z0-9._-]{0,10}$/.test(value.SMS_RU_FROM) ||
+        Object.entries(phoneSmsLimits).some(
+          ([key, maximum]) =>
+            !/^[1-9][0-9]{0,6}$/.test(value[key]) ||
+            Number(value[key]) > maximum,
+        ))) ||
+    (fixed.PHONE_VERIFICATION_MODE === "prosto_sms" &&
+      (!/^[a-f0-9]{64}$/.test(value.PHONE_VERIFICATION_SECRET) ||
+        value.PHONE_VERIFICATION_SECRET === value.EMAIL_REGISTRATION_SECRET ||
+        !/^[!-~]{16,256}$/.test(value.PROSTOSMS_API_KEY) ||
+        !/^[A-Za-z0-9][A-Za-z0-9._-]{0,10}$/.test(value.PROSTOSMS_SENDER) ||
+        Object.entries(phoneSmsLimits).some(
+          ([key, maximum]) =>
+            !/^[1-9][0-9]{0,6}$/.test(value[key]) ||
+            Number(value[key]) > maximum,
         )))
   )
     throw new Error();
@@ -180,7 +237,7 @@ export function containerSpec(
   if (
     inherited.CITYGO_MOUNTED_CONFIG !== undefined &&
     Object.keys(inherited).some((key) =>
-      /^(EMAIL_|POSTBOX_|PHONE_|SMS_)/.test(key),
+      /^(EMAIL_|POSTBOX_|PHONE_|SMS_|PROSTOSMS_)/.test(key),
     )
   )
     throw new Error(

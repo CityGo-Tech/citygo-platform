@@ -28,6 +28,8 @@ jobs:
       OPENAI_API_KEY: citygo-env-isolation-canary-20260922
       ROUTERAI_API_KEY: citygo-env-isolation-canary-20260922
       GIGACHAT_CREDENTIALS: citygo-env-isolation-canary-20260922
+      PROSTOSMS_API_KEY: citygo-env-isolation-canary-20260922
+      PROSTOSMS_SENDER: citygo-env-isolation-canary-20260922
       NEXT_PUBLIC_SHOULD_NOT_LEAK: citygo-env-isolation-canary-20260922
       EXPO_PUBLIC_SHOULD_NOT_LEAK: citygo-env-isolation-canary-20260922
     steps:

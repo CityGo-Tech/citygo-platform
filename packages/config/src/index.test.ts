@@ -102,6 +102,65 @@ test("verification transports stay disabled and explicit settings fail closed wi
   );
 });
 
+test("ProstoSMS is a separate explicit phone opt-in, never an SMS.ru credential alias or fallback", () => {
+  const config = {
+    PHONE_VERIFICATION_MODE: "prosto_sms",
+    PHONE_VERIFICATION_SECRET: "b".repeat(64),
+    PROSTOSMS_MODE: "live",
+    PROSTOSMS_API_KEY: "synthetic-prosto-key-123456",
+    PROSTOSMS_SENDER: "CityGo",
+    EMAIL_REGISTRATION_MODE: "required",
+    EMAIL_REGISTRATION_SECRET: "a".repeat(64),
+    AI_CREDIT_MODE: "routerai_citygo_10x",
+    PHONE_SMS_GLOBAL_DAILY_LIMIT: "10",
+    PHONE_SMS_GLOBAL_TOTAL_LIMIT: "20",
+  };
+  assert.equal(readConfig({}).PROSTOSMS_MODE, "disabled");
+  assert.equal(readConfig(config).PHONE_VERIFICATION_MODE, "prosto_sms");
+  assert.equal(readConfig(config).SMS_RU_MODE, "disabled");
+  assert.equal(
+    readConfig({
+      PROSTOSMS_MODE: "live",
+      PROSTOSMS_API_KEY: config.PROSTOSMS_API_KEY,
+      PROSTOSMS_SENDER: config.PROSTOSMS_SENDER,
+    }).PHONE_VERIFICATION_MODE,
+    "disabled",
+  );
+  for (const [key, value] of Object.entries({
+    PROSTOSMS_MODE: "test",
+    PROSTOSMS_API_KEY: undefined,
+    PROSTOSMS_SENDER: undefined,
+    PHONE_VERIFICATION_SECRET: "a".repeat(64),
+    EMAIL_REGISTRATION_SECRET: undefined,
+    EMAIL_REGISTRATION_MODE: "disabled",
+    AI_CREDIT_MODE: "routerai_at_cost",
+    PHONE_SMS_GLOBAL_DAILY_LIMIT: "0",
+    PHONE_SMS_GLOBAL_TOTAL_LIMIT: "0",
+  }))
+    assert.throws(() => readConfig({ ...config, [key]: value }), key);
+  for (const key of [
+    "x".repeat(15),
+    "x".repeat(257),
+    "a b".repeat(8),
+    "x".repeat(16) + "\n",
+  ])
+    assert.throws(() => readConfig({ ...config, PROSTOSMS_API_KEY: key }));
+  for (const sender of ["ситиго.рф", "City Go", "x".repeat(12), "CityGo\r\n"])
+    assert.throws(() => readConfig({ ...config, PROSTOSMS_SENDER: sender }));
+  assert.throws(() => readConfig({ ...config, PROSTOSMS_MODE: "disabled" }));
+  assert.throws(() =>
+    readConfig({ ...config, PHONE_VERIFICATION_MODE: "sms_ru" }),
+  );
+  assert.throws(() =>
+    readConfig({
+      ...config,
+      SMS_RU_MODE: "live",
+      SMS_RU_API_ID: "synthetic-api-id-123",
+      SMS_RU_FROM: "CityGo",
+    }),
+  );
+});
+
 test("email registration defaults disabled and cannot be enabled by an implicit secret or a truthy mode", () => {
   assert.equal(readConfig({}).EMAIL_REGISTRATION_MODE, "disabled");
   assert.equal(readConfig({}).EMAIL_REGISTRATION_SECRET, undefined);

@@ -25,15 +25,43 @@ export const russianMobilePhoneSchema = z
     }
     return canonical;
   });
-export const phoneVerificationPolicySchema = z.strictObject({
-  phoneVerification: z.enum(["disabled", "unavailable", "required"]),
-  giftAmountMicros: z.literal(500_000_000),
-});
+export const phoneVerificationPolicySchema = z
+  .strictObject({
+    phoneVerification: z.enum(["disabled", "unavailable", "required"]),
+    // Bind UI disclosure/consent to the selected server-side recipient, even
+    // while that provider is not yet available for actual SMS admissions.
+    deliveryProvider: z.enum(["none", "sms_ru", "prosto_sms"]),
+    giftAmountMicros: z.literal(500_000_000),
+    // Account eligibility only: the entered number must still pass the
+    // retained-phone claim check before any SMS admission or grant.
+    giftStatus: z.enum([
+      "unavailable",
+      "email_required",
+      "eligible",
+      "granted",
+    ]),
+  })
+  .refine(
+    (value) =>
+      (value.phoneVerification === "required") ===
+      (value.giftStatus !== "unavailable"),
+    "Состояние подарка не соответствует доступности подтверждения телефона",
+  )
+  .refine(
+    (value) =>
+      (value.phoneVerification === "disabled") ===
+      (value.deliveryProvider === "none"),
+    "Провайдер не соответствует режиму подтверждения телефона",
+  );
 export const phoneVerificationStartSchema = z.strictObject({
   phone: russianMobilePhoneSchema,
+  expectedDeliveryProvider: z.enum(["sms_ru", "prosto_sms"]),
 });
 export const phoneVerificationResendSchema =
-  emailRegistrationResendSchema.extend({ phone: russianMobilePhoneSchema });
+  emailRegistrationResendSchema.extend({
+    phone: russianMobilePhoneSchema,
+    expectedDeliveryProvider: z.enum(["sms_ru", "prosto_sms"]),
+  });
 export const phoneVerificationConfirmSchema =
   emailRegistrationConfirmSchema.extend({ phone: russianMobilePhoneSchema });
 export const phoneVerificationChallengeSchema =

@@ -20,6 +20,7 @@ import { ConversationHome } from "../components/conversation-home";
 import { OwnerReceiptsPanel } from "../components/owner-receipts";
 import { MessageFavoritesPanel } from "../components/message-favorites";
 import { EmailRegistration } from "../components/email-registration";
+import { PhoneVerificationPanel } from "../components/phone-verification";
 import {
   pendingEmailRegistration,
   type PendingEmailRegistration,
@@ -55,6 +56,7 @@ export default function Home() {
   const [passwordOpen, setPasswordOpen] = useState(false);
   const [receiptsOpen, setReceiptsOpen] = useState(false);
   const [favoritesOpen, setFavoritesOpen] = useState(false);
+  const [phoneOpen, setPhoneOpen] = useState(false);
   const [conversationView, setConversationView] = useState(false);
   const [text, setText] = useState("");
   const [draft, setDraft] = useState("");
@@ -108,6 +110,7 @@ export default function Home() {
     authPending.current = false;
     setReceiptsOpen(false);
     setFavoritesOpen(false);
+    setPhoneOpen(false);
     setConversationView(false);
     selectedConversation.current = null;
     visibleThread.current = null;
@@ -616,6 +619,7 @@ export default function Home() {
                   disabled={busy || sending}
                   onClick={() => {
                     setConversationView(true);
+                    setPhoneOpen(false);
                     setFavoritesOpen(false);
                     setReceiptsOpen(false);
                   }}
@@ -629,6 +633,7 @@ export default function Home() {
                 disabled={busy || sending}
                 onClick={() => {
                   setReceiptsOpen(false);
+                  setPhoneOpen(false);
                   setFavoritesOpen(true);
                 }}
               >
@@ -641,10 +646,24 @@ export default function Home() {
                 disabled={busy || sending}
                 onClick={() => {
                   setFavoritesOpen(false);
+                  setPhoneOpen(false);
                   setReceiptsOpen(true);
                 }}
               >
                 Мои чеки
+              </Button>
+            )}
+            {!board.user.mustChangePassword && !passwordOpen && (
+              <Button
+                variant="ghost"
+                disabled={busy || sending}
+                onClick={() => {
+                  setFavoritesOpen(false);
+                  setReceiptsOpen(false);
+                  setPhoneOpen(true);
+                }}
+              >
+                Подарок 500 ₽
               </Button>
             )}
             <Button variant="ghost" onClick={() => setPasswordOpen(true)}>
@@ -838,7 +857,18 @@ export default function Home() {
           </Card>
         ) : (
           <>
-            {favoritesOpen ? (
+            {phoneOpen ? (
+              <PhoneVerificationPanel
+                key={board.user.id + ":phone:" + formVersion}
+                userId={board.user.id}
+                sessionSignal={session.capture().signal}
+                onAccessDenied={requireLogin}
+                onGranted={() =>
+                  void refresh(session.capture()).catch(() => {})
+                }
+                onClose={() => setPhoneOpen(false)}
+              />
+            ) : favoritesOpen ? (
               <MessageFavoritesPanel
                 key={board.user.id + ":favorites:" + formVersion}
                 userId={board.user.id}

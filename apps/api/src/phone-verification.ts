@@ -15,12 +15,16 @@ import {
 import { tokenHash } from "./auth.js";
 import type { readConfig } from "@citygo/config";
 import type { SmsRuDeliveryResult } from "./verification-delivery/sms-ru.js";
+import type { ProstoSmsDeliveryResult } from "./verification-delivery/prosto-sms.js";
 
 export type PhoneVerificationDelivery = (input: {
   phone: string;
   code: string;
   signal: AbortSignal;
-}) => Promise<SmsRuDeliveryResult>;
+}) => Promise<SmsRuDeliveryResult | ProstoSmsDeliveryResult>;
+// The adapter owns its eight-second provider deadline; leave time to cancel
+// and persist the admission outcome before this outer request guard expires.
+export const PHONE_DELIVERY_DEADLINE_MS = 12_000;
 export function phoneVerificationPolicy(
   config: ReturnType<typeof readConfig>,
 ): PhoneVerificationPolicy | undefined {
@@ -57,18 +61,29 @@ export function registerPhoneVerification(
     context: (request: FastifyRequest) => Promise<PhoneVerificationContext>;
   },
 ) {
+  const selectedProvider = options.config.PHONE_VERIFICATION_MODE;
   const policy = phoneVerificationPolicy(options.config);
   const state = policy ? new PhoneVerification(options.db, policy) : undefined;
   const ready = async () =>
     !!state &&
     !!options.delivery &&
-    options.config.SMS_RU_MODE === "live" &&
+    ((selectedProvider === "sms_ru" && options.config.SMS_RU_MODE === "live") ||
+      (selectedProvider === "prosto_sms" &&
+        options.config.PROSTOSMS_MODE === "live")) &&
     (await state.readiness());
   const unavailable = async () => {
     if (!(await ready()))
       throw new DomainError(
         503,
         "Подтверждение телефона ещё не подключено. Подарок пока недоступен.",
+      );
+  };
+  const expectProvider = (expected: "sms_ru" | "prosto_sms") => {
+    if (selectedProvider !== "disabled" && expected !== selectedProvider)
+      throw new DomainError(
+        409,
+        "Провайдер SMS изменился. Обновите условия подтверждения телефона.",
+        "CONFLICT",
       );
   };
   const digest = (purpose: string, ...values: string[]) =>
@@ -98,10 +113,11 @@ export function registerPhoneVerification(
           timeout = setTimeout(() => {
             controller.abort();
             reject(new Error("SMS deadline"));
-          }, 8_000);
+          }, PHONE_DELIVERY_DEADLINE_MS);
         }),
       ]);
       if (
+        receipt.provider !== selectedProvider ||
         receipt.accepted !== true ||
         receipt.mode !== "live" ||
         receipt.simulated !== false
@@ -121,14 +137,22 @@ export function registerPhoneVerification(
     }
   }
   app.get("/v1/phone-verification/policy", async (request) => {
-    await options.context(request);
+    const ctx = await options.context(request);
+    // Disabled installations do not query phone tables. Unbound installations
+    // only check control readiness, never account gift history or challenges.
+    const available = !!policy && (await ready());
+    const giftStatus = available
+      ? (await state!.status(ctx)).giftStatus
+      : "unavailable";
     return {
       phoneVerification: !policy
         ? "disabled"
-        : (await ready())
+        : available
           ? "required"
           : "unavailable",
+      deliveryProvider: policy ? selectedProvider : "none",
       giftAmountMicros: 500_000_000,
+      giftStatus,
     };
   });
   const limits = {
@@ -136,8 +160,10 @@ export function registerPhoneVerification(
   };
   app.post("/v1/phone-verification/start", limits, async (request) => {
     const ctx = await options.context(request);
+    const { phone, expectedDeliveryProvider } =
+      phoneVerificationStartSchema.parse(request.body);
+    expectProvider(expectedDeliveryProvider);
     await unavailable();
-    const { phone } = phoneVerificationStartSchema.parse(request.body);
     const id = randomUUID(),
       proof = randomBytes(32).toString("hex"),
       otp = code();
@@ -159,9 +185,10 @@ export function registerPhoneVerification(
   });
   app.post("/v1/phone-verification/resend", limits, async (request) => {
     const ctx = await options.context(request);
+    const input = phoneVerificationResendSchema.parse(request.body);
+    expectProvider(input.expectedDeliveryProvider);
     await unavailable();
-    const input = phoneVerificationResendSchema.parse(request.body),
-      otp = code();
+    const otp = code();
     const codeHash = digest("phone-otp", input.challengeId, otp);
     const result = await state!.resend(ctx, {
       id: input.challengeId,

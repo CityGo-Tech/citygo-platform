@@ -10,12 +10,14 @@ import { readConfig } from "@citygo/config";
 import {
   CONTRACT_VERSION_HEADER,
   phoneVerificationChallengeSchema,
+  phoneVerificationPolicySchema,
   phoneVerificationReceiptSchema,
 } from "@citygo/contracts";
 import { buildApp } from "./app.js";
 import { hashPassword, tokenHash } from "./auth.js";
 import {
   phoneVerificationPolicy,
+  PHONE_DELIVERY_DEADLINE_MS,
   type PhoneVerificationDelivery,
 } from "./phone-verification.js";
 
@@ -46,6 +48,7 @@ async function fixture(
   options: {
     bound?: boolean;
     disabled?: boolean;
+    prostoSms?: boolean;
     delivery?: PhoneVerificationDelivery;
   } = {},
 ) {
@@ -54,6 +57,17 @@ async function fixture(
   await migrate(db);
   const config = readConfig({
     ...prepared,
+    ...(options.prostoSms
+      ? {
+          PHONE_VERIFICATION_MODE: "prosto_sms",
+          SMS_RU_MODE: "disabled",
+          SMS_RU_API_ID: undefined,
+          SMS_RU_FROM: undefined,
+          PROSTOSMS_MODE: "live",
+          PROSTOSMS_API_KEY: "synthetic-prosto-key-123456",
+          PROSTOSMS_SENDER: "CityGo",
+        }
+      : {}),
     ...(options.disabled
       ? { PHONE_VERIFICATION_MODE: "disabled", SMS_RU_MODE: "disabled" }
       : {}),
@@ -74,7 +88,7 @@ async function fixture(
       (async ({ phone, code }) => {
         sent.push({ phone, code });
         return {
-          provider: "sms_ru",
+          provider: options.prostoSms ? "prosto_sms" : "sms_ru",
           mode: "live",
           accepted: true,
           simulated: false,
@@ -112,7 +126,15 @@ async function fixture(
       method: "POST",
       url: "/v1/phone-verification/" + path,
       headers: ownHeaders,
-      payload,
+      payload:
+        path === "start" || path === "resend"
+          ? {
+              expectedDeliveryProvider: options.prostoSms
+                ? "prosto_sms"
+                : "sms_ru",
+              ...payload,
+            }
+          : payload,
     });
   const money = async () => ({
     entries: (await db.query("select 1 from ai_credit_entries")).rows.length,
@@ -123,15 +145,16 @@ async function fixture(
 
 test("HTTP email + phone OTP creates exactly one gift; replay is the same receipt, not another 500", async (t) => {
   const f = await fixture(t);
-  assert.equal(
+  const policy = phoneVerificationPolicySchema.parse(
     (
       await f.app.inject({
         url: "/v1/phone-verification/policy",
         headers: f.auth,
       })
-    ).json().phoneVerification,
-    "required",
+    ).json(),
   );
+  assert.equal(policy.phoneVerification, "required");
+  assert.equal(policy.deliveryProvider, "sms_ru");
   const start = await f.post("start", { phone: "8 (999) 000-00-01" });
   assert.equal(start.statusCode, 200);
   const challenge = phoneVerificationChallengeSchema.parse(start.json());
@@ -163,6 +186,20 @@ test("HTTP email + phone OTP creates exactly one gift; replay is the same receip
     alreadyGranted: true,
   });
   assert.deepEqual(await f.money(), { entries: 1, claims: 1 });
+  assert.deepEqual(
+    (
+      await f.app.inject({
+        url: "/v1/phone-verification/policy",
+        headers: f.auth,
+      })
+    ).json(),
+    {
+      phoneVerification: "required",
+      deliveryProvider: "sms_ru",
+      giftAmountMicros: 500_000_000,
+      giftStatus: "granted",
+    },
+  );
   assert.equal(
     (await f.post("start", { phone: "+79990000002" })).statusCode,
     409,
@@ -170,8 +207,197 @@ test("HTTP email + phone OTP creates exactly one gift; replay is the same receip
   assert.equal(f.sent.length, 1);
 });
 
-test("disabled/unbound phone preparation is honest unavailable; no SMS or money", async (t) => {
-  for (const options of [{ disabled: true }, { bound: false }]) {
+test("ProstoSMS synthetic receipt confirms one phone and grants once, without SMS.ru fallback", async (t) => {
+  const f = await fixture(t, { prostoSms: true });
+  const policy = await f.app.inject({
+    url: "/v1/phone-verification/policy",
+    headers: f.auth,
+  });
+  assert.equal(policy.statusCode, 200);
+  assert.equal(
+    phoneVerificationPolicySchema.parse(policy.json()).giftStatus,
+    "eligible",
+  );
+  assert.equal(policy.json().deliveryProvider, "prosto_sms");
+  const start = await f.post("start", { phone });
+  assert.equal(start.statusCode, 200);
+  const challenge = phoneVerificationChallengeSchema.parse(start.json());
+  const input = {
+    challengeId: challenge.challengeId,
+    proof: challenge.proof,
+    phone,
+    code: f.sent[0]!.code,
+  };
+  const confirmed = await f.post("confirm", input);
+  assert.equal(confirmed.statusCode, 200);
+  const receipt = phoneVerificationReceiptSchema.parse(confirmed.json());
+  assert.equal(receipt.grantedMicros, 500_000_000);
+  assert.deepEqual((await f.post("confirm", input)).json(), {
+    ...receipt,
+    alreadyGranted: true,
+  });
+  assert.deepEqual(await f.money(), { entries: 1, claims: 1 });
+  assert.equal(f.sent.length, 1);
+  assert.deepEqual(
+    (
+      await f.app.inject({
+        url: "/v1/phone-verification/policy",
+        headers: f.auth,
+      })
+    ).json(),
+    {
+      phoneVerification: "required",
+      deliveryProvider: "prosto_sms",
+      giftAmountMicros: 500_000_000,
+      giftStatus: "granted",
+    },
+  );
+});
+
+test("an accepted receipt from another SMS provider cannot unlock the selected ProstoSMS path", async (t) => {
+  let sends = 0;
+  const f = await fixture(t, {
+    prostoSms: true,
+    delivery: async () => {
+      sends++;
+      return {
+        provider: "sms_ru",
+        mode: "live",
+        accepted: true,
+        simulated: false,
+        providerMessageId: "000000-10000000",
+      };
+    },
+  });
+  assert.equal((await f.post("start", { phone })).statusCode, 503);
+  assert.equal(sends, 1);
+  assert.deepEqual(await f.money(), { entries: 0, claims: 0 });
+  assert.equal(
+    (await f.db.query("select delivery from phone_verification_challenges"))
+      .rows[0]!.delivery,
+    "failed",
+  );
+});
+
+test("consented provider mismatch rejects start/resend before quota, challenge changes or SMS in either selected channel", async (t) => {
+  for (const prostoSms of [false, true]) {
+    const f = await fixture(t, { prostoSms });
+    const selected = prostoSms ? "prosto_sms" : "sms_ru";
+    const other = prostoSms ? "sms_ru" : "prosto_sms";
+    const wrongStart = await f.post("start", {
+      phone,
+      expectedDeliveryProvider: other,
+    });
+    assert.equal(wrongStart.statusCode, 409);
+    assert.equal(wrongStart.json().code, "CONFLICT");
+    assert.equal(
+      wrongStart.json().error,
+      "Провайдер SMS изменился. Обновите условия подтверждения телефона.",
+    );
+    assert.equal(f.sent.length, 0);
+    assert.equal(
+      (await f.db.query("select 1 from phone_verification_sends")).rows.length,
+      0,
+    );
+    assert.equal(
+      (await f.db.query("select 1 from phone_verification_challenges")).rows
+        .length,
+      0,
+    );
+    const start = await f.post("start", {
+      phone,
+      expectedDeliveryProvider: selected,
+    });
+    assert.equal(start.statusCode, 200);
+    const challenge = phoneVerificationChallengeSchema.parse(start.json());
+    const binding = {
+      challengeId: challenge.challengeId,
+      proof: challenge.proof,
+      phone,
+    };
+    const beforeChallenge = (
+      await f.db.query("select * from phone_verification_challenges")
+    ).rows;
+    const beforeSends = (
+      await f.db.query("select * from phone_verification_sends")
+    ).rows;
+    const wrongResend = await f.post("resend", {
+      ...binding,
+      expectedDeliveryProvider: other,
+    });
+    assert.equal(wrongResend.statusCode, 409);
+    assert.equal(wrongResend.json().code, "CONFLICT");
+    assert.deepEqual(
+      (await f.db.query("select * from phone_verification_challenges")).rows,
+      beforeChallenge,
+    );
+    assert.deepEqual(
+      (await f.db.query("select * from phone_verification_sends")).rows,
+      beforeSends,
+    );
+    assert.equal(f.sent.length, 1);
+    for (const [path, payload] of [
+      ["start", { phone }],
+      ["resend", binding],
+    ] as const) {
+      const missing = await f.app.inject({
+        method: "POST",
+        url: "/v1/phone-verification/" + path,
+        headers: f.auth,
+        payload,
+      });
+      assert.equal(missing.statusCode, 400);
+    }
+    assert.deepEqual(
+      (await f.db.query("select * from phone_verification_challenges")).rows,
+      beforeChallenge,
+    );
+    assert.deepEqual(
+      (await f.db.query("select * from phone_verification_sends")).rows,
+      beforeSends,
+    );
+    // Synthetic fixture clock aging only: the real durable cooldown stays60s.
+    await f.db.query(
+      "update phone_verification_sends set created_at=created_at-interval '61 seconds'",
+    );
+    const resend = await f.post("resend", {
+      ...binding,
+      expectedDeliveryProvider: selected,
+    });
+    assert.equal(resend.statusCode, 200);
+    assert.equal(f.sent.length, 2);
+    assert.deepEqual(await f.money(), { entries: 0, claims: 0 });
+  }
+});
+
+test("selected provider is pinned once for policy, admission and receipt checks, not a mutable caller option", async (t) => {
+  const f = await fixture(t, { prostoSms: true });
+  f.config.PHONE_VERIFICATION_MODE = "sms_ru";
+  const policy = await f.app.inject({
+    url: "/v1/phone-verification/policy",
+    headers: f.auth,
+  });
+  assert.equal(policy.json().deliveryProvider, "prosto_sms");
+  const start = await f.post("start", {
+    phone,
+    expectedDeliveryProvider: "prosto_sms",
+  });
+  assert.equal(start.statusCode, 200);
+  assert.equal(f.sent.length, 1);
+  assert.equal(
+    (await f.db.query("select delivery from phone_verification_challenges"))
+      .rows[0]!.delivery,
+    "accepted",
+  );
+  assert.deepEqual(await f.money(), { entries: 0, claims: 0 });
+});
+
+test("disabled/unbound phone preparation is honest unavailable with its selected provider; no SMS or money", async (t) => {
+  for (const options of [
+    { disabled: true },
+    { bound: false },
+    { bound: false, prostoSms: true },
+  ]) {
     const f = await fixture(t, options);
     const policy = await f.app.inject({
       url: "/v1/phone-verification/policy",
@@ -180,6 +406,14 @@ test("disabled/unbound phone preparation is honest unavailable; no SMS or money"
     assert.equal(
       policy.json().phoneVerification,
       options.disabled ? "disabled" : "unavailable",
+    );
+    assert.equal(
+      phoneVerificationPolicySchema.parse(policy.json()).giftStatus,
+      "unavailable",
+    );
+    assert.equal(
+      policy.json().deliveryProvider,
+      options.disabled ? "none" : options.prostoSms ? "prosto_sms" : "sms_ru",
     );
     assert.equal((await f.post("start", { phone })).statusCode, 503);
     assert.equal(f.sent.length, 0);
@@ -269,11 +503,157 @@ test("a legacy unverified email account cannot send an SMS or receive a gift", a
     { ...f.auth, authorization: "Bearer " + token },
   );
   assert.equal(response.statusCode, 403);
+  const policy = await f.app.inject({
+    url: "/v1/phone-verification/policy",
+    headers: { ...f.auth, authorization: "Bearer " + token },
+  });
+  assert.equal(policy.statusCode, 200);
+  assert.equal(
+    phoneVerificationPolicySchema.parse(policy.json()).giftStatus,
+    "email_required",
+  );
   assert.equal(f.sent.length, 0);
   assert.equal(
     (await f.db.query("select 1 from phone_verification_sends")).rows.length,
     0,
   );
+});
+
+test("disabled policy never reads phone tables and unbound policy never reads gift history", async (t) => {
+  const disabled = await fixture(t, { disabled: true });
+  await disabled.db.exec(
+    "drop table phone_welcome_claims,phone_verification_sends,phone_verification_challenges,phone_verification_control",
+  );
+  assert.deepEqual(
+    (
+      await disabled.app.inject({
+        url: "/v1/phone-verification/policy",
+        headers: disabled.auth,
+      })
+    ).json(),
+    {
+      phoneVerification: "disabled",
+      deliveryProvider: "none",
+      giftAmountMicros: 500_000_000,
+      giftStatus: "unavailable",
+    },
+  );
+  const unbound = await fixture(t, { bound: false });
+  await unbound.db.exec(
+    "drop table phone_welcome_claims,phone_verification_sends,phone_verification_challenges",
+  );
+  assert.deepEqual(
+    (
+      await unbound.app.inject({
+        url: "/v1/phone-verification/policy",
+        headers: unbound.auth,
+      })
+    ).json(),
+    {
+      phoneVerification: "unavailable",
+      deliveryProvider: "sms_ru",
+      giftAmountMicros: 500_000_000,
+      giftStatus: "unavailable",
+    },
+  );
+});
+
+test("policy reauthorizes every reload and never serves another account after session revocation", async (t) => {
+  const f = await fixture(t);
+  const policy = await f.app.inject({
+    url: "/v1/phone-verification/policy",
+    headers: f.auth,
+  });
+  assert.equal(
+    phoneVerificationPolicySchema.parse(policy.json()).giftStatus,
+    "eligible",
+  );
+  await f.db.query("delete from sessions where token_hash=$1", [
+    tokenHash(f.token),
+  ]);
+  assert.equal(
+    (
+      await f.app.inject({
+        url: "/v1/phone-verification/policy",
+        headers: f.auth,
+      })
+    ).statusCode,
+    401,
+  );
+  await f.db.query("update users set must_change_password=true where id=$1", [
+    f.user.id,
+  ]);
+  await new Repository(f.db).createSession(f.user.id, tokenHash(f.token));
+  assert.equal(
+    (
+      await f.app.inject({
+        url: "/v1/phone-verification/policy",
+        headers: f.auth,
+      })
+    ).statusCode,
+    403,
+  );
+  assert.equal(f.sent.length, 0);
+  assert.deepEqual(await f.money(), { entries: 0, claims: 0 });
+});
+
+test("outer SMS deadline leaves adapter cleanup time and ignores a late accepted result without retry or gift", async (t) => {
+  let entered!: () => void,
+    release!: (value: Awaited<ReturnType<PhoneVerificationDelivery>>) => void;
+  const ready = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  let sends = 0,
+    signal: AbortSignal | undefined;
+  const f = await fixture(t, {
+    delivery: async (input) => {
+      sends++;
+      signal = input.signal;
+      entered();
+      return new Promise((resolve) => {
+        release = resolve;
+      });
+    },
+  });
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    let settled = false;
+    const pending = f.post("start", { phone }).then((value) => {
+      settled = true;
+      return value;
+    });
+    await ready;
+    t.mock.timers.tick(8_000);
+    await Promise.resolve();
+    assert.equal(settled, false);
+    assert.equal(signal?.aborted, false);
+    t.mock.timers.tick(PHONE_DELIVERY_DEADLINE_MS - 8_000);
+    const response = await pending;
+    assert.equal(response.statusCode, 503);
+    assert.equal(signal?.aborted, true);
+    release({
+      provider: "sms_ru",
+      mode: "live",
+      accepted: true,
+      simulated: false,
+      providerMessageId: "synthetic-late",
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(sends, 1);
+    assert.equal(
+      (await f.db.query("select delivery from phone_verification_challenges"))
+        .rows[0]!.delivery,
+      "failed",
+    );
+    assert.equal(
+      (await f.db.query("select 1 from phone_verification_sends")).rows.length,
+      1,
+    );
+    assert.deepEqual(await f.money(), { entries: 0, claims: 0 });
+  } finally {
+    t.mock.timers.reset();
+  }
 });
 
 test("configured provider factory does not bypass injection guard outside the isolated harness", async (t) => {

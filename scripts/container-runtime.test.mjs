@@ -269,6 +269,16 @@ const liveMountedProfiles = [
     "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-profile.fixture.json",
     "us",
   ],
+  [
+    "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-smsru-v1",
+    "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-smsru-profile.fixture.json",
+    "us",
+  ],
+  [
+    "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-v1",
+    "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-profile.fixture.json",
+    "us",
+  ],
 ];
 for (const [marker, file, rejectedCountry] of liveMountedProfiles)
   test(`live YooKassa ${marker} requires its exact API-only profile and never inherits credentials`, (t) => {
@@ -596,7 +606,12 @@ test("email-only v8 accepts only exact unlimited or its bounded canonical decima
   for (const [oldMarker, file] of [
     ["routerai-credit-v1", "routerai-profile.fixture.json"],
     ["routerai-citygo-10x-v1", "routerai-citygo-10x-profile.fixture.json"],
-    ...liveMountedProfiles.filter(([profile]) => profile !== marker),
+    ...liveMountedProfiles.filter(
+      ([profile]) =>
+        profile !== marker &&
+        !profile.endsWith("-postbox-email-smsru-v1") &&
+        !profile.endsWith("-postbox-email-prostosms-v1"),
+    ),
   ]) {
     const legacy = JSON.parse(
       readFileSync(join(root, "deploy/fixtures", file), "utf8"),
@@ -626,6 +641,277 @@ test("email-only v8 accepts only exact unlimited or its bounded canonical decima
     );
 });
 
+test("v9 email + SMS has a separate exact keyset, numeric SMS caps and independent identity secret", (t) => {
+  const directory = fixture(t),
+    marker =
+      "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-smsru-v1";
+  const read = (name) =>
+    JSON.parse(readFileSync(join(root, "deploy/fixtures", name), "utf8"));
+  const legacy = read(
+    "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-profile.fixture.json",
+  );
+  const value = read(
+    "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-smsru-profile.fixture.json",
+  );
+  const extra = Object.fromEntries(
+    Object.entries(value).filter(([key]) => !(key in legacy)),
+  );
+  assert.deepEqual(
+    Object.keys(extra).sort(),
+    [
+      "PHONE_VERIFICATION_SECRET",
+      "SMS_RU_API_ID",
+      "SMS_RU_FROM",
+      "PHONE_SMS_GLOBAL_DAILY_LIMIT",
+      "PHONE_SMS_GLOBAL_TOTAL_LIMIT",
+    ].sort(),
+  );
+  assert.deepEqual(value, {
+    ...legacy,
+    PHONE_VERIFICATION_MODE: "sms_ru",
+    SMS_RU_MODE: "live",
+    ...extra,
+  });
+  const spec = (data, profile = marker) => {
+    writeFileSync(join(directory, "api.json"), JSON.stringify(data));
+    return containerSpec(
+      "api",
+      {
+        CITYGO_MOUNTED_CONFIG: "1",
+        CITYGO_AI_PROFILE: profile,
+        LLM_PROVIDER: "routerai",
+      },
+      directory,
+      directory,
+    );
+  };
+  assert.equal(spec(value).env.SMS_RU_MODE, "live");
+  for (const patch of [
+    { PHONE_VERIFICATION_MODE: "required" },
+    { PHONE_VERIFICATION_MODE: "disabled" },
+    { SMS_DELIVERY_PROVIDER: "sms_ru" },
+    { SMS_RU_MODE: "test" },
+    { SMS_RU_MODE: "disabled" },
+    { PHONE_VERIFICATION_SECRET: value.EMAIL_REGISTRATION_SECRET },
+    { PHONE_VERIFICATION_SECRET: "B".repeat(64) },
+    { PHONE_VERIFICATION_SECRET: "b".repeat(63) },
+    { SMS_RU_API_ID: "short" },
+    { SMS_RU_API_ID: "x".repeat(129) },
+    { SMS_RU_API_ID: "secret\nvalue" },
+    { SMS_RU_FROM: "" },
+    { SMS_RU_FROM: "ситиго.рф" },
+    { SMS_RU_FROM: "CityGo " },
+    { SMS_RU_FROM: "CityGo\r\nBcc:x" },
+    { SMS_RU_FROM: "x".repeat(12) },
+    { AI_CREDIT_RESERVATION_MODE: "full" },
+    { AI_CREDIT_MODE: "routerai_at_cost" },
+    { YOOKASSA_MODE: "test" },
+    { YOOKASSA_FISCAL_PROFILE: "disabled" },
+  ])
+    assert.throws(() => spec({ ...value, ...patch }), /Invalid mounted/);
+  for (const [key, maximum] of [
+    ["PHONE_SMS_GLOBAL_DAILY_LIMIT", 100000],
+    ["PHONE_SMS_GLOBAL_TOTAL_LIMIT", 1000000],
+  ]) {
+    for (const bad of [
+      "0",
+      "01",
+      "-1",
+      "+1",
+      "1.0",
+      "1e3",
+      "unlimited",
+      "Infinity",
+      "NaN",
+      " 1",
+      "1\n",
+      String(maximum + 1),
+      1,
+      true,
+      null,
+      {},
+      [],
+    ])
+      assert.throws(() => spec({ ...value, [key]: bad }), /Invalid mounted/);
+    for (const good of ["1", String(maximum)])
+      assert.equal(spec({ ...value, [key]: good }).env[key], good);
+  }
+  assert.equal(
+    spec({
+      ...value,
+      EMAIL_SEND_DAILY_LIMIT: "unlimited",
+      EMAIL_SEND_TOTAL_LIMIT: "unlimited",
+      SMS_RU_FROM: "SMS.RU",
+    }).env.EMAIL_SEND_TOTAL_LIMIT,
+    "unlimited",
+  );
+  for (const [oldMarker, file] of [
+    ["routerai-credit-v1", "routerai-profile.fixture.json"],
+    ["routerai-citygo-10x-v1", "routerai-citygo-10x-profile.fixture.json"],
+    ...liveMountedProfiles.filter(
+      ([m]) => m !== marker && !m.endsWith("-postbox-email-prostosms-v1"),
+    ),
+  ]) {
+    const old = read(file);
+    assert.doesNotThrow(() => spec(old, oldMarker));
+    assert.throws(() => spec(value, oldMarker), /Invalid mounted/);
+    assert.throws(() => spec(old), /Invalid mounted/);
+    for (const key of Object.keys(extra))
+      assert.throws(
+        () => spec({ ...old, [key]: value[key] }, oldMarker),
+        /Invalid mounted/,
+      );
+  }
+});
+
+test("v10 ProstoSMS is independent from v1-v9 and admits only pinned local credential policy", (t) => {
+  const directory = fixture(t),
+    marker =
+      "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-v1";
+  const read = (name) =>
+    JSON.parse(readFileSync(join(root, "deploy/fixtures", name), "utf8"));
+  const legacy = read(
+    "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-profile.fixture.json",
+  );
+  const value = read(
+    "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-profile.fixture.json",
+  );
+  const extra = Object.fromEntries(
+    Object.entries(value).filter(([key]) => !(key in legacy)),
+  );
+  assert.deepEqual(
+    Object.keys(extra).sort(),
+    [
+      "PROSTOSMS_MODE",
+      "PHONE_VERIFICATION_SECRET",
+      "PROSTOSMS_API_KEY",
+      "PROSTOSMS_SENDER",
+      "PHONE_SMS_GLOBAL_DAILY_LIMIT",
+      "PHONE_SMS_GLOBAL_TOTAL_LIMIT",
+    ].sort(),
+  );
+  assert.deepEqual(value, {
+    ...legacy,
+    PHONE_VERIFICATION_MODE: "prosto_sms",
+    ...extra,
+  });
+  assert.equal(value.SMS_RU_MODE, "disabled");
+  const spec = (data, profile = marker) => {
+    writeFileSync(join(directory, "api.json"), JSON.stringify(data));
+    return containerSpec(
+      "api",
+      {
+        CITYGO_MOUNTED_CONFIG: "1",
+        CITYGO_AI_PROFILE: profile,
+        LLM_PROVIDER: "routerai",
+      },
+      directory,
+      directory,
+    );
+  };
+  assert.equal(spec(value).env.PROSTOSMS_MODE, "live");
+  for (const patch of [
+    { PHONE_VERIFICATION_MODE: "sms_ru" },
+    { PHONE_VERIFICATION_MODE: "required" },
+    { PROSTOSMS_MODE: "disabled" },
+    { PROSTOSMS_MODE: "test" },
+    { SMS_RU_MODE: "live" },
+    { SMS_RU_MODE: "test" },
+    { SMS_RU_API_ID: "synthetic-forbidden" },
+    { SMS_RU_FROM: "CityGo" },
+    { PROSTOSMS_API_KEY: "x".repeat(15) },
+    { PROSTOSMS_API_KEY: "x".repeat(257) },
+    { PROSTOSMS_API_KEY: "has an internal space" },
+    { PROSTOSMS_API_KEY: "x".repeat(16) + "\n" },
+    { PROSTOSMS_API_KEY: "é".repeat(16) },
+    { PROSTOSMS_API_KEY: "x".repeat(16) + "\u007f" },
+    { PROSTOSMS_SENDER: "" },
+    { PROSTOSMS_SENDER: "ситиго.рф" },
+    { PROSTOSMS_SENDER: "x".repeat(12) },
+    { PROSTOSMS_SENDER: " CityGo" },
+    { PROSTOSMS_SENDER: "CityGo\r\n" },
+    { PROSTOSMS_SENDER: "-CityGo" },
+    { PHONE_VERIFICATION_SECRET: value.EMAIL_REGISTRATION_SECRET },
+    { PHONE_VERIFICATION_SECRET: "B".repeat(64) },
+    { PHONE_VERIFICATION_SECRET: "b".repeat(63) },
+    { AI_CREDIT_RESERVATION_MODE: "full" },
+    { YOOKASSA_FISCAL_PROFILE: "disabled" },
+  ])
+    assert.throws(() => spec({ ...value, ...patch }), /Invalid mounted/);
+  for (const key of Object.keys(value)) {
+    const data = { ...value };
+    delete data[key];
+    assert.throws(() => spec(data), /Invalid mounted/);
+  }
+  for (const key of [
+    "PROSTOSMS_UNREVIEWED",
+    "PROSTOSMS_ENDPOINT",
+    "SMS_DELIVERY_PROVIDER",
+  ])
+    assert.throws(
+      () => spec({ ...value, [key]: "synthetic-forbidden" }),
+      /Invalid mounted/,
+    );
+  for (const [key, maximum] of [
+    ["PHONE_SMS_GLOBAL_DAILY_LIMIT", 100000],
+    ["PHONE_SMS_GLOBAL_TOTAL_LIMIT", 1000000],
+  ]) {
+    for (const bad of [
+      "0",
+      "01",
+      "-1",
+      "+1",
+      "1.0",
+      "1e3",
+      "unlimited",
+      "Infinity",
+      "NaN",
+      String(maximum + 1),
+      1,
+      true,
+      null,
+      {},
+      [],
+    ])
+      assert.throws(() => spec({ ...value, [key]: bad }), /Invalid mounted/);
+    for (const good of ["1", String(maximum)])
+      assert.equal(spec({ ...value, [key]: good }).env[key], good);
+  }
+  for (const key of ["!".repeat(16), "~".repeat(256)])
+    assert.equal(
+      spec({ ...value, PROSTOSMS_API_KEY: key }).env.PROSTOSMS_API_KEY,
+      key,
+    );
+  assert.equal(
+    spec({
+      ...value,
+      PROSTOSMS_SENDER: "A1234567890",
+      EMAIL_SEND_DAILY_LIMIT: "unlimited",
+      EMAIL_SEND_TOTAL_LIMIT: "unlimited",
+    }).env.EMAIL_SEND_TOTAL_LIMIT,
+    "unlimited",
+  );
+  for (const [oldMarker, file] of [
+    ["routerai-credit-v1", "routerai-profile.fixture.json"],
+    ["routerai-citygo-10x-v1", "routerai-citygo-10x-profile.fixture.json"],
+    ...liveMountedProfiles.filter(([m]) => m !== marker),
+  ]) {
+    const old = read(file);
+    assert.doesNotThrow(() => spec(old, oldMarker));
+    assert.throws(() => spec(value, oldMarker), /Invalid mounted/);
+    assert.throws(() => spec(old), /Invalid mounted/);
+    for (const key of [
+      "PROSTOSMS_MODE",
+      "PROSTOSMS_API_KEY",
+      "PROSTOSMS_SENDER",
+    ])
+      assert.throws(
+        () => spec({ ...old, [key]: value[key] }, oldMarker),
+        /Invalid mounted/,
+      );
+  }
+});
+
 test("all mounted profiles, including disabled, refuse ambient verification prefixes", (t) => {
   const directory = fixture(t);
   for (const mode of ["api", "worker", "migrate"])
@@ -641,6 +927,9 @@ test("all mounted profiles, including disabled, refuse ambient verification pref
       "PHONE_VERIFICATION_MODE",
       "SMS_RU_MODE",
       "SMS_UNREVIEWED",
+      "PROSTOSMS_MODE",
+      "PROSTOSMS_API_KEY",
+      "PROSTOSMS_UNREVIEWED",
     ])
       assert.throws(
         () =>
@@ -664,7 +953,7 @@ test("all mounted profiles, including disabled, refuse ambient verification pref
       join(directory, "api.json"),
       readFileSync(join(root, "deploy/fixtures", file)),
     );
-    for (const prefix of ["EMAIL_", "POSTBOX_", "PHONE_", "SMS_"])
+    for (const prefix of ["EMAIL_", "POSTBOX_", "PHONE_", "SMS_", "PROSTOSMS_"])
       assert.throws(
         () =>
           containerSpec(

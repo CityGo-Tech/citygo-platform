@@ -352,21 +352,29 @@ export function createClient(
       ),
     phoneVerificationPolicy: () =>
       request("/v1/phone-verification/policy", phoneVerificationPolicySchema),
-    beginPhoneVerification: async (phone: string) =>
+    beginPhoneVerification: async (
+      phone: string,
+      expectedDeliveryProvider: "sms_ru" | "prosto_sms",
+    ) =>
       request(
         "/v1/phone-verification/start",
         phoneVerificationChallengeSchema,
-        phoneVerificationInput(phoneVerificationStartSchema, { phone }),
+        phoneVerificationInput(phoneVerificationStartSchema, {
+          phone,
+          expectedDeliveryProvider,
+        }),
       ),
     resendPhoneVerification: async (
       challengeId: string,
       proof: string,
       phone: string,
+      expectedDeliveryProvider: "sms_ru" | "prosto_sms",
     ) => {
       const input = phoneVerificationInput(phoneVerificationResendSchema, {
         challengeId,
         proof,
         phone,
+        expectedDeliveryProvider,
       });
       const result = await request(
         "/v1/phone-verification/resend",

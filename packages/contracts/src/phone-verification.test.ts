@@ -11,6 +11,7 @@ import {
 } from "./phone-verification.js";
 
 const phone = "+79990000000";
+const expectedDeliveryProvider = "prosto_sms";
 const challenge = {
   challengeId: "a274d301-c0e2-4e4a-b0f4-4bf8a513ff64",
   proof: "ab".repeat(32),
@@ -38,12 +39,20 @@ test("Russian mobile numbers normalize to one canonical identity before a phone 
     "  +7 999 000 00 00  ",
   ]) {
     assert.equal(russianMobilePhoneSchema.parse(raw), phone);
-    assert.deepEqual(phoneVerificationStartSchema.parse({ phone: raw }), {
-      phone,
-    });
     assert.deepEqual(
-      phoneVerificationResendSchema.parse({ ...capability, phone: raw }),
-      capability,
+      phoneVerificationStartSchema.parse({
+        phone: raw,
+        expectedDeliveryProvider,
+      }),
+      { phone, expectedDeliveryProvider },
+    );
+    assert.deepEqual(
+      phoneVerificationResendSchema.parse({
+        ...capability,
+        phone: raw,
+        expectedDeliveryProvider,
+      }),
+      { ...capability, expectedDeliveryProvider },
     );
     assert.deepEqual(
       phoneVerificationConfirmSchema.parse({
@@ -88,9 +97,28 @@ test("phone policy is a strict explicit availability state with exactly the appr
     assert.deepEqual(
       phoneVerificationPolicySchema.parse({
         phoneVerification,
+        deliveryProvider: phoneVerification === "disabled" ? "none" : "sms_ru",
         giftAmountMicros: 500_000_000,
+        giftStatus:
+          phoneVerification === "required" ? "eligible" : "unavailable",
       }),
-      { phoneVerification, giftAmountMicros: 500_000_000 },
+      {
+        phoneVerification,
+        deliveryProvider: phoneVerification === "disabled" ? "none" : "sms_ru",
+        giftAmountMicros: 500_000_000,
+        giftStatus:
+          phoneVerification === "required" ? "eligible" : "unavailable",
+      },
+    );
+  for (const giftStatus of ["email_required", "eligible", "granted"] as const)
+    assert.equal(
+      phoneVerificationPolicySchema.parse({
+        phoneVerification: "required",
+        deliveryProvider: "prosto_sms",
+        giftAmountMicros: 500_000_000,
+        giftStatus,
+      }).giftStatus,
+      giftStatus,
     );
   for (const value of [
     {},
@@ -99,13 +127,103 @@ test("phone policy is a strict explicit availability state with exactly the appr
     { phoneVerification: "required" },
     { phoneVerification: "required", giftAmountMicros: "500000000" },
     { phoneVerification: "required", giftAmountMicros: 500_000_001 },
+    { phoneVerification: "required", giftAmountMicros: 500_000_000 },
     {
       phoneVerification: "required",
       giftAmountMicros: 500_000_000,
+      giftStatus: "unavailable",
+    },
+    {
+      phoneVerification: "disabled",
+      giftAmountMicros: 500_000_000,
+      giftStatus: "eligible",
+    },
+    {
+      phoneVerification: "unavailable",
+      giftAmountMicros: 500_000_000,
+      giftStatus: "granted",
+    },
+    {
+      phoneVerification: "required",
+      giftAmountMicros: 500_000_000,
+      giftStatus: "unknown",
+    },
+    {
+      phoneVerification: "required",
+      giftAmountMicros: 500_000_000,
+      giftStatus: "eligible",
       apiId: "synthetic-secret",
     },
   ])
-    assert.equal(phoneVerificationPolicySchema.safeParse(value).success, false);
+    assert.equal(
+      phoneVerificationPolicySchema.safeParse({
+        deliveryProvider: "sms_ru",
+        ...value,
+      }).success,
+      false,
+    );
+});
+
+test("policy requires an explicit server delivery provider, never infers it from availability", () => {
+  const base = { giftAmountMicros: 500_000_000 };
+  for (const deliveryProvider of ["sms_ru", "prosto_sms"] as const)
+    for (const phoneVerification of ["unavailable", "required"] as const) {
+      const value = {
+        ...base,
+        phoneVerification,
+        deliveryProvider,
+        giftStatus:
+          phoneVerification === "required" ? "eligible" : "unavailable",
+      };
+      assert.deepEqual(phoneVerificationPolicySchema.parse(value), value);
+    }
+  assert.equal(
+    phoneVerificationPolicySchema.safeParse({
+      ...base,
+      phoneVerification: "disabled",
+      giftStatus: "unavailable",
+      deliveryProvider: "none",
+    }).success,
+    true,
+  );
+  for (const deliveryProvider of [
+    undefined,
+    null,
+    true,
+    "prosto",
+    "SMS.RU",
+    "",
+  ])
+    assert.equal(
+      phoneVerificationPolicySchema.safeParse({
+        ...base,
+        phoneVerification: "required",
+        giftStatus: "eligible",
+        deliveryProvider,
+      }).success,
+      false,
+    );
+  for (const deliveryProvider of ["sms_ru", "prosto_sms"])
+    assert.equal(
+      phoneVerificationPolicySchema.safeParse({
+        ...base,
+        phoneVerification: "disabled",
+        giftStatus: "unavailable",
+        deliveryProvider,
+      }).success,
+      false,
+    );
+  for (const phoneVerification of ["unavailable", "required"])
+    assert.equal(
+      phoneVerificationPolicySchema.safeParse({
+        ...base,
+        phoneVerification,
+        giftStatus:
+          phoneVerification === "required" ? "eligible" : "unavailable",
+        deliveryProvider: "none",
+      }).success,
+      false,
+    );
 });
 
 test("phone commands retain strict capability and six-ASCII-digit checks without arbitrary fields", () => {
@@ -116,9 +234,9 @@ test("phone commands retain strict capability and six-ASCII-digit checks without
   ]) {
     const valid =
       schema === phoneVerificationStartSchema
-        ? { phone }
+        ? { phone, expectedDeliveryProvider }
         : schema === phoneVerificationResendSchema
-          ? capability
+          ? { ...capability, expectedDeliveryProvider }
           : { ...capability, code: "012345" };
     assert.equal(schema.safeParse(valid).success, true);
     for (const change of [
@@ -143,6 +261,9 @@ test("phone commands retain strict capability and six-ASCII-digit checks without
   ]) {
     const valid = {
       ...capability,
+      ...(schema === phoneVerificationResendSchema
+        ? { expectedDeliveryProvider }
+        : {}),
       ...(schema === phoneVerificationConfirmSchema ? { code: "012345" } : {}),
     };
     for (const change of [
@@ -171,6 +292,43 @@ test("phone commands retain strict capability and six-ASCII-digit checks without
       phoneVerificationConfirmSchema.safeParse({ ...capability, code }).success,
       false,
     );
+});
+
+test("every outbound phone command requires the exact consented provider, not a default, none or arbitrary provider", () => {
+  for (const schema of [
+    phoneVerificationStartSchema,
+    phoneVerificationResendSchema,
+  ]) {
+    const base =
+      schema === phoneVerificationStartSchema ? { phone } : capability;
+    for (const expectedDeliveryProvider of ["sms_ru", "prosto_sms"])
+      assert.equal(
+        schema.safeParse({ ...base, expectedDeliveryProvider }).success,
+        true,
+      );
+    for (const expectedDeliveryProvider of [
+      undefined,
+      null,
+      "none",
+      "smsru",
+      "prosto",
+      true,
+    ])
+      assert.equal(
+        schema.safeParse({ ...base, expectedDeliveryProvider }).success,
+        false,
+      );
+  }
+  // Confirmation does not disclose the number to a provider, and retains its
+  // existing strict local capability/OTP command rather than an unused field.
+  assert.equal(
+    phoneVerificationConfirmSchema.safeParse({
+      ...capability,
+      code: "012345",
+      expectedDeliveryProvider,
+    }).success,
+    false,
+  );
 });
 
 test("phone challenges expose only a bounded ephemeral capability, never delivery status, code or identity", () => {

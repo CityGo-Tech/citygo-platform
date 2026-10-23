@@ -2,6 +2,7 @@ import type { readConfig } from "@citygo/config";
 import type { RegistrationEmailDelivery } from "../email-registration.js";
 import { createPostboxDelivery } from "./postbox.js";
 import { createSmsRuDelivery } from "./sms-ru.js";
+import { createProstoSmsDelivery } from "./prosto-sms.js";
 
 type Config = ReturnType<typeof readConfig>;
 export function configuredEmailDelivery(
@@ -21,6 +22,14 @@ export function configuredEmailDelivery(
   };
 }
 export function configuredPhoneDelivery(config: Config) {
+  if (
+    config.PHONE_VERIFICATION_MODE === "prosto_sms" &&
+    config.PROSTOSMS_MODE === "live"
+  )
+    return createProstoSmsDelivery({
+      apiKey: config.PROSTOSMS_API_KEY!,
+      from: config.PROSTOSMS_SENDER!,
+    }).send;
   if (
     config.PHONE_VERIFICATION_MODE !== "sms_ru" ||
     config.SMS_RU_MODE !== "live"

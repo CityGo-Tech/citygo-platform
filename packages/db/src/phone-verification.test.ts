@@ -104,7 +104,10 @@ test("unverified legacy email and a verification fact for a different current em
     value = input();
   await repo.createSession(userId, ctx.sessionTokenHash);
   await assert.rejects(f.phone.begin(ctx, value), status(403));
-  await assert.rejects(f.phone.status(ctx), status(403));
+  assert.deepEqual(await f.phone.status(ctx), {
+    alreadyGranted: false,
+    giftStatus: "email_required",
+  });
   assert.equal(
     (await f.db.query("select 1 from phone_verification_sends")).rows.length,
     0,
@@ -137,7 +140,10 @@ test("phone core is unbound by default; explicit policy is idempotent and silent
   await configurePhoneVerification(f.db, defaultPolicy);
   await configurePhoneVerification(f.db, defaultPolicy);
   assert.equal(await f.phone.readiness(), true);
-  assert.deepEqual(await f.phone.status(f.ctx), { alreadyGranted: false });
+  assert.deepEqual(await f.phone.status(f.ctx), {
+    alreadyGranted: false,
+    giftStatus: "eligible",
+  });
   await f.phone.begin(f.ctx, value);
   await f.phone.markAccepted(value.id, value.codeHash);
   for (const policy of [
@@ -178,7 +184,10 @@ test("accepted user-bound OTP atomically grants one 500 CityGo bonus and trigger
   const receipt = await f.phone.confirm(f.ctx, confirmation(value));
   assert.equal(receipt.grantedMicros, 500_000_000);
   assert.equal(receipt.alreadyGranted, false);
-  assert.deepEqual(await f.phone.status(f.ctx), { alreadyGranted: true });
+  assert.deepEqual(await f.phone.status(f.ctx), {
+    alreadyGranted: true,
+    giftStatus: "granted",
+  });
   const after = await f.money();
   assert.deepEqual(await f.phone.confirm(f.ctx, confirmation(value)), {
     ...receipt,
@@ -441,6 +450,53 @@ test("expired/revoked sessions, deleted users and temporary passwords fail close
     (await f.db.query("select 1 from phone_welcome_claims")).rows.length,
     0,
   );
+});
+
+test("gift status is account/session-bound, read-only and retains a consumed gift after reactivation", async (t) => {
+  const f = await fixture(t),
+    value = input();
+  await f.phone.begin(f.ctx, value);
+  await f.phone.markAccepted(value.id, value.codeHash);
+  await f.phone.confirm(f.ctx, confirmation(value));
+  const other = await f.user(),
+    before = await f.money();
+  assert.deepEqual(await f.phone.status(other), {
+    alreadyGranted: false,
+    giftStatus: "eligible",
+  });
+  assert.deepEqual(await f.phone.status(f.ctx), {
+    alreadyGranted: true,
+    giftStatus: "granted",
+  });
+  await f.db.query("update users set status='deleted' where id=$1", [
+    f.ctx.userId,
+  ]);
+  await assert.rejects(f.phone.status(f.ctx), status(401));
+  await f.db.query("update users set status='active' where id=$1", [
+    f.ctx.userId,
+  ]);
+  assert.deepEqual(await f.phone.status(f.ctx), {
+    alreadyGranted: true,
+    giftStatus: "granted",
+  });
+  const next = {
+    ...f.ctx,
+    sessionTokenHash: hash("replacement-status-session"),
+  };
+  await new Repository(f.db).createSession(next.userId, next.sessionTokenHash);
+  await f.db.query("delete from sessions where token_hash=$1", [
+    f.ctx.sessionTokenHash,
+  ]);
+  await assert.rejects(f.phone.status(f.ctx), status(401));
+  assert.deepEqual(await f.phone.status(next), {
+    alreadyGranted: true,
+    giftStatus: "granted",
+  });
+  await assert.rejects(
+    f.phone.status({ ...other, sessionTokenHash: next.sessionTokenHash }),
+    status(401),
+  );
+  assert.deepEqual(await f.money(), before);
 });
 
 test("post-claim failure rolls back consumption, 500 bonus, gift lot and audit together; safe retry grants once", async (t) => {
