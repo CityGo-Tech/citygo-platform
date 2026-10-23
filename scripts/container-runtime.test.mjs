@@ -264,6 +264,11 @@ const liveMountedProfiles = [
     "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-profile.fixture.json",
     "us",
   ],
+  [
+    "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-v1",
+    "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-profile.fixture.json",
+    "us",
+  ],
 ];
 for (const [marker, file, rejectedCountry] of liveMountedProfiles)
   test(`live YooKassa ${marker} requires its exact API-only profile and never inherits credentials`, (t) => {
@@ -407,6 +412,139 @@ test("overdraft profile changes only explicit billing-risk mode, never legacy ma
     "citygo_service_full_payment_v1",
   );
   assert.equal(overdraft.ROUTERAI_MAX_OUTPUT_TOKENS, "4096");
+});
+
+test("email-only mounted profile preserves v7 and rejects partial credentials, SMS, unsafe From and count caps", (t) => {
+  const directory = fixture(t);
+  const read = (name) =>
+    JSON.parse(readFileSync(join(root, "deploy/fixtures", name), "utf8"));
+  const legacy = read(
+    "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-profile.fixture.json",
+  );
+  const value = read(
+    "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-profile.fixture.json",
+  );
+  const extra = Object.fromEntries(
+    Object.entries(value).filter(([key]) => !(key in legacy)),
+  );
+  assert.deepEqual(value, { ...legacy, ...extra });
+  assert.deepEqual(
+    Object.keys(extra).sort(),
+    [
+      "EMAIL_REGISTRATION_MODE",
+      "EMAIL_DELIVERY_PROVIDER",
+      "POSTBOX_FROM_EMAIL",
+      "PHONE_VERIFICATION_MODE",
+      "SMS_RU_MODE",
+      "EMAIL_REGISTRATION_SECRET",
+      "POSTBOX_ACCESS_KEY_ID",
+      "POSTBOX_SECRET_ACCESS_KEY",
+      "EMAIL_SEND_DAILY_LIMIT",
+      "EMAIL_SEND_TOTAL_LIMIT",
+    ].sort(),
+  );
+  const inherited = {
+    CITYGO_MOUNTED_CONFIG: "1",
+    CITYGO_AI_PROFILE:
+      "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-v1",
+    LLM_PROVIDER: "routerai",
+  };
+  const spec = (data) => {
+    writeFileSync(join(directory, "api.json"), JSON.stringify(data));
+    return containerSpec("api", inherited, directory, directory);
+  };
+  assert.equal(spec(value).env.EMAIL_REGISTRATION_MODE, "required");
+  for (const patch of [
+    { EMAIL_REGISTRATION_MODE: "disabled" },
+    { EMAIL_DELIVERY_PROVIDER: "disabled" },
+    { POSTBOX_FROM_EMAIL: "other@xn--c1ajazlh.xn--p1ai" },
+    { POSTBOX_FROM_EMAIL: "no-reply@ситиго.рф" },
+    {
+      POSTBOX_FROM_EMAIL:
+        "no-reply@xn--c1ajazlh.xn--p1ai\r\nBcc:other@example.test",
+    },
+    { POSTBOX_ACCESS_KEY_ID: "short" },
+    { POSTBOX_ACCESS_KEY_ID: "x".repeat(129) },
+    { POSTBOX_SECRET_ACCESS_KEY: "short" },
+    { POSTBOX_SECRET_ACCESS_KEY: "x".repeat(257) },
+    { POSTBOX_SECRET_ACCESS_KEY: "secret with space" },
+    { EMAIL_REGISTRATION_SECRET: "B".repeat(64) },
+    { EMAIL_REGISTRATION_SECRET: "b".repeat(63) },
+    { EMAIL_SEND_DAILY_LIMIT: "0" },
+    { EMAIL_SEND_DAILY_LIMIT: "01" },
+    { EMAIL_SEND_DAILY_LIMIT: "100001" },
+    { EMAIL_SEND_TOTAL_LIMIT: "1000001" },
+    { EMAIL_SEND_TOTAL_LIMIT: "1e3" },
+    { EMAIL_SEND_TOTAL_LIMIT: 2 },
+    { PHONE_VERIFICATION_MODE: "sms_ru" },
+    { SMS_RU_MODE: "test" },
+    { SMS_RU_API_ID: "synthetic-must-not-be-present" },
+    { PHONE_VERIFICATION_SECRET: "c".repeat(64) },
+  ])
+    assert.throws(() => spec({ ...value, ...patch }), /Invalid mounted/);
+  const maximum = spec({
+    ...value,
+    EMAIL_SEND_DAILY_LIMIT: "100000",
+    EMAIL_SEND_TOTAL_LIMIT: "1000000",
+  });
+  assert.equal(maximum.env.EMAIL_SEND_TOTAL_LIMIT, "1000000");
+});
+
+test("all mounted profiles, including disabled, refuse ambient verification prefixes", (t) => {
+  const directory = fixture(t);
+  for (const mode of ["api", "worker", "migrate"])
+    writeFileSync(
+      join(directory, `${mode}.json`),
+      JSON.stringify({ DATABASE_URL: db }),
+    );
+  for (const mode of ["api", "web", "worker", "migrate", "migrate-release"])
+    for (const key of [
+      "EMAIL_REGISTRATION_MODE",
+      "EMAIL_UNREVIEWED",
+      "POSTBOX_ACCESS_KEY_ID",
+      "PHONE_VERIFICATION_MODE",
+      "SMS_RU_MODE",
+      "SMS_UNREVIEWED",
+    ])
+      assert.throws(
+        () =>
+          containerSpec(
+            mode,
+            {
+              CITYGO_MOUNTED_CONFIG: "1",
+              LLM_PROVIDER: "disabled",
+              [key]: "synthetic-ambient-secret",
+            },
+            directory,
+            directory,
+          ),
+        /Invalid mounted verification/,
+      );
+  for (const [marker, file] of [
+    ["routerai-credit-v1", "routerai-profile.fixture.json"],
+    ...liveMountedProfiles.map(([marker, file]) => [marker, file]),
+  ]) {
+    writeFileSync(
+      join(directory, "api.json"),
+      readFileSync(join(root, "deploy/fixtures", file)),
+    );
+    for (const prefix of ["EMAIL_", "POSTBOX_", "PHONE_", "SMS_"])
+      assert.throws(
+        () =>
+          containerSpec(
+            "api",
+            {
+              CITYGO_MOUNTED_CONFIG: "1",
+              CITYGO_AI_PROFILE: marker,
+              LLM_PROVIDER: "routerai",
+              [`${prefix}UNREVIEWED`]: "synthetic-ambient-secret",
+            },
+            directory,
+            directory,
+          ),
+        /Invalid mounted verification/,
+      );
+  }
 });
 
 test("Nginx rendering rejects directives and sets bounded streaming/header rules", () => {

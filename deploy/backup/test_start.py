@@ -243,7 +243,8 @@ class Validation(unittest.TestCase):
         self.assertEqual({k: value[k] for k in s.ROUTERAI_LIMITS}, dict.fromkeys(s.ROUTERAI_LIMITS, "0"))
         self.assertEqual(s.CLOSED_ONLY_PROFILES,
                          {s.CITYGO_10X_YOOKASSA_LIVE_PROFILE, profile, s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_PROFILE,
-                          s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_PROFILE})
+                          s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_PROFILE,
+                          s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROFILE})
         for key in value:
             missing = dict(value); del missing[key]
             with self.subTest(missing=key), self.assertRaises(b.BackupError): validate(missing)
@@ -361,7 +362,63 @@ class Validation(unittest.TestCase):
         self.assertNotIn("secrets", spec["services"]["web"])
 
 
+    def test_email_v8_has_exact_independent_closed_scope_and_preserves_all_legacy_keys(self):
+        profile = s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROFILE
+        value = routerai_fixture(profile)
+        legacy = routerai_fixture(s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_PROFILE)
+        extra = {key: setting for key, setting in value.items() if key not in legacy}
+        self.assertEqual(value, {**legacy, **extra})
+        self.assertEqual(set(extra), {"EMAIL_REGISTRATION_MODE", "EMAIL_DELIVERY_PROVIDER", "POSTBOX_FROM_EMAIL",
+            "PHONE_VERIFICATION_MODE", "SMS_RU_MODE"} | s.EMAIL_PRIVATE_KEYS | set(s.EMAIL_LIMITS))
+        self.assertEqual(s.PROFILE_VERSIONS[profile], 8)
+        self.assertIn(profile, s.CLOSED_ONLY_PROFILES)
+        def validate(data, selected=profile):
+            with patch.object(t, "read_file", return_value=encoded(data)):
+                return s.api_secret("/unused", selected)
+        self.assertEqual(validate(value), encoded(value))
+        for key in value:
+            missing = dict(value); del missing[key]
+            with self.subTest(missing=key), self.assertRaises(b.BackupError): validate(missing)
+        for change in ({"EMAIL_REGISTRATION_MODE": "disabled"}, {"EMAIL_DELIVERY_PROVIDER": "disabled"},
+                       {"POSTBOX_FROM_EMAIL": "other@xn--c1ajazlh.xn--p1ai"}, {"POSTBOX_FROM_EMAIL": "no-reply@ситиго.рф"},
+                       {"POSTBOX_FROM_EMAIL": "no-reply@xn--c1ajazlh.xn--p1ai\r\nBcc:other@example.test"},
+                       {"POSTBOX_ACCESS_KEY_ID": "short"}, {"POSTBOX_ACCESS_KEY_ID": "x" * 129},
+                       {"POSTBOX_SECRET_ACCESS_KEY": "short"}, {"POSTBOX_SECRET_ACCESS_KEY": "x" * 257},
+                       {"POSTBOX_SECRET_ACCESS_KEY": "secret with space"}, {"EMAIL_REGISTRATION_SECRET": "B" * 64},
+                       {"EMAIL_REGISTRATION_SECRET": "b" * 63}, {"EMAIL_SEND_DAILY_LIMIT": "0"},
+                       {"EMAIL_SEND_DAILY_LIMIT": "01"}, {"EMAIL_SEND_DAILY_LIMIT": "100001"},
+                       {"EMAIL_SEND_TOTAL_LIMIT": "1000001"}, {"EMAIL_SEND_TOTAL_LIMIT": "1e3"}, {"EMAIL_SEND_TOTAL_LIMIT": 2},
+                       {"PHONE_VERIFICATION_MODE": "sms_ru"}, {"SMS_RU_MODE": "test"},
+                       {"SMS_RU_API_ID": "synthetic-must-not-be-present"}, {"PHONE_VERIFICATION_SECRET": "c" * 64},
+                       {"AI_CREDIT_RESERVATION_MODE": "full"}, {"YOOKASSA_FISCAL_PROFILE": "disabled"}):
+            with self.subTest(keys=list(change)), self.assertRaises(b.BackupError): validate({**value, **change})
+        validate({**value, "EMAIL_SEND_DAILY_LIMIT": "100000", "EMAIL_SEND_TOTAL_LIMIT": "1000000"})
+        for old in set(s.PROFILE_VERSIONS) - {profile}:
+            with self.subTest(old_profile=old), self.assertRaises(b.BackupError): validate(value, old)
+            if old != s.PROFILE:
+                with self.subTest(old_secret=old), self.assertRaises(b.BackupError): validate(routerai_fixture(old))
+        marker = "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-v1"
+        self.assertEqual(s.profile_environment(profile), {"LLM_PROVIDER": "routerai", "CITYGO_AI_PROFILE": marker})
+        image = {"local_id": "sha256:" + "c" * 64, "config_id": "sha256:" + "c" * 64}
+        value = preparation_fixture.container("api"); value["Image"] = image["local_id"]; value["State"]["Dead"] = False
+        base = detail(value, "api", image, "/tmp/api.json", profile)
+        args = ("api", image, "citygo-fixture", ORIGIN, "/tmp/api.json", {"web_api": WEB_NETWORK, "database": "e" * 64})
+        s.runtime(base, *args, profile)
+        for old in set(s.PROFILE_VERSIONS) - {profile}:
+            with self.subTest(old_marker=old), self.assertRaises(b.BackupError): s.runtime(base, *args, old)
+        for key in extra:
+            bad = copy.deepcopy(base); bad["Config"]["Env"].append(key + "=synthetic-hidden")
+            with self.subTest(ambient=key), self.assertRaises(b.BackupError): s.runtime(bad, *args, profile)
+        spec = s.compose_spec("citygo-fixture", ORIGIN, {"api": image, "web": image}, "/tmp/api.json", profile)
+        self.assertNotIn("secrets", spec["services"]["web"])
+        self.assertFalse(any(key.startswith(("EMAIL_", "POSTBOX_", "PHONE_", "SMS_")) for service in spec["services"].values()
+                             for key in service["environment"]))
+
+
 def routerai_fixture(profile=s.ROUTERAI_PROFILE):
+    if profile == s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROFILE:
+        return json.loads((Path(__file__).resolve().parent.parent / "fixtures" /
+                           "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-profile.fixture.json").read_bytes())
     if profile == s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_PROFILE:
         return json.loads((Path(__file__).resolve().parent.parent / "fixtures" /
                            "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-profile.fixture.json").read_bytes())

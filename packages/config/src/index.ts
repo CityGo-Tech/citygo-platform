@@ -1,6 +1,9 @@
 import { z } from "zod";
 import { isIP } from "node:net";
 import { aiProviderIdSchema, type AiProviderId } from "@citygo/contracts";
+import { isAsciiSenderEmail } from "./sender-email.js";
+
+export { isAsciiSenderEmail } from "./sender-email.js";
 
 const optionalSetting = z.preprocess(
   (value) => (typeof value === "string" ? value.trim() || undefined : value),
@@ -145,7 +148,15 @@ export const serverConfigSchema = z.object({
       .regex(/^[!-~]+$/)
       .optional(),
   ),
-  POSTBOX_FROM_EMAIL: optionalSetting.pipe(z.email().max(254).optional()),
+  POSTBOX_FROM_EMAIL: z.preprocess(
+    // Blank settings remain optional, but never trim a nonblank mailbox: doing
+    // so would hide trailing CRLF or other unsafe sender input.
+    (value) => (typeof value === "string" && !value.trim() ? undefined : value),
+    z
+      .string()
+      .refine(isAsciiSenderEmail, "Invalid bare sender email")
+      .optional(),
+  ),
   EMAIL_SEND_DAILY_LIMIT: z.coerce.number().int().min(0).max(100000).default(0),
   EMAIL_SEND_TOTAL_LIMIT: z.coerce
     .number()

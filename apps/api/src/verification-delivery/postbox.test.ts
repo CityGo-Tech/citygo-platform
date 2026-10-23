@@ -138,6 +138,14 @@ test("Postbox rejects unsafe configuration before creating a transport request",
     { fromEmail: "CityGo <verification@citygo.example>" },
     { fromEmail: "verification@citygo.example\r\nBcc: attacker@example.com" },
     { fromEmail: " verification@citygo.example" },
+    { fromEmail: "no-reply@ситиго.рф" },
+    { fromEmail: "no-reply@xn--a.example" },
+    { fromEmail: "no-reply@xn--abc.example" },
+    { fromEmail: "no-reply@xn--c1ajazlh.xn--p1ai." },
+    { fromEmail: "no-reply@xn--c1ajazlh.xn--p1ai,other@example.com" },
+    {
+      fromEmail: "no-reply@xn--c1ajazlh.xn--p1ai\r\nBcc: attacker@example.com",
+    },
     { timeoutMs: 0 },
     { timeoutMs: 7_501 },
     { timeoutMs: 1.5 },
@@ -148,6 +156,42 @@ test("Postbox rejects unsafe configuration before creating a transport request",
         error instanceof PostboxDeliveryError && error.code === "configuration",
     );
   }
+});
+
+test("Postbox preserves an approved ASCII IDN sender in the signed synthetic request", async () => {
+  let calls = 0;
+  const fromEmail = "no-reply@xn--c1ajazlh.xn--p1ai";
+  const send = createPostboxDelivery(
+    { ...config, fromEmail },
+    {
+      clock,
+      fetch: transport(async (_url, init) => {
+        calls++;
+        const body = String(init.body);
+        assert.equal(JSON.parse(body).FromEmailAddress, fromEmail);
+        assert.equal(
+          new Headers(init.headers).get("authorization"),
+          signAwsV4({
+            ...config,
+            method: "POST",
+            path: "/v2/email/outbound-emails",
+            region: "ru-central1",
+            service: "ses",
+            body,
+            headers: {
+              host: "postbox.cloud.yandex.net",
+              "content-type": "application/json",
+              "x-amz-date": "20261023T120000Z",
+            },
+          }),
+        );
+        return response();
+      }),
+    },
+  );
+  assert.equal(calls, 0);
+  assert.equal((await send(input())).accepted, true);
+  assert.equal(calls, 1);
 });
 
 test("Postbox validates recipient, six ASCII digits, and a future ISO expiry without sending", async () => {
@@ -163,6 +207,8 @@ test("Postbox validates recipient, six ASCII digits, and a future ISO expiry wit
     { email: "a@example.com,b@example.com" },
     { email: "a@example.com\nBcc: attacker@example.com" },
     { email: "Name <a@example.com>" },
+    // Sender IDN support must not change registration/recipient validation.
+    { email: "recipient@xn--c1ajazlh.xn--p1ai" },
     { code: "12345" },
     { code: "１２３４５６" },
     { code: "123456\n" },
@@ -407,7 +453,64 @@ test("Postbox rejects empty, malformed and missing MessageId responses", async (
   }
 });
 
-test("Postbox rejects mismatched URLs, redirects, absent bodies and invalid media metadata", async () => {
+test("Postbox accepts bounded JSON MessageId independently of response MIME", async () => {
+  for (const mime of [
+    undefined,
+    "text/plain; charset=utf-8",
+    "application/x-amz-json-1.1",
+    "application/octet-stream",
+    "text/html",
+    "application/json; charset=utf-8",
+  ]) {
+    let calls = 0;
+    const send = createPostboxDelivery(config, {
+      clock,
+      fetch: transport(async () => {
+        calls++;
+        // Uint8Array avoids Response adding text/plain for a string fixture.
+        return new Response(
+          new TextEncoder().encode(
+            '{"MessageId":"synthetic-mime-independent"}',
+          ),
+          { headers: mime ? { "content-type": mime } : {} },
+        );
+      }),
+    });
+    assert.deepEqual(await send(input()), {
+      accepted: true,
+      provider: "yandex_postbox",
+      messageId: "synthetic-mime-independent",
+    });
+    assert.equal(calls, 1);
+  }
+});
+
+test("Postbox still rejects non-JSON, malformed MessageId and oversized bodies for non-JSON MIME", async () => {
+  for (const mime of [undefined, "text/plain", "text/html"]) {
+    for (const body of [
+      "<html>not an acknowledgement</html>",
+      "not-json",
+      "{}",
+      '{"MessageId":"with space"}',
+      "x".repeat(65_537),
+    ]) {
+      let calls = 0;
+      const send = createPostboxDelivery(config, {
+        clock,
+        fetch: transport(async () => {
+          calls++;
+          return new Response(new TextEncoder().encode(body), {
+            headers: mime ? { "content-type": mime } : {},
+          });
+        }),
+      });
+      await rejects(send(input()), "invalid_response");
+      assert.equal(calls, 1);
+    }
+  }
+});
+
+test("Postbox rejects mismatched URLs, redirects, absent bodies and invalid length metadata", async () => {
   const variants = [
     () => {
       const result = response();
@@ -423,10 +526,6 @@ test("Postbox rejects mismatched URLs, redirects, absent bodies and invalid medi
     },
     () =>
       new Response(null, { headers: { "content-type": "application/json" } }),
-    () =>
-      new Response('{"MessageId":"id"}', {
-        headers: { "content-type": "text/plain" },
-      }),
     () =>
       new Response('{"MessageId":"id"}', {
         headers: {
@@ -448,6 +547,33 @@ test("Postbox rejects mismatched URLs, redirects, absent bodies and invalid medi
       fetch: transport(async () => variant()),
     });
     await rejects(send(input()), "invalid_response");
+  }
+});
+
+test("Postbox reader cleanup cannot replace acceptance or leak exceptions over sanitized failure", async () => {
+  for (const method of ["cancel", "releaseLock"] as const) {
+    for (const malformed of [false, true]) {
+      const send = createPostboxDelivery(config, {
+        clock,
+        fetch: transport(async () => {
+          const result = response();
+          const body = malformed
+            ? new Response("not-json").body!
+            : result.body!;
+          const getReader = body.getReader.bind(body);
+          body.getReader = (() => {
+            const reader = getReader();
+            reader[method] = () => {
+              throw new Error(`${config.secretAccessKey} ${input().email}`);
+            };
+            return reader;
+          }) as typeof body.getReader;
+          return new Response(body);
+        }),
+      });
+      if (malformed) await rejects(send(input()), "invalid_response");
+      else assert.equal((await send(input())).accepted, true);
+    }
   }
 });
 

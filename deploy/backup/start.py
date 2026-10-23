@@ -28,13 +28,16 @@ CITYGO_10X_YOOKASSA_LIVE_PROFILE = "citygo-api-web-routerai-citygo-10x-yookassa-
 CITYGO_10X_YOOKASSA_LIVE_CN_PROFILE = "citygo-api-web-routerai-citygo-10x-yookassa-live-cn-v1"
 CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_PROFILE = "citygo-api-web-routerai-citygo-10x-yookassa-live-cn-fiscal-v2"
 CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_PROFILE = "citygo-api-web-routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-v1"
+CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROFILE = "citygo-api-web-routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-v1"
 PROFILE_VERSIONS = {PROFILE: 1, ROUTERAI_PROFILE: 2, CITYGO_10X_PROFILE: 3,
                     CITYGO_10X_YOOKASSA_LIVE_PROFILE: 4, CITYGO_10X_YOOKASSA_LIVE_CN_PROFILE: 5,
                     CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_PROFILE: 6,
-                    CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_PROFILE: 7}
+                    CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_PROFILE: 7,
+                    CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROFILE: 8}
 CLOSED_ONLY_PROFILES = frozenset((CITYGO_10X_YOOKASSA_LIVE_PROFILE, CITYGO_10X_YOOKASSA_LIVE_CN_PROFILE,
                                 CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_PROFILE,
-                                CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_PROFILE))
+                                CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_PROFILE,
+                                CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROFILE))
 # Public configuration is pinned together with the private key by startup approval.
 # No live budget, user bonus, consent or payment authorization is encoded here.
 ROUTERAI_FIXED = {
@@ -64,6 +67,12 @@ CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_FIXED = {**CITYGO_10X_YOOKASSA_LIVE_CN_FIXED,
     "YOOKASSA_FISCAL_PROFILE": "citygo_service_full_payment_v1"}
 CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_FIXED = {**CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_FIXED,
     "AI_CREDIT_RESERVATION_MODE": "fixed5_overdraft"}
+CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_FIXED = {**CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_FIXED,
+    "EMAIL_REGISTRATION_MODE": "required", "EMAIL_DELIVERY_PROVIDER": "yandex_postbox",
+    "POSTBOX_FROM_EMAIL": "no-reply@xn--c1ajazlh.xn--p1ai",
+    "PHONE_VERIFICATION_MODE": "disabled", "SMS_RU_MODE": "disabled"}
+EMAIL_PRIVATE_KEYS = {"EMAIL_REGISTRATION_SECRET", "POSTBOX_ACCESS_KEY_ID", "POSTBOX_SECRET_ACCESS_KEY"}
+EMAIL_LIMITS = {"EMAIL_SEND_DAILY_LIMIT": 100000, "EMAIL_SEND_TOTAL_LIMIT": 1000000}
 YOOKASSA_LIVE_KEYS = {"YOOKASSA_SHOP_ID", "YOOKASSA_SECRET_KEY"}
 ROUTERAI_LIMITS = {
     "LLM_USER_DAILY_REQUEST_LIMIT": 10000, "LLM_GLOBAL_DAILY_REQUEST_LIMIT": 1000000,
@@ -84,14 +93,16 @@ def api_secret(path, profile=PROFILE):
     if profile == PROFILE:
         b.require({"DATABASE_URL"} <= set(value) <= {"DATABASE_URL", "ADMIN_USER_IDS"}, "start-secret")
     else:
-        fixed = (CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_FIXED if profile == CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_PROFILE else
+        fixed = (CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_FIXED if profile == CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROFILE else
+                 CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_FIXED if profile == CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_PROFILE else
                  CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_FIXED if profile == CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_PROFILE else
                  CITYGO_10X_YOOKASSA_LIVE_CN_FIXED if profile == CITYGO_10X_YOOKASSA_LIVE_CN_PROFILE else
                  CITYGO_10X_YOOKASSA_LIVE_FIXED if profile == CITYGO_10X_YOOKASSA_LIVE_PROFILE else
                  CITYGO_10X_FIXED if profile == CITYGO_10X_PROFILE else ROUTERAI_FIXED)
         payment_keys = YOOKASSA_LIVE_KEYS if profile in CLOSED_ONLY_PROFILES else set()
+        email_keys = EMAIL_PRIVATE_KEYS | set(EMAIL_LIMITS) if profile == CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROFILE else set()
         t.keys(value, {"DATABASE_URL", "ADMIN_USER_IDS", "ROUTERAI_API_KEY", "ROUTERAI_DATA_NOTICE",
-                       "ROUTERAI_PRODUCTION_POLICY_ID"} | set(fixed) | set(ROUTERAI_LIMITS) | payment_keys, "start-secret")
+                       "ROUTERAI_PRODUCTION_POLICY_ID"} | set(fixed) | set(ROUTERAI_LIMITS) | payment_keys | email_keys, "start-secret")
         b.require(all(type(v) is str and v.strip() == v and v and not any(ord(c) < 32 for c in v)
                       for v in value.values()), "start-secret")
         b.require(all(value[k] == v for k, v in fixed.items()), "start-secret")
@@ -106,6 +117,12 @@ def api_secret(path, profile=PROFILE):
             # neither the key prefix nor startup approval proves acceptance.
             b.require(t.matches(value["YOOKASSA_SHOP_ID"], r"[1-9][0-9]{0,19}")
                       and t.matches(value["YOOKASSA_SECRET_KEY"], r"live_[A-Za-z0-9_=-]{8,8192}"), "start-secret")
+        if email_keys:
+            b.require(t.matches(value["EMAIL_REGISTRATION_SECRET"], t.HASH)
+                      and t.matches(value["POSTBOX_ACCESS_KEY_ID"], r"[A-Za-z0-9_-]{8,128}")
+                      and t.matches(value["POSTBOX_SECRET_ACCESS_KEY"], r"[!-~]{16,256}")
+                      and all(t.matches(value[key], r"[1-9][0-9]{0,6}") and int(value[key]) <= maximum
+                              for key, maximum in EMAIL_LIMITS.items()), "start-secret")
     url = value["DATABASE_URL"]
     b.require(type(url) is str and not any(ord(ch) <= 32 for ch in url), "start-secret")
     try:
@@ -171,6 +188,7 @@ def profile_environment(profile):
     b.require(type(profile) is str and profile in PROFILE_VERSIONS, "start-profile")
     return ({"LLM_PROVIDER": "disabled"} if profile == PROFILE else
             {"LLM_PROVIDER": "routerai", "CITYGO_AI_PROFILE":
+             "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-v1" if profile == CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROFILE else
              "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-v1" if profile == CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_PROFILE else
              "routerai-citygo-10x-yookassa-live-cn-fiscal-v2" if profile == CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_PROFILE else
              "routerai-citygo-10x-yookassa-live-cn-v1" if profile == CITYGO_10X_YOOKASSA_LIVE_CN_PROFILE else

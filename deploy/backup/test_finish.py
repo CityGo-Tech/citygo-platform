@@ -335,4 +335,32 @@ class CityGo10xLiveCnCutover(RouterAiCutover):
         self.assertFalse((self.state / w.ADMISSION).exists())
 
 
+@unittest.skipUnless(sys.platform.startswith("linux"), "Linux protected email-profile atomic cutover")
+class CityGo10xPostboxEmailCutover(RouterAiCutover):
+    profile = s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROFILE
+    marker = "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-v1"
+
+    def test_email_v8_generation_is_closed_api_only_and_keeps_money_and_model_settings(self):
+        result = self.finish()
+        spec = json.loads(self.plan["files"]["compose.json"])
+        value = json.loads(self.api.read_bytes())
+        self.assertEqual(s.approval(self.start_approval.path.read_bytes(), time.time())["version"], 8)
+        self.assertEqual(value["EMAIL_REGISTRATION_MODE"], "required")
+        self.assertEqual(value["PHONE_VERIFICATION_MODE"], "disabled")
+        self.assertEqual(value["SMS_RU_MODE"], "disabled")
+        self.assertEqual(value["AI_CREDIT_RESERVATION_MODE"], "fixed5_overdraft")
+        self.assertEqual(value["AI_CREDIT_MODE"], "routerai_citygo_10x")
+        self.assertEqual(value["YOOKASSA_FISCAL_PROFILE"], "citygo_service_full_payment_v1")
+        for role, service in spec["services"].items():
+            self.assertFalse(any(key.startswith(("EMAIL_", "POSTBOX_", "PHONE_", "SMS_")) for key in service.get("environment", {})))
+            if role != "api":
+                self.assertFalse(any(mount.get("source") == "api_config" if isinstance(mount, dict)
+                                     else mount == "api_config" for mount in service.get("secrets", [])))
+        for key in s.EMAIL_PRIVATE_KEYS:
+            self.assertNotIn(value[key], self.plan["files"]["compose.json"].decode())
+            self.assertNotIn(value[key], json.dumps(result))
+        self.assertTrue(self.host.closed)
+        self.assertFalse((self.state / w.ADMISSION).exists())
+
+
 if __name__ == "__main__": unittest.main()

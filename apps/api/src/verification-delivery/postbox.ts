@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isAsciiSenderEmail } from "@citygo/config";
 import { signAwsV4 } from "./signing.js";
 
 // Explicit static service-account credentials only; no ambient AWS credentials.
@@ -75,7 +76,7 @@ export function createPostboxDelivery(
     !/^[A-Za-z0-9_-]{1,128}$/.test(config.accessKeyId) ||
     typeof config.secretAccessKey !== "string" ||
     !/^[\x21-\x7e]{1,512}$/.test(config.secretAccessKey) ||
-    !email(config.fromEmail) ||
+    !isAsciiSenderEmail(config.fromEmail) ||
     !Number.isInteger(timeoutMs) ||
     timeoutMs < 1 ||
     timeoutMs > 7_500
@@ -196,15 +197,11 @@ export function createPostboxDelivery(
         throw new PostboxDeliveryError("invalid_response");
       // No retry: even a timeout could have accepted the email upstream.
       if (response.status !== 200) throw new PostboxDeliveryError("http");
-      if (
-        response.headers
-          .get("content-type")
-          ?.split(";", 1)[0]
-          ?.trim()
-          .toLowerCase() !== "application/json" ||
-        !response.body
-      )
-        throw new PostboxDeliveryError("invalid_response");
+      // SendEmail specifies HTTP 200 + a JSON MessageId, not a response MIME.
+      // A controlled Postbox request returned 200 with a different MIME; do not
+      // confuse that metadata with rejection. Never render or execute the body:
+      // retain the byte/deadline/UTF-8/JSON/MessageId checks below for every MIME.
+      if (!response.body) throw new PostboxDeliveryError("invalid_response");
       const length = response.headers.get("content-length");
       if (
         length !== null &&
@@ -252,8 +249,17 @@ export function createPostboxDelivery(
       clearTimeout(timer);
       input.signal.removeEventListener("abort", abort);
       if (reader) {
-        void reader.cancel().catch(() => undefined);
-        reader.releaseLock();
+        try {
+          void reader.cancel().catch(() => undefined);
+        } catch {
+          // Best-effort cleanup must not replace an acknowledgement or the
+          // original sanitized failure with an upstream exception.
+        }
+        try {
+          reader.releaseLock();
+        } catch {
+          // The same rule applies if a transport cannot release its reader.
+        }
       } else cancel(response);
     }
   };

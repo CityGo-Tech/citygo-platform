@@ -9,6 +9,37 @@ const production = {
   TRUSTED_PROXY_CIDRS: "10.0.0.8/32, ::1/128",
 };
 
+test("Postbox sender accepts ASCII IDN From without accepting header or IDN injection", () => {
+  const sender = "no-reply@xn--c1ajazlh.xn--p1ai";
+  assert.equal(
+    readConfig({ POSTBOX_FROM_EMAIL: sender }).POSTBOX_FROM_EMAIL,
+    sender,
+  );
+  assert.equal(
+    readConfig({ POSTBOX_FROM_EMAIL: "sender@example.test" })
+      .POSTBOX_FROM_EMAIL,
+    "sender@example.test",
+  );
+  for (const invalid of [
+    "no-reply@ситиго.рф",
+    "sender@xn--a.example",
+    "sender@xn--abc.example",
+    "sender@xn--c1ajazlh.xn--p1ai.",
+    "CityGo <no-reply@xn--c1ajazlh.xn--p1ai>",
+    `${sender},other@example.com`,
+    `${sender}\r\nBcc:other@example.com`,
+    `${sender}\r\n`,
+    ` ${sender}`,
+    `${sender} `,
+  ])
+    assert.throws(() => readConfig({ POSTBOX_FROM_EMAIL: invalid }));
+  for (const blank of [undefined, "", " "])
+    assert.equal(
+      readConfig({ POSTBOX_FROM_EMAIL: blank }).POSTBOX_FROM_EMAIL,
+      undefined,
+    );
+});
+
 test("verification transports stay disabled and explicit settings fail closed without credentials/caps", () => {
   const blank = readConfig({});
   assert.equal(blank.EMAIL_DELIVERY_PROVIDER, "disabled");
