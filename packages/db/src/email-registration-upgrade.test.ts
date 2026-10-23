@@ -64,7 +64,22 @@ test("schema25→26 preserves every old row, financial identity, sequence and mi
       "select sequencename as name,last_value::text from pg_sequences where schemaname='public' order by sequencename",
     )
   ).rows;
-  await migrate(db);
+  // This regression deliberately isolates the original 25 -> 26 transition.
+  // Newer migrations have their own preservation/retention upgrade fixtures.
+  const name = "0026_email_registration.sql";
+  const source = await readFile(
+    new URL("../migrations/" + name, import.meta.url),
+    "utf8",
+  );
+  await db.transaction(async (tx) => {
+    await tx.exec(
+      source.replace(/^begin;\s*/i, "").replace(/commit;\s*$/i, ""),
+    );
+    await tx.query(
+      "insert into citygo_migrations(name,checksum) values($1,$2)",
+      [name, hash(source.replaceAll("\r\n", "\n"))],
+    );
+  });
   const after = await captureRestartRows(db);
   for (const [name, rows] of Object.entries(before)) {
     const current =

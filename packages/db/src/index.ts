@@ -7,8 +7,18 @@ export {
   type EmailRegistrationBegin,
   type EmailRegistrationResend,
   type EmailRegistrationConfirm,
+  type EmailSendLimits,
 } from "./email-registration.js";
 export { AiCreditLedger } from "./ai-credit.js";
+export {
+  PhoneVerification,
+  configurePhoneVerification,
+  type PhoneVerificationPolicy,
+  type PhoneVerificationContext,
+  type PhoneVerificationBegin,
+  type PhoneVerificationConfirm,
+  type PhoneVerificationReceipt,
+} from "./phone-verification.js";
 export {
   AiCreditCharges,
   type AiCreditReservationMode,

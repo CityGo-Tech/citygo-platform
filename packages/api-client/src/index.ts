@@ -16,6 +16,12 @@ import {
   emailRegistrationChallengeSchema,
   emailRegistrationResendSchema,
   emailRegistrationConfirmSchema,
+  phoneVerificationPolicySchema,
+  phoneVerificationStartSchema,
+  phoneVerificationResendSchema,
+  phoneVerificationConfirmSchema,
+  phoneVerificationChallengeSchema,
+  phoneVerificationReceiptSchema,
   adminNpdReceiptListSchema,
   adminNpdReceiptDetailSchema,
   ownerNpdReceiptListSchema,
@@ -243,6 +249,15 @@ export function createClient(
       throw new Error("Некорректные параметры подтверждения email");
     return parsed.data;
   }
+  function phoneVerificationInput<T>(
+    schema: ResponseSchema<T>,
+    input: unknown,
+  ): T {
+    const parsed = schema.safeParse(input);
+    if (!parsed.success)
+      throw new Error("Некорректные параметры подтверждения телефона");
+    return parsed.data;
+  }
   async function receiptRequest(taskId: string, command?: NpdReceiptCommand) {
     const id = receiptInput(npdReceiptTaskIdSchema, taskId);
     const body =
@@ -332,6 +347,56 @@ export function createClient(
         emailRegistrationInput(emailRegistrationConfirmSchema, {
           challengeId,
           proof,
+          code,
+        }),
+      ),
+    phoneVerificationPolicy: () =>
+      request("/v1/phone-verification/policy", phoneVerificationPolicySchema),
+    beginPhoneVerification: async (phone: string) =>
+      request(
+        "/v1/phone-verification/start",
+        phoneVerificationChallengeSchema,
+        phoneVerificationInput(phoneVerificationStartSchema, { phone }),
+      ),
+    resendPhoneVerification: async (
+      challengeId: string,
+      proof: string,
+      phone: string,
+    ) => {
+      const input = phoneVerificationInput(phoneVerificationResendSchema, {
+        challengeId,
+        proof,
+        phone,
+      });
+      const result = await request(
+        "/v1/phone-verification/resend",
+        phoneVerificationChallengeSchema,
+        input,
+      );
+      if (
+        result.challengeId.toLowerCase() !== input.challengeId.toLowerCase() ||
+        result.proof !== input.proof
+      )
+        throw new ApiError(
+          200,
+          "Ответ сервера не соответствует запросу подтверждения телефона",
+          "invalid_response",
+        );
+      return result;
+    },
+    confirmPhoneVerification: async (
+      challengeId: string,
+      proof: string,
+      phone: string,
+      code: string,
+    ) =>
+      request(
+        "/v1/phone-verification/confirm",
+        phoneVerificationReceiptSchema,
+        phoneVerificationInput(phoneVerificationConfirmSchema, {
+          challengeId,
+          proof,
+          phone,
           code,
         }),
       ),

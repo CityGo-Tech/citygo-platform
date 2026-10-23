@@ -5,7 +5,12 @@ import {
   emailRegistrationConfirmSchema,
   emailRegistrationResendSchema,
 } from "@citygo/contracts";
-import { DomainError, EmailRegistration, type Database } from "@citygo/db";
+import {
+  DomainError,
+  EmailRegistration,
+  type Database,
+  type EmailSendLimits,
+} from "@citygo/db";
 import { hashPassword, newToken, tokenHash } from "./auth.js";
 
 export type RegistrationEmailDelivery = (input: {
@@ -15,8 +20,9 @@ export type RegistrationEmailDelivery = (input: {
   signal: AbortSignal;
 }) => Promise<void>;
 
-// A real delivery adapter is deliberately not selected implicitly. The owner
-// has not selected a mail provider; injected senders are isolated tests only.
+// A transport is selected explicitly by server configuration. Provider
+// acceptance is not inbox delivery; only the recipient's OTP proves access.
+// Injected senders are allowed by buildApp only in isolated tests.
 export function registerEmailRegistration(
   app: FastifyInstance,
   options: {
@@ -24,10 +30,11 @@ export function registerEmailRegistration(
     mode: "disabled" | "required";
     secret?: string;
     delivery?: RegistrationEmailDelivery;
+    sendLimits?: EmailSendLimits;
     setSession: (reply: FastifyReply, token: string) => void;
   },
 ) {
-  const state = new EmailRegistration(options.db);
+  const state = new EmailRegistration(options.db, options.sendLimits);
   const available =
     options.mode === "required" &&
     !!options.delivery &&

@@ -53,6 +53,61 @@ async function fixture(t: TestContext) {
   return { db, store, repo, access, proof, ageQuota };
 }
 
+test("global email admissions survive failures/restart and cannot be increased by mutating config", async (t) => {
+  const f = await fixture(t);
+  const limits = { daily: 2, total: 2 };
+  const store = new EmailRegistration(f.db, limits);
+  limits.daily = limits.total = 100;
+  const first = input("global-one@example.test");
+  await store.begin(first);
+  await store.cancelDelivery(first.id, first.codeHash);
+  await new EmailRegistration(f.db, { daily: 2, total: 2 }).begin(
+    input("global-two@example.test"),
+  );
+  await assert.rejects(
+    store.begin(input("global-three@example.test")),
+    status(429),
+  );
+  assert.equal(
+    (await f.db.query("select 1 from email_registrations")).rows.length,
+    2,
+  );
+  assert.equal(
+    (
+      await f.db.query(
+        "select 1 from email_registration_rate_events where kind='recipient'",
+      )
+    ).rows.length,
+    2,
+  );
+});
+
+test("email zero admission cap denies before storing a challenge or send; total survives a new UTC day", async (t) => {
+  const f = await fixture(t);
+  await assert.rejects(
+    new EmailRegistration(f.db, { daily: 0, total: 10 }).begin(input()),
+    status(429),
+  );
+  assert.equal(
+    (await f.db.query("select 1 from email_registration_rate_events")).rows
+      .length,
+    0,
+  );
+  const store = new EmailRegistration(f.db, { daily: 1, total: 1 });
+  await store.begin(input("all-time-one@example.test"));
+  await f.db.query(
+    "update email_registration_rate_events set created_at=clock_timestamp()-interval '2 days'",
+  );
+  await assert.rejects(
+    store.begin(input("all-time-two@example.test")),
+    status(429),
+  );
+  for (const invalid of [-1, 1.2, NaN, Infinity, 1000001])
+    assert.throws(
+      () => new EmailRegistration(f.db, { daily: invalid, total: 10 }),
+    );
+});
+
 test("pending email registration creates no user/session/credit; delivered confirmation creates one verified ordinary account", async (t) => {
   const f = await fixture(t),
     value = input();

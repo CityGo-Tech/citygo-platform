@@ -531,6 +531,7 @@ test("structured registration logs redact email, password, OTP, proof and creden
   t.after(() => app.close());
   const canaries = {
     email: "synthetic-private-person@example.test",
+    phone: "+79990000001",
     password: "synthetic-private-password",
     code: "012345",
     proof: "b".repeat(64),
@@ -549,6 +550,7 @@ test("structured registration logs redact email, password, OTP, proof and creden
         },
         body: {
           email: canaries.email,
+          phone: canaries.phone,
           password: canaries.password,
           code: canaries.code,
           proof: canaries.proof,
@@ -566,7 +568,7 @@ test("structured registration logs redact email, password, OTP, proof and creden
   for (const value of Object.values(canaries))
     assert.ok(!output.includes(value));
   const logged = JSON.parse(records[0]!);
-  for (const key of ["email", "password", "code", "proof"])
+  for (const key of ["email", "phone", "password", "code", "proof"])
     assert.equal(logged.req.body[key], "[Redacted]");
   assert.equal(logged.codeHash, "[Redacted]");
   assert.equal(logged.proofHash, "[Redacted]");

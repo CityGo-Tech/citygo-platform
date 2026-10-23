@@ -57,6 +57,7 @@ import {
   readConfig,
   effectiveLlmLimits,
   validateCreditReservationConfig,
+  validateVerificationDeliveryConfig,
 } from "@citygo/config";
 import { instructions, profileContext, routeAgent } from "@citygo/agents";
 import { redactPaths } from "@citygo/observability";
@@ -101,6 +102,14 @@ import {
   registerEmailRegistration,
   type RegistrationEmailDelivery,
 } from "./email-registration.js";
+import {
+  configuredEmailDelivery,
+  configuredPhoneDelivery,
+} from "./verification-delivery/configured.js";
+import {
+  registerPhoneVerification,
+  type PhoneVerificationDelivery,
+} from "./phone-verification.js";
 
 export async function buildApp(options: {
   db: Database;
@@ -115,12 +124,14 @@ export async function buildApp(options: {
   refundClient?: RefundClient;
   paymentReconcileScheduler?: PaymentReconcileScheduler;
   emailRegistrationDelivery?: RegistrationEmailDelivery;
+  phoneVerificationDelivery?: PhoneVerificationDelivery;
 }) {
   const drain = options.drain ?? new ApiDrain();
   const config = options.config ?? readConfig();
   validateCreditReservationConfig(config);
+  validateVerificationDeliveryConfig(config);
   if (
-    options.emailRegistrationDelivery &&
+    (options.emailRegistrationDelivery || options.phoneVerificationDelivery) &&
     (config.NODE_ENV !== "test" || options.testing !== true)
   )
     throw new Error(
@@ -439,6 +450,19 @@ export async function buildApp(options: {
           "select user_id from account_email_verifications limit 0",
         );
       }
+      if (config.PHONE_VERIFICATION_MODE !== "disabled") {
+        const phone = await options.db.query(
+          "select name from citygo_migrations where name='0027_phone_verification.sql'",
+        );
+        if (phone.rows.length !== 1) throw new Error("Pending phone migration");
+        for (const table of [
+          "phone_verification_control",
+          "phone_verification_challenges",
+          "phone_verification_sends",
+          "phone_welcome_claims",
+        ])
+          await options.db.query(`select 1 from ${table} limit 0`);
+      }
       if (config.R1_HOUSING_API_MODE === "synthetic")
         await verifyHousingReadiness(options.db);
     } catch {
@@ -548,9 +572,29 @@ export async function buildApp(options: {
     db: options.db,
     mode: config.EMAIL_REGISTRATION_MODE,
     secret: config.EMAIL_REGISTRATION_SECRET,
-    delivery: options.emailRegistrationDelivery,
+    delivery:
+      options.emailRegistrationDelivery ?? configuredEmailDelivery(config),
+    sendLimits:
+      config.EMAIL_DELIVERY_PROVIDER === "yandex_postbox"
+        ? {
+            daily: config.EMAIL_SEND_DAILY_LIMIT,
+            total: config.EMAIL_SEND_TOTAL_LIMIT,
+          }
+        : undefined,
     setSession: (reply, token) => {
       reply.setCookie(sessionName, token, cookieOptions);
+    },
+  });
+  registerPhoneVerification(app, {
+    db: options.db,
+    config,
+    delivery:
+      options.phoneVerificationDelivery ?? configuredPhoneDelivery(config),
+    context: async (request) => {
+      const user = await authenticate(request);
+      const token =
+        bearer(request.headers.authorization) ?? request.cookies[sessionName];
+      return { userId: user.id, sessionTokenHash: tokenHash(token!) };
     },
   });
   for (const action of ["register", "login"] as const) {

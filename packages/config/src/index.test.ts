@@ -9,6 +9,68 @@ const production = {
   TRUSTED_PROXY_CIDRS: "10.0.0.8/32, ::1/128",
 };
 
+test("verification transports stay disabled and explicit settings fail closed without credentials/caps", () => {
+  const blank = readConfig({});
+  assert.equal(blank.EMAIL_DELIVERY_PROVIDER, "disabled");
+  assert.equal(blank.PHONE_VERIFICATION_MODE, "disabled");
+  assert.equal(blank.SMS_RU_MODE, "disabled");
+  assert.equal(blank.EMAIL_SEND_TOTAL_LIMIT, 0);
+  assert.equal(blank.PHONE_SMS_GLOBAL_TOTAL_LIMIT, 0);
+  const postbox = {
+    EMAIL_DELIVERY_PROVIDER: "yandex_postbox",
+    POSTBOX_ACCESS_KEY_ID: "synthetic-access",
+    POSTBOX_SECRET_ACCESS_KEY: "synthetic-secret",
+    POSTBOX_FROM_EMAIL: "sender@example.test",
+    EMAIL_REGISTRATION_SECRET: "a".repeat(64),
+    EMAIL_SEND_DAILY_LIMIT: "10",
+    EMAIL_SEND_TOTAL_LIMIT: "20",
+  };
+  assert.equal(readConfig(postbox).EMAIL_DELIVERY_PROVIDER, "yandex_postbox");
+  for (const key of Object.keys(postbox)) {
+    if (key === "EMAIL_DELIVERY_PROVIDER") continue;
+    assert.throws(() => readConfig({ ...postbox, [key]: undefined }), key);
+  }
+  const phone = {
+    PHONE_VERIFICATION_MODE: "sms_ru",
+    SMS_RU_MODE: "live",
+    SMS_RU_API_ID: "synthetic-api-id-123",
+    SMS_RU_FROM: "CityGo",
+    PHONE_VERIFICATION_SECRET: "b".repeat(64),
+    EMAIL_REGISTRATION_SECRET: "a".repeat(64),
+    EMAIL_REGISTRATION_MODE: "required",
+    AI_CREDIT_MODE: "routerai_citygo_10x",
+    PHONE_SMS_GLOBAL_DAILY_LIMIT: "10",
+    PHONE_SMS_GLOBAL_TOTAL_LIMIT: "20",
+  };
+  assert.equal(readConfig(phone).PHONE_VERIFICATION_MODE, "sms_ru");
+  assert.equal(
+    readConfig({ ...phone, SMS_RU_FROM: "SMS.RU" }).SMS_RU_FROM,
+    "SMS.RU",
+  );
+  for (const sender of ["City Go", ".CityGo", "x".repeat(12), "CityGo\nOther"])
+    assert.throws(() => readConfig({ ...phone, SMS_RU_FROM: sender }));
+  for (const [key, value] of Object.entries({
+    SMS_RU_MODE: "test",
+    SMS_RU_API_ID: undefined,
+    SMS_RU_FROM: undefined,
+    PHONE_VERIFICATION_SECRET: "a".repeat(64),
+    PHONE_SMS_GLOBAL_DAILY_LIMIT: "0",
+    PHONE_SMS_GLOBAL_TOTAL_LIMIT: "0",
+    EMAIL_REGISTRATION_MODE: "disabled",
+    EMAIL_REGISTRATION_SECRET: undefined,
+    AI_CREDIT_MODE: "routerai_at_cost",
+  }))
+    assert.throws(() => readConfig({ ...phone, [key]: value }), key);
+  assert.equal(
+    readConfig({
+      SMS_RU_MODE: "test",
+      SMS_RU_API_ID: phone.SMS_RU_API_ID,
+      SMS_RU_FROM: "CityGo",
+    }).PHONE_VERIFICATION_MODE,
+    "disabled",
+  );
+});
+
 test("email registration defaults disabled and cannot be enabled by an implicit secret or a truthy mode", () => {
   assert.equal(readConfig({}).EMAIL_REGISTRATION_MODE, "disabled");
   assert.equal(readConfig({}).EMAIL_REGISTRATION_SECRET, undefined);

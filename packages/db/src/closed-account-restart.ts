@@ -50,6 +50,10 @@ const tables = [
   "payment_refund_events",
   "payment_refunds",
   "payment_topup_orders",
+  "phone_verification_challenges",
+  "phone_verification_control",
+  "phone_verification_sends",
+  "phone_welcome_claims",
   "questionnaire_answers",
   "quests",
   "r1_housing_brief_revisions",
@@ -65,6 +69,10 @@ const tables = [
 ] as const;
 // No money, attempt, receipt, policy, migration, catalog or usage row is rewritten.
 const retainedTables = [
+  "phone_verification_challenges",
+  "phone_verification_control",
+  "phone_verification_sends",
+  "phone_welcome_claims",
   "account_email_verifications",
   "email_registrations",
   "email_registration_rate_events",
@@ -309,6 +317,21 @@ async function inspect(tx: Sql, options: Options) {
     blockers.push({
       code: "EMAIL_REGISTRATION_HISTORY_REQUIRES_REVIEW",
       count: verificationHistoryCount,
+    });
+  const phoneHistoryCount = [
+    "phone_verification_challenges",
+    "phone_verification_sends",
+    "phone_welcome_claims",
+  ].reduce((total, name) => total + snapshot.counts[name]!, 0);
+  const phoneBindingCount = (
+    await tx.query<{ count: number }>(
+      "select count(*)::int as count from phone_verification_control where identity_key_fingerprint is not null",
+    )
+  ).rows[0]!.count;
+  if (phoneHistoryCount + phoneBindingCount)
+    blockers.push({
+      code: "PHONE_VERIFICATION_HISTORY_REQUIRES_REVIEW",
+      count: phoneHistoryCount + phoneBindingCount,
     });
   const block = async (code: string, sql: string) => {
     const count = (await tx.query<{ count: number }>(sql)).rows[0]!.count;

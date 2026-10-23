@@ -118,7 +118,7 @@ export const serverConfigSchema = z.object({
   GIGACHAT_SCOPE: optionalSetting,
   GIGACHAT_CA_BUNDLE_FILE: optionalSetting,
   ADMIN_USER_IDS: z.string().default(""),
-  // Staged email registration. No production delivery adapter is selected yet.
+  // Staged transports: disabled by default; activation needs a reviewed runtime.
   EMAIL_REGISTRATION_MODE: z.enum(["disabled", "required"]).default("disabled"),
   EMAIL_REGISTRATION_SECRET: optionalSetting.pipe(
     z
@@ -126,6 +126,67 @@ export const serverConfigSchema = z.object({
       .regex(/^[a-f0-9]{64}$/)
       .optional(),
   ),
+  EMAIL_DELIVERY_PROVIDER: z
+    .enum(["disabled", "yandex_postbox"])
+    .default("disabled"),
+  POSTBOX_ACCESS_KEY_ID: optionalSetting.pipe(
+    z
+      .string()
+      .min(8)
+      .max(128)
+      .regex(/^[A-Za-z0-9_-]+$/)
+      .optional(),
+  ),
+  POSTBOX_SECRET_ACCESS_KEY: optionalSetting.pipe(
+    z
+      .string()
+      .min(16)
+      .max(256)
+      .regex(/^[!-~]+$/)
+      .optional(),
+  ),
+  POSTBOX_FROM_EMAIL: optionalSetting.pipe(z.email().max(254).optional()),
+  EMAIL_SEND_DAILY_LIMIT: z.coerce.number().int().min(0).max(100000).default(0),
+  EMAIL_SEND_TOTAL_LIMIT: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(1000000)
+    .default(0),
+  PHONE_VERIFICATION_MODE: z.enum(["disabled", "sms_ru"]).default("disabled"),
+  PHONE_VERIFICATION_SECRET: optionalSetting.pipe(
+    z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .optional(),
+  ),
+  SMS_RU_MODE: z.enum(["disabled", "test", "live"]).default("disabled"),
+  SMS_RU_API_ID: optionalSetting.pipe(
+    z
+      .string()
+      .min(16)
+      .max(128)
+      .regex(/^[A-Za-z0-9_-]+$/)
+      .optional(),
+  ),
+  SMS_RU_FROM: optionalSetting.pipe(
+    z
+      .string()
+      .regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,10}$/)
+      .optional(),
+  ),
+  PHONE_SMS_GLOBAL_DAILY_LIMIT: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(100000)
+    .default(0),
+  PHONE_SMS_GLOBAL_TOTAL_LIMIT: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(1000000)
+    .default(0),
   AI_CREDIT_MODE: z
     .enum(["disabled", "routerai_at_cost", "routerai_citygo_10x"])
     .default("disabled"),
@@ -153,6 +214,7 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env) {
   const config = serverConfigSchema.parse(env);
   validateCreditReservationConfig(config);
   validatePaymentConfig(config);
+  validateVerificationDeliveryConfig(config);
   if (
     config.NODE_ENV === "production" &&
     config.R1_HOUSING_API_MODE !== "disabled"
@@ -172,6 +234,45 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env) {
       "Production requires explicit TRUSTED_PROXY_CIDRS for the Web proxy; see docs/runbooks/production.md",
     );
   return config;
+}
+
+// Transport configuration is not recipient approval or a production release.
+export function validateVerificationDeliveryConfig(
+  config: z.infer<typeof serverConfigSchema>,
+) {
+  if (
+    config.EMAIL_DELIVERY_PROVIDER === "yandex_postbox" &&
+    (!config.POSTBOX_ACCESS_KEY_ID ||
+      !config.POSTBOX_SECRET_ACCESS_KEY ||
+      !config.POSTBOX_FROM_EMAIL ||
+      !config.EMAIL_REGISTRATION_SECRET ||
+      !config.EMAIL_SEND_DAILY_LIMIT ||
+      !config.EMAIL_SEND_TOTAL_LIMIT)
+  )
+    throw new Error(
+      "Postbox requires explicit credentials, From, registration secret and positive email send caps",
+    );
+  if (
+    config.SMS_RU_MODE !== "disabled" &&
+    (!config.SMS_RU_API_ID || !config.SMS_RU_FROM)
+  )
+    throw new Error(
+      "SMS.ru requires explicit API credentials and an agreed sender",
+    );
+  if (
+    config.PHONE_VERIFICATION_MODE !== "disabled" &&
+    (config.SMS_RU_MODE !== "live" ||
+      !config.PHONE_VERIFICATION_SECRET ||
+      !config.PHONE_SMS_GLOBAL_DAILY_LIMIT ||
+      !config.PHONE_SMS_GLOBAL_TOTAL_LIMIT ||
+      config.AI_CREDIT_MODE !== "routerai_citygo_10x" ||
+      config.EMAIL_REGISTRATION_MODE !== "required" ||
+      !config.EMAIL_REGISTRATION_SECRET ||
+      config.EMAIL_REGISTRATION_SECRET === config.PHONE_VERIFICATION_SECRET)
+  )
+    throw new Error(
+      "Phone verification requires live SMS, verified-email policy, CityGo 10x, separate identity secret and positive send admission caps",
+    );
 }
 
 export function validateCreditReservationConfig(

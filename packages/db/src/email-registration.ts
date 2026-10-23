@@ -82,7 +82,26 @@ async function accountExists(tx: Sql, email: string) {
     ).rows.length > 0
   );
 }
-async function quota(tx: Sql, recipientKey: string, ipKey: string) {
+export type EmailSendLimits = { daily: number; total: number };
+async function quota(
+  tx: Sql,
+  recipientKey: string,
+  ipKey: string,
+  global?: EmailSendLimits,
+) {
+  if (global) {
+    const row = (
+      await tx.query<{ daily: number; total: number }>(
+        `select count(*) filter(where created_at>=date_trunc('day',clock_timestamp() at time zone 'UTC') at time zone 'UTC')::int as daily,
+       count(*)::int as total from email_registration_rate_events where kind='recipient'`,
+      )
+    ).rows[0]!;
+    if (row.daily >= global.daily || row.total >= global.total)
+      throw new DomainError(
+        429,
+        "Общий лимит отправки писем исчерпан. Попробуйте позже",
+      );
+  }
   const limits = (
     await tx.query<{
       recipient_count: number;
@@ -111,7 +130,21 @@ async function quota(tx: Sql, recipientKey: string, ipKey: string) {
 // hashes passwords and performs delivery OUTSIDE these short transactions.
 // No SMTP, user-visible OTP, bonus, provider request or runtime activation here.
 export class EmailRegistration {
-  constructor(private db: Database) {}
+  private readonly sendLimits?: Readonly<EmailSendLimits>;
+  constructor(
+    private db: Database,
+    sendLimits?: EmailSendLimits,
+  ) {
+    if (
+      sendLimits &&
+      ![sendLimits.daily, sendLimits.total].every(
+        (value) =>
+          Number.isSafeInteger(value) && value >= 0 && value <= 1000000,
+      )
+    )
+      throw new Error("Invalid email send admission limits");
+    this.sendLimits = sendLimits && Object.freeze({ ...sendLimits });
+  }
 
   async begin(raw: EmailRegistrationBegin) {
     const input = parse(beginSchema, raw);
@@ -128,7 +161,7 @@ export class EmailRegistration {
         ).rows.length
       )
         throw new DomainError(409, "Попытка регистрации уже существует");
-      await quota(tx, input.recipientKey, input.ipKey);
+      await quota(tx, input.recipientKey, input.ipKey, this.sendLimits);
       return (
         await tx.query<{ id: string; expiresAt: string }>(
           `insert into email_registrations(id,email,password_hash,proof_hash,code_hash,recipient_key,expires_at)
@@ -186,7 +219,7 @@ export class EmailRegistration {
         throw invalid();
       if (await accountExists(tx, current.email))
         throw new DomainError(409, "Аккаунт с этой почтой уже существует");
-      await quota(tx, current.recipient_key, input.ipKey);
+      await quota(tx, current.recipient_key, input.ipKey, this.sendLimits);
       const next = (
         await tx.query<{ expiresAt: string }>(
           `update email_registrations set code_hash=$2,delivery='pending',attempts=0,
