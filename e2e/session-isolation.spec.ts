@@ -51,7 +51,9 @@ async function install(page: Page, withProfile = true) {
   const state = { board: fixture("A", withProfile) as Dashboard | null };
   await page.route("**/api/v1/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
-    if (path.endsWith("/dashboard")) {
+    if (path.endsWith("/auth/registration-policy")) {
+      await route.fulfill({ json: { emailVerification: "disabled" } });
+    } else if (path.endsWith("/dashboard")) {
       await route.fulfill({
         status: state.board ? 200 : 401,
         json: state.board ?? { error: "Тестовая сессия завершилась" },

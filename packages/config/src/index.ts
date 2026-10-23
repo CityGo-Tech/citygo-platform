@@ -118,6 +118,14 @@ export const serverConfigSchema = z.object({
   GIGACHAT_SCOPE: optionalSetting,
   GIGACHAT_CA_BUNDLE_FILE: optionalSetting,
   ADMIN_USER_IDS: z.string().default(""),
+  // Staged email registration. No production delivery adapter is selected yet.
+  EMAIL_REGISTRATION_MODE: z.enum(["disabled", "required"]).default("disabled"),
+  EMAIL_REGISTRATION_SECRET: optionalSetting.pipe(
+    z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .optional(),
+  ),
   AI_CREDIT_MODE: z
     .enum(["disabled", "routerai_at_cost", "routerai_citygo_10x"])
     .default("disabled"),

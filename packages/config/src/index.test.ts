@@ -9,6 +9,57 @@ const production = {
   TRUSTED_PROXY_CIDRS: "10.0.0.8/32, ::1/128",
 };
 
+test("email registration defaults disabled and cannot be enabled by an implicit secret or a truthy mode", () => {
+  assert.equal(readConfig({}).EMAIL_REGISTRATION_MODE, "disabled");
+  assert.equal(readConfig({}).EMAIL_REGISTRATION_SECRET, undefined);
+  const secret = "a".repeat(64);
+  assert.equal(
+    readConfig({ EMAIL_REGISTRATION_SECRET: secret }).EMAIL_REGISTRATION_MODE,
+    "disabled",
+  );
+  for (const mode of ["true", "enabled", "production", "1", "REQUIRED", ""])
+    assert.throws(() => readConfig({ EMAIL_REGISTRATION_MODE: mode }));
+  // Mode is a policy, not proof of a configured delivery adapter. The HTTP
+  // boundary separately reports unavailable and rejects legacy registration.
+  const pending = readConfig({
+    ...production,
+    EMAIL_REGISTRATION_MODE: "required",
+  });
+  assert.equal(pending.EMAIL_REGISTRATION_MODE, "required");
+  assert.equal(pending.EMAIL_REGISTRATION_SECRET, undefined);
+});
+
+test("email OTP secret is blank-safe, purpose-specific configuration and exactly 32 hex bytes", () => {
+  for (const blank of [undefined, "", " "])
+    assert.equal(
+      readConfig({ EMAIL_REGISTRATION_SECRET: blank })
+        .EMAIL_REGISTRATION_SECRET,
+      undefined,
+    );
+  assert.equal(
+    readConfig({
+      EMAIL_REGISTRATION_MODE: "required",
+      EMAIL_REGISTRATION_SECRET: ` ${"b".repeat(64)} `,
+    }).EMAIL_REGISTRATION_SECRET,
+    "b".repeat(64),
+  );
+  for (const value of [
+    "true",
+    "1",
+    "a".repeat(63),
+    "a".repeat(65),
+    "A".repeat(64),
+    "g".repeat(64),
+  ])
+    assert.throws(() => readConfig({ EMAIL_REGISTRATION_SECRET: value }));
+  const independent = readConfig({
+    OPENAI_API_KEY: "synthetic-provider-key",
+    YOOKASSA_SECRET_KEY: "synthetic-payment-key",
+  });
+  assert.equal(independent.EMAIL_REGISTRATION_SECRET, undefined);
+  assert.equal(independent.EMAIL_REGISTRATION_MODE, "disabled");
+});
+
 test("fixed 5 CityGo overdraft is explicit and cannot reinterpret disabled or at-cost charging", () => {
   assert.equal(readConfig({}).AI_CREDIT_RESERVATION_MODE, "full");
   const allowed = {

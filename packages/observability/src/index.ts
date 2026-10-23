@@ -5,6 +5,12 @@ export const redactPaths = [
   "password",
   "token",
   "apiKey",
+  "req.body.password",
+  "req.body.email",
+  "req.body.code",
+  "req.body.proof",
+  "codeHash",
+  "proofHash",
 ];
 export function publicError(error: unknown): string {
   return error instanceof Error && error.name === "AbortError"

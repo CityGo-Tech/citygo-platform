@@ -196,7 +196,7 @@ test("cross-tab logout clears a loaded receipt and a delayed refresh cannot repu
     await expect(open(page)).toHaveCount(0);
     await expect(panel(page)).toHaveCount(0);
     await expect(
-      page.getByRole("heading", { name: "Начнём вашу историю", exact: true }),
+      page.getByRole("heading", { name: "Сохраните свой путь", exact: true }),
     ).toBeVisible();
   } finally {
     state.release();

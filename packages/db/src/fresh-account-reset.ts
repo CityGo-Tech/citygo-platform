@@ -6,6 +6,7 @@ import { DomainError } from "./errors.js";
 // registration, migrations, HTTP, or the accounting-preserving restart tool.
 // This inventory is deliberately not discovered into a deletion list.
 const tables = [
+  "account_email_verifications",
   "account_security_state",
   "agent_handoffs",
   "agent_threads",
@@ -33,6 +34,8 @@ const tables = [
   "credit_hold_allocations",
   "credit_refund_allocations",
   "credit_source_lots",
+  "email_registrations",
+  "email_registration_rate_events",
   "generated_artifacts",
   "knowledge_sources",
   "messages",
@@ -97,6 +100,10 @@ const protectedEmpty = [
   ...protectedDebt,
 ] as const;
 const preserved = [
+  // No retention/anti-abuse deletion is authorized by the old TEST reset.
+  "account_email_verifications",
+  "email_registrations",
+  "email_registration_rate_events",
   "citygo_migration_lock",
   "citygo_migrations",
   "quests",
@@ -363,6 +370,16 @@ async function inspect(tx: Sql, options: Options) {
     blockers.push({ code: "EXPECTED_USER_COUNT_MISMATCH", count: 1 });
   if (options.maintenanceConfirmed !== true)
     blockers.push({ code: "MAINTENANCE_NOT_CONFIRMED", count: 1 });
+  const verificationHistoryCount = [
+    "account_email_verifications",
+    "email_registrations",
+    "email_registration_rate_events",
+  ].reduce((total, name) => total + snapshot.counts[name]!, 0);
+  if (verificationHistoryCount)
+    blockers.push({
+      code: "EMAIL_REGISTRATION_HISTORY_REQUIRES_REVIEW",
+      count: verificationHistoryCount,
+    });
   const npdHistoryCount = protectedNpd.reduce(
     (count, name) => count + snapshot.counts[name]!,
     0,

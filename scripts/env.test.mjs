@@ -42,6 +42,8 @@ const canaries = {
   LLM_PROVIDER: "openai",
   OPENAI_MODEL: "test/model",
   ADMIN_USER_IDS: "synthetic-admin",
+  EMAIL_REGISTRATION_MODE: "required",
+  EMAIL_REGISTRATION_SECRET: "a".repeat(64),
 };
 function fixture(t, files = {}) {
   const directory = mkdtempSync(join(tmpdir(), "citygo-env-test-"));
@@ -83,6 +85,11 @@ test("API gets only known API settings; worker/migrator get no LLM or API settin
   assert.equal(api.YOOKASSA_SHOP_ID, canaries.YOOKASSA_SHOP_ID);
   assert.equal(api.YOOKASSA_SECRET_KEY, canaries.YOOKASSA_SECRET_KEY);
   assert.equal(api.R1_HOUSING_API_MODE, "synthetic");
+  assert.equal(api.EMAIL_REGISTRATION_MODE, "required");
+  assert.equal(
+    api.EMAIL_REGISTRATION_SECRET,
+    canaries.EMAIL_REGISTRATION_SECRET,
+  );
   assert.equal(
     api.ROUTERAI_PRODUCTION_POLICY_ID,
     canaries.ROUTERAI_PRODUCTION_POLICY_ID,
