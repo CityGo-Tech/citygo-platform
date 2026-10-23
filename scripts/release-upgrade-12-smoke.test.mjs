@@ -52,13 +52,13 @@ test("the upgrade rehearsal rejects a production project before Docker or databa
   );
 });
 
-test("literal 12-era fixture rewinds current 24, rolls back late ACL failure and reapplies without losing data", async (t) => {
+test("literal 12-era fixture rewinds current 25, rolls back late ACL failure and reapplies without losing data", async (t) => {
   const db = new PGlite();
   t.after(() => db.close());
   await db.waitReady;
-  assert.equal(migrations.length, 24);
+  assert.equal(migrations.length, 25);
   assert.equal(migrations[11].name, "0012_housing_answer_history.sql");
-  assert.equal(migrations.at(-1).name, "0024_ai_credit_overdraft.sql");
+  assert.equal(migrations.at(-1).name, "0025_assistant_conversations.sql");
   await db.exec(
     "create role citygo_api; create role citygo_worker; create role citygo_backup; create table citygo_migrations(name text primary key,checksum text not null)",
   );
@@ -93,6 +93,15 @@ test("literal 12-era fixture rewinds current 24, rolls back late ACL failure and
   );
   assert.equal(rewind[1].includes("${"), false);
   await db.exec(rewind[1]);
+  assert.deepEqual(
+    (
+      await db.query(
+        "select exists(select 1 from information_schema.columns where table_schema='public' and table_name='agent_threads' and column_name='conversation_agent_key') as assistant_column,to_regclass('one_open_thread_per_assistant')::text as assistant_index",
+      )
+    ).rows,
+    [{ assistant_column: false, assistant_index: null }],
+    "Rewind removes actual 0025 structures, not merely its journal entry",
+  );
   assert.deepEqual(
     (
       await db.query(
@@ -146,6 +155,7 @@ test("literal 12-era fixture rewinds current 24, rolls back late ACL failure and
     (
       await db.query(`select jsonb_build_object(
     'users',(select jsonb_agg(to_jsonb(t)-'username'-'role'-'must_change_password') from users t),
+    'threads',(select jsonb_agg(to_jsonb(t)-'conversation_agent_key' order by id) from agent_threads t),
     'messages',(select jsonb_agg(to_jsonb(t) order by id) from messages t),
     'credits',(select jsonb_agg(to_jsonb(t)-'billing_review_required') from ai_credit_accounts t),
     'entries',(select jsonb_agg(to_jsonb(t) order by id) from ai_credit_entries t)) as snapshot`)
@@ -174,8 +184,16 @@ test("literal 12-era fixture rewinds current 24, rolls back late ACL failure and
     "The last failing ACL rolls back new DDL, columns, constraints and earlier grants",
   );
   assert.deepEqual(await history(), historyBefore);
-
   await apply(migrations.slice(12));
+  assert.deepEqual(
+    (
+      await db.query(
+        "select conversation_agent_key from agent_threads where user_id=900012",
+      )
+    ).rows,
+    [{ conversation_agent_key: null }],
+    "Existing historical thread is explicitly kept as legacy",
+  );
   assert.deepEqual(
     await journal(),
     migrations.map(({ name, checksum }) => ({ name, checksum })),

@@ -41,7 +41,7 @@ const migrations = readdirSync(migrationDirectory)
 const withoutTransaction = (sql) =>
   sql.replace(/^begin;\s*/i, "").replace(/commit;\s*$/i, "");
 
-test("18→24 rehearsal rejects a production project before fixture I/O", async () => {
+test("18→25 rehearsal rejects a production project before fixture I/O", async () => {
   const unexpected = () => assert.fail("No I/O before ownership guards");
   await assert.rejects(
     releaseUpgrade18Smoke({
@@ -55,11 +55,11 @@ test("18→24 rehearsal rejects a production project before fixture I/O", async 
   );
 });
 
-test("literal schema-18 fixture preserves budgets/orders/holds, rolls back late ACLs and reapplies only 19–24", async (t) => {
+test("literal schema-18 fixture preserves budgets/orders/holds, rolls back late ACLs and reapplies only 19–25", async (t) => {
   const db = new PGlite();
   t.after(() => db.close());
   await db.waitReady;
-  assert.equal(migrations.length, 24);
+  assert.equal(migrations.length, 25);
   assert.equal(migrations[17].name, "0018_payment_refunds.sql");
   assert.deepEqual(
     migrations.slice(18).map(({ name }) => name),
@@ -70,6 +70,7 @@ test("literal schema-18 fixture preserves budgets/orders/holds, rolls back late 
       "0022_payment_admission.sql",
       "0023_payment_receipt_snapshots.sql",
       "0024_ai_credit_overdraft.sql",
+      "0025_assistant_conversations.sql",
     ],
   );
   await db.exec(
@@ -97,6 +98,15 @@ test("literal schema-18 fixture preserves budgets/orders/holds, rolls back late 
   await apply(migrations);
   const defaultBudget = (await db.query("select * from ai_budget")).rows;
   await db.exec(upgrade18RewindSql());
+  assert.deepEqual(
+    (
+      await db.query(
+        "select exists(select 1 from information_schema.columns where table_schema='public' and table_name='agent_threads' and column_name='conversation_agent_key') as assistant_column,to_regclass('one_open_thread_per_assistant')::text as assistant_index",
+      )
+    ).rows,
+    [{ assistant_column: false, assistant_index: null }],
+    "Rewind removes actual 0025 structures, not merely its journal entry",
+  );
   assert.deepEqual(
     (
       await db.query(
@@ -140,7 +150,7 @@ test("literal schema-18 fixture preserves budgets/orders/holds, rolls back late 
       await db.query(`select jsonb_build_object(
       'users',(select jsonb_agg(to_jsonb(t) order by id) from users t),
       'credentials',(select jsonb_agg(to_jsonb(t) order by user_id) from user_credentials t),
-      'threads',(select jsonb_agg(to_jsonb(t) order by id) from agent_threads t),
+      'threads',(select jsonb_agg(to_jsonb(t)-'conversation_agent_key' order by id) from agent_threads t),
       'messages',(select jsonb_agg(to_jsonb(t) order by id) from messages t),
       'accounts',(select jsonb_agg(to_jsonb(t) order by user_id) from ai_credit_accounts t),
       'entries',(select jsonb_agg(to_jsonb(t) order by id) from ai_credit_entries t),
@@ -192,6 +202,15 @@ test("literal schema-18 fixture preserves budgets/orders/holds, rolls back late 
   assert.deepEqual(await history(), historyBefore);
 
   await apply(migrations.slice(18));
+  assert.deepEqual(
+    (
+      await db.query(
+        "select conversation_agent_key from agent_threads where user_id=900018",
+      )
+    ).rows,
+    [{ conversation_agent_key: null }],
+    "Existing historical thread is explicitly kept as legacy",
+  );
   assert.deepEqual(
     await journal(),
     migrations.map(({ name, checksum }) => ({ name, checksum })),

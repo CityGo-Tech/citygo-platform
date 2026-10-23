@@ -2923,6 +2923,7 @@ for (const migration of [
   "0019_yookassa_live_orders.sql",
   "0020_ai_budget_provider_balance.sql",
   "0021_payment_notifications.sql",
+  "0025_assistant_conversations.sql",
 ]) {
   test(`readiness requires ${migration}`, async (t) => {
     const f = await fixture(false);

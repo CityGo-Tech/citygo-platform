@@ -1,6 +1,6 @@
 // Only the disposable pilot harness, before its API/Worker starts. This is not
 // production rollback tooling: the harness already owns an empty current DB.
-// Rehearsing 12→24 here does not authorize any production release or alter the
+// Rehearsing 12→25 here does not authorize any production release or alter the
 // separately pinned historical 12→18 controller profile and approvals.
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
@@ -126,6 +126,7 @@ export async function releaseUpgrade12Smoke({
       "0022_payment_admission.sql",
       "0023_payment_receipt_snapshots.sql",
       "0024_ai_credit_overdraft.sql",
+      "0025_assistant_conversations.sql",
     ],
   );
   const expectedJournal = migrations.map(({ name }) => ({
@@ -150,6 +151,15 @@ export async function releaseUpgrade12Smoke({
   psql(`begin;
     drop table payment_admission_commands,payment_admission_reconciliation_events,payment_admission;
     drop function citygo_guard_payment_admission_history();
+    -- Remove 0025 only in this verified empty disposable fixture. Restore the
+    -- original legacy-only schema before creating the historical thread.
+    drop trigger assistant_conversation_identity on agent_threads;
+    drop function citygo_guard_assistant_conversation();
+    drop index one_open_thread_per_assistant;
+    drop index agent_threads_owner_history;
+    drop index one_open_thread_per_user;
+    alter table agent_threads drop column conversation_agent_key;
+    create unique index one_open_thread_per_user on agent_threads(user_id) where status<>'closed';
     -- Exact synthetic 0024 rewind; deleting only its journal would leave debt
     -- triggers/constraints in a fixture claiming to be the historical schema.
     drop trigger credit_source_debt_repayment on credit_source_lots;
@@ -226,7 +236,7 @@ export async function releaseUpgrade12Smoke({
     delete from citygo_migrations where name in (
       '0013_account_access.sql','0014_citygo_credit.sql','0015_yookassa_orders.sql',
       '0016_npd_receipts.sql','0017_credit_source_lots.sql','0018_payment_refunds.sql',
-      '0019_yookassa_live_orders.sql','0020_ai_budget_provider_balance.sql','0021_payment_notifications.sql','0022_payment_admission.sql','0023_payment_receipt_snapshots.sql','0024_ai_credit_overdraft.sql');
+      '0019_yookassa_live_orders.sql','0020_ai_budget_provider_balance.sql','0021_payment_notifications.sql','0022_payment_admission.sql','0023_payment_receipt_snapshots.sql','0024_ai_credit_overdraft.sql','0025_assistant_conversations.sql');
     commit`);
 
   psql(`begin;
@@ -281,7 +291,7 @@ export async function releaseUpgrade12Smoke({
     ["relocation_plans", "user_id"],
     ["user_quests", "user_id"],
     ["xp_events", "user_id"],
-    ["agent_threads", "user_id"],
+    ["agent_threads", "user_id", "-'conversation_agent_key'"],
     ["messages", "thread_id", "", "select id from agent_threads"],
     ["r1_housing_briefs", "user_id"],
     ["r1_housing_commands", "user_id"],
@@ -317,6 +327,12 @@ export async function releaseUpgrade12Smoke({
   const aclBefore = aclSnapshot();
   const assertTwelve = () => {
     assert.deepEqual(journal(), expectedJournal.slice(0, 12));
+    assert.equal(
+      psql(
+        "select count(*) from information_schema.columns where table_schema='public' and table_name='agent_threads' and column_name='conversation_agent_key'",
+      ),
+      "0",
+    );
     assert.equal(
       psql(
         "select count(*) from information_schema.tables where table_schema='public' and table_name in ('account_security_state','ai_credit_topups','payment_topup_orders','npd_receipt_tasks','npd_receipt_commands','npd_receipt_evidence','npd_refund_observations','credit_source_lots','credit_hold_allocations','credit_refund_allocations','payment_refunds','payment_refund_events','payment_notification_inbox')",
@@ -409,6 +425,13 @@ export async function releaseUpgrade12Smoke({
     snapshot(),
     before,
     "Preserve actual 12-era data, IDs and history",
+  );
+  assert.equal(
+    psql(
+      `select conversation_agent_key is null from agent_threads where user_id=${userId}`,
+    ),
+    "t",
+    "Historical thread remains legacy; migration must not choose a helper",
   );
   assert.equal(
     psql(
@@ -510,6 +533,6 @@ export async function releaseUpgrade12Smoke({
   assertClosedPaymentAdmission(psql);
   assertPaymentAdmissionAcls(psql);
   console.log(
-    "Exact synthetic 12→24 rehearsal passed: twelve current migrations + ACLs, late-grants transactional rollback, preserved 12-era data, conservative source backfill, restricted runtime roles; closed checkout, no production authorization, deploy or provider calls",
+    "Exact synthetic 12→25 rehearsal passed: thirteen current migrations + ACLs, late-grants transactional rollback, preserved 12-era data and legacy conversation, conservative source backfill, restricted runtime roles; closed checkout, no production authorization, deploy or provider calls",
   );
 }

@@ -5,6 +5,7 @@ import type {
   AgentKey,
   AiConsentInput,
   Dashboard,
+  ConversationSummary,
   Quest,
 } from "@citygo/contracts";
 import {
@@ -42,7 +43,11 @@ export type JourneyProps = {
   onConsent: (input: AiConsentInput) => void;
   onStart: (id: string) => Promise<boolean>;
   onComplete: (id: string) => Promise<boolean>;
-  onBegin?: () => void;
+  onBegin?: (agentKey?: AgentKey) => Promise<boolean>;
+  conversations?: ConversationSummary[] | null;
+  conversationNextCursor?: string | null;
+  onConversations?: (before?: string) => void;
+  onOpenConversation?: (id: string) => Promise<boolean>;
   onPassword?: () => void;
   onFavorites?: () => void;
   onFavorite?: (messageId: string, saved: boolean) => void;

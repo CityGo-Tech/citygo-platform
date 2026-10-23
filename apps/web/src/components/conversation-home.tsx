@@ -7,34 +7,13 @@ import { AiAccessPanel } from "./ai-access";
 import { agentNames, type JourneyProps } from "./journey";
 import { FavoriteButton } from "./message-favorites";
 import { EmptyAiCreditHint, messageInterruptionLabel } from "./chat-readiness";
+import type { AgentKey } from "@citygo/contracts";
+import {
+  AssistantCatalog,
+  ConversationList,
+  assistantTitle,
+} from "./assistant-conversations";
 
-const helpers = [
-  [
-    "support",
-    "Координатор переезда",
-    "Помоги понять, с чего начать переезд в Москву.",
-  ],
-  [
-    "housing",
-    "Помощник по жилью",
-    "Помоги подготовиться к поиску жилья в Москве.",
-  ],
-  [
-    "job-search",
-    "Помощник по работе",
-    "Помоги составить план поиска работы в Москве.",
-  ],
-  [
-    "resume-builder",
-    "Помощник по резюме",
-    "Помоги рассказать о моём опыте в резюме.",
-  ],
-  [
-    "digital-mentor",
-    "Гид по городской жизни",
-    "Помоги разобраться в транспорте и первых шагах в Москве.",
-  ],
-] as const;
 const topics = [
   ["Понять и спланировать", "Не понимаю, с чего начать переезд в Москву."],
   ["Найти жильё", "Хочу обсудить поиск жилья в Москве."],
@@ -52,17 +31,95 @@ const greeting =
 /** First conversational slice of Figma 6:14. No invented plan or profile. */
 export function ConversationHome(props: JourneyProps) {
   const [tab, setTab] = useState("Диалоги");
+  const [showList, setShowList] = useState(false);
   const { board, busy, sending } = props;
   const agent = props.streamAgent ?? board.thread?.agentKey ?? "support";
   const canSend =
     !!board.thread &&
     board.provider !== "unconfigured" &&
     board.aiAccess.granted &&
+    !board.thread.closed &&
     !busy;
   const suggest = (text: string) => {
     props.onText(text);
     setTab("Диалоги");
+    setShowList(false);
   };
+  const begin = async (key?: AgentKey) => {
+    const started = await props.onBegin?.(key);
+    if (started) {
+      setTab("Диалоги");
+      setShowList(false);
+    }
+    return !!started;
+  };
+  const open = async (id: string) => {
+    const opened = await props.onOpenConversation?.(id);
+    if (opened) {
+      setTab("Диалоги");
+      setShowList(false);
+    }
+    return !!opened;
+  };
+  const sidebar = (
+    <aside className="conversation-topics">
+      <Card>
+        <span className="eyebrow">ВАШ ПУТЬ В МОСКВУ</span>
+        {topics.map(([label, text]) => (
+          <Button
+            key={label}
+            variant="secondary"
+            disabled={busy || sending}
+            onClick={() => suggest(text)}
+          >
+            {label}
+          </Button>
+        ))}
+        <div className="conversation-note">
+          <strong>В вашем темпе</strong>
+          <p>Можно начать с любой задачи. Необязательно знать срок и бюджет.</p>
+        </div>
+        <Image
+          src="/figma/support-assistant.png"
+          width={64}
+          height={64}
+          alt="Координатор переезда CityGo"
+        />
+      </Card>
+    </aside>
+  );
+  const rail = (
+    <aside className="conversation-context">
+      <Card>
+        <span className="eyebrow">ВАШ AI-ПОМОЩНИК</span>
+        <Image
+          src={
+            agent === "support"
+              ? "/figma/support-assistant.png"
+              : `/characters/${agent}-640.webp`
+          }
+          width={240}
+          height={240}
+          alt={agentNames[agent]}
+        />
+        <h2>{agentNames[agent]}</h2>
+        <p>{assistantTitle(agent)}</p>
+        <p>
+          Начните с вопроса. Помощник уточнит только нужное по ходу разговора.
+        </p>
+        <Button
+          variant="secondary"
+          disabled={busy || sending}
+          onClick={() => setTab("Помощники")}
+        >
+          Сменить помощника
+        </Button>
+        <small>
+          Ответы AI — ориентир, не проверенная сделка и не бронирование.
+        </small>
+      </Card>
+    </aside>
+  );
   return (
     <section className="conversation-home">
       <nav aria-label="Личный кабинет CityGo" className="conversation-tabs">
@@ -71,7 +128,14 @@ export function ConversationHome(props: JourneyProps) {
             key={name}
             variant={tab === name ? "primary" : "secondary"}
             aria-pressed={tab === name}
-            onClick={() => setTab(name)}
+            disabled={busy || sending}
+            onClick={() => {
+              setTab(name);
+              if (name === "Диалоги") {
+                setShowList(true);
+                props.onConversations?.();
+              }
+            }}
           >
             {name}
           </Button>
@@ -86,40 +150,34 @@ export function ConversationHome(props: JourneyProps) {
             придумываем. Сохранение структурированного плана из диалога появится
             в следующем этапе.
           </p>
-          <Button onClick={() => setTab("Диалоги")}>
+          <Button
+            onClick={() => {
+              setTab("Диалоги");
+              setShowList(false);
+            }}
+          >
             Обсудить следующий шаг
           </Button>
         </Card>
-      ) : tab === "Помощники" ? (
-        <div className="conversation-helper-grid">
-          <h1>Команда CityGo</h1>
-          {helpers.map(([key, name, suggestion]) => (
-            <Card key={key}>
-              <Image
-                src={`/characters/${key}-192.webp`}
-                width={64}
-                height={64}
-                alt=""
+      ) : tab === "Помощники" || (tab === "Диалоги" && showList) ? (
+        <div className="conversation-workspace">
+          {sidebar}
+          <div className="conversation-main">
+            {tab === "Помощники" ? (
+              <AssistantCatalog busy={busy || sending} onBegin={begin} />
+            ) : (
+              <ConversationList
+                conversations={props.conversations ?? null}
+                nextCursor={props.conversationNextCursor ?? null}
+                busy={busy || sending}
+                onOpen={open}
+                onLoad={(before) => props.onConversations?.(before)}
+                onHelpers={() => setTab("Помощники")}
+                onFavorites={props.onFavorites}
               />
-              <h2>{name}</h2>
-              <p>{agentNames[key]}</p>
-              <Button variant="secondary" onClick={() => suggest(suggestion)}>
-                Подготовить вопрос
-              </Button>
-            </Card>
-          ))}
-          <Card>
-            <Badge>Партнёр · готовится</Badge>
-            <h2>Bubble</h2>
-            <p>
-              Досуг под настроение. API партнёра пока не подключён — сообщения
-              ему не отправляются.
-            </p>
-          </Card>
-          <p>
-            Выбор карточки подставляет вопрос. Координатор передаст диалог
-            специалисту по теме сообщения.
-          </p>
+            )}
+          </div>
+          {rail}
         </div>
       ) : tab === "Профиль" ? (
         <Card>
@@ -144,40 +202,28 @@ export function ConversationHome(props: JourneyProps) {
         </Card>
       ) : (
         <div className="conversation-workspace">
-          <aside className="conversation-topics">
-            <Card>
-              <span className="eyebrow">ВАШ ПУТЬ В МОСКВУ</span>
-              {topics.map(([label, text]) => (
-                <Button
-                  key={label}
-                  variant="secondary"
-                  onClick={() => suggest(text)}
-                >
-                  {label}
-                </Button>
-              ))}
-              <div className="conversation-note">
-                <strong>В вашем темпе</strong>
-                <p>
-                  Можно начать с любой задачи. Необязательно знать срок и
-                  бюджет.
-                </p>
-              </div>
-              <Image
-                src="/figma/support-assistant.png"
-                width={64}
-                height={64}
-                alt="Координатор переезда CityGo"
-              />
-            </Card>
-          </aside>
+          {sidebar}
           <div className="conversation-main">
             <Card>
               <Badge>ДИАЛОГ С ПОМОЩНИКОМ</Badge>
-              <h1>Давайте начнём с того, что волнует</h1>
+              <h1>
+                {board.thread?.assistantKey
+                  ? assistantTitle(board.thread.assistantKey)
+                  : "Давайте начнём с того, что волнует"}
+              </h1>
               <p>
                 Можно начать с любого вопроса. Уточним нужное по ходу разговора.
               </p>
+              <Button
+                variant="ghost"
+                disabled={busy || sending}
+                onClick={() => {
+                  setShowList(true);
+                  props.onConversations?.();
+                }}
+              >
+                Все диалоги
+              </Button>
               <div
                 className="conversation-messages"
                 aria-label="История диалога"
@@ -187,7 +233,14 @@ export function ConversationHome(props: JourneyProps) {
                 {!board.thread?.messages.length && (
                   <article className="conversation-message assistant">
                     <strong>AI-ПОМОЩНИК</strong>
-                    <AssistantMessage content={greeting} />
+                    <AssistantMessage
+                      content={
+                        board.thread?.assistantKey &&
+                        board.thread.assistantKey !== "support"
+                          ? `Здравствуйте! Я ${assistantTitle(board.thread.assistantKey).toLowerCase()}. Расскажите, с чем нужна помощь. Можно начать без известного бюджета и срока.`
+                          : greeting
+                      }
+                    />
                   </article>
                 )}
                 {board.thread?.messages.map((message) => (
@@ -233,9 +286,14 @@ export function ConversationHome(props: JourneyProps) {
                 )}
               </div>
               {!board.thread ? (
-                <Button disabled={busy} onClick={props.onBegin}>
+                <Button disabled={busy} onClick={() => void begin()}>
                   Начать диалог
                 </Button>
+              ) : board.thread.closed ? (
+                <p>
+                  Это завершённый разговор. История и избранное доступны; новый
+                  вопрос можно задать в открытом диалоге помощника.
+                </p>
               ) : (
                 <form onSubmit={props.onChat}>
                   <EmptyAiCreditHint access={board.aiAccess} />
@@ -277,29 +335,7 @@ export function ConversationHome(props: JourneyProps) {
               />
             )}
           </div>
-          <aside className="conversation-context">
-            <Card>
-              <span className="eyebrow">ВАШ AI-ПОМОЩНИК</span>
-              <Image
-                src={
-                  agent === "support"
-                    ? "/figma/support-assistant.png"
-                    : `/characters/${agent}-640.webp`
-                }
-                width={240}
-                height={240}
-                alt={agentNames[agent]}
-              />
-              <h2>{agentNames[agent]}</h2>
-              <p>
-                Начните с вопроса. Помощник уточнит только нужное по ходу
-                разговора.
-              </p>
-              <small>
-                Ответы AI — ориентир, не проверенная сделка и не бронирование.
-              </small>
-            </Card>
-          </aside>
+          {rail}
         </div>
       )}
     </section>

@@ -1,4 +1,4 @@
-// Synthetic-only 18→24 rehearsal for the disposable pilot harness, while its
+// Synthetic-only 18→25 rehearsal for the disposable pilot harness, while its
 // PostgreSQL container is the sole project member. Never a production rollback
 // or migration tool; a successful receipt cannot authorize public traffic.
 import assert from "node:assert/strict";
@@ -52,6 +52,15 @@ export function upgrade18RewindSql() {
   return `begin;
     drop table payment_admission_commands,payment_admission_reconciliation_events,payment_admission;
     drop function citygo_guard_payment_admission_history();
+    -- Remove 0025 only in this verified empty disposable fixture, then restore
+    -- the genuine historical one-open-thread constraint before seeding.
+    drop trigger assistant_conversation_identity on agent_threads;
+    drop function citygo_guard_assistant_conversation();
+    drop index one_open_thread_per_assistant;
+    drop index agent_threads_owner_history;
+    drop index one_open_thread_per_user;
+    alter table agent_threads drop column conversation_agent_key;
+    create unique index one_open_thread_per_user on agent_threads(user_id) where status<>'closed';
     -- Restore the genuine fully prepaid 18-era shape before seeding it.
     drop trigger credit_source_debt_repayment on credit_source_lots;
     drop trigger credit_source_debt_check on credit_source_lots;
@@ -93,7 +102,7 @@ export function upgrade18RewindSql() {
     alter table payment_topup_orders add constraint payment_topup_orders_test_check check(test);
     ${legacyFunction}
     delete from citygo_migrations where name in (
-      '0019_yookassa_live_orders.sql','0020_ai_budget_provider_balance.sql','0021_payment_notifications.sql','0022_payment_admission.sql','0023_payment_receipt_snapshots.sql','0024_ai_credit_overdraft.sql');
+      '0019_yookassa_live_orders.sql','0020_ai_budget_provider_balance.sql','0021_payment_notifications.sql','0022_payment_admission.sql','0023_payment_receipt_snapshots.sql','0024_ai_credit_overdraft.sql','0025_assistant_conversations.sql');
     commit`;
 }
 
@@ -275,6 +284,7 @@ export async function releaseUpgrade18Smoke({
       "0022_payment_admission.sql",
       "0023_payment_receipt_snapshots.sql",
       "0024_ai_credit_overdraft.sql",
+      "0025_assistant_conversations.sql",
     ],
   );
   const expectedJournal = migrations.map(({ name }) => ({
@@ -315,7 +325,7 @@ export async function releaseUpgrade18Smoke({
       `select jsonb_build_object(${preservedTables
         .map(
           (table) =>
-            `'${table}',(select jsonb_agg(to_jsonb(t)${table === "ai_budget" ? "-'mode'" : table === "payment_topup_orders" ? "-'payload_version'-'receipt_email'-'receipt_profile'" : ""} order by to_jsonb(t)::text) from ${table} t)`,
+            `'${table}',(select jsonb_agg(to_jsonb(t)${table === "ai_budget" ? "-'mode'" : table === "payment_topup_orders" ? "-'payload_version'-'receipt_email'-'receipt_profile'" : table === "agent_threads" ? "-'conversation_agent_key'" : ""} order by to_jsonb(t)::text) from ${table} t)`,
         )
         .join(",")})::text`,
     );
@@ -335,6 +345,12 @@ export async function releaseUpgrade18Smoke({
   const schemaBefore = schemaSnapshot();
   const assertEighteen = () => {
     assert.deepEqual(journal(), expectedJournal.slice(0, 18));
+    assert.equal(
+      psql(
+        "select count(*) from information_schema.columns where table_schema='public' and table_name='agent_threads' and column_name='conversation_agent_key'",
+      ),
+      "0",
+    );
     assert.equal(
       psql(
         "select to_regclass('public.payment_notification_inbox') is null and not exists(select 1 from information_schema.columns where table_schema='public' and table_name='ai_budget' and column_name='mode') and exists(select 1 from pg_constraint where conrelid='payment_topup_orders'::regclass and conname='payment_topup_orders_test_check')",
@@ -405,6 +421,13 @@ export async function releaseUpgrade18Smoke({
   assert.equal(snapshot(), before, "Preserve schema-18 history and money");
   assert.equal(
     psql(
+      `select conversation_agent_key is null from agent_threads where user_id=${userId}`,
+    ),
+    "t",
+    "Historical thread remains legacy; migration must not choose a helper",
+  );
+  assert.equal(
+    psql(
       "select payload_version=1 and receipt_email is null and receipt_profile is null from payment_topup_orders where id='" +
         orderId +
         "'",
@@ -450,6 +473,6 @@ export async function releaseUpgrade18Smoke({
   );
   assert.deepEqual(journal(), expectedJournal);
   console.log(
-    "Exact synthetic 18→24 rehearsal passed: six migrations + ACLs, late-ACL transactional rollback, preserved fixed budget/counters/test order/source hold and receipt-free v1 identity; least-privilege runtime, closed checkout, no production authorization or provider calls",
+    "Exact synthetic 18→25 rehearsal passed: seven migrations + ACLs, late-ACL transactional rollback, preserved legacy conversation/fixed budget/counters/test order/source hold and receipt-free v1 identity; least-privilege runtime, closed checkout, no production authorization or provider calls",
   );
 }

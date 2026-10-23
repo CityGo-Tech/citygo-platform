@@ -77,6 +77,33 @@ export const agentKeys = [
 ] as const;
 export const agentKeySchema = z.enum(agentKeys);
 export type AgentKey = z.infer<typeof agentKeySchema>;
+// Numeric database IDs remain opaque strings, including values above 2^53.
+export const conversationIdSchema = z
+  .string()
+  .regex(/^[1-9]\d{0,18}$/)
+  .refine(
+    (value) =>
+      /^[1-9]\d{0,18}$/.test(value) && BigInt(value) <= 9223372036854775807n,
+  );
+export const conversationStartSchema = z.strictObject({
+  agentKey: agentKeySchema.optional(),
+});
+export const conversationListQuerySchema = z.strictObject({
+  before: conversationIdSchema.optional(),
+});
+export type ConversationSummary = {
+  id: string;
+  agentKey: AgentKey;
+  assistantKey: AgentKey | null;
+  closed: boolean;
+  updatedAt: string;
+  preview: string;
+};
+export type ConversationList = {
+  userId: string;
+  conversations: ConversationSummary[];
+  nextCursor: string | null;
+};
 export const chatInputSchema = z.object({
   text: z.string().trim().min(1).max(4000),
   requestId: z.uuid(),
@@ -126,7 +153,13 @@ export type Dashboard = {
   profile: Questionnaire | null;
   xp: number;
   quests: Quest[];
-  thread: { id: string; agentKey: AgentKey; messages: Message[] } | null;
+  thread: {
+    id: string;
+    agentKey: AgentKey;
+    assistantKey?: AgentKey | null;
+    closed?: boolean;
+    messages: Message[];
+  } | null;
   provider: AiProviderId | "unconfigured";
   aiAccess: AiAccess;
 };
