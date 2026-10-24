@@ -21,6 +21,7 @@ import { OwnerReceiptsPanel } from "../components/owner-receipts";
 import { MessageFavoritesPanel } from "../components/message-favorites";
 import { EmailRegistration } from "../components/email-registration";
 import { PhoneVerificationPanel } from "../components/phone-verification";
+import { useConversationHistory } from "../components/use-conversation-history";
 import {
   pendingEmailRegistration,
   type PendingEmailRegistration,
@@ -85,6 +86,11 @@ export default function Home() {
       }),
     [session],
   );
+  const history = useConversationHistory({
+    board,
+    sessionSignal: session.capture().signal,
+    onAccessDenied: requireLogin,
+  });
   function requireLogin() {
     if (session.hasOwner()) notifyBrowserSessionChange();
     clearUserState();
@@ -502,6 +508,7 @@ export default function Home() {
       !board?.thread ||
       board.thread.closed ||
       !board.aiAccess?.granted ||
+      history.detached ||
       !text.trim() ||
       busy ||
       sending ||
@@ -897,7 +904,13 @@ export default function Home() {
             ) : (
               <Experience
                 key={board.user.id}
-                board={board}
+                board={history.board ?? board}
+                history={history.state}
+                onOlderMessages={history.loadOlder}
+                onLatestMessages={() => {
+                  history.returnToLatest();
+                  void refresh(session.capture()).catch(() => {});
+                }}
                 busy={busy}
                 sending={sending}
                 draft={draft}
@@ -911,8 +924,12 @@ export default function Home() {
                 onFavorites={() => setFavoritesOpen(true)}
                 onFavorite={(messageId, saved) =>
                   void act(async (ticket) => {
-                    await api.setMessageFavorite(messageId, saved);
+                    const confirmed = await api.setMessageFavorite(
+                      messageId,
+                      saved,
+                    );
                     ticket.check();
+                    history.patchFavorite(confirmed);
                     await refresh(ticket);
                     ticket.check();
                     setNotice(

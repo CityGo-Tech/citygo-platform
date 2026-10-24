@@ -19,8 +19,13 @@ import type {
   CityGoTariffSnapshot,
   ConversationList,
   ConversationSummary,
+  ConversationMessagesPage,
 } from "@citygo/contracts";
-import { LEGACY_AT_COST_TARIFF, conversationIdSchema } from "@citygo/contracts";
+import {
+  LEGACY_AT_COST_TARIFF,
+  conversationIdSchema,
+  conversationHistoryIdSchema,
+} from "@citygo/contracts";
 import { randomUUID } from "node:crypto";
 import { canTransitionQuest } from "@citygo/domain";
 import { DomainError } from "./errors.js";
@@ -594,6 +599,72 @@ export class Repository {
       return {
         userId,
         thread: { ...thread, messages: await this.history(tx, threadId) },
+      };
+    });
+  }
+  async conversationMessages(
+    userId: string,
+    threadId: string,
+    beforeId?: string,
+  ): Promise<ConversationMessagesPage> {
+    if (
+      !conversationHistoryIdSchema.safeParse(userId).success ||
+      !conversationHistoryIdSchema.safeParse(threadId).success ||
+      (beforeId !== undefined &&
+        !conversationHistoryIdSchema.safeParse(beforeId).success)
+    )
+      fail(400, "Недопустимый идентификатор диалога");
+    return this.db.transaction(async (tx) => {
+      // Match conversation creation/admission's user -> thread lock order.
+      // This short transaction has no model, money or other external work.
+      const owner = (
+        await tx.query<{ status: string; must_change_password: boolean }>(
+          "select status,must_change_password from users where id=$1 for share",
+          [userId],
+        )
+      ).rows[0];
+      if (!owner) return fail(404, "Чат не найден");
+      if (owner.status !== "active") fail(403, "Аккаунт недоступен");
+      if (owner.must_change_password)
+        fail(403, "Сначала измените временный пароль");
+      const thread = (
+        await tx.query(
+          "select id from agent_threads where id=$2 and user_id=$1 for share",
+          [userId, threadId],
+        )
+      ).rows[0];
+      if (!thread) fail(404, "Чат не найден");
+      if (
+        beforeId !== undefined &&
+        !(
+          await tx.query(
+            "select id from messages where id=$2 and thread_id=$1 and role in ('user','assistant')",
+            [threadId, beforeId],
+          )
+        ).rows.length
+      )
+        fail(404, "Чат не найден");
+      // Keyset by the original bigint, not timestamps, OFFSET or Number.
+      // 101 is only a lookahead; never return more than 100. The existing
+      // (thread_id,created_at,id) index is not an O(1) pagination guarantee.
+      const rows = (
+        await tx.query<Message>(
+          `select m.id::text,m.role,m.content,coalesce(m.metadata->>'agentKey','housing') as "agentKey",
+            coalesce(m.metadata->>'status','complete') as status, m.metadata->'generation' as generation,
+            m.metadata->>'failureCode' as "failureCode",
+            (m.metadata->'citygoFavorite'='true'::jsonb) is true as favorite
+           from messages m where m.thread_id=$1 and m.role in ('user','assistant')
+            and ($2::bigint is null or m.id<$2::bigint)
+           order by m.id desc limit 101`,
+          [threadId, beforeId ?? null],
+        )
+      ).rows;
+      const messages = rows.slice(0, 100).reverse();
+      return {
+        userId,
+        threadId,
+        messages,
+        nextCursor: rows.length > 100 ? messages[0]!.id : null,
       };
     });
   }

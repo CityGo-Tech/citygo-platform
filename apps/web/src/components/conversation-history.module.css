@@ -1,0 +1,40 @@
+.controls {
+  display: grid;
+  gap: var(--cg-space-sm);
+  margin-block: var(--cg-space-md);
+}
+.controls :global(.cg-button) {
+  min-height: var(--cg-size-touch-min);
+  font-weight: 600;
+  white-space: normal;
+}
+.controls p {
+  margin: 0;
+}
+.notice {
+  display: grid;
+  gap: var(--cg-space-sm);
+  padding: var(--cg-space-md);
+  background: var(--cg-color-primary-soft);
+  border-radius: var(--cg-radius-control);
+}
+.error {
+  color: var(--cg-color-danger);
+}
+.end {
+  display: flex;
+  align-items: center;
+  min-height: var(--cg-size-touch-min);
+  color: var(--cg-color-muted);
+  font-size: 12px;
+}
+.viewport {
+  overflow-anchor: none;
+}
+.chatViewport {
+  min-height: 220px;
+  max-height: min(70vh, 728px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}

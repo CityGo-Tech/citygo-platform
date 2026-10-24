@@ -51,6 +51,9 @@ import {
   favoriteMessagesPageSchema,
   conversationStartSchema,
   conversationListQuerySchema,
+  conversationMessagesQuerySchema,
+  conversationMessagesResponseSchema,
+  conversationHistoryIdSchema,
   conversationIdSchema,
   conversationListResponseSchema,
   conversationDetailResponseSchema,
@@ -605,6 +608,38 @@ export function createClient(
         throw new ApiError(
           200,
           "Ответ сервера не соответствует выбранному диалогу",
+          "invalid_response",
+        );
+      return result;
+    },
+    conversationMessages: async (conversationId: string, before?: string) => {
+      const id = conversationHistoryIdSchema.parse(conversationId);
+      const query = conversationMessagesQuerySchema.parse(
+        before === undefined ? {} : { before },
+      );
+      const result = await request(
+        "/v1/conversations/" +
+          id +
+          "/messages" +
+          (query.before === undefined ? "" : "?before=" + query.before),
+        conversationMessagesResponseSchema,
+      );
+      if (
+        result.threadId !== id ||
+        result.messages.some(
+          (message, index, messages) =>
+            (query.before !== undefined &&
+              BigInt(message.id) >= BigInt(query.before)) ||
+            (index > 0 &&
+              BigInt(messages[index - 1]!.id) >= BigInt(message.id)),
+        ) ||
+        (result.nextCursor !== null &&
+          (result.messages.length !== 100 ||
+            result.nextCursor !== result.messages[0]?.id))
+      )
+        throw new ApiError(
+          200,
+          "Ответ сервера не соответствует странице истории диалога",
           "invalid_response",
         );
       return result;

@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { Button, Card, Badge, AssistantMessage } from "@citygo/ui-web";
@@ -13,6 +13,11 @@ import {
   ConversationList,
   assistantTitle,
 } from "./assistant-conversations";
+import {
+  ConversationHistoryControls,
+  conversationHistoryStyles,
+  useHistoryScrollAnchor,
+} from "./conversation-history";
 
 const topics = [
   ["Понять и спланировать", "Не понимаю, с чего начать переезд в Москву."],
@@ -33,12 +38,24 @@ export function ConversationHome(props: JourneyProps) {
   const [tab, setTab] = useState("Диалоги");
   const [showList, setShowList] = useState(false);
   const { board, busy, sending } = props;
+  const log = useRef<HTMLDivElement>(null);
+  const historyScroll = useHistoryScrollAnchor(
+    log,
+    board.thread?.messages ?? [],
+    {
+      threadId: board.thread?.id,
+      detached: props.history?.detached,
+      draft: props.draft,
+      pending: props.pending,
+    },
+  );
   const agent = props.streamAgent ?? board.thread?.agentKey ?? "support";
   const canSend =
     !!board.thread &&
     board.provider !== "unconfigured" &&
     board.aiAccess.granted &&
     !board.thread.closed &&
+    !props.history?.detached &&
     !busy;
   const suggest = (text: string) => {
     props.onText(text);
@@ -224,11 +241,26 @@ export function ConversationHome(props: JourneyProps) {
               >
                 Все диалоги
               </Button>
+              <ConversationHistoryControls
+                state={props.history}
+                disabled={busy || sending}
+                onOlder={() => historyScroll.loadOlder(props.onOlderMessages)}
+                onLatest={() =>
+                  historyScroll.returnToLatest(props.onLatestMessages)
+                }
+              />
               <div
-                className="conversation-messages"
+                ref={log}
+                className={
+                  "conversation-messages " +
+                  conversationHistoryStyles.viewport +
+                  " " +
+                  conversationHistoryStyles.chatViewport
+                }
                 aria-label="История диалога"
                 role="log"
                 aria-live="polite"
+                aria-busy={props.history?.phase === "loading"}
               >
                 {!board.thread?.messages.length && (
                   <article className="conversation-message assistant">
@@ -246,6 +278,7 @@ export function ConversationHome(props: JourneyProps) {
                 {board.thread?.messages.map((message) => (
                   <article
                     key={message.id}
+                    data-history-message={message.id}
                     className={"conversation-message " + message.role}
                   >
                     <strong>

@@ -20,6 +20,12 @@ import { AiAccessPanel } from "./ai-access";
 import type { TopupActions } from "./test-topup";
 import { FavoriteButton } from "./message-favorites";
 import { EmptyAiCreditHint, messageInterruptionLabel } from "./chat-readiness";
+import {
+  ConversationHistoryControls,
+  conversationHistoryStyles,
+  useHistoryScrollAnchor,
+} from "./conversation-history";
+import type { ConversationHistoryState } from "./conversation-history-state";
 
 import { agentNames } from "./agent-names";
 export { agentNames } from "./agent-names";
@@ -52,6 +58,9 @@ export type JourneyProps = {
   onFavorites?: () => void;
   onFavorite?: (messageId: string, saved: boolean) => void;
   topups?: TopupActions;
+  history?: ConversationHistoryState | null;
+  onOlderMessages?: () => Promise<void>;
+  onLatestMessages?: () => void;
 };
 
 function Avatar({
@@ -112,12 +121,25 @@ export function Journey(props: JourneyProps) {
       : hash === "#chat"
         ? "chat"
         : "plan";
+  const historyScroll = useHistoryScrollAnchor(
+    log,
+    board.thread?.messages ?? [],
+    {
+      threadId: board.thread?.id,
+      detached: props.history?.detached,
+      draft,
+      pending,
+      view,
+    },
+  );
   const agent = props.streamAgent ?? board.thread?.agentKey ?? "housing";
   const doneCount = board.quests.filter((q) => q.state === "completed").length;
   const canChat =
     !!board.thread &&
+    !board.thread.closed &&
     board.provider !== "unconfigured" &&
     !!board.aiAccess?.granted &&
+    !props.history?.detached &&
     !busy;
   const checkedCount = checks.filter(Boolean).length;
 
@@ -135,10 +157,6 @@ export function Journey(props: JourneyProps) {
         .getElementById("journey-agents")
         ?.scrollIntoView({ block: "start" });
   }, [view, hash]);
-  useEffect(() => {
-    // Scroll only the conversation, never pull the whole page away from the checklist.
-    if (log.current) log.current.scrollTop = log.current.scrollHeight;
-  }, [draft, board.thread?.messages.length, view, pending]);
 
   function navigate(target: string) {
     window.location.hash = target;
@@ -392,13 +410,24 @@ export function Journey(props: JourneyProps) {
                 </Button>
               </Card>
             )}
+            <ConversationHistoryControls
+              state={props.history}
+              disabled={busy || sending}
+              onOlder={() => historyScroll.loadOlder(props.onOlderMessages)}
+              onLatest={() =>
+                historyScroll.returnToLatest(props.onLatestMessages)
+              }
+            />
             <div
               ref={log}
-              className="journey-messages"
+              className={
+                "journey-messages " + conversationHistoryStyles.viewport
+              }
               role="log"
               aria-label="История чата"
               aria-live="polite"
               aria-relevant="additions text"
+              aria-busy={props.history?.phase === "loading"}
             >
               <p className="journey-chat-intro">
                 Расскажите, какое жильё ищете. Не отправляйте паспорт, пароли и
@@ -408,6 +437,7 @@ export function Journey(props: JourneyProps) {
                 <article
                   className={"journey-message " + message.role}
                   key={message.id}
+                  data-history-message={message.id}
                 >
                   <small>
                     {message.role === "user"
