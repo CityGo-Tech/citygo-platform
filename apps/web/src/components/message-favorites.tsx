@@ -121,10 +121,7 @@ export function MessageFavoritesPanel({
       <span className="eyebrow">ЛИЧНЫЙ КАБИНЕТ</span>
       <h1>Избранные сообщения</h1>
       <p>Ваши сообщения и ответы помощников — всё важное в одном месте.</p>
-      <small>
-        Удаляется только закладка: сообщения остаются в диалогах. Сохранение не
-        отправляет текст AI-провайдерам или Bubble.
-      </small>
+      <small>Удаляется только закладка. Сообщение остаётся в диалоге.</small>
       {error && <p role="alert">{error}</p>}
       {busy && <p role="status">Обновляем избранное…</p>}
       {!busy && !error && !messages.length && !nextBefore && (

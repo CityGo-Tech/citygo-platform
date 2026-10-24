@@ -150,12 +150,12 @@ async function open(page: Page) {
     .getByRole("button", { name: "Телефон и подарок", exact: true })
     .click();
   await expect(
-    page.getByRole("heading", { name: "Подарок 500 ₽ CityGo", exact: true }),
+    page.getByRole("heading", { name: "Подтверждение телефона", exact: true }),
   ).toBeVisible();
 }
 function panel(page: Page) {
   return page.getByRole("region", {
-    name: "Подарок 500 ₽ CityGo",
+    name: "Подтверждение телефона",
     exact: true,
   });
 }
@@ -164,7 +164,7 @@ async function begin(page: Page) {
     .getByLabel("Российский мобильный номер", { exact: true })
     .fill("8 (999) 000-00-00");
   await page
-    .getByRole("checkbox", { name: /Согласен на передачу.*ProstoSMS/ })
+    .getByRole("checkbox", { name: "Согласен на подтверждение номера по SMS." })
     .check();
   await page
     .getByRole("button", { name: "Получить код по SMS", exact: true })
@@ -185,7 +185,7 @@ test("opening gift checks availability only; disabled mode never sends SMS or in
   ).toBeVisible();
   expect(state.policies).toBe(0);
   await open(page);
-  await expect(page.getByRole("status")).toContainText("пока выключено");
+  await expect(page.getByRole("status")).toContainText("пока недоступно");
   await expect(
     page.getByLabel("Российский мобильный номер", { exact: true }),
   ).toHaveCount(0);
@@ -202,7 +202,9 @@ test("unavailable, email-required and already-granted states offer no SMS or pre
   state.status = "unavailable";
   await page.goto("/");
   await open(page);
-  await expect(page.getByRole("status")).toContainText("временно недоступно");
+  await expect(page.getByRole("status")).toContainText(
+    "Не удалось загрузить подтверждение",
+  );
   state.mode = "required";
   state.status = "email_required";
   await page.getByRole("button", { name: "Обновить статус подарка" }).click();
@@ -211,9 +213,7 @@ test("unavailable, email-required and already-granted states offer no SMS or pre
   );
   state.status = "granted";
   await page.getByRole("button", { name: "Обновить статус подарка" }).click();
-  await expect(page.getByRole("status")).toContainText(
-    "Разовый подарок уже использован",
-  );
+  await expect(page.getByRole("status")).toContainText("Подарок уже получен");
   await expect(
     page.getByRole("button", { name: "Получить код по SMS" }),
   ).toHaveCount(0);
@@ -242,12 +242,17 @@ test("explicit SMS consent, normalization, masked number and strict OTP receipt 
     .fill("8 (999) 000-00-00");
   await expect(submit).toBeDisabled();
   expect(state.starts).toEqual([]);
+  expect(await panel(page).innerText()).not.toMatch(
+    /ProstoSMS|SMS\.ru|×10|резерв/i,
+  );
+  await panel(page).getByText("Условия подтверждения", { exact: true }).click();
   await expect(panel(page)).toContainText(
-    "История диалогов с ИИ и сообщения помощников не передаются.",
+    "Для доставки SMS номер и код передаются сервису ProstoSMS",
   );
   await expect(panel(page)).not.toContainText("SMS.ru");
+  await panel(page).getByText("Условия подтверждения", { exact: true }).click();
   await page
-    .getByRole("checkbox", { name: /Согласен на передачу.*ProstoSMS/ })
+    .getByRole("checkbox", { name: "Согласен на подтверждение номера по SMS." })
     .check();
   await page.screenshot({
     path: info.outputPath("phone-gift-consent.png"),
@@ -338,7 +343,7 @@ test("a provider delivery acknowledgment is not a gift receipt", async ({
     .getByRole("button", { name: "Подтвердить телефон и получить подарок" })
     .click();
   await expect(panel(page).getByRole("alert")).toContainText(
-    "Подарок не подтверждён",
+    "Не удалось подтвердить телефон",
   );
   await expect(
     page.getByText("Начислено 500 ₽ CityGo.", { exact: false }),
@@ -369,7 +374,9 @@ test("expired OTP cannot confirm or resend and reload discards the capability wi
     page.getByLabel("Российский мобильный номер", { exact: true }),
   ).toHaveValue("");
   await expect(
-    page.getByRole("checkbox", { name: /Согласен на передачу.*ProstoSMS/ }),
+    page.getByRole("checkbox", {
+      name: "Согласен на подтверждение номера по SMS.",
+    }),
   ).not.toBeChecked();
   await expect(page.getByLabel("Код из SMS", { exact: true })).toHaveCount(0);
   expect(state.starts).toHaveLength(1);
@@ -393,14 +400,10 @@ test("confirmation conflict enables explicit status refresh and reload without a
   await expect(panel(page).getByRole("alert")).toContainText("Обновите статус");
   await expect(page.getByLabel("Код из SMS", { exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "Обновить статус подарка" }).click();
-  await expect(page.getByRole("status")).toContainText(
-    "Разовый подарок уже использован",
-  );
+  await expect(page.getByRole("status")).toContainText("Подарок уже получен");
   await page.reload();
   await open(page);
-  await expect(page.getByRole("status")).toContainText(
-    "Разовый подарок уже использован",
-  );
+  await expect(page.getByRole("status")).toContainText("Подарок уже получен");
   expect(state.starts).toHaveLength(1);
   expect(state.confirms).toHaveLength(1);
   expect(state.resends).toEqual([]);
@@ -417,7 +420,7 @@ test("unknown send failure never automatically retries or displays a grant", asy
   await open(page);
   await begin(page);
   await expect(panel(page).getByRole("alert")).toContainText(
-    "только по вашему действию",
+    "Не удалось подтвердить отправку",
   );
   await expect(panel(page).getByRole("alert")).not.toContainText(
     "SYNTHETIC_PROVIDER_DETAIL",
@@ -456,7 +459,7 @@ test("cross-tab session invalidation prevents a delayed challenge from restoring
   await state.delivered;
   await expect(page.getByLabel("Код из SMS", { exact: true })).toHaveCount(0);
   await expect(
-    page.getByRole("heading", { name: "Подарок 500 ₽ CityGo" }),
+    page.getByRole("heading", { name: "Подтверждение телефона" }),
   ).toHaveCount(0);
   expect(state.resends).toEqual([]);
   expect(state.confirms).toEqual([]);
@@ -473,27 +476,33 @@ test("server-selected provider changes reset consent and challenge before any fu
     .getByLabel("Российский мобильный номер", { exact: true })
     .fill(phone);
   await page
-    .getByRole("checkbox", { name: /Согласен на передачу.*ProstoSMS/ })
+    .getByRole("checkbox", { name: "Согласен на подтверждение номера по SMS." })
     .check();
   state.provider = "sms_ru";
   await page
     .getByRole("button", { name: "Получить код по SMS", exact: true })
     .click();
   await expect(panel(page).getByRole("alert")).toContainText(
-    "Сервис отправки SMS изменился",
+    "Условия подтверждения изменились",
   );
   await expect(
-    page.getByRole("checkbox", { name: /Согласен на передачу.*SMS.ru/ }),
+    page.getByRole("checkbox", {
+      name: "Согласен на подтверждение номера по SMS.",
+    }),
   ).not.toBeChecked();
   await expect(
     page.getByLabel("Российский мобильный номер", { exact: true }),
   ).toHaveValue("");
   expect(state.starts).toEqual([]);
+  await panel(page).getByText("Условия подтверждения", { exact: true }).click();
+  await expect(panel(page)).toContainText("сервису SMS.ru");
+  await expect(panel(page)).not.toContainText("ProstoSMS");
+  await panel(page).getByText("Условия подтверждения", { exact: true }).click();
   await page
     .getByLabel("Российский мобильный номер", { exact: true })
     .fill(phone);
   await page
-    .getByRole("checkbox", { name: /Согласен на передачу.*SMS.ru/ })
+    .getByRole("checkbox", { name: "Согласен на подтверждение номера по SMS." })
     .check();
   await page
     .getByRole("button", { name: "Получить код по SMS", exact: true })
@@ -506,9 +515,14 @@ test("server-selected provider changes reset consent and challenge before any fu
     .click();
   await expect(page.getByLabel("Код из SMS", { exact: true })).toHaveCount(0);
   await expect(
-    page.getByRole("checkbox", { name: /Согласен на передачу.*ProstoSMS/ }),
+    page.getByRole("checkbox", {
+      name: "Согласен на подтверждение номера по SMS.",
+    }),
   ).not.toBeChecked();
-  expect(state.starts).toHaveLength(1);
+  await panel(page).getByText("Условия подтверждения", { exact: true }).click();
+  await expect(panel(page)).toContainText("сервису ProstoSMS");
+  await expect(panel(page)).not.toContainText("SMS.ru");
+  expect(state.starts).toEqual([{ phone, expectedDeliveryProvider: "sms_ru" }]);
   expect(state.resends).toEqual([]);
   expect(state.confirms).toEqual([]);
   expect(state.unexpected).toEqual([]);
@@ -525,7 +539,7 @@ test("missing or unsupported delivery binding cannot offer consent or SMS", asyn
     state.provider = provider;
     await page.getByRole("button", { name: "Обновить статус подарка" }).click();
     await expect(panel(page).getByRole("alert")).toContainText(
-      "Подарок не подтверждён",
+      "Не удалось подтвердить телефон",
     );
     await expect(panel(page).getByRole("checkbox")).toHaveCount(0);
     await expect(
@@ -555,29 +569,37 @@ test("a server mismatch after the policy read rejects the send and reconciles on
   await expect(page.getByLabel("Код из SMS", { exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "Обновить статус подарка" }).click();
   await expect(
-    page.getByRole("checkbox", { name: /Согласен на передачу.*SMS.ru/ }),
+    page.getByRole("checkbox", {
+      name: "Согласен на подтверждение номера по SMS.",
+    }),
   ).not.toBeChecked();
   await expect(
     page.getByRole("button", { name: "Получить код по SMS", exact: true }),
   ).toBeDisabled();
   expect(state.starts).toHaveLength(1);
+  await panel(page).getByText("Условия подтверждения", { exact: true }).click();
+  await expect(panel(page)).toContainText("сервису SMS.ru");
+  await expect(panel(page)).not.toContainText("ProstoSMS");
+  await panel(page).getByText("Условия подтверждения", { exact: true }).click();
   state.forceStartConflict = true;
   await page
     .getByLabel("Российский мобильный номер", { exact: true })
     .fill(phone);
   await page
-    .getByRole("checkbox", { name: /Согласен на передачу.*SMS.ru/ })
+    .getByRole("checkbox", { name: "Согласен на подтверждение номера по SMS." })
     .check();
   await page
     .getByRole("button", { name: "Получить код по SMS", exact: true })
     .click();
   await expect(panel(page).getByRole("alert")).toContainText(
-    "Условия отправки SMS изменились",
+    "Условия подтверждения изменились",
   );
   await expect(panel(page).getByRole("alert")).not.toContainText("использован");
   await page.getByRole("button", { name: "Обновить статус подарка" }).click();
   await expect(
-    page.getByRole("checkbox", { name: /Согласен на передачу.*SMS.ru/ }),
+    page.getByRole("checkbox", {
+      name: "Согласен на подтверждение номера по SMS.",
+    }),
   ).not.toBeChecked();
   await expect(
     page.getByRole("button", { name: "Получить код по SMS", exact: true }),

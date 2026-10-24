@@ -127,8 +127,8 @@ test("policy loads without sending; consent and a valid number are required befo
   assert.equal(s.last().phase, "ready");
   assert.deepEqual(s.calls, []);
   await s.resource.start(phone, false);
-  assert.match(s.last().error, /согласие.*ProstoSMS/);
-  assert.equal(s.last().error.includes("SMS.ru"), false);
+  assert.match(s.last().error, /согласие/);
+  assert.doesNotMatch(s.last().error, /ProstoSMS|SMS\.ru/);
   await s.resource.start("+77010000000", true);
   assert.deepEqual(s.calls, []);
   await s.resource.start("8 (999) 000-00-00", true);
@@ -242,7 +242,8 @@ test("unknown send outcome stays throttled with no automatic resend or invented 
   assert.equal(s.calls.length, 1);
   s.advance(120_000);
   assert.equal(s.calls.length, 1);
-  assert.match(s.last().error, /только по вашему действию/);
+  assert.match(s.last().error, /Не удалось подтвердить отправку/);
+  assert.match(s.last().error, /код ещё может прийти/);
   s.resource.dispose();
 });
 
@@ -441,7 +442,7 @@ test("send conflict discards capability without implying a used gift and allows 
   await s.resource.start(phone, true);
   assert.equal(s.last().phase, "unavailable");
   assert.equal(s.last().challenge, null);
-  assert.match(s.last().error, /Условия отправки SMS изменились/);
+  assert.match(s.last().error, /Условия подтверждения изменились/);
   assert.equal(s.last().error.includes("подарок уже"), false);
   await s.resource.load();
   assert.equal(s.last().phase, "ready");

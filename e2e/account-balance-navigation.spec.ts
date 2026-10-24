@@ -124,12 +124,14 @@ test("a new account with no dialogue can find zero balance, top up and bind a ph
   await openBalance(page);
   await expect(page.locator("#citygo-balance")).toHaveCount(1);
   await expect(page.getByLabel("Сумма пополнения")).toHaveValue("100");
-  await expect(page.getByLabel("Email для чека ЮKassa")).toHaveValue("");
+  await expect(page.getByLabel("Email для чека")).toHaveValue("");
   await expect(page.getByText("Подтверждение пока не подключено.")).toHaveCount(
     0,
   );
   await expect(
-    page.getByRole("button", { name: "Создать платёж", exact: true }),
+    page
+      .getByRole("region", { name: "Пополнение баланса", exact: true })
+      .getByRole("button", { name: "Пополнить баланс", exact: true }),
   ).toBeDisabled();
   expect(
     await page.evaluate(
@@ -154,7 +156,7 @@ test("a new account with no dialogue can find zero balance, top up and bind a ph
   expect(calls.external).toBe(0);
 });
 
-test("the account indicator preserves signed micro-rouble precision and separate reserves after reload", async ({
+test("the account indicator preserves signed micro-rouble precision without internal reserve details after reload", async ({
   page,
 }) => {
   const { calls } = await install(page, { balanceMicros: -2_170_001 });
@@ -162,12 +164,11 @@ test("the account indicator preserves signed micro-rouble precision and separate
   await expect(toolbar(page)).toContainText("-2.170001 ₽");
   await openBalance(page);
   await expect(page.locator("#citygo-balance")).toContainText("-2.170001");
-  await expect(page.locator("#citygo-balance")).toContainText("В резерве: 5");
-  await expect(page.locator("#citygo-balance")).toContainText(
-    "резервируется 5 ₽ CityGo",
+  await expect(page.locator("#citygo-balance .balance-amount")).toHaveText(
+    "-2.170001 ₽ CityGo",
   );
-  await expect(page.locator("#citygo-balance")).toContainText(
-    "стоимость модели ×10",
+  expect(await page.locator("#citygo-balance").innerText()).not.toMatch(
+    /резерв|×10|стоимость модели|RouterAI|DeepSeek|ЮKassa|ProstoSMS/i,
   );
   await page.reload();
   await expect(toolbar(page)).toContainText("-2.170001 ₽");
@@ -193,7 +194,7 @@ test("missing server credit is unavailable rather than a fabricated zero balance
     page.getByRole("heading", { name: "Баланс и пополнение", exact: true }),
   ).toBeVisible();
   await expect(page.getByRole("status")).toContainText(
-    "Не удалось получить баланс",
+    "Не удалось загрузить баланс",
   );
   await expect(page.getByLabel("Сумма пополнения")).toHaveCount(0);
   expect(calls.posts).toEqual([]);
@@ -220,7 +221,7 @@ test("profile exposes balance and phone entry points and keeps a partially enter
     .click();
   await page.getByLabel("Сумма пополнения").fill("157");
   await page
-    .getByLabel("Email для чека ЮKassa")
+    .getByLabel("Email для чека")
     .fill("receipt-navigation@example.test");
   await back(page).click();
   await profile().click();
@@ -232,7 +233,7 @@ test("profile exposes balance and phone entry points and keeps a partially enter
   await back(page).click();
   await openBalance(page);
   await expect(page.getByLabel("Сумма пополнения")).toHaveValue("157");
-  await expect(page.getByLabel("Email для чека ЮKassa")).toHaveValue(
+  await expect(page.getByLabel("Email для чека")).toHaveValue(
     "receipt-navigation@example.test",
   );
   await expect(page.locator("#citygo-balance")).toHaveCount(1);

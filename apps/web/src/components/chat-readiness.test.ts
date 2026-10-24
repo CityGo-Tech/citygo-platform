@@ -91,7 +91,7 @@ test("guidance renders an explicit balance anchor, not a payment action or a har
   );
   assert.match(html, /href="#citygo-balance"/);
   assert.match(html, /Баланс и пополнение/);
-  assert.match(html, /для платного ответа/);
+  assert.match(html, /Недостаточно средств для нового ответа\./);
   assert.doesNotMatch(html, /100|<button|<form|target=|yookassa|requestId/);
   assert.equal(
     renderToStaticMarkup(
@@ -141,8 +141,11 @@ test("fixed-reserve guidance includes debt and sub-five balances without blockin
       access: { ...fixed, credit: { ...fixed.credit!, availableMicros: -1 } },
     }),
   );
-  assert.match(html, /не менее 5 ₽ CityGo/);
-  assert.match(html, /сначала погашает задолженность/);
+  assert.match(html, /Недостаточно средств для нового ответа\./);
+  assert.doesNotMatch(
+    html,
+    /резерв|5 ₽|×10|стоимость модели|RouterAI|DeepSeek/i,
+  );
   assert.match(html, /href="#citygo-balance"/);
   assert.doesNotMatch(html, /<button|<form|disabled|target=|yookassa/);
   assert.equal(hasEmptyChargeBalance(access("routerai_citygo_10x", -1)), true);

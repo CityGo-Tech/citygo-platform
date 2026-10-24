@@ -43,9 +43,7 @@ export function EmptyAiCreditHint({
   return createElement(
     "p",
     { role: "note", className: "chat-credit-hint" },
-    access?.credit?.reservationMode === "fixed5_overdraft"
-      ? "Для нового платного ответа ИИ нужно не менее 5 ₽ CityGo доступного баланса. Пополнение сначала погашает задолженность. Проверку резерва выполняет сервер. "
-      : "На балансе недостаточно доступных средств для платного ответа ИИ. Необходимый резерв проверяется сервером. ",
+    "Недостаточно средств для нового ответа. ",
     createElement(
       "a",
       {

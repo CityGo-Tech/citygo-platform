@@ -59,8 +59,17 @@ test("six-character registration → conversation without questionnaire → save
     .getByRole("button", { name: "Пополнить баланс", exact: true })
     .click();
   const credit = page.getByRole("region", { name: "Бесплатный баланс AI" });
-  await expect(credit).toContainText("Разовый бонус 500 ₽ ещё не выдан");
-  await expect(credit).toContainText("Доступно: 0 ₽");
+  await expect(
+    credit.getByRole("button", { name: "Получить подарок 500 ₽" }),
+  ).toBeVisible();
+  await expect(credit.locator(".balance-amount")).toHaveText("0 ₽");
+  const initialDashboard = await page.request.get("/api/v1/dashboard");
+  expect(initialDashboard.ok()).toBeTruthy();
+  expect((await initialDashboard.json()).aiAccess.credit).toMatchObject({
+    bonusGranted: false,
+    grantedMicros: 0,
+    availableMicros: 0,
+  });
   await page
     .getByRole("button", { name: "Вернуться в приложение", exact: true })
     .click();
@@ -68,17 +77,17 @@ test("six-character registration → conversation without questionnaire → save
     page.getByRole("button", { name: "Отправить", exact: true }),
   ).toBeDisabled();
   const approve = page.getByRole("button", {
-    name: "Подтвердить получателя AI",
+    name: "Продолжить",
   });
   await expect(approve).toBeDisabled();
   await page
     .getByRole("checkbox", {
-      name: "Разрешаю передачу указанных данных этому получателю для рекомендаций.",
+      name: "Согласен на обработку сообщений для ответов помощника.",
     })
     .check();
   await approve.click();
   await expect(
-    page.getByText("Передача данных разрешена: OpenAI", { exact: false }),
+    page.getByText("Настройки обработки сообщений", { exact: true }),
   ).toBeVisible();
   const message =
     "Хочу переехать в Москву, но пока не знаю бюджет и дату. С чего начать?";
@@ -90,10 +99,14 @@ test("six-character registration → conversation without questionnaire → save
   );
   await expect(page.getByRole("log")).toContainText(message);
   await expectNoInventedPlan(page);
-  await page.getByRole("button", { name: "Отозвать разрешение AI" }).click();
-  await expect(
-    page.getByRole("button", { name: "Подтвердить получателя AI" }),
-  ).toBeDisabled();
+  await page
+    .getByText("Настройки обработки сообщений", { exact: true })
+    .click();
+  await expect(page.locator(".ai-access:visible")).toContainText(
+    "Обработку выполняет OpenAI.",
+  );
+  await page.getByRole("button", { name: "Отозвать согласие" }).click();
+  await expect(page.getByRole("button", { name: "Продолжить" })).toBeDisabled();
   await page.reload();
   await expect(page.getByRole("log")).toContainText(
     "Тестовый ответ. Уточните район",
@@ -124,10 +137,10 @@ test("six consecutive synthetic replies preserve numeric chat order and the last
     .click();
   await page
     .getByRole("checkbox", {
-      name: "Разрешаю передачу указанных данных этому получателю для рекомендаций.",
+      name: "Согласен на обработку сообщений для ответов помощника.",
     })
     .check();
-  await page.getByRole("button", { name: "Подтвердить получателя AI" }).click();
+  await page.getByRole("button", { name: "Продолжить" }).click();
   const questions: string[] = [];
   for (let turn = 1; turn <= 6; turn++) {
     const question = `Вымышленный вопрос ${turn}: помоги подготовить переезд`;

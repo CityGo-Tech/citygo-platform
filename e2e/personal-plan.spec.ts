@@ -538,10 +538,10 @@ test("real local API persists chosen messages and CAS changes without spending o
     .click();
   await page
     .getByRole("checkbox", {
-      name: "Разрешаю передачу указанных данных этому получателю для рекомендаций.",
+      name: "Согласен на обработку сообщений для ответов помощника.",
     })
     .check();
-  await page.getByRole("button", { name: "Подтвердить получателя AI" }).click();
+  await page.getByRole("button", { name: "Продолжить" }).click();
   await page
     .getByLabel("Сообщение помощнику")
     .fill("Синтетический вопрос для локального плана");

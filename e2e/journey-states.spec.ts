@@ -52,7 +52,7 @@ async function dashboard(page: Page, board: Dashboard) {
   );
 }
 
-test("personal daily reserve is visible outside consent details and survives reload without becoming a billing statement", async ({
+test("internal daily budget stays hidden while processing terms remain available after reload", async ({
   page,
 }) => {
   const board = fixture();
@@ -66,18 +66,35 @@ test("personal daily reserve is visible outside consent details and survives rel
   };
   await dashboard(page, board);
   await page.goto("/#chat");
-  const budget = page.locator(".ai-access [role=status]");
-  await expect(budget).toContainText("500 RUB в сутки");
-  await expect(budget).toContainText("Зарезервировано: 120");
-  await expect(budget).toContainText("Остаток резерва: 380");
-  await expect(budget).toContainText("03:00 по Москве");
-  await expect(budget).toContainText("не фактическое списание");
+  const access = page.locator(".ai-access:visible");
+  expect(await access.innerText()).not.toMatch(
+    /резерв|RUB|500|120|380|03:00|OpenAI|test-model|×10/i,
+  );
+  const terms = access.getByText("Настройки обработки сообщений", {
+    exact: true,
+  });
+  await expect(terms).toBeVisible();
+  await expect(
+    access.getByRole("button", { name: "Отозвать согласие", exact: true }),
+  ).not.toBeVisible();
+  await terms.click();
+  await expect(access).toContainText("Обработку выполняет OpenAI.");
+  await expect(access).toContainText(board.aiAccess.policy!.routing);
+  await expect(access).toContainText(board.aiAccess.policy!.data);
+  await expect(access).not.toContainText("test-model");
+  await expect(
+    access.getByRole("button", { name: "Отозвать согласие", exact: true }),
+  ).toBeVisible();
   await page.reload();
-  await expect(budget).toContainText("Остаток резерва: 380");
+  expect(await access.innerText()).not.toMatch(
+    /резерв|RUB|500|120|380|03:00|OpenAI|test-model|×10/i,
+  );
   board.aiAccess.budget.reservedTodayMicros = 500000000;
   board.aiAccess.budget.remainingMicros = 0;
   await page.reload();
-  await expect(budget).toContainText("Остаток резерва: 0");
+  expect(await access.innerText()).not.toMatch(
+    /резерв|RUB|500|03:00|OpenAI|test-model|×10/i,
+  );
   expect(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= innerWidth,
@@ -308,10 +325,10 @@ test("changed recipient resets unchecked consent and never resends automatically
   });
   await page.goto("/#chat");
   const checkbox = page.getByRole("checkbox", {
-    name: "Разрешаю передачу указанных данных этому получателю для рекомендаций.",
+    name: "Согласен на обработку сообщений для ответов помощника.",
   });
   const confirm = page.getByRole("button", {
-    name: "Подтвердить получателя AI",
+    name: "Продолжить",
   });
   await expect(checkbox).not.toBeChecked();
   await expect(confirm).toBeDisabled();
@@ -321,7 +338,16 @@ test("changed recipient resets unchecked consent and never resends automatically
   await expect(page.locator(".alert[role='alert']")).toContainText(
     "AI-получатель изменился",
   );
-  await expect(page.getByText(/Получатель: RouterAI/)).toBeVisible();
+  expect(await page.locator(".ai-access:visible").innerText()).not.toContain(
+    "RouterAI",
+  );
+  await page.getByText("Условия обработки сообщений", { exact: true }).click();
+  await expect(
+    page.getByText("Обработку выполняет RouterAI.", { exact: true }),
+  ).toBeVisible();
+  await expect(page.locator(".ai-access:visible")).not.toContainText(
+    "test/new-model",
+  );
   await expect(checkbox).not.toBeChecked();
   await expect(confirm).toBeDisabled();
   await checkbox.check();
@@ -389,7 +415,9 @@ test("unconfigured provider disables chat; server rejection never displays succe
     }),
   );
   await page.goto("/#chat");
-  await expect(page.getByRole("note")).toContainText("AI ещё не подключён");
+  await expect(page.getByRole("note")).toContainText(
+    "Помощник временно недоступен. Попробуйте позже.",
+  );
   await expect(page.getByLabel("Сообщение помощнику")).toBeDisabled();
   await expect(
     page.getByRole("button", { name: "До 30 минут в пути", exact: true }),

@@ -388,8 +388,7 @@ export function Journey(props: JourneyProps) {
             </header>
             {board.provider === "unconfigured" && (
               <p className="provider-warning" role="note">
-                AI ещё не подключён. Для ответов нужен ключ провайдера на
-                сервере.
+                Помощник временно недоступен. Попробуйте позже.
               </p>
             )}
             <AiAccessPanel
@@ -577,8 +576,7 @@ export function Journey(props: JourneyProps) {
                   ))}
                 </fieldset>
                 <p className="journey-completion-hint" id="completion-hint">
-                  Сначала обсудите этот квест с Housing Navigator, затем
-                  подтвердите все критерии. Завершение проверяется сервером.
+                  Обсудите задачу с помощником и подтвердите результат.
                 </p>
                 <Button
                   className="journey-finish"

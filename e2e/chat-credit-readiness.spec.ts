@@ -156,7 +156,7 @@ test("profile-free zero credit shows an explicit topup link and preserves a conf
     page.getByRole("heading", { name: "Давайте начнём с того, что волнует" }),
   ).toBeVisible();
   await expect(page.locator("form .chat-credit-hint")).toContainText(
-    "для платного ответа ИИ",
+    "Недостаточно средств для нового ответа.",
   );
   await expect(page.getByLabel("Бюджет аренды в месяц, ₽")).toHaveCount(0);
   const link = page.getByRole("link", {
@@ -249,7 +249,8 @@ test("fixed-reserve negative balance stays visible after reload without automati
   await expect(balance).toBeFocused();
   await expect(balance).toBeVisible();
   await expect(balance).toContainText("-3");
-  await expect(balance).toContainText("5");
+  await expect(balance).toContainText("Задолженность: 3 ₽ CityGo");
+  expect(await balance.innerText()).not.toMatch(/резерв|×10|стоимость модели/i);
   await page.reload();
   await page
     .getByRole("link", { name: "Баланс и пополнение", exact: true })

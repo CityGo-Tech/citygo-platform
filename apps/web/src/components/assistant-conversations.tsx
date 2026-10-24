@@ -62,10 +62,7 @@ function BubbleCard() {
         <p className="assistant-specialty">
           Досуг под настроение · Партнёр CityGo
         </p>
-        <p>
-          Поможет выбрать, куда сходить в Москве. Подключение партнёра
-          готовится: сообщения и история ему пока не передаются.
-        </p>
+        <p>Скоро поможет выбрать, куда сходить в Москве.</p>
         <Button className="assistant-open" variant="secondary" disabled>
           Bubble · скоро
         </Button>
@@ -86,10 +83,7 @@ export function AssistantCatalog({
     <Card className="assistant-directory" aria-label="Каталог помощников">
       <span className="eyebrow">CITYGO · ВАШ ПЕРЕЕЗД</span>
       <h1>Ваша команда AI-помощников</h1>
-      <p>
-        Пять помощников CityGo и Bubble — партнёр по досугу. Начните с того, что
-        важно сейчас.
-      </p>
+      <p>Выберите помощника для вашей задачи.</p>
       {assistantCatalog.map((item) => (
         <article
           className="assistant-directory-card"
@@ -119,10 +113,7 @@ export function AssistantCatalog({
         </article>
       ))}
       <BubbleCard />
-      <small>
-        Открытие разговора бесплатно. Запрос к модели отправится только после
-        нажатия «Отправить»; действуют показанные согласие и условия баланса.
-      </small>
+      <small>Выберите помощника и задайте вопрос.</small>
     </Card>
   );
 }
@@ -149,16 +140,11 @@ export function ConversationList({
     <Card className="assistant-directory" aria-label="Ваши разговоры">
       <span className="eyebrow">CITYGO · ВАШ ПЕРЕЕЗД</span>
       <h1>Ваши разговоры</h1>
-      <p>
-        Диалоги сохраняются в CityGo. У каждого помощника своя история; прежний
-        общий диалог остаётся доступен отдельно.
-      </p>
+      <p>Здесь ваши разговоры с помощниками.</p>
       {conversations === null ? (
         <p role="status">Загружаем разговоры…</p>
       ) : conversations.length === 0 ? (
-        <p>
-          Разговоров пока нет. Выберите помощника — анкету заполнять не нужно.
-        </p>
+        <p>Выберите помощника, чтобы начать разговор.</p>
       ) : (
         conversations.map((item) => {
           const title = item.assistantKey

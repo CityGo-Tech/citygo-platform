@@ -116,10 +116,7 @@ export function EmailRegistration({
           </>
         ) : (
           <>
-            <p>
-              Только данные для входа. Информацию о переезде вы расскажете
-              помощнику, когда будет удобно.
-            </p>
+            <p>Создайте аккаунт, чтобы сохранять диалоги.</p>
             <form key={formVersion} onSubmit={onRegister}>
               <Field
                 id="registration-email"
@@ -142,13 +139,6 @@ export function EmailRegistration({
                 disabled={busy || disabled}
                 required
               />
-              <div className={styles.notice}>
-                <strong>Отдельные решения</strong>
-                <p>
-                  Создание аккаунта не означает согласие на передачу сообщений
-                  AI. Правила обработки доступны до продолжения.
-                </p>
-              </div>
               <div className={styles.actions}>
                 <Button type="submit" disabled={busy || disabled}>
                   {busy ? "Подождите…" : "Создать аккаунт"}

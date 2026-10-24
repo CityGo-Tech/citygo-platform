@@ -123,7 +123,7 @@ test("changed user ID clears a no-profile dialog draft and unconfirmed AI permis
     "Черновик без анкеты пользователя A",
   );
   const consent = page.getByRole("checkbox", {
-    name: "Разрешаю передачу указанных данных этому получателю для рекомендаций.",
+    name: "Согласен на обработку сообщений для ответов помощника.",
   });
   await consent.check();
   state.board = fixture("B", false);
@@ -133,9 +133,7 @@ test("changed user ID clears a no-profile dialog draft and unconfirmed AI permis
   await changedOwner;
   await expect(page.getByLabel("Сообщение помощнику")).toHaveValue("");
   await expect(consent).not.toBeChecked();
-  await expect(
-    page.getByRole("button", { name: "Подтвердить получателя AI" }),
-  ).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Продолжить" })).toBeDisabled();
   await expect(page.getByLabel("Откуда переезжаете")).toHaveCount(0);
   await expect(page.locator(".account")).toContainText("0 XP");
   expect(questionnaireWrites).toEqual([]);
@@ -231,13 +229,13 @@ test("failed Web logout clears local data but does not claim server revocation",
   await page.getByLabel("Сообщение помощнику").fill("Черновик A");
   await page.getByRole("button", { name: "Выйти", exact: true }).click();
   await expect(page.locator(".alert[role=alert]")).toContainText(
-    "Не удалось подтвердить выход на сервере",
+    "Не удалось завершить выход",
   );
   await expect(
     page.getByRole("button", { name: "Создать аккаунт", exact: true }),
   ).toBeDisabled();
   await expect(
-    page.getByRole("button", { name: "Повторить выход на сервере" }),
+    page.getByRole("button", { name: "Повторить выход" }),
   ).toBeEnabled();
   await expect(page.locator("body")).not.toContainText("Черновик A");
 });

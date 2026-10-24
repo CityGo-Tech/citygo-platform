@@ -479,7 +479,7 @@ export default function Home() {
       if (ticket.active()) {
         setLogoutUnconfirmed(true);
         setError(
-          "Локальные данные очищены. Не удалось подтвердить выход на сервере. Повторите выход перед использованием устройства другим человеком.",
+          "Не удалось завершить выход. Повторите попытку перед передачей устройства другому человеку.",
         );
       }
     } finally {
@@ -746,7 +746,7 @@ export default function Home() {
         )}
         {logoutUnconfirmed && (
           <Button disabled={busy} onClick={() => void logout()}>
-            Повторить выход на сервере
+            Повторить выход
           </Button>
         )}
         {loading ? (
@@ -941,10 +941,6 @@ export default function Home() {
                 ЛИЧНЫЙ КАБИНЕТ · CITYGO
               </span>
               <h1>Баланс и пополнение</h1>
-              <p>
-                Ваш баланс для общения с ИИ-помощниками. Пополняйте его через
-                ЮKassa или подтвердите телефон для разового подарка.
-              </p>
               <Button variant="secondary" onClick={returnToApp}>
                 Вернуться в приложение
               </Button>
@@ -960,8 +956,7 @@ export default function Home() {
               />
               {!board.aiAccess.credit && (
                 <p role="status">
-                  Не удалось получить баланс. Обновите страницу; сумма не
-                  считается нулевой.
+                  Не удалось загрузить баланс. Обновите страницу.
                 </p>
               )}
             </section>
@@ -1090,7 +1085,7 @@ export default function Home() {
       </main>
       <footer>
         CityGo · Место для вашего нового начала{" "}
-        <span>Web · AI-помощники по переезду</span>
+        <span>Помощники по переезду</span>
       </footer>
     </div>
   );

@@ -235,11 +235,10 @@ export function ConversationHome(props: JourneyProps) {
         <Card>
           <h1>Личный кабинет</h1>
           <p>{board.user.username ?? board.user.email}</p>
-          <p>Роль: {board.user.role ?? "user"}</p>
           <div className={accountStyles.profileCard}>
             <span className={accountStyles.eyebrow}>БАЛАНС CITYGO</span>
             <h2>Баланс и пополнение</h2>
-            <p>Остаток, пополнение через ЮKassa и последние операции.</p>
+            <p>Пополнение и история операций.</p>
             <Button disabled={busy || sending} onClick={props.onBalance}>
               Баланс и пополнение
             </Button>
@@ -247,7 +246,7 @@ export function ConversationHome(props: JourneyProps) {
           <div className={accountStyles.profileCard}>
             <span className={accountStyles.eyebrow}>КОНТАКТЫ АККАУНТА</span>
             <h2>Телефон и подарок</h2>
-            <p>Подтвердите номер по SMS. Разовый подарок — 500 ₽ CityGo.</p>
+            <p>Подтвердите телефон и получите 500 ₽ CityGo.</p>
             <Button
               variant="secondary"
               disabled={busy || sending}

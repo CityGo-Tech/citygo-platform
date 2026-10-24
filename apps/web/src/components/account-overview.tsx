@@ -28,7 +28,7 @@ export function AccountOverview({
             ? `${formatSignedMoneyMicros(access.credit.availableMicros)} ₽ CityGo`
             : "Баланс недоступен"}
         </div>
-        <p>Доступно для общения с помощниками</p>
+        <p>Для общения с помощниками</p>
         <Button variant="ghost" disabled={disabled} onClick={onBalance}>
           Баланс и пополнение
         </Button>
@@ -42,8 +42,8 @@ export function AccountOverview({
         </Button>
         <small>
           {access.credit?.bonusGranted
-            ? "Разовый подарок уже начислен. Его использование отражается в балансе."
-            : "Подтвердите телефон, чтобы получить разовые 500 ₽ CityGo."}
+            ? "Подарок уже начислен."
+            : "500 ₽ в подарок за подтверждение телефона."}
         </small>
       </div>
     </Card>
