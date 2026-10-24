@@ -139,6 +139,15 @@ test("phone core is unbound by default; explicit policy is idempotent and silent
   await assert.rejects(f.phone.begin(f.ctx, value), status(503));
   await configurePhoneVerification(f.db, defaultPolicy);
   await configurePhoneVerification(f.db, defaultPolicy);
+  assert.equal(
+    (
+      await f.db.query<{ policy_fingerprint: string }>(
+        "select policy_fingerprint from phone_verification_control where id=1",
+      )
+    ).rows[0]!.policy_fingerprint,
+    hash(JSON.stringify(defaultPolicy)),
+    "Previously bound numeric policy keeps its original canonical fingerprint",
+  );
   assert.equal(await f.phone.readiness(), true);
   assert.deepEqual(await f.phone.status(f.ctx), {
     alreadyGranted: false,
@@ -367,6 +376,207 @@ test("zero admission caps deny instead of selecting defaults", async (t) => {
   assert.equal(
     (await f.db.query("select 1 from phone_verification_sends")).rows.length,
     0,
+  );
+});
+
+const unlimitedGlobalPolicy: PhoneVerificationPolicy = {
+  ...defaultPolicy,
+  limits: { ...defaultPolicy.limits, globalDaily: null, globalTotal: null },
+};
+
+for (const unlimited of [false, true])
+  test(`${unlimited ? "unlimited" : "finite"} globals preserve a three-hour cooldown on an accepted send outside the hourly window`, async (t) => {
+    const base = unlimited ? unlimitedGlobalPolicy : defaultPolicy;
+    const policy: PhoneVerificationPolicy = {
+      ...base,
+      limits: { ...base.limits, cooldownSeconds: 10800 },
+    };
+    const f = await fixture(t, policy),
+      first = input();
+    await f.phone.begin(f.ctx, first);
+    await f.phone.markAccepted(first.id, first.codeHash);
+    await f.db.query(
+      "update phone_verification_sends set created_at=clock_timestamp()-interval '2 hours'",
+    );
+    assert.equal(
+      (
+        await f.db.query(
+          "select 1 from phone_verification_sends where created_at>clock_timestamp()-interval '1 hour'",
+        )
+      ).rows.length,
+      0,
+    );
+    await assert.rejects(
+      f.phone.begin(f.ctx, input("different-phone", "different-ip")),
+      status(429),
+    );
+    await assert.rejects(
+      f.phone.begin(await f.user(), input("synthetic-phone", "different-ip")),
+      status(429),
+    );
+    assert.equal(
+      (await f.db.query("select 1 from phone_verification_sends")).rows.length,
+      1,
+    );
+  });
+
+test("explicit unlimited globals persist as null, retain numeric policy identity and cannot be silently rebound", async (t) => {
+  const f = await fixture(t, unlimitedGlobalPolicy);
+  await f.phone.begin(f.ctx, input("first", "first-ip"));
+  await f.phone.begin(await f.user(), input("second", "second-ip"));
+  assert.equal(
+    (await f.db.query("select 1 from phone_verification_sends")).rows.length,
+    2,
+  );
+  const bound = (
+    await f.db.query<{ policy: PhoneVerificationPolicy }>(
+      "select policy from phone_verification_control where id=1",
+    )
+  ).rows[0]!.policy;
+  assert.equal(bound.limits.globalDaily, null);
+  assert.equal(bound.limits.globalTotal, null);
+  await configurePhoneVerification(f.db, unlimitedGlobalPolicy);
+  for (const replacement of [
+    defaultPolicy,
+    { ...unlimitedGlobalPolicy, identityKeyFingerprint: hash("replacement") },
+  ]) {
+    await assert.rejects(
+      configurePhoneVerification(f.db, replacement),
+      status(409),
+    );
+    assert.equal(
+      await new PhoneVerification(f.db, replacement).readiness(),
+      false,
+    );
+  }
+  for (const changes of [
+    { globalDaily: undefined },
+    { globalDaily: "unlimited" },
+    { userHourly: null },
+    { phoneHourly: null },
+    { ipHourly: null },
+    { cooldownSeconds: null },
+  ])
+    assert.throws(
+      () =>
+        new PhoneVerification(f.db, {
+          ...unlimitedGlobalPolicy,
+          limits: { ...unlimitedGlobalPolicy.limits, ...changes },
+        } as unknown as PhoneVerificationPolicy),
+      status(400),
+    );
+});
+
+for (const dimension of ["globalDaily", "globalTotal"] as const)
+  test(`a finite ${dimension} still limits admission when the other global dimension is unlimited`, async (t) => {
+    const policy: PhoneVerificationPolicy = {
+      ...unlimitedGlobalPolicy,
+      limits: { ...unlimitedGlobalPolicy.limits, [dimension]: 1 },
+    };
+    const f = await fixture(t, policy);
+    const first = input("first", "first-ip");
+    await f.phone.begin(f.ctx, first);
+    await f.phone.cancelDelivery(first.id, first.codeHash);
+    await assert.rejects(
+      f.phone.begin(await f.user(), input("second", "second-ip")),
+      status(429),
+    );
+    assert.equal(
+      (await f.db.query("select 1 from phone_verification_sends")).rows.length,
+      1,
+    );
+  });
+
+for (const dimension of [
+  "userHourly",
+  "phoneHourly",
+  "ipHourly",
+  "cooldownSeconds",
+] as const)
+  test(`unlimited globals do not bypass the durable ${dimension} protection after a failed send`, async (t) => {
+    const policy: PhoneVerificationPolicy = {
+      ...unlimitedGlobalPolicy,
+      limits: {
+        ...unlimitedGlobalPolicy.limits,
+        [dimension]: dimension === "cooldownSeconds" ? 60 : 1,
+      },
+    };
+    const f = await fixture(t, policy),
+      first = input();
+    await f.phone.begin(f.ctx, first);
+    await f.phone.cancelDelivery(first.id, first.codeHash);
+    const ctx =
+      dimension === "userHourly" || dimension === "cooldownSeconds"
+        ? f.ctx
+        : await f.user();
+    const next = input(
+      dimension === "phoneHourly" || dimension === "cooldownSeconds"
+        ? "synthetic-phone"
+        : "different-phone",
+      dimension === "ipHourly" ? "synthetic-ip" : "different-ip",
+    );
+    await assert.rejects(f.phone.begin(ctx, next), status(429));
+    assert.equal(
+      (await f.db.query("select 1 from phone_verification_sends")).rows.length,
+      1,
+    );
+    assert.equal(
+      (await f.db.query("select 1 from ai_credit_entries")).rows.length,
+      0,
+    );
+  });
+
+test("unlimited globals preserve five-code lockout, exactly one gift and retained per-phone uniqueness", async (t) => {
+  const f = await fixture(t, unlimitedGlobalPolicy),
+    first = input("wrong-code-phone");
+  await f.phone.begin(f.ctx, first);
+  await f.phone.markAccepted(first.id, first.codeHash);
+  for (let attempt = 0; attempt < 5; attempt++)
+    await assert.rejects(
+      f.phone.confirm(f.ctx, {
+        ...confirmation(first),
+        codeHash: hash("wrong"),
+      }),
+      status(400),
+    );
+  await assert.rejects(
+    f.phone.confirm(f.ctx, confirmation(first)),
+    status(400),
+  );
+  assert.equal(
+    (await f.db.query("select 1 from ai_credit_entries")).rows.length,
+    0,
+  );
+  const verified = await f.user(),
+    value = input("verified-phone", "different-ip");
+  await f.phone.begin(verified, value);
+  await f.phone.markAccepted(value.id, value.codeHash);
+  const receipt = await f.phone.confirm(verified, confirmation(value));
+  assert.equal(receipt.grantedMicros, 500_000_000);
+  assert.deepEqual(await f.phone.confirm(verified, confirmation(value)), {
+    ...receipt,
+    alreadyGranted: true,
+  });
+  await assert.rejects(
+    f.phone.begin(await f.user(), input("verified-phone")),
+    status(409),
+  );
+  await assert.rejects(
+    f.phone.begin(verified, input("another-phone")),
+    status(409),
+  );
+  assert.equal(
+    (await f.db.query("select 1 from phone_welcome_claims")).rows.length,
+    1,
+  );
+  assert.equal(
+    (await f.db.query("select 1 from ai_credit_entries where kind='bonus'"))
+      .rows.length,
+    1,
+  );
+  assert.equal(
+    (await f.ledger.status(verified.userId)).availableMicros,
+    500_000_000,
   );
 });
 

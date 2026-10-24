@@ -111,6 +111,11 @@ const citygo10xLiveCnFiscalOverdraftEmailProstoFixed = {
   PHONE_VERIFICATION_MODE: "prosto_sms",
   PROSTOSMS_MODE: "live",
 };
+// Explicit unlimited-SMS identity. The earlier v10 profile retains its positive
+// finite limits; zero keeps its historical hard-stop meaning everywhere.
+const citygo10xLiveCnFiscalOverdraftEmailProstoUnlimitedFixed = {
+  ...citygo10xLiveCnFiscalOverdraftEmailProstoFixed,
+};
 const routerAiProfiles = {
   "routerai-credit-v1": routerAiFixed,
   "routerai-citygo-10x-v1": citygo10xFixed,
@@ -125,6 +130,8 @@ const routerAiProfiles = {
     citygo10xLiveCnFiscalOverdraftEmailSmsFixed,
   "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-v1":
     citygo10xLiveCnFiscalOverdraftEmailProstoFixed,
+  "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-unlimited-v1":
+    citygo10xLiveCnFiscalOverdraftEmailProstoUnlimitedFixed,
 };
 const routerAiKeys = (fixed) => [
   "DATABASE_URL",
@@ -215,10 +222,11 @@ function validateRouterAi(value, fixed) {
         value.PHONE_VERIFICATION_SECRET === value.EMAIL_REGISTRATION_SECRET ||
         !/^[!-~]{16,256}$/.test(value.PROSTOSMS_API_KEY) ||
         !/^[A-Za-z0-9][A-Za-z0-9._-]{0,10}$/.test(value.PROSTOSMS_SENDER) ||
-        Object.entries(phoneSmsLimits).some(
-          ([key, maximum]) =>
-            !/^[1-9][0-9]{0,6}$/.test(value[key]) ||
-            Number(value[key]) > maximum,
+        Object.entries(phoneSmsLimits).some(([key, maximum]) =>
+          fixed === citygo10xLiveCnFiscalOverdraftEmailProstoUnlimitedFixed
+            ? value[key] !== "unlimited"
+            : !/^[1-9][0-9]{0,6}$/.test(value[key]) ||
+              Number(value[key]) > maximum,
         )))
   )
     throw new Error();

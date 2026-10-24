@@ -404,4 +404,25 @@ class CityGo10xPostboxProstoCutover(RouterAiCutover):
         self.assertTrue(self.host.closed);self.assertFalse((self.state / w.ADMISSION).exists())
 
 
+@unittest.skipUnless(sys.platform.startswith("linux"), "Linux protected unlimited ProstoSMS cutover")
+class CityGo10xPostboxProstoUnlimitedCutover(RouterAiCutover):
+    profile = s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_UNLIMITED_PROFILE
+    marker = "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-unlimited-v1"
+
+    def test_v11_unlimited_sms_is_closed_api_only_and_preserves_financial_profile(self):
+        result = self.finish();spec = json.loads(self.plan["files"]["compose.json"]);value = json.loads(self.api.read_bytes())
+        self.assertEqual(s.approval(self.start_approval.path.read_bytes(), time.time())["version"], 11)
+        self.assertEqual(value["PHONE_SMS_GLOBAL_DAILY_LIMIT"], "unlimited");self.assertEqual(value["PHONE_SMS_GLOBAL_TOTAL_LIMIT"], "unlimited")
+        self.assertEqual(value["PHONE_VERIFICATION_MODE"], "prosto_sms");self.assertEqual(value["PROSTOSMS_MODE"], "live")
+        self.assertEqual(value["SMS_RU_MODE"], "disabled");self.assertEqual(value["AI_CREDIT_RESERVATION_MODE"], "fixed5_overdraft")
+        self.assertEqual(value["AI_CREDIT_MODE"], "routerai_citygo_10x");self.assertEqual(value["YOOKASSA_MODE"], "live")
+        self.assertEqual(value["YOOKASSA_FISCAL_PROFILE"], "citygo_service_full_payment_v1")
+        for role, service in spec["services"].items():
+            self.assertFalse(any(key.startswith(("EMAIL_", "POSTBOX_", "PHONE_", "SMS_", "PROSTOSMS_")) for key in service.get("environment", {})))
+            if role != "api": self.assertFalse(any(mount.get("source") == "api_config" if isinstance(mount, dict) else mount == "api_config" for mount in service.get("secrets", [])))
+        for key in s.EMAIL_PRIVATE_KEYS | s.PROSTOSMS_PRIVATE_KEYS:
+            self.assertNotIn(value[key], self.plan["files"]["compose.json"].decode());self.assertNotIn(value[key], json.dumps(result))
+        self.assertTrue(self.host.closed);self.assertFalse((self.state / w.ADMISSION).exists())
+
+
 if __name__ == "__main__": unittest.main()

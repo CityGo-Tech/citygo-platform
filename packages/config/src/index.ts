@@ -15,8 +15,8 @@ const optionalIntegerSetting = (min: number, max: number) =>
     z.coerce.number().int().min(min).max(max).optional(),
   );
 
-// Only the two global email caps support an explicit unlimited choice. Zero
-// remains the default hard stop; no coercion from booleans, arrays or objects.
+// Global email caps and explicitly selected live ProstoSMS support unlimited.
+// Zero remains the default hard stop; no booleans, arrays or objects are coerced.
 // A cap choice is not approval for public sending or paid provider conditions.
 const emailSendLimit = (max: number) =>
   z
@@ -214,18 +214,8 @@ export const serverConfigSchema = z.object({
       .regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,10}$/)
       .optional(),
   ),
-  PHONE_SMS_GLOBAL_DAILY_LIMIT: z.coerce
-    .number()
-    .int()
-    .min(0)
-    .max(100000)
-    .default(0),
-  PHONE_SMS_GLOBAL_TOTAL_LIMIT: z.coerce
-    .number()
-    .int()
-    .min(0)
-    .max(1000000)
-    .default(0),
+  PHONE_SMS_GLOBAL_DAILY_LIMIT: emailSendLimit(100000),
+  PHONE_SMS_GLOBAL_TOTAL_LIMIT: emailSendLimit(1000000),
   AI_CREDIT_MODE: z
     .enum(["disabled", "routerai_at_cost", "routerai_citygo_10x"])
     .default("disabled"),
@@ -309,6 +299,15 @@ export function validateVerificationDeliveryConfig(
     throw new Error(
       "Only one SMS transport may be enabled; no automatic fallback",
     );
+  if (
+    (config.PHONE_SMS_GLOBAL_DAILY_LIMIT === "unlimited" ||
+      config.PHONE_SMS_GLOBAL_TOTAL_LIMIT === "unlimited") &&
+    (config.PHONE_VERIFICATION_MODE !== "prosto_sms" ||
+      config.PROSTOSMS_MODE !== "live")
+  )
+    throw new Error(
+      "Unlimited global SMS admission requires explicitly selected live ProstoSMS",
+    );
   const phoneTransportLive =
     (config.PHONE_VERIFICATION_MODE === "sms_ru" &&
       config.SMS_RU_MODE === "live") ||
@@ -326,7 +325,7 @@ export function validateVerificationDeliveryConfig(
       config.EMAIL_REGISTRATION_SECRET === config.PHONE_VERIFICATION_SECRET)
   )
     throw new Error(
-      "Phone verification requires live SMS, verified-email policy, CityGo 10x, separate identity secret and positive send admission caps",
+      "Phone verification requires live SMS, verified-email policy, CityGo 10x, separate identity secret and positive or explicit unlimited global send admission caps",
     );
 }
 

@@ -31,19 +31,22 @@ CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_PROFILE = "citygo-api-web-routerai-
 CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROFILE = "citygo-api-web-routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-v1"
 CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_SMS_PROFILE = "citygo-api-web-routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-smsru-v1"
 CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_PROFILE = "citygo-api-web-routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-v1"
+CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_UNLIMITED_PROFILE = "citygo-api-web-routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-unlimited-v1"
 PROFILE_VERSIONS = {PROFILE: 1, ROUTERAI_PROFILE: 2, CITYGO_10X_PROFILE: 3,
                     CITYGO_10X_YOOKASSA_LIVE_PROFILE: 4, CITYGO_10X_YOOKASSA_LIVE_CN_PROFILE: 5,
                     CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_PROFILE: 6,
                     CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_PROFILE: 7,
                     CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROFILE: 8,
                     CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_SMS_PROFILE: 9,
-                    CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_PROFILE: 10}
+                    CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_PROFILE: 10,
+                    CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_UNLIMITED_PROFILE: 11}
 CLOSED_ONLY_PROFILES = frozenset((CITYGO_10X_YOOKASSA_LIVE_PROFILE, CITYGO_10X_YOOKASSA_LIVE_CN_PROFILE,
                                 CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_PROFILE,
                                 CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_PROFILE,
                                 CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROFILE,
                                 CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_SMS_PROFILE,
-                                CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_PROFILE))
+                                CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_PROFILE,
+                                CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_UNLIMITED_PROFILE))
 # Public configuration is pinned together with the private key by startup approval.
 # No live budget, user bonus, consent or payment authorization is encoded here.
 ROUTERAI_FIXED = {
@@ -88,6 +91,8 @@ CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_FIXED = {
     **CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_FIXED,
     "PHONE_VERIFICATION_MODE": "prosto_sms", "PROSTOSMS_MODE": "live"}
 PROSTOSMS_PRIVATE_KEYS = {"PHONE_VERIFICATION_SECRET", "PROSTOSMS_API_KEY", "PROSTOSMS_SENDER"}
+PROSTOSMS_PROFILES = frozenset((CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_PROFILE,
+                               CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_UNLIMITED_PROFILE))
 YOOKASSA_LIVE_KEYS = {"YOOKASSA_SHOP_ID", "YOOKASSA_SECRET_KEY"}
 ROUTERAI_LIMITS = {
     "LLM_USER_DAILY_REQUEST_LIMIT": 10000, "LLM_GLOBAL_DAILY_REQUEST_LIMIT": 1000000,
@@ -108,7 +113,7 @@ def api_secret(path, profile=PROFILE):
     if profile == PROFILE:
         b.require({"DATABASE_URL"} <= set(value) <= {"DATABASE_URL", "ADMIN_USER_IDS"}, "start-secret")
     else:
-        fixed = (CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_FIXED if profile == CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_PROFILE else
+        fixed = (CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_FIXED if profile in PROSTOSMS_PROFILES else
                  CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_SMS_FIXED if profile == CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_SMS_PROFILE else
                  CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_FIXED if profile == CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROFILE else
                  CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_FIXED if profile == CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_PROFILE else
@@ -117,9 +122,9 @@ def api_secret(path, profile=PROFILE):
                  CITYGO_10X_YOOKASSA_LIVE_FIXED if profile == CITYGO_10X_YOOKASSA_LIVE_PROFILE else
                  CITYGO_10X_FIXED if profile == CITYGO_10X_PROFILE else ROUTERAI_FIXED)
         payment_keys = YOOKASSA_LIVE_KEYS if profile in CLOSED_ONLY_PROFILES else set()
-        email_keys = EMAIL_PRIVATE_KEYS | set(EMAIL_LIMITS) if profile in (CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROFILE, CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_SMS_PROFILE, CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_PROFILE) else set()
+        email_keys = EMAIL_PRIVATE_KEYS | set(EMAIL_LIMITS) if profile in (CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROFILE, CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_SMS_PROFILE, *PROSTOSMS_PROFILES) else set()
         phone_keys = PHONE_SMS_PRIVATE_KEYS | set(PHONE_SMS_LIMITS) if profile == CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_SMS_PROFILE else set()
-        prosto_keys = PROSTOSMS_PRIVATE_KEYS | set(PHONE_SMS_LIMITS) if profile == CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_PROFILE else set()
+        prosto_keys = PROSTOSMS_PRIVATE_KEYS | set(PHONE_SMS_LIMITS) if profile in PROSTOSMS_PROFILES else set()
         t.keys(value, {"DATABASE_URL", "ADMIN_USER_IDS", "ROUTERAI_API_KEY", "ROUTERAI_DATA_NOTICE",
                        "ROUTERAI_PRODUCTION_POLICY_ID"} | set(fixed) | set(ROUTERAI_LIMITS) | payment_keys | email_keys | phone_keys | prosto_keys, "start-secret")
         b.require(all(type(v) is str and v.strip() == v and v and not any(ord(c) < 32 for c in v)
@@ -137,7 +142,8 @@ def api_secret(path, profile=PROFILE):
             b.require(t.matches(value["YOOKASSA_SHOP_ID"], r"[1-9][0-9]{0,19}")
                       and t.matches(value["YOOKASSA_SECRET_KEY"], r"live_[A-Za-z0-9_=-]{8,8192}"), "start-secret")
         if email_keys:
-            # Exact email-only sentinel; zero and AI/SMS quotas keep their old meaning.
+            # Email sentinel is independent of the separate v11 SMS identity.
+            # Zero and every legacy AI/SMS quota retain their old meaning.
             b.require(t.matches(value["EMAIL_REGISTRATION_SECRET"], t.HASH)
                       and t.matches(value["POSTBOX_ACCESS_KEY_ID"], r"[A-Za-z0-9_-]{8,128}")
                       and t.matches(value["POSTBOX_SECRET_ACCESS_KEY"], r"[!-~]{16,256}")
@@ -156,7 +162,8 @@ def api_secret(path, profile=PROFILE):
                       and value["PHONE_VERIFICATION_SECRET"] != value["EMAIL_REGISTRATION_SECRET"]
                       and t.matches(value["PROSTOSMS_API_KEY"], r"[!-~]{16,256}")
                       and t.matches(value["PROSTOSMS_SENDER"], r"[A-Za-z0-9][A-Za-z0-9._-]{0,10}")
-                      and all(t.matches(value[key], r"[1-9][0-9]{0,6}") and int(value[key]) <= maximum
+                      and all((value[key] == "unlimited" if profile == CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_UNLIMITED_PROFILE
+                               else t.matches(value[key], r"[1-9][0-9]{0,6}") and int(value[key]) <= maximum)
                               for key, maximum in PHONE_SMS_LIMITS.items()), "start-secret")
     url = value["DATABASE_URL"]
     b.require(type(url) is str and not any(ord(ch) <= 32 for ch in url), "start-secret")
@@ -223,6 +230,7 @@ def profile_environment(profile):
     b.require(type(profile) is str and profile in PROFILE_VERSIONS, "start-profile")
     return ({"LLM_PROVIDER": "disabled"} if profile == PROFILE else
             {"LLM_PROVIDER": "routerai", "CITYGO_AI_PROFILE":
+             "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-unlimited-v1" if profile == CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_UNLIMITED_PROFILE else
              "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-v1" if profile == CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_PROFILE else
              "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-smsru-v1" if profile == CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_SMS_PROFILE else
              "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-v1" if profile == CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROFILE else

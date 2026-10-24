@@ -18,8 +18,10 @@ const policySchema = z.strictObject({
     phoneHourly: count,
     ipHourly: count,
     cooldownSeconds: z.number().int().min(0).max(86400),
-    globalDaily: count,
-    globalTotal: count,
+    // Explicit unlimited applies only to globals. Zero still denies; omitted,
+    // negative or string values cannot silently remove any bound protection.
+    globalDaily: count.nullable(),
+    globalTotal: count.nullable(),
   }),
 });
 const contextSchema = z.strictObject({
@@ -244,31 +246,51 @@ export class PhoneVerification {
     ipKey: string,
   ) {
     const limits = this.value.policy.limits;
+    if (limits.globalDaily !== null || limits.globalTotal !== null) {
+      const global = (
+        await tx.query<{ daily?: number; total?: number }>(
+          limits.globalDaily !== null && limits.globalTotal !== null
+            ? `select count(*) filter(where created_at>=date_trunc('day',clock_timestamp() at time zone 'UTC') at time zone 'UTC')::int as daily,
+               count(*)::int as total from phone_verification_sends`
+            : limits.globalDaily !== null
+              ? `select count(*)::int as daily from phone_verification_sends
+                 where created_at>=date_trunc('day',clock_timestamp() at time zone 'UTC') at time zone 'UTC'`
+              : "select count(*)::int as total from phone_verification_sends",
+        )
+      ).rows[0]!;
+      if (
+        (limits.globalDaily !== null && global.daily! >= limits.globalDaily) ||
+        (limits.globalTotal !== null && global.total! >= limits.globalTotal)
+      )
+        throw new DomainError(429, "Слишком много отправок. Попробуйте позже");
+    }
     const row = (
       await tx.query<{
         user_count: number;
         phone_count: number;
         ip_count: number;
-        daily_count: number;
-        total_count: number;
         cooldown: boolean;
       }>(
         `select count(*) filter(where user_id=$1 and created_at>clock_timestamp()-interval '1 hour')::int as user_count,
        count(*) filter(where phone_key=$2 and created_at>clock_timestamp()-interval '1 hour')::int as phone_count,
-       count(*) filter(where ip_key=$3 and created_at>clock_timestamp()-interval '1 hour')::int as ip_count,
-       count(*) filter(where created_at>=date_trunc('day',clock_timestamp() at time zone 'UTC') at time zone 'UTC')::int as daily_count,
-       count(*)::int as total_count,
+        count(*) filter(where ip_key=$3 and created_at>clock_timestamp()-interval '1 hour')::int as ip_count,
        coalesce(bool_or((user_id=$1 or phone_key=$2) and created_at>clock_timestamp()-($4::integer*interval '1 second')),false) as cooldown
-       from phone_verification_sends`,
-        [userId, phoneKey, ipKey, limits.cooldownSeconds],
+        from phone_verification_sends
+        where created_at>clock_timestamp()-($5::integer*interval '1 second')
+          and (user_id=$1 or phone_key=$2 or ip_key=$3)`,
+        [
+          userId,
+          phoneKey,
+          ipKey,
+          limits.cooldownSeconds,
+          Math.max(3600, limits.cooldownSeconds),
+        ],
       )
     ).rows[0]!;
     if (
       row.user_count >= limits.userHourly ||
       row.phone_count >= limits.phoneHourly ||
       row.ip_count >= limits.ipHourly ||
-      row.daily_count >= limits.globalDaily ||
-      row.total_count >= limits.globalTotal ||
       row.cooldown
     )
       throw new DomainError(429, "Слишком много отправок. Попробуйте позже");
