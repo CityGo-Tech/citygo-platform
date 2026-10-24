@@ -1,6 +1,6 @@
 // Only the disposable pilot harness, before its API/Worker starts. This is not
 // production rollback tooling: the harness already owns an empty current DB.
-// Rehearsing 12→26 here does not authorize any production release or alter the
+// Rehearsing 12→27 here does not authorize any production release or alter the
 // separately pinned historical 12→18 controller profile and approvals.
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
@@ -128,6 +128,7 @@ export async function releaseUpgrade12Smoke({
       "0024_ai_credit_overdraft.sql",
       "0025_assistant_conversations.sql",
       "0026_email_registration.sql",
+      "0027_phone_verification.sql",
     ],
   );
   const expectedJournal = migrations.map(({ name }) => ({
@@ -152,6 +153,16 @@ export async function releaseUpgrade12Smoke({
   psql(`begin;
     drop table payment_admission_commands,payment_admission_reconciliation_events,payment_admission;
     drop function citygo_guard_payment_admission_history();
+    do $$ begin
+      if exists(select 1 from phone_welcome_claims)
+        or exists(select 1 from phone_verification_challenges)
+        or exists(select 1 from phone_verification_sends)
+        or exists(select 1 from phone_verification_control where identity_key_fingerprint is not null) then
+        raise exception 'Phone verification history cannot be rewound';
+      end if;
+    end $$;
+    drop table phone_welcome_claims,phone_verification_sends,phone_verification_challenges,phone_verification_control;
+    drop function citygo_guard_phone_challenge(),citygo_guard_phone_welcome_claim();
     do $$ begin
       if exists(select 1 from account_email_verifications)
         or exists(select 1 from email_registrations)
@@ -246,7 +257,7 @@ export async function releaseUpgrade12Smoke({
     delete from citygo_migrations where name in (
       '0013_account_access.sql','0014_citygo_credit.sql','0015_yookassa_orders.sql',
       '0016_npd_receipts.sql','0017_credit_source_lots.sql','0018_payment_refunds.sql',
-      '0019_yookassa_live_orders.sql','0020_ai_budget_provider_balance.sql','0021_payment_notifications.sql','0022_payment_admission.sql','0023_payment_receipt_snapshots.sql','0024_ai_credit_overdraft.sql','0025_assistant_conversations.sql','0026_email_registration.sql');
+      '0019_yookassa_live_orders.sql','0020_ai_budget_provider_balance.sql','0021_payment_notifications.sql','0022_payment_admission.sql','0023_payment_receipt_snapshots.sql','0024_ai_credit_overdraft.sql','0025_assistant_conversations.sql','0026_email_registration.sql','0027_phone_verification.sql');
     commit`);
 
   psql(`begin;
@@ -543,6 +554,6 @@ export async function releaseUpgrade12Smoke({
   assertClosedPaymentAdmission(psql);
   assertPaymentAdmissionAcls(psql);
   console.log(
-    "Exact synthetic 12→26 rehearsal passed: fourteen current migrations + ACLs, late-grants transactional rollback, preserved 12-era data and legacy conversation, conservative source backfill, empty pending-email schema, restricted runtime roles; closed checkout, no production authorization, deploy or provider calls",
+    "Exact synthetic 12→27 rehearsal passed: fifteen current migrations + ACLs, late-grants transactional rollback, preserved 12-era data and legacy conversation, conservative source backfill, empty pending-email schema and unbound phone policy, restricted runtime roles; closed checkout, no production authorization, deploy or provider calls",
   );
 }

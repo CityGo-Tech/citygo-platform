@@ -61,6 +61,12 @@ grant select, insert on email_registrations, email_registration_rate_events,
   account_email_verifications to citygo_api;
 grant update (code_hash,delivery,attempts,expires_at,consumed_user_id,consumed_at)
   on email_registrations to citygo_api;
+-- Phone identity policy is operator-bound, never writable/bindable by API.
+-- Quotas and spent gift rights are retained append-only; Worker gets no access.
+grant select on phone_verification_control to citygo_api;
+grant select,insert on phone_verification_challenges,phone_verification_sends,phone_welcome_claims to citygo_api;
+grant update (code_hash,delivery,attempts,expires_at,superseded_at,consumed_at,consumed_operation_id)
+  on phone_verification_challenges to citygo_api;
 -- UPDATE on users is needed by existing SELECT ... FOR UPDATE row locks.
 grant update on users, relocation_plans, user_quests, agent_threads,
   chat_requests, ai_consents, ai_usage_daily, ai_user_usage_daily, ai_routing,

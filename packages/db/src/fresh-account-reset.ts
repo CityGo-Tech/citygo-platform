@@ -50,6 +50,10 @@ const tables = [
   "payment_refund_events",
   "payment_refunds",
   "payment_topup_orders",
+  "phone_verification_challenges",
+  "phone_verification_control",
+  "phone_verification_sends",
+  "phone_welcome_claims",
   "questionnaire_answers",
   "quests",
   "r1_housing_brief_revisions",
@@ -100,6 +104,10 @@ const protectedEmpty = [
   ...protectedDebt,
 ] as const;
 const preserved = [
+  "phone_verification_challenges",
+  "phone_verification_control",
+  "phone_verification_sends",
+  "phone_welcome_claims",
   // No retention/anti-abuse deletion is authorized by the old TEST reset.
   "account_email_verifications",
   "email_registrations",
@@ -380,6 +388,21 @@ async function inspect(tx: Sql, options: Options) {
       code: "EMAIL_REGISTRATION_HISTORY_REQUIRES_REVIEW",
       count: verificationHistoryCount,
     });
+  const phoneHistoryCount = [
+    "phone_verification_challenges",
+    "phone_verification_sends",
+    "phone_welcome_claims",
+  ].reduce((total, name) => total + snapshot.counts[name]!, 0);
+  const phoneBindingCount = (
+    await tx.query<{ count: number }>(
+      "select count(*)::int as count from phone_verification_control where identity_key_fingerprint is not null",
+    )
+  ).rows[0]!.count;
+  if (phoneHistoryCount + phoneBindingCount)
+    blockers.push({
+      code: "PHONE_VERIFICATION_HISTORY_REQUIRES_REVIEW",
+      count: phoneHistoryCount + phoneBindingCount,
+    });
   const npdHistoryCount = protectedNpd.reduce(
     (count, name) => count + snapshot.counts[name]!,
     0,
@@ -501,16 +524,25 @@ export class FreshAccountReset {
         refuse("Полный тестовый сброс заблокирован; проверьте dry-run");
       // Truncate only reviewed child tables. Even EMPTY admission history has a
       // users FK and immutable TRUNCATE guard; it must never join this command.
-      // Delete users separately after all history/owner blockers were checked.
+      // Retained phone evidence also references credit entries. Even when empty
+      // it must never join TRUNCATE: delete the already-authorized old financial
+      // parents separately, only after all history/owner blockers were checked.
       // No CASCADE, schema drop, sequence restart, role changes or migration edits.
       await tx.exec(
         `truncate table ${[
-          ...erased.filter((name) => name !== "users"),
+          ...erased.filter(
+            (name) =>
+              !["users", "ai_credit_entries", "ai_credit_accounts"].includes(
+                name,
+              ),
+          ),
           ...protectedEmpty,
         ]
           .map((name) => `public.${name}`)
           .join(",")}`,
       );
+      await tx.exec("delete from public.ai_credit_entries");
+      await tx.exec("delete from public.ai_credit_accounts");
       await tx.exec("delete from public.users");
       await tx.exec(
         "update ai_budget set enabled=false,total_reserved_micros=0,user_daily_limit_micros=null,revision=revision+1 where id=1",

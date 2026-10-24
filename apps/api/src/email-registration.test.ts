@@ -36,6 +36,7 @@ async function fixture(
   t: TestContext,
   mode: "disabled" | "required",
   delivery?: RegistrationEmailDelivery,
+  verificationConfig: NodeJS.ProcessEnv = {},
 ) {
   const db = await connectDatabase("pglite://:memory:");
   t.after(() => db.close());
@@ -48,6 +49,7 @@ async function fixture(
       LLM_PROVIDER: "disabled",
       EMAIL_REGISTRATION_MODE: mode,
       EMAIL_REGISTRATION_SECRET: "a".repeat(64),
+      ...verificationConfig,
     }),
     emailRegistrationDelivery: delivery,
   });
@@ -78,6 +80,113 @@ test("disabled flow preserves six-character registration, but cannot fake confir
     (await post("/v1/auth/register", { email, password })).statusCode,
     200,
   );
+});
+
+test("explicit unlimited global email caps preserve OTP, recipient cooldown and no automatic gift", async (t) => {
+  const delivered: Parameters<RegistrationEmailDelivery>[0][] = [];
+  const { post, db } = await fixture(
+    t,
+    "required",
+    async (input) => {
+      delivered.push(input);
+    },
+    {
+      EMAIL_DELIVERY_PROVIDER: "yandex_postbox",
+      POSTBOX_ACCESS_KEY_ID: "synthetic-access",
+      POSTBOX_SECRET_ACCESS_KEY: "synthetic-secret",
+      POSTBOX_FROM_EMAIL: "sender@example.test",
+      EMAIL_SEND_DAILY_LIMIT: "unlimited",
+      EMAIL_SEND_TOTAL_LIMIT: "unlimited",
+    },
+  );
+  const first = await post("/v1/auth/email/register", { email, password });
+  assert.equal(first.statusCode, 200);
+  assert.equal(
+    (
+      await post("/v1/auth/email/register", {
+        email: "other-synthetic-email@example.test",
+        password,
+      })
+    ).statusCode,
+    200,
+  );
+  assert.equal(delivered.length, 2);
+  assert.equal(
+    (await post("/v1/auth/email/register", { email, password })).statusCode,
+    429,
+  );
+  assert.equal(delivered.length, 2);
+  assert.equal(
+    (await db.query("select 1 from email_registration_rate_events")).rows
+      .length,
+    4,
+  );
+  assert.equal((await db.query("select 1 from users")).rows.length, 0);
+  const challenge = emailRegistrationChallengeSchema.parse(first.json());
+  assert.equal(
+    (
+      await post("/v1/auth/email/confirm", {
+        challengeId: challenge.challengeId,
+        proof: challenge.proof,
+        code: delivered[0]!.code,
+      })
+    ).statusCode,
+    200,
+  );
+  assert.equal((await db.query("select 1 from users")).rows.length, 1);
+  assert.equal((await db.query("select 1 from sessions")).rows.length, 1);
+  assert.equal(
+    (await db.query("select 1 from account_email_verifications")).rows.length,
+    1,
+  );
+  assert.equal(
+    (await db.query("select 1 from ai_credit_entries")).rows.length,
+    0,
+  );
+});
+
+test("one unlimited global email cap never bypasses the other numeric cap", async (t) => {
+  for (const [daily, total] of [
+    ["unlimited", "1"],
+    ["1", "unlimited"],
+  ]) {
+    let sent = 0;
+    const { post, db } = await fixture(
+      t,
+      "required",
+      async () => {
+        sent++;
+      },
+      {
+        EMAIL_DELIVERY_PROVIDER: "yandex_postbox",
+        POSTBOX_ACCESS_KEY_ID: "synthetic-access",
+        POSTBOX_SECRET_ACCESS_KEY: "synthetic-secret",
+        POSTBOX_FROM_EMAIL: "sender@example.test",
+        EMAIL_SEND_DAILY_LIMIT: daily,
+        EMAIL_SEND_TOTAL_LIMIT: total,
+      },
+    );
+    assert.equal(
+      (await post("/v1/auth/email/register", { email, password })).statusCode,
+      200,
+    );
+    assert.equal(
+      (
+        await post("/v1/auth/email/register", {
+          email: "other-synthetic-email@example.test",
+          password,
+        })
+      ).statusCode,
+      429,
+    );
+    assert.equal(sent, 1);
+    assert.equal(
+      (await db.query("select 1 from email_registration_rate_events")).rows
+        .length,
+      2,
+    );
+    assert.equal((await db.query("select 1 from users")).rows.length, 0);
+  }
 });
 
 test("required without delivery is honest unavailable, denies legacy bypass but preserves historical login", async (t) => {
@@ -349,7 +458,49 @@ test("late failed delivery from an older HTTP resend cannot cancel the newly del
   assert.equal((await db.query("select 1 from sessions")).rows.length, 1);
 });
 
-test("an unresponsive sender reaches the eight-second deadline, aborts and cannot create an account after a late completion", async (t) => {
+test("a sender acknowledged after the former eight-second cutoff remains one delivery with the same quotas", async (t) => {
+  const entered = deferred<Parameters<RegistrationEmailDelivery>[0]>();
+  const sender = deferred<void>();
+  let sends = 0;
+  const { post, db } = await fixture(t, "required", async (input) => {
+    sends++;
+    entered.resolve(input);
+    await sender.promise;
+  });
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const pending = post("/v1/auth/email/register", { email, password });
+    const sent = await entered.promise;
+    t.mock.timers.tick(8_001);
+    assert.equal(sent.signal.aborted, false);
+    sender.resolve();
+    const accepted = await pending;
+    assert.equal(accepted.statusCode, 200);
+    assert.ok(
+      emailRegistrationChallengeSchema.safeParse(accepted.json()).success,
+    );
+    assert.equal(sends, 1);
+    assert.equal(
+      (
+        await db.query<{ delivery: string }>(
+          "select delivery from email_registrations",
+        )
+      ).rows[0]!.delivery,
+      "sent",
+    );
+    assert.equal(
+      (await db.query("select 1 from email_registration_rate_events")).rows
+        .length,
+      2,
+    );
+    assert.equal((await db.query("select 1 from users")).rows.length, 0);
+  } finally {
+    sender.resolve();
+    t.mock.timers.reset();
+  }
+});
+
+test("an unresponsive sender reaches the twenty-five-second deadline, aborts and cannot create an account after a late completion", async (t) => {
   const entered = deferred<Parameters<RegistrationEmailDelivery>[0]>();
   const sender = deferred<void>();
   const { post, db } = await fixture(t, "required", async (input) => {
@@ -360,7 +511,7 @@ test("an unresponsive sender reaches the eight-second deadline, aborts and canno
   try {
     const pending = post("/v1/auth/email/register", { email, password });
     const sent = await entered.promise;
-    t.mock.timers.tick(7_999);
+    t.mock.timers.tick(24_999);
     assert.equal(sent.signal.aborted, false);
     t.mock.timers.tick(1);
     assert.equal(sent.signal.aborted, true);
@@ -531,6 +682,7 @@ test("structured registration logs redact email, password, OTP, proof and creden
   t.after(() => app.close());
   const canaries = {
     email: "synthetic-private-person@example.test",
+    phone: "+79990000001",
     password: "synthetic-private-password",
     code: "012345",
     proof: "b".repeat(64),
@@ -549,6 +701,7 @@ test("structured registration logs redact email, password, OTP, proof and creden
         },
         body: {
           email: canaries.email,
+          phone: canaries.phone,
           password: canaries.password,
           code: canaries.code,
           proof: canaries.proof,
@@ -566,7 +719,7 @@ test("structured registration logs redact email, password, OTP, proof and creden
   for (const value of Object.values(canaries))
     assert.ok(!output.includes(value));
   const logged = JSON.parse(records[0]!);
-  for (const key of ["email", "password", "code", "proof"])
+  for (const key of ["email", "phone", "password", "code", "proof"])
     assert.equal(logged.req.body[key], "[Redacted]");
   assert.equal(logged.codeHash, "[Redacted]");
   assert.equal(logged.proofHash, "[Redacted]");

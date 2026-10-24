@@ -42,6 +42,10 @@ const ownedTables = [
   "ai_credit_charges",
 ] as const;
 const retained = [
+  "phone_verification_control",
+  "phone_verification_challenges",
+  "phone_verification_sends",
+  "phone_welcome_claims",
   "account_email_verifications",
   "email_registrations",
   "email_registration_rate_events",
@@ -142,6 +146,10 @@ export class AccountReset {
       // A retained singleton and append-only audit, not a deletion whitelist.
       // Security lock above serializes the supported admission writers.
       for (const table of [
+        "phone_verification_control",
+        "phone_verification_challenges",
+        "phone_verification_sends",
+        "phone_welcome_claims",
         "account_email_verifications",
         "email_registrations",
         "email_registration_rate_events",

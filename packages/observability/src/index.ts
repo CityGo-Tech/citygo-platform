@@ -7,6 +7,7 @@ export const redactPaths = [
   "apiKey",
   "req.body.password",
   "req.body.email",
+  "req.body.phone",
   "req.body.code",
   "req.body.proof",
   "codeHash",

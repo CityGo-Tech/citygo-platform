@@ -82,7 +82,38 @@ async function accountExists(tx: Sql, email: string) {
     ).rows.length > 0
   );
 }
-async function quota(tx: Sql, recipientKey: string, ipKey: string) {
+// null is explicit unlimited admission for this field; numeric zero still denies.
+// An omitted object preserves the historical recipient/IP-only configuration.
+export type EmailSendLimits = { daily: number | null; total: number | null };
+async function quota(
+  tx: Sql,
+  recipientKey: string,
+  ipKey: string,
+  global?: EmailSendLimits,
+) {
+  if (global && (global.daily !== null || global.total !== null)) {
+    const daily = global.daily,
+      total = global.total;
+    const row = (
+      await tx.query<{ daily?: number; total?: number }>(
+        daily !== null && total !== null
+          ? `select count(*) filter(where created_at>=date_trunc('day',clock_timestamp() at time zone 'UTC') at time zone 'UTC')::int as daily,
+       count(*)::int as total from email_registration_rate_events where kind='recipient'`
+          : daily !== null
+            ? `select count(*)::int as daily from email_registration_rate_events where kind='recipient'
+       and created_at>=date_trunc('day',clock_timestamp() at time zone 'UTC') at time zone 'UTC'`
+            : "select count(*)::int as total from email_registration_rate_events where kind='recipient'",
+      )
+    ).rows[0]!;
+    if (
+      (daily !== null && row.daily! >= daily) ||
+      (total !== null && row.total! >= total)
+    )
+      throw new DomainError(
+        429,
+        "Общий лимит отправки писем исчерпан. Попробуйте позже",
+      );
+  }
   const limits = (
     await tx.query<{
       recipient_count: number;
@@ -111,7 +142,32 @@ async function quota(tx: Sql, recipientKey: string, ipKey: string) {
 // hashes passwords and performs delivery OUTSIDE these short transactions.
 // No SMTP, user-visible OTP, bonus, provider request or runtime activation here.
 export class EmailRegistration {
-  constructor(private db: Database) {}
+  private readonly sendLimits?: Readonly<EmailSendLimits>;
+  constructor(
+    private db: Database,
+    sendLimits?: EmailSendLimits,
+  ) {
+    if (sendLimits !== undefined) {
+      if (
+        sendLimits === null ||
+        typeof sendLimits !== "object" ||
+        Array.isArray(sendLimits)
+      )
+        throw new Error("Invalid email send admission limits");
+      // Read each field once and validate the frozen snapshot, not the caller's
+      // mutable object. Undefined fields are not another spelling of unlimited.
+      const snapshot = { daily: sendLimits.daily, total: sendLimits.total };
+      if (
+        ![snapshot.daily, snapshot.total].every(
+          (value) =>
+            value === null ||
+            (Number.isSafeInteger(value) && value >= 0 && value <= 1000000),
+        )
+      )
+        throw new Error("Invalid email send admission limits");
+      this.sendLimits = Object.freeze(snapshot);
+    }
+  }
 
   async begin(raw: EmailRegistrationBegin) {
     const input = parse(beginSchema, raw);
@@ -128,7 +184,7 @@ export class EmailRegistration {
         ).rows.length
       )
         throw new DomainError(409, "Попытка регистрации уже существует");
-      await quota(tx, input.recipientKey, input.ipKey);
+      await quota(tx, input.recipientKey, input.ipKey, this.sendLimits);
       return (
         await tx.query<{ id: string; expiresAt: string }>(
           `insert into email_registrations(id,email,password_hash,proof_hash,code_hash,recipient_key,expires_at)
@@ -186,7 +242,7 @@ export class EmailRegistration {
         throw invalid();
       if (await accountExists(tx, current.email))
         throw new DomainError(409, "Аккаунт с этой почтой уже существует");
-      await quota(tx, current.recipient_key, input.ipKey);
+      await quota(tx, current.recipient_key, input.ipKey, this.sendLimits);
       const next = (
         await tx.query<{ expiresAt: string }>(
           `update email_registrations set code_hash=$2,delivery='pending',attempts=0,

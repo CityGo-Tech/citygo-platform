@@ -80,6 +80,20 @@ const citygo10xLiveCnFiscalOverdraftFixed = {
   ...citygo10xLiveCnFiscalFixed,
   AI_CREDIT_RESERVATION_MODE: "fixed5_overdraft",
 };
+// Separate preparation-only identity; legacy mounted profiles never acquire
+// verification credentials or sending permission through a larger keyset.
+const citygo10xLiveCnFiscalOverdraftEmailFixed = {
+  ...citygo10xLiveCnFiscalOverdraftFixed,
+  EMAIL_REGISTRATION_MODE: "required",
+  EMAIL_DELIVERY_PROVIDER: "yandex_postbox",
+  POSTBOX_FROM_EMAIL: "no-reply@xn--c1ajazlh.xn--p1ai",
+  PHONE_VERIFICATION_MODE: "disabled",
+  SMS_RU_MODE: "disabled",
+};
+const emailLimits = {
+  EMAIL_SEND_DAILY_LIMIT: 100000,
+  EMAIL_SEND_TOTAL_LIMIT: 1000000,
+};
 const routerAiProfiles = {
   "routerai-credit-v1": routerAiFixed,
   "routerai-citygo-10x-v1": citygo10xFixed,
@@ -88,6 +102,8 @@ const routerAiProfiles = {
   "routerai-citygo-10x-yookassa-live-cn-fiscal-v2": citygo10xLiveCnFiscalFixed,
   "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-v1":
     citygo10xLiveCnFiscalOverdraftFixed,
+  "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-v1":
+    citygo10xLiveCnFiscalOverdraftEmailFixed,
 };
 const routerAiKeys = (fixed) => [
   "DATABASE_URL",
@@ -99,6 +115,14 @@ const routerAiKeys = (fixed) => [
   ...Object.keys(routerAiLimits),
   ...(fixed.YOOKASSA_MODE === "live"
     ? ["YOOKASSA_SHOP_ID", "YOOKASSA_SECRET_KEY"]
+    : []),
+  ...(fixed.EMAIL_DELIVERY_PROVIDER === "yandex_postbox"
+    ? [
+        "EMAIL_REGISTRATION_SECRET",
+        "POSTBOX_ACCESS_KEY_ID",
+        "POSTBOX_SECRET_ACCESS_KEY",
+        ...Object.keys(emailLimits),
+      ]
     : []),
 ];
 
@@ -127,7 +151,18 @@ function validateRouterAi(value, fixed) {
     value.ROUTERAI_API_KEY.length > 8192 ||
     (fixed.YOOKASSA_MODE === "live" &&
       (!/^[1-9][0-9]{0,19}$/.test(value.YOOKASSA_SHOP_ID) ||
-        !/^live_[A-Za-z0-9_=-]{8,8192}$/.test(value.YOOKASSA_SECRET_KEY)))
+        !/^live_[A-Za-z0-9_=-]{8,8192}$/.test(value.YOOKASSA_SECRET_KEY))) ||
+    (fixed.EMAIL_DELIVERY_PROVIDER === "yandex_postbox" &&
+      (!/^[a-f0-9]{64}$/.test(value.EMAIL_REGISTRATION_SECRET) ||
+        !/^[A-Za-z0-9_-]{8,128}$/.test(value.POSTBOX_ACCESS_KEY_ID) ||
+        !/^[!-~]{16,256}$/.test(value.POSTBOX_SECRET_ACCESS_KEY) ||
+        // This exact email-only sentinel does not change AI/SMS quota policy.
+        Object.entries(emailLimits).some(
+          ([key, maximum]) =>
+            value[key] !== "unlimited" &&
+            (!/^[1-9][0-9]{0,6}$/.test(value[key]) ||
+              Number(value[key]) > maximum),
+        )))
   )
     throw new Error();
 }
@@ -142,6 +177,15 @@ export function containerSpec(
   const { scope, args } = modes[mode];
   let secrets = {};
   const profile = inherited.CITYGO_AI_PROFILE;
+  if (
+    inherited.CITYGO_MOUNTED_CONFIG !== undefined &&
+    Object.keys(inherited).some((key) =>
+      /^(EMAIL_|POSTBOX_|PHONE_|SMS_)/.test(key),
+    )
+  )
+    throw new Error(
+      "Invalid mounted verification configuration (contents hidden)",
+    );
   if (
     profile !== undefined &&
     (!Object.hasOwn(routerAiProfiles, profile) ||

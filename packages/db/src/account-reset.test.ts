@@ -298,9 +298,12 @@ test("an empty account database can be inspected without creating bootstrap or f
   assert.equal(plan.accountCount, 0);
   assert.equal(plan.bootstrapCompleted, false);
   assert.equal(plan.counts.payment_admission, 1);
+  assert.equal(plan.counts.phone_verification_control, 1);
   assert.ok(
     Object.entries(plan.counts).every(
-      ([name, count]) => name === "payment_admission" || count === 0,
+      ([name, count]) =>
+        ["payment_admission", "phone_verification_control"].includes(name) ||
+        count === 0,
     ),
   );
   assert.deepEqual(plan.blockers, [

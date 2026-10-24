@@ -25,6 +25,10 @@ export async function routerAiProfileSmoke({
       "routerai-citygo-10x-yookassa-live-cn-v1",
       "routerai-citygo-10x-yookassa-live-cn-profile.fixture.json",
     ],
+    [
+      "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-v1",
+      "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-profile.fixture.json",
+    ],
   ])
     await mountedProfileSmoke({
       project,
@@ -164,6 +168,25 @@ async function mountedProfileSmoke({
       `import assert from 'node:assert/strict'; const ready=await fetch('http://127.0.0.1:4000/ready'); assert.equal(ready.status,200); assert.equal((await fetch('http://127.0.0.1:4000/v1/admin/ai')).status,401); console.log('profile-ready-auth-closed');`,
     ]);
     assert.equal(proof.trim(), "profile-ready-auth-closed");
+    if (marker.endsWith("-postbox-email-v1")) {
+      const emailProof = docker([
+        "exec",
+        id,
+        "node",
+        "--input-type=module",
+        "-e",
+        `import assert from 'node:assert/strict'; const policy=await fetch('http://127.0.0.1:4000/v1/auth/registration-policy'); assert.deepEqual(await policy.json(),{emailVerification:'required'}); const legacy=await fetch('http://127.0.0.1:4000/v1/auth/register',{method:'POST',headers:{'content-type':'application/json',origin:'https://pilot.example.test','x-citygo-contract-version':'1'},body:JSON.stringify({email:'synthetic-email-closed@example.test',password:'123456'})}); assert.equal(legacy.status,503); console.log('email-policy-required-no-send');`,
+      ]);
+      assert.equal(emailProof.trim(), "email-policy-required-no-send");
+      for (const table of [
+        "email_registrations",
+        "email_registration_rate_events",
+        "account_email_verifications",
+        "phone_verification_sends",
+        "phone_welcome_claims",
+      ])
+        assert.equal(psql(`select count(*) from ${table}`), "0");
+    }
     if (marker === "routerai-citygo-10x-v1")
       await closedPaymentsProof({ id, docker, psql });
     assert.equal(psql("select enabled from ai_budget where id=1"), "f");
@@ -183,7 +206,7 @@ async function mountedProfileSmoke({
     );
     assert.ok(
       !env.some((v) =>
-        /^(ROUTERAI_API_KEY|OPENAI_API_KEY|GIGACHAT_CREDENTIALS|DATABASE_URL|YOOKASSA_(?:SHOP_ID|SECRET_KEY))=/.test(
+        /^(ROUTERAI_API_KEY|OPENAI_API_KEY|GIGACHAT_CREDENTIALS|DATABASE_URL|YOOKASSA_(?:SHOP_ID|SECRET_KEY)|EMAIL_REGISTRATION_SECRET|POSTBOX_(?:ACCESS_KEY_ID|SECRET_ACCESS_KEY))=/.test(
           v,
         ),
       ),

@@ -44,6 +44,19 @@ const canaries = {
   ADMIN_USER_IDS: "synthetic-admin",
   EMAIL_REGISTRATION_MODE: "required",
   EMAIL_REGISTRATION_SECRET: "a".repeat(64),
+  EMAIL_DELIVERY_PROVIDER: "yandex_postbox",
+  POSTBOX_ACCESS_KEY_ID: "synthetic-postbox-access",
+  POSTBOX_SECRET_ACCESS_KEY: "synthetic-postbox-secret",
+  POSTBOX_FROM_EMAIL: "synthetic-sender@example.test",
+  EMAIL_SEND_DAILY_LIMIT: "10",
+  EMAIL_SEND_TOTAL_LIMIT: "20",
+  PHONE_VERIFICATION_MODE: "sms_ru",
+  PHONE_VERIFICATION_SECRET: "b".repeat(64),
+  SMS_RU_MODE: "live",
+  SMS_RU_API_ID: "synthetic-sms-api-id",
+  SMS_RU_FROM: "CityGo",
+  PHONE_SMS_GLOBAL_DAILY_LIMIT: "10",
+  PHONE_SMS_GLOBAL_TOTAL_LIMIT: "20",
 };
 function fixture(t, files = {}) {
   const directory = mkdtempSync(join(tmpdir(), "citygo-env-test-"));
@@ -96,6 +109,22 @@ test("API gets only known API settings; worker/migrator get no LLM or API settin
   );
   assert.equal(api.GIGACHAT_CREDENTIALS, canaries.GIGACHAT_CREDENTIALS);
   assert.equal(api.FUTURE_PROVIDER_KEY, undefined);
+  for (const key of [
+    "EMAIL_DELIVERY_PROVIDER",
+    "POSTBOX_ACCESS_KEY_ID",
+    "POSTBOX_SECRET_ACCESS_KEY",
+    "POSTBOX_FROM_EMAIL",
+    "EMAIL_SEND_DAILY_LIMIT",
+    "EMAIL_SEND_TOTAL_LIMIT",
+    "PHONE_VERIFICATION_MODE",
+    "PHONE_VERIFICATION_SECRET",
+    "SMS_RU_MODE",
+    "SMS_RU_API_ID",
+    "SMS_RU_FROM",
+    "PHONE_SMS_GLOBAL_DAILY_LIMIT",
+    "PHONE_SMS_GLOBAL_TOTAL_LIMIT",
+  ])
+    assert.equal(api[key], canaries[key]);
   assert.equal(api.TEST_DATABASE_URL, undefined);
   for (const scope of ["worker", "migrator"]) {
     const env = serviceEnv(scope, { directory, inherited: canaries });
