@@ -173,7 +173,9 @@ export const serverConfigSchema = z.object({
   ),
   EMAIL_SEND_DAILY_LIMIT: emailSendLimit(100000),
   EMAIL_SEND_TOTAL_LIMIT: emailSendLimit(1000000),
-  PHONE_VERIFICATION_MODE: z.enum(["disabled", "sms_ru"]).default("disabled"),
+  PHONE_VERIFICATION_MODE: z
+    .enum(["disabled", "sms_ru", "prosto_sms"])
+    .default("disabled"),
   PHONE_VERIFICATION_SECRET: optionalSetting.pipe(
     z
       .string()
@@ -190,6 +192,23 @@ export const serverConfigSchema = z.object({
       .optional(),
   ),
   SMS_RU_FROM: optionalSetting.pipe(
+    z
+      .string()
+      .regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,10}$/)
+      .optional(),
+  ),
+  // Independent opt-in. No wire-level simulation is documented by ProstoSMS;
+  // synthetic tests inject a transport instead of calling a paid endpoint.
+  PROSTOSMS_MODE: z.enum(["disabled", "live"]).default("disabled"),
+  PROSTOSMS_API_KEY: z.preprocess(
+    (value) => (typeof value === "string" && !value.trim() ? undefined : value),
+    z
+      .string()
+      .regex(/^[!-~]{16,256}$/)
+      .optional(),
+  ),
+  PROSTOSMS_SENDER: z.preprocess(
+    (value) => (typeof value === "string" && !value.trim() ? undefined : value),
     z
       .string()
       .regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,10}$/)
@@ -280,8 +299,24 @@ export function validateVerificationDeliveryConfig(
       "SMS.ru requires explicit API credentials and an agreed sender",
     );
   if (
+    config.PROSTOSMS_MODE !== "disabled" &&
+    (!config.PROSTOSMS_API_KEY || !config.PROSTOSMS_SENDER)
+  )
+    throw new Error(
+      "ProstoSMS requires an explicit API key and an agreed sender",
+    );
+  if (config.PROSTOSMS_MODE !== "disabled" && config.SMS_RU_MODE !== "disabled")
+    throw new Error(
+      "Only one SMS transport may be enabled; no automatic fallback",
+    );
+  const phoneTransportLive =
+    (config.PHONE_VERIFICATION_MODE === "sms_ru" &&
+      config.SMS_RU_MODE === "live") ||
+    (config.PHONE_VERIFICATION_MODE === "prosto_sms" &&
+      config.PROSTOSMS_MODE === "live");
+  if (
     config.PHONE_VERIFICATION_MODE !== "disabled" &&
-    (config.SMS_RU_MODE !== "live" ||
+    (!phoneTransportLive ||
       !config.PHONE_VERIFICATION_SECRET ||
       !config.PHONE_SMS_GLOBAL_DAILY_LIMIT ||
       !config.PHONE_SMS_GLOBAL_TOTAL_LIMIT ||

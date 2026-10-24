@@ -126,3 +126,49 @@ test("same-owner relogin rotates the receipt lifetime; late denial cannot clear 
   first.dispose();
   current.dispose();
 });
+
+test("phone gift opens only in the authenticated cabinet after the password guard and resets with the session", () => {
+  const isPhone = (node: ts.Node) =>
+    ts.isJsxSelfClosingElement(node) &&
+    node.tagName.getText(source) === "PhoneVerificationPanel";
+  const guard = findAll(
+    source,
+    (node) =>
+      ts.isConditionalExpression(node) &&
+      node.condition.getText(source) ===
+        "board.user.mustChangePassword || passwordOpen",
+  )[0];
+  assert.ok(guard && ts.isConditionalExpression(guard));
+  assert.equal(findAll(guard.whenTrue, isPhone).length, 0);
+  assert.equal(findAll(source, isPhone).length, 1);
+  const explicit = findAll(
+    guard.whenFalse,
+    (node) =>
+      ts.isConditionalExpression(node) &&
+      node.condition.getText(source) === "phoneOpen",
+  )[0];
+  assert.ok(explicit && ts.isConditionalExpression(explicit));
+  assert.equal(findAll(explicit.whenFalse, isPhone).length, 0);
+  const panel = findAll(explicit.whenTrue, isPhone)[0];
+  assert.ok(panel && ts.isJsxSelfClosingElement(panel));
+  const attributes = Object.fromEntries(
+    panel.attributes.properties.map((attribute) => {
+      assert.ok(ts.isJsxAttribute(attribute));
+      return [
+        attribute.name.getText(source),
+        attribute.initializer?.getText(source),
+      ];
+    }),
+  );
+  assert.equal(attributes.userId, "{board.user.id}");
+  assert.equal(attributes.sessionSignal, "{session.capture().signal}");
+  assert.equal(attributes.onAccessDenied, "{requireLogin}");
+  assert.equal(attributes.key, '{board.user.id + ":phone:" + formVersion}');
+  const clear = findAll(
+    source,
+    (node) =>
+      ts.isFunctionDeclaration(node) && node.name?.text === "clearUserState",
+  )[0];
+  assert.ok(clear);
+  assert.match(clear.getText(source), /setPhoneOpen\(false\)/);
+});

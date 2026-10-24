@@ -3,6 +3,7 @@ import test from "node:test";
 import { ApiError, createClient, createSessionGuard } from "./index.js";
 
 const phone = "+79990000000";
+const expectedDeliveryProvider = "prosto_sms";
 const challengeId = "a274d301-c0e2-4e4a-b0f4-4bf8a513ff64";
 const proof = "ab".repeat(32);
 const challenge = {
@@ -16,7 +17,12 @@ const receipt = {
   grantedMicros: 500_000_000,
   alreadyGranted: false,
 };
-const policy = { phoneVerification: "required", giftAmountMicros: 500_000_000 };
+const policy = {
+  phoneVerification: "required",
+  deliveryProvider: "prosto_sms",
+  giftAmountMicros: 500_000_000,
+  giftStatus: "eligible",
+};
 const errorCode = (code: string) => (error: unknown) =>
   error instanceof ApiError && error.code === code;
 function deferred<T>() {
@@ -62,11 +68,19 @@ test("phone methods use authenticated exact paths and canonical bodies without p
     });
     assert.deepEqual(await client.phoneVerificationPolicy(), policy);
     assert.deepEqual(
-      await client.beginPhoneVerification("8 (999) 000-00-00"),
+      await client.beginPhoneVerification(
+        "8 (999) 000-00-00",
+        expectedDeliveryProvider,
+      ),
       challenge,
     );
     assert.deepEqual(
-      await client.resendPhoneVerification(challengeId, proof, "79990000000"),
+      await client.resendPhoneVerification(
+        challengeId,
+        proof,
+        "79990000000",
+        expectedDeliveryProvider,
+      ),
       challenge,
     );
     assert.deepEqual(
@@ -94,13 +108,13 @@ test("phone methods use authenticated exact paths and canonical bodies without p
         ...common,
         path: "http://synthetic/v1/phone-verification/start",
         method: "POST",
-        body: { phone },
+        body: { phone, expectedDeliveryProvider },
       },
       {
         ...common,
         path: "http://synthetic/v1/phone-verification/resend",
         method: "POST",
-        body: { challengeId, proof, phone },
+        body: { challengeId, proof, phone, expectedDeliveryProvider },
       },
       {
         ...common,
@@ -125,19 +139,34 @@ test("invalid phone/capability/code input fails before fetch or reading credenti
     },
   });
   for (const run of [
-    () => client.beginPhoneVerification("+77010000000"),
-    () => client.beginPhoneVerification("+79990000000,+79990000001"),
     () =>
-      client.beginPhoneVerification({
+      client.beginPhoneVerification("+77010000000", expectedDeliveryProvider),
+    () =>
+      client.beginPhoneVerification(
+        "+79990000000,+79990000001",
+        expectedDeliveryProvider,
+      ),
+    () =>
+      client.beginPhoneVerification(
+        {
+          phone,
+          apiId: "synthetic-secret",
+        } as unknown as string,
+        expectedDeliveryProvider,
+      ),
+    () =>
+      client.resendPhoneVerification(
+        "invalid-id",
+        proof,
         phone,
-        apiId: "synthetic-secret",
-      } as unknown as string),
-    () => client.resendPhoneVerification("invalid-id", proof, phone),
+        expectedDeliveryProvider,
+      ),
     () =>
       client.resendPhoneVerification(
         challengeId,
         "synthetic-invalid-proof",
         phone,
+        expectedDeliveryProvider,
       ),
     () =>
       client.confirmPhoneVerification(
@@ -166,12 +195,48 @@ test("invalid phone/capability/code input fails before fetch or reading credenti
   assert.equal(effects, 0);
 });
 
+test("outbound phone commands never infer or default the consented provider before reading credentials", async () => {
+  let effects = 0;
+  const client = createClient("http://synthetic", {
+    token: () => {
+      effects++;
+      return "synthetic-session";
+    },
+    fetch: async () => {
+      effects++;
+      return Response.json(challenge);
+    },
+  });
+  for (const invalid of [undefined, null, "none", "unknown", true]) {
+    const provider = invalid as unknown as typeof expectedDeliveryProvider;
+    for (const request of [
+      () => client.beginPhoneVerification(phone, provider),
+      () => client.resendPhoneVerification(challengeId, proof, phone, provider),
+    ])
+      await assert.rejects(request(), (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.equal(
+          error.message,
+          "Некорректные параметры подтверждения телефона",
+        );
+        return true;
+      });
+  }
+  assert.equal(effects, 0);
+});
+
 test("policy and challenge responses reject unknown fields, provider secrets and malformed values", async () => {
   for (const response of [
     {},
     { ...policy, phoneVerification: true },
     { ...policy, giftAmountMicros: "500000000" },
     { ...policy, apiId: "synthetic-secret" },
+    { ...policy, giftStatus: "unknown" },
+    { ...policy, deliveryProvider: undefined },
+    { ...policy, deliveryProvider: "none" },
+    { ...policy, deliveryProvider: "unknown" },
+    { phoneVerification: "required", giftAmountMicros: 500_000_000 },
+    { ...policy, phoneVerification: "disabled" },
   ])
     await assert.rejects(
       createClient("http://synthetic", {
@@ -193,11 +258,48 @@ test("policy and challenge responses reject unknown fields, provider secrets and
       fetch: async () => Response.json(response),
     });
     for (const run of [
-      () => client.beginPhoneVerification(phone),
-      () => client.resendPhoneVerification(challengeId, proof, phone),
+      () => client.beginPhoneVerification(phone, expectedDeliveryProvider),
+      () =>
+        client.resendPhoneVerification(
+          challengeId,
+          proof,
+          phone,
+          expectedDeliveryProvider,
+        ),
     ])
       await assert.rejects(run(), errorCode("invalid_response"));
   }
+});
+
+test("phone policy preserves selected provider on required and unavailable states without client-side guesses", async () => {
+  for (const deliveryProvider of ["sms_ru", "prosto_sms"])
+    for (const phoneVerification of ["required", "unavailable"]) {
+      const response = {
+        ...policy,
+        phoneVerification,
+        deliveryProvider,
+        giftStatus:
+          phoneVerification === "required" ? "eligible" : "unavailable",
+      };
+      assert.deepEqual(
+        await createClient("http://synthetic", {
+          fetch: async () => Response.json(response),
+        }).phoneVerificationPolicy(),
+        response,
+      );
+    }
+  const disabled = {
+    ...policy,
+    phoneVerification: "disabled",
+    giftStatus: "unavailable",
+    deliveryProvider: "none",
+  };
+  assert.deepEqual(
+    await createClient("http://synthetic", {
+      fetch: async () => Response.json(disabled),
+    }).phoneVerificationPolicy(),
+    disabled,
+  );
 });
 
 test("a resend response stays bound to exactly the same challenge and proof", async () => {
@@ -208,7 +310,12 @@ test("a resend response stays bound to exactly the same challenge and proof", as
     await assert.rejects(
       createClient("http://synthetic", {
         fetch: async () => Response.json({ ...challenge, ...change }),
-      }).resendPhoneVerification(challengeId, proof, phone),
+      }).resendPhoneVerification(
+        challengeId,
+        proof,
+        phone,
+        expectedDeliveryProvider,
+      ),
       errorCode("invalid_response"),
     );
 });
@@ -255,8 +362,14 @@ test("phone endpoints are account-bound: every current-session 401 invalidates a
   });
   for (const run of [
     () => client.phoneVerificationPolicy(),
-    () => client.beginPhoneVerification(phone),
-    () => client.resendPhoneVerification(challengeId, proof, phone),
+    () => client.beginPhoneVerification(phone, expectedDeliveryProvider),
+    () =>
+      client.resendPhoneVerification(
+        challengeId,
+        proof,
+        phone,
+        expectedDeliveryProvider,
+      ),
     () => client.confirmPhoneVerification(challengeId, proof, phone, "012345"),
   ])
     await assert.rejects(run(), errorCode("http"));
@@ -280,8 +393,14 @@ test("pre-cancelled phone commands never fetch or read credentials", async () =>
   });
   for (const run of [
     () => client.phoneVerificationPolicy(),
-    () => client.beginPhoneVerification(phone),
-    () => client.resendPhoneVerification(challengeId, proof, phone),
+    () => client.beginPhoneVerification(phone, expectedDeliveryProvider),
+    () =>
+      client.resendPhoneVerification(
+        challengeId,
+        proof,
+        phone,
+        expectedDeliveryProvider,
+      ),
     () => client.confirmPhoneVerification(challengeId, proof, phone, "012345"),
   ])
     await assert.rejects(run(), errorCode("aborted"));
@@ -308,9 +427,14 @@ test("late phone replies cannot expose a capability or gift after the session ow
         route === "policy"
           ? client.phoneVerificationPolicy()
           : route === "start"
-            ? client.beginPhoneVerification(phone)
+            ? client.beginPhoneVerification(phone, expectedDeliveryProvider)
             : route === "resend"
-              ? client.resendPhoneVerification(challengeId, proof, phone)
+              ? client.resendPhoneVerification(
+                  challengeId,
+                  proof,
+                  phone,
+                  expectedDeliveryProvider,
+                )
               : client.confirmPhoneVerification(
                   challengeId,
                   proof,
@@ -352,7 +476,12 @@ test("a phone resend timeout never automatically retries an SMS with an unknown 
   t.mock.timers.enable({ apis: ["setTimeout"] });
   try {
     const rejected = assert.rejects(
-      client.resendPhoneVerification(challengeId, proof, phone),
+      client.resendPhoneVerification(
+        challengeId,
+        proof,
+        phone,
+        expectedDeliveryProvider,
+      ),
       errorCode("timeout"),
     );
     t.mock.timers.tick(15);

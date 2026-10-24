@@ -157,12 +157,23 @@ export class PhoneVerification {
   }
   async status(rawContext: PhoneVerificationContext) {
     return this.db.transaction(async (tx) => {
-      const ctx = await this.authorize(tx, rawContext);
+      // Read-only account eligibility is not permission to send. All writes
+      // below still require the current verified email through authorize().
+      const ctx = await this.authorize(tx, rawContext, false);
       const granted = await tx.query(
-        "select 1 from ai_credit_entries where user_id=$1 and kind='bonus'",
+        `select 1 from ai_credit_entries where user_id=$1 and kind='bonus'
+         union all select 1 from phone_welcome_claims where user_id=$1`,
         [ctx.userId],
       );
-      return { alreadyGranted: granted.rows.length > 0 };
+      const alreadyGranted = granted.rows.length > 0;
+      return {
+        alreadyGranted,
+        giftStatus: alreadyGranted
+          ? ("granted" as const)
+          : ctx.emailVerified
+            ? ("eligible" as const)
+            : ("email_required" as const),
+      };
     });
   }
   private async bound(tx: Sql) {
@@ -185,7 +196,11 @@ export class PhoneVerification {
         "Политика или ключ телефона требуют отдельной настройки оператором",
       );
   }
-  private async authorize(tx: Sql, raw: PhoneVerificationContext) {
+  private async authorize(
+    tx: Sql,
+    raw: PhoneVerificationContext,
+    requireEmail = true,
+  ) {
     const ctx = parse(contextSchema, raw);
     await security(tx);
     await this.bound(tx);
@@ -206,9 +221,9 @@ export class PhoneVerification {
     if (!current) throw new DomainError(401, "Войдите в аккаунт");
     if (current.must_change_password)
       throw new DomainError(403, "Сначала смените временный пароль");
-    if (!current.email_verified)
+    if (requireEmail && !current.email_verified)
       throw new DomainError(403, "Сначала подтвердите электронную почту");
-    return ctx;
+    return { ...ctx, emailVerified: current.email_verified };
   }
   private async eligible(tx: Sql, userId: string, phoneKey: string) {
     if (

@@ -55,6 +55,9 @@ const canaries = {
   SMS_RU_MODE: "live",
   SMS_RU_API_ID: "synthetic-sms-api-id",
   SMS_RU_FROM: "CityGo",
+  PROSTOSMS_MODE: "live",
+  PROSTOSMS_API_KEY: "synthetic-prostosms-key",
+  PROSTOSMS_SENDER: "CityGo",
   PHONE_SMS_GLOBAL_DAILY_LIMIT: "10",
   PHONE_SMS_GLOBAL_TOTAL_LIMIT: "20",
 };
@@ -121,6 +124,9 @@ test("API gets only known API settings; worker/migrator get no LLM or API settin
     "SMS_RU_MODE",
     "SMS_RU_API_ID",
     "SMS_RU_FROM",
+    "PROSTOSMS_MODE",
+    "PROSTOSMS_API_KEY",
+    "PROSTOSMS_SENDER",
     "PHONE_SMS_GLOBAL_DAILY_LIMIT",
     "PHONE_SMS_GLOBAL_TOTAL_LIMIT",
   ])
