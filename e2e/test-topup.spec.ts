@@ -180,16 +180,27 @@ async function saveSyntheticAttempt(
   }, attempt);
 }
 
+async function openBalance(page: Page) {
+  await page
+    .getByRole("region", { name: "Баланс и телефон", exact: true })
+    .getByRole("button", { name: "Пополнить баланс", exact: true })
+    .click();
+  await expect(page.locator("#citygo-balance")).toBeVisible();
+}
+
 test("checkout is hidden without the server capability; return parameters do not grant money", async ({
   page,
 }) => {
   const state = await fixture(page, { available: false });
   await page.goto("/?payment=succeeded&credited=true&amount=10000");
+  await openBalance(page);
   await expect(
     page.getByRole("heading", { name: "Баланс CityGo", exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByText("9007199254.740991", { exact: false }),
+    page
+      .locator("#citygo-wallet-view")
+      .getByText("9007199254.740991", { exact: false }),
   ).toBeVisible();
   await expect(
     page.getByRole("heading", {
@@ -211,6 +222,7 @@ test("ambiguous create retries the frozen email and key in memory; only explicit
 }) => {
   const state = await fixture(page, { failFirst: true });
   await page.goto("/");
+  await openBalance(page);
   await expect(page.getByLabel("Сумма пополнения")).toHaveValue("100");
   await expect(page.getByLabel("Email для чека ЮKassa")).toHaveValue("");
   await page
@@ -257,6 +269,7 @@ test("ambiguous create retries the frozen email and key in memory; only explicit
   );
   expect(state.reconciles).toBe(0);
   await page.goto(`/?payment=succeeded&credited=true&orderId=${order.orderId}`);
+  await openBalance(page);
   await expect(
     page.getByText("зачисление не подтверждено", { exact: false }),
   ).toBeVisible();
@@ -284,6 +297,7 @@ test("a malformed checkout response never exposes an unsafe payment link or retr
 }) => {
   const state = await fixture(page, { unsafeUrl: true });
   await page.goto("/");
+  await openBalance(page);
   await page
     .getByLabel("Email для чека ЮKassa")
     .fill("receipt-buyer@synthetic-citygo-mail.ru");
@@ -315,6 +329,7 @@ test("live checkout explicitly warns about real money, credits 100 to 100 and ne
 }) => {
   const state = await fixture(page, { live: true });
   await page.goto("/?payment=succeeded&credited=true&amount=10000");
+  await openBalance(page);
   const panel = page.getByRole("region", { name: "Пополнение баланса ЮKassa" });
   await expect(panel).toBeVisible();
   await expect(
@@ -362,6 +377,7 @@ test("live checkout explicitly warns about real money, credits 100 to 100 and ne
   expect(stored).not.toContain("receiptEmail");
   expect(state.reconciles).toBe(0);
   await page.goto(`/?payment=succeeded&credited=true&orderId=${order.orderId}`);
+  await openBalance(page);
   await expect(panel).toContainText("зачисление не подтверждено");
   await expect.poll(() => state.reads).toBe(1);
   expect(state.creates).toHaveLength(1);
@@ -390,6 +406,7 @@ test("closed checkout keeps a saved pending payment readable and explicitly reco
   const state = await fixture(page, { available: false, live: true });
   await saveSyntheticAttempt(page, savedAttempt);
   await page.goto("/?payment=succeeded&credited=true");
+  await openBalance(page);
   const panel = page.getByRole("region", { name: "Пополнение баланса ЮKassa" });
   await expect(panel).toContainText("Приём новых платежей временно закрыт");
   await expect(panel).toContainText(savedAttempt.requestId);
@@ -436,6 +453,7 @@ test("closed checkout preserves an ambiguous attempt without POST, automatic ret
   };
   await saveSyntheticAttempt(page, ambiguous);
   await page.goto("/");
+  await openBalance(page);
   const panel = page.getByRole("region", { name: "Пополнение баланса ЮKassa" });
   await expect(panel).toContainText(ambiguous.requestId);
   await expect(panel).toContainText("Результат создания не подтверждён");
@@ -448,6 +466,7 @@ test("closed checkout preserves an ambiguous attempt without POST, automatic ret
   ).toBeEnabled();
   await expect(panel.getByRole("link")).toHaveCount(0);
   await page.reload();
+  await openBalance(page);
   await expect(panel).toContainText(ambiguous.requestId);
   expect(
     await page.evaluate(() =>
@@ -466,6 +485,7 @@ test("closing new checkout after creation preserves the existing payment and doe
 }) => {
   const state = await fixture(page, { live: true });
   await page.goto("/");
+  await openBalance(page);
   await page
     .getByLabel("Email для чека ЮKassa")
     .fill("receipt-buyer@synthetic-citygo-mail.ru");
@@ -479,6 +499,7 @@ test("closing new checkout after creation preserves the existing payment and doe
   const firstRequest = state.creates[0]!;
   state.available = false;
   await page.reload();
+  await openBalance(page);
   await expect(panel).toContainText("Приём новых платежей временно закрыт");
   await expect(panel).toContainText(firstRequest.requestId);
   await expect.poll(() => state.reads).toBe(1);
@@ -487,9 +508,14 @@ test("closing new checkout after creation preserves the existing payment and doe
   ).toBeEnabled();
   state.userId = "102";
   await page.reload();
+  await page
+    .getByRole("navigation", { name: "Личный кабинет CityGo", exact: true })
+    .getByRole("button", { name: "Профиль", exact: true })
+    .click();
   await expect(
-    page.getByText("ID аккаунта: 102", { exact: true }),
+    page.getByText("checkout-102@example.test", { exact: true }),
   ).toBeVisible();
+  await openBalance(page);
   await expect(panel).toHaveCount(0);
   await expect(
     page.getByText(firstRequest.requestId, { exact: false }),
@@ -505,6 +531,7 @@ test("new checkout requires an explicit buyer email without using the account em
 }) => {
   const state = await fixture(page);
   await page.goto("/");
+  await openBalance(page);
   const email = page.getByLabel("Email для чека ЮKassa");
   const create = page.getByRole("button", {
     name: "Создать платёж",
@@ -530,6 +557,7 @@ test("reloaded ambiguous checkout never replaces the original buyer email or POS
 }) => {
   const state = await fixture(page, { failFirst: true });
   await page.goto("/");
+  await openBalance(page);
   await page
     .getByLabel("Email для чека ЮKassa")
     .fill("original-buyer@synthetic-citygo-mail.ru");
@@ -542,6 +570,7 @@ test("reloaded ambiguous checkout never replaces the original buyer email or POS
   expect(state.creates).toHaveLength(1);
   const original = state.creates[0]!;
   await page.reload();
+  await openBalance(page);
   const panel = page.getByRole("region", { name: "Пополнение баланса ЮKassa" });
   await expect(panel).toContainText(original.requestId);
   await expect(panel).toContainText("исходный email для чека не хранится");
@@ -577,6 +606,7 @@ test("an ambiguous attempt recovers through an authenticated read-only lookup wi
     amountKopeks: savedAttempt.amountKopeks,
   });
   await page.goto("/");
+  await openBalance(page);
   const panel = page.getByRole("region", { name: "Пополнение баланса ЮKassa" });
   await expect(panel).toContainText("Приём новых платежей временно закрыт");
   await expect.poll(() => state.attemptReads).toBe(1);
@@ -612,6 +642,7 @@ test("an explicit create opens a safe loading tab synchronously, then hands the 
   const state = await fixture(page, { createGate });
   try {
     await page.goto("/");
+    await openBalance(page);
     await page
       .getByLabel("Email для чека ЮKassa")
       .fill("receipt-buyer@synthetic-citygo-mail.ru");
@@ -657,6 +688,7 @@ test("a blocked popup presents a prominent safe fallback without another payment
   });
   const state = await fixture(page);
   await page.goto("/");
+  await openBalance(page);
   await page
     .getByLabel("Email для чека ЮKassa")
     .fill("receipt-buyer@synthetic-citygo-mail.ru");
@@ -692,6 +724,7 @@ for (const options of [{ failFirst: true }, { unsafeUrl: true }]) {
   }) => {
     const state = await fixture(page, options);
     await page.goto("/");
+    await openBalance(page);
     await page
       .getByLabel("Email для чека ЮKassa")
       .fill("receipt-buyer@synthetic-citygo-mail.ru");
@@ -716,6 +749,7 @@ for (const responseStatus of ["creating", "succeeded"] as const) {
   }) => {
     const state = await fixture(page, { responseStatus });
     await page.goto("/");
+    await openBalance(page);
     await page
       .getByLabel("Email для чека ЮKassa")
       .fill("receipt-buyer@synthetic-citygo-mail.ru");
@@ -750,6 +784,7 @@ test("closing the loading tab uses fallback when the same request finishes, with
   const state = await fixture(page, { createGate });
   try {
     await page.goto("/");
+    await openBalance(page);
     await page
       .getByLabel("Email для чека ЮKassa")
       .fill("receipt-buyer@synthetic-citygo-mail.ru");
@@ -797,6 +832,7 @@ for (const destination of ["same-origin", "cross-origin"] as const) {
     );
     try {
       await page.goto("/");
+      await openBalance(page);
       await page
         .getByLabel("Email для чека ЮKassa")
         .fill("receipt-buyer@synthetic-citygo-mail.ru");

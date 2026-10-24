@@ -166,8 +166,12 @@ test("profile-free zero credit shows an explicit topup link and preserves a conf
   await expect(link).toHaveAttribute("href", "#citygo-balance");
   await link.click();
   await expect(page.locator("#citygo-balance")).toBeFocused();
+  await expect(page.locator("#citygo-balance")).toBeVisible();
   expect(new URL(page.url()).hash).toBe("");
   expect(calls.messages).toBe(0);
+  await page
+    .getByRole("button", { name: "Вернуться в приложение", exact: true })
+    .click();
   const question = "Помоги понять, с чего начать переезд";
   await page.getByLabel("Сообщение помощнику").fill(question);
   const send = page.getByRole("button", { name: "Отправить", exact: true });
@@ -238,15 +242,23 @@ test("fixed-reserve negative balance stays visible after reload without automati
     page.getByRole("heading", { name: "Давайте начнём с того, что волнует" }),
   ).toBeVisible();
   const balance = page.locator("#citygo-balance");
-  await expect(balance).toContainText("-3");
-  await expect(balance).toContainText("5");
   await expect(page.locator("form .chat-credit-hint")).toBeVisible();
   await page
     .getByRole("link", { name: "Баланс и пополнение", exact: true })
     .click();
   await expect(balance).toBeFocused();
-  await page.reload();
+  await expect(balance).toBeVisible();
   await expect(balance).toContainText("-3");
+  await expect(balance).toContainText("5");
+  await page.reload();
+  await page
+    .getByRole("link", { name: "Баланс и пополнение", exact: true })
+    .click();
+  await expect(balance).toBeVisible();
+  await expect(balance).toContainText("-3");
+  await page
+    .getByRole("button", { name: "Вернуться в приложение", exact: true })
+    .click();
   await page.getByLabel("Сообщение помощнику").fill("Нужна помощь человека");
   await expect(
     page.getByRole("button", { name: "Отправить", exact: true }),
@@ -282,6 +294,11 @@ test("legacy journey keeps unknown interruptions generic and focuses balance wit
     .getByRole("link", { name: "Баланс и пополнение", exact: true })
     .click();
   await expect(page.locator("#citygo-balance")).toBeFocused();
+  await expect(page.locator("#citygo-balance")).toBeVisible();
+  await expect(page).toHaveURL(/#chat$/);
+  await page
+    .getByRole("button", { name: "Вернуться в приложение", exact: true })
+    .click();
   await expect(page).toHaveURL(/#chat$/);
   await expect(page.locator(".journey-chat")).toBeVisible();
   expect(calls.messages).toBe(0);

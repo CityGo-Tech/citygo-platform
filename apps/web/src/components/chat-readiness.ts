@@ -32,7 +32,13 @@ export function hasEmptyChargeBalance(access?: AiAccess) {
 }
 
 /** Guidance only: human handoff and authoritative server admission remain usable. */
-export function EmptyAiCreditHint({ access }: { access?: AiAccess }) {
+export function EmptyAiCreditHint({
+  access,
+  onBalance,
+}: {
+  access?: AiAccess;
+  onBalance?: () => void;
+}) {
   if (!hasEmptyChargeBalance(access)) return null;
   return createElement(
     "p",
@@ -48,6 +54,10 @@ export function EmptyAiCreditHint({ access }: { access?: AiAccess }) {
           // The legacy Journey uses hashes as routes. Focus the existing balance
           // section without replacing #chat, creating a payment or opening a tab.
           event.preventDefault();
+          if (onBalance) {
+            onBalance();
+            return;
+          }
           const target = document.getElementById(chatBalanceTarget);
           target?.scrollIntoView({ block: "start" });
           target?.focus({ preventScroll: true });

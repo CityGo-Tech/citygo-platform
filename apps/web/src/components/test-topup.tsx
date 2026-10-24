@@ -7,7 +7,7 @@ import {
   type CreateTopupInput,
   type TopupOrder,
 } from "@citygo/contracts";
-import { Button } from "@citygo/ui-web";
+import { Button, Field } from "@citygo/ui-web";
 import {
   parsePaymentAttempt,
   paymentAmountKopeks,
@@ -216,7 +216,7 @@ export function TestTopupPanel({
   // existing order. Keep the saved identity and server verification available.
   if (!canCreate && !attempt) return error ? <p role="alert">{error}</p> : null;
   return (
-    <section aria-label="Пополнение баланса ЮKassa">
+    <section className="citygo-topup" aria-label="Пополнение баланса ЮKassa">
       <h3>Пополнение баланса ЮKassa</h3>
       <p>
         Оплата 100 ₽ пополняет баланс на 100 ₽ CityGo. Создание платежа ещё не
@@ -231,31 +231,26 @@ export function TestTopupPanel({
       )}
       {canCreate && (
         <form onSubmit={create}>
-          <label>
-            Сумма, ₽ CityGo{" "}
-            <input
-              aria-label="Сумма пополнения"
-              inputMode="decimal"
-              value={amount}
-              disabled={locked || !!attempt}
-              onChange={(event) => setAmount(event.target.value)}
-            />
-          </label>
+          <Field
+            label="Сумма пополнения"
+            hint="Сумма в рублях CityGo"
+            inputMode="decimal"
+            value={amount}
+            disabled={locked || !!attempt}
+            onChange={(event) => setAmount(event.target.value)}
+          />
           {!attempt && (
-            <label>
-              Email покупателя для чека ЮKassa{" "}
-              <input
-                aria-label="Email для чека ЮKassa"
-                type="email"
-                inputMode="email"
-                autoComplete="email"
-                required
-                maxLength={254}
-                value={receiptEmail}
-                disabled={locked}
-                onChange={(event) => setReceiptEmail(event.target.value)}
-              />
-            </label>
+            <Field
+              label="Email для чека ЮKassa"
+              type="email"
+              inputMode="email"
+              autoComplete="email"
+              required
+              maxLength={254}
+              value={receiptEmail}
+              disabled={locked}
+              onChange={(event) => setReceiptEmail(event.target.value)}
+            />
           )}
           {!attempt && (
             <p>

@@ -57,6 +57,8 @@ export type JourneyProps = {
   onConversations?: (before?: string) => void;
   onOpenConversation?: (id: string) => Promise<boolean>;
   onPassword?: () => void;
+  onBalance?: () => void;
+  onPhone?: () => void;
   onFavorites?: () => void;
   onFavorite?: (messageId: string, saved: boolean) => void;
   topups?: TopupActions;
@@ -403,6 +405,7 @@ export function Journey(props: JourneyProps) {
               busy={busy}
               onConsent={props.onConsent}
               topups={props.topups}
+              onBalance={props.onBalance}
             />
             {!board.thread && (
               <Card>
@@ -506,7 +509,10 @@ export function Journey(props: JourneyProps) {
               </div>
             )}
             <form onSubmit={props.onChat} className="journey-composer">
-              <EmptyAiCreditHint access={board.aiAccess} />
+              <EmptyAiCreditHint
+                access={board.aiAccess}
+                onBalance={props.onBalance}
+              />
               <label className="sr-only" htmlFor="journey-message">
                 Сообщение помощнику
               </label>

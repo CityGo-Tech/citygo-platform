@@ -65,3 +65,35 @@ test("balance panel never invents outstanding debt from negative availability or
   assert.match(html, /резервируется верхняя оценка/);
   assert.doesNotMatch(html, /резервируется 5 ₽/);
 });
+
+test("dedicated wallet has no AI-consent mutations or stale SMS availability claim", () => {
+  const html = renderToStaticMarkup(
+    createElement(AiAccessPanel, {
+      access: balance(0),
+      busy: false,
+      balanceOnly: true,
+      onPhone() {},
+      onConsent() {},
+    }),
+  );
+  assert.match(html, /id="citygo-balance"/);
+  assert.match(html, /Телефон и подарок/);
+  assert.doesNotMatch(
+    html,
+    /Подтверждение пока не подключено|Отозвать разрешение AI|Подтвердить получателя AI/,
+  );
+});
+
+test("chat with account navigation has no second wallet or payment form", () => {
+  const html = renderToStaticMarkup(
+    createElement(AiAccessPanel, {
+      access: balance(0),
+      busy: false,
+      onBalance() {},
+      onConsent() {},
+    }),
+  );
+  assert.match(html, /Баланс и пополнение/);
+  assert.doesNotMatch(html, /id="citygo-balance"|Сумма пополнения/);
+  assert.match(html, /Отозвать разрешение AI/);
+});

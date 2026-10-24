@@ -385,6 +385,28 @@ small {
   align-items: center;
   gap: 18px;
 }
+.ai-access .balance-amount {
+  display: block;
+  color: var(--cg-color-foreground);
+  font-size: 32px;
+  line-height: 1.3;
+  margin: var(--cg-space-md) 0;
+}
+.citygo-topup {
+  margin: var(--cg-space-lg) 0;
+  padding: var(--cg-space-lg);
+  border: 1px solid var(--cg-color-border);
+  border-radius: var(--cg-radius-card);
+}
+.citygo-topup form {
+  display: grid;
+  gap: var(--cg-space-md);
+}
+@media (max-width: 700px) {
+  .citygo-topup {
+    padding: var(--cg-space-md);
+  }
+}
 main {
   min-height: calc(100vh - 165px);
   padding: 32px 4% 48px;

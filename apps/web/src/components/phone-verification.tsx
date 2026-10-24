@@ -115,7 +115,10 @@ export function PhoneVerificationPanel({
   return (
     <Card className={styles.panel} aria-labelledby="phone-gift-heading">
       <span className="eyebrow">ЛИЧНЫЙ КАБИНЕТ · CITYGO</span>
-      <h1 id="phone-gift-heading">Подарок 500 ₽ CityGo</h1>
+      <h1 id="phone-gift-heading" tabIndex={-1}>
+        Подарок 500 ₽ CityGo
+      </h1>
+      <h2>Привязать номер телефона</h2>
       <p>
         Один подарок после подтверждения вашего российского мобильного номера.
         Это баланс для общения с помощниками, не выплата денег и не пополнение

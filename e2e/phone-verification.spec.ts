@@ -146,7 +146,8 @@ async function install(page: Page) {
 }
 async function open(page: Page) {
   await page
-    .getByRole("button", { name: "Подарок 500 ₽", exact: true })
+    .getByRole("region", { name: "Баланс и телефон", exact: true })
+    .getByRole("button", { name: "Телефон и подарок", exact: true })
     .click();
   await expect(
     page.getByRole("heading", { name: "Подарок 500 ₽ CityGo", exact: true }),
@@ -178,7 +179,9 @@ test("opening gift checks availability only; disabled mode never sends SMS or in
   state.status = "unavailable";
   await page.goto("/");
   await expect(
-    page.getByRole("button", { name: "Подарок 500 ₽", exact: true }),
+    page
+      .getByRole("region", { name: "Баланс и телефон", exact: true })
+      .getByRole("button", { name: "Телефон и подарок", exact: true }),
   ).toBeVisible();
   expect(state.policies).toBe(0);
   await open(page);

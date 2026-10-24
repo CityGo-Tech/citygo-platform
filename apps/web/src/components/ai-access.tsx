@@ -17,12 +17,18 @@ export function AiAccessPanel({
   onConsent,
   userId,
   topups,
+  balanceOnly = false,
+  onBalance,
+  onPhone,
 }: {
   access: AiAccess;
   busy: boolean;
   onConsent: (input: AiConsentInput) => void;
   userId?: string;
   topups?: TopupActions;
+  balanceOnly?: boolean;
+  onBalance?: () => void;
+  onPhone?: () => void;
 }) {
   const [checked, setChecked] = React.useState(false);
   const policy = access.policy;
@@ -42,21 +48,43 @@ export function AiAccessPanel({
   );
   return (
     <Card className="ai-access">
-      {access.credit && (
+      {onBalance && access.credit && (
+        <Button type="button" variant="secondary" onClick={onBalance}>
+          Баланс и пополнение
+        </Button>
+      )}
+      {!onBalance && access.credit && (
         <section
           id={chatBalanceTarget}
           tabIndex={-1}
           aria-label={citygoTariff ? "Баланс CityGo" : "Бесплатный баланс AI"}
         >
           <h2>{citygoTariff ? "Баланс CityGo" : "Бесплатный баланс AI"}</h2>
-          {userId && <p>ID аккаунта: {userId}</p>}
+          <strong className="balance-amount">
+            {formatSignedMoneyMicros(access.credit.availableMicros)} ₽
+            {citygoTariff ? " CityGo" : ""}
+          </strong>
+          {userId && topups && (
+            <TestTopupPanel
+              key={userId}
+              userId={userId}
+              actions={topups}
+              disabled={busy}
+              canCreate={access.credit.topUpAvailable === true}
+            />
+          )}
           <p>
             {access.credit.bonusGranted
               ? "Разовые 500 ₽ начислены. Ежедневного восстановления нет."
               : citygoTariff
-                ? "Подарок 500 ₽ CityGo выдаётся после подтверждения телефона. Подтверждение пока не подключено."
+                ? "Подарок 500 ₽ CityGo выдаётся один раз после подтверждения телефона. Доступность и условия проверяются в разделе «Телефон и подарок»."
                 : "Разовый бонус 500 ₽ ещё не выдан. Обратитесь к владельцу пилота."}
           </p>
+          {onPhone && (
+            <Button type="button" variant="secondary" onClick={onPhone}>
+              Телефон и подарок
+            </Button>
+          )}
           <p>
             Доступно: {formatSignedMoneyMicros(access.credit.availableMicros)}{" "}
             ₽. В резерве: {formatMoneyMicros(access.credit.heldMicros)} ₽.
@@ -87,19 +115,10 @@ export function AiAccessPanel({
                 ? "Ответы RouterAI — по подтверждённой стоимости без наценки. Перед запросом сумма резервируется; при неизвестной стоимости резерв остаётся на сверке. Доли микрорубля округляются вниз."
                 : "Автоматическое списание за ответы пока не подключено."}{" "}
             {access.credit.topUpAvailable === true
-              ? "Пополнение доступно ниже. Перед оплатой проверьте режим платежа."
+              ? "Пополнение доступно. Перед оплатой проверьте режим платежа."
               : "Пополнение пока недоступно."}{" "}
             Бонус не включает ИИ и не заменяет общий бюджет сервиса.
           </p>
-          {userId && topups && (
-            <TestTopupPanel
-              key={userId}
-              userId={userId}
-              actions={topups}
-              disabled={busy}
-              canCreate={access.credit.topUpAvailable === true}
-            />
-          )}
           {!!access.credit.pending?.length && (
             <div role="status">
               <p>Резервы на сверке. При обращении к владельцу укажите ID:</p>
@@ -141,50 +160,51 @@ export function AiAccessPanel({
           )}
         </section>
       )}
-      {access.granted ? (
-        <details>
-          <summary>
-            Передача данных разрешена: {policy?.recipient} · {policy?.model}
-          </summary>
-          {description}
-        </details>
-      ) : (
-        <>
-          <h2>Передача данных AI</h2>
-          {description ?? (
-            <p>
-              Условия подключения недоступны. Обновите страницу перед отправкой
-              сообщения.
-            </p>
-          )}
-          {policy && (
-            <label className="check">
-              <input
-                type="checkbox"
-                checked={checked}
-                disabled={busy}
-                onChange={(event) => setChecked(event.target.checked)}
-              />
-              <span>
-                Разрешаю передачу указанных данных этому получателю для
-                рекомендаций.
-              </span>
-            </label>
-          )}
-          {policy && (
-            <Button
-              type="button"
-              disabled={busy || !checked}
-              onClick={() =>
-                onConsent({ action: "granted", policyId: policy.id })
-              }
-            >
-              Подтвердить получателя AI
-            </Button>
-          )}
-        </>
-      )}
-      {access.budget?.limitMicros != null && (
+      {!balanceOnly &&
+        (access.granted ? (
+          <details>
+            <summary>
+              Передача данных разрешена: {policy?.recipient} · {policy?.model}
+            </summary>
+            {description}
+          </details>
+        ) : (
+          <>
+            <h2>Передача данных AI</h2>
+            {description ?? (
+              <p>
+                Условия подключения недоступны. Обновите страницу перед
+                отправкой сообщения.
+              </p>
+            )}
+            {policy && (
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  disabled={busy}
+                  onChange={(event) => setChecked(event.target.checked)}
+                />
+                <span>
+                  Разрешаю передачу указанных данных этому получателю для
+                  рекомендаций.
+                </span>
+              </label>
+            )}
+            {policy && (
+              <Button
+                type="button"
+                disabled={busy || !checked}
+                onClick={() =>
+                  onConsent({ action: "granted", policyId: policy.id })
+                }
+              >
+                Подтвердить получателя AI
+              </Button>
+            )}
+          </>
+        ))}
+      {!onBalance && access.budget?.limitMicros != null && (
         <p role="status">
           Лимит AI вашего аккаунта:{" "}
           {formatMoneyMicros(access.budget.limitMicros)}{" "}
@@ -197,20 +217,25 @@ export function AiAccessPanel({
           отправку.
         </p>
       )}
-      <p>
-        <small>
-          Отзыв блокирует новые запросы. Уже принятый запрос может завершиться;
-          переданные данные нельзя вернуть. План и история остаются доступны.
-        </small>
-      </p>
-      <Button
-        type="button"
-        variant="ghost"
-        disabled={busy}
-        onClick={() => onConsent({ action: "revoked" })}
-      >
-        Отозвать разрешение AI
-      </Button>
+      {!balanceOnly && (
+        <>
+          <p>
+            <small>
+              Отзыв блокирует новые запросы. Уже принятый запрос может
+              завершиться; переданные данные нельзя вернуть. План и история
+              остаются доступны.
+            </small>
+          </p>
+          <Button
+            type="button"
+            variant="ghost"
+            disabled={busy}
+            onClick={() => onConsent({ action: "revoked" })}
+          >
+            Отозвать разрешение AI
+          </Button>
+        </>
+      )}
     </Card>
   );
 }
