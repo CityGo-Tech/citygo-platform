@@ -92,7 +92,22 @@ test("schema26→27 preserves all old accounts, financial rows, migration receip
         "select sequencename,last_value::text from pg_sequences where schemaname='public' order by sequencename",
       )
     ).rows;
-  await migrate(db);
+  // Preserve this fixture's original schema26 -> 27 transition independently
+  // of later migrations, each of which has its own upgrade regression.
+  const migrationName = "0027_phone_verification.sql";
+  const source = await readFile(
+    new URL("../migrations/" + migrationName, import.meta.url),
+    "utf8",
+  );
+  await db.transaction(async (tx) => {
+    await tx.exec(
+      source.replace(/^begin;\s*/i, "").replace(/commit;\s*$/i, ""),
+    );
+    await tx.query(
+      "insert into citygo_migrations(name,checksum) values($1,$2)",
+      [migrationName, hash(source.replaceAll("\r\n", "\n"))],
+    );
+  });
   const after = await captureRestartRows(db);
   for (const [name, rows] of Object.entries(before))
     assert.deepEqual(

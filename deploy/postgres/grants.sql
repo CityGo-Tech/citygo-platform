@@ -61,6 +61,11 @@ grant select, insert on email_registrations, email_registration_rate_events,
   account_email_verifications to citygo_api;
 grant update (code_hash,delivery,attempts,expires_at,consumed_user_id,consumed_at)
   on email_registrations to citygo_api;
+-- Password recovery keeps immutable identity/lifetime and cumulative attempts.
+-- The API can consume/invalidate codes, never delete recovery/quota history.
+grant select, insert on password_recovery_challenges to citygo_api;
+grant update (code_hash,delivery,attempts,consumed_at,invalidated_at)
+  on password_recovery_challenges to citygo_api;
 -- Phone identity policy is operator-bound, never writable/bindable by API.
 -- Quotas and spent gift rights are retained append-only; Worker gets no access.
 grant select on phone_verification_control to citygo_api;

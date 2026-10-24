@@ -31,6 +31,7 @@ import {
 import { tokens } from "@citygo/design-tokens";
 import { Button, Card, Field } from "@citygo/ui-native";
 import { questChecklist } from "@citygo/content";
+import { MobilePasswordRecovery } from "./src/password-recovery";
 import {
   hasEmptyChargeBalance,
   messageInterruptionLabel,
@@ -81,7 +82,7 @@ export default function App() {
     [error, setError] = useState("");
   const [email, setEmail] = useState(""),
     [password, setPassword] = useState(""),
-    [mode, setMode] = useState<"login" | "register">("login");
+    [mode, setMode] = useState<"login" | "register" | "recover">("login");
   const [showPasswordChange, setShowPasswordChange] = useState(false),
     [currentPassword, setCurrentPassword] = useState(""),
     [newPassword, setNewPassword] = useState(""),
@@ -115,6 +116,7 @@ export default function App() {
     setBoard(null);
     setEmail("");
     setPassword("");
+    setMode("login");
     setShowPasswordChange(false);
     setCurrentPassword("");
     setNewPassword("");
@@ -193,6 +195,7 @@ export default function App() {
     }
   }
   function authenticate() {
+    if (mode === "recover") return;
     if (operations.current() || storageBlocked) return;
     const parsed = (
       mode === "login" ? loginSchema : credentialsSchema
@@ -337,6 +340,7 @@ export default function App() {
       operation.finish();
     }
   }
+  const recoverySession = lifetime.capture();
   return (
     <SafeAreaProvider>
       <SafeAreaView style={styles.screen}>
@@ -351,13 +355,18 @@ export default function App() {
               scrollOffset.current = event.nativeEvent.contentOffset.y;
             }}
             scrollEventThrottle={16}
-            contentContainerStyle={styles.content}
+            contentContainerStyle={[
+              styles.content,
+              !board && mode === "recover" && styles.recoveryContent,
+            ]}
             keyboardShouldPersistTaps="handled"
           >
-            <View style={styles.header}>
-              <Text style={styles.logo}>CityGo</Text>
-              <Text>{board ? board.xp + " XP" : "Ваш новый город"}</Text>
-            </View>
+            {!(mode === "recover" && !board) && (
+              <View style={styles.header}>
+                <Text style={styles.logo}>CityGo</Text>
+                <Text>{board ? board.xp + " XP" : "Ваш новый город"}</Text>
+              </View>
+            )}
             {!!error && (
               <Text accessibilityRole="alert" style={styles.error}>
                 {error}
@@ -387,6 +396,29 @@ export default function App() {
             )}
             {!ready ? (
               <Text>Загрузка…</Text>
+            ) : !board && mode === "recover" ? (
+              <MobilePasswordRecovery
+                base={base}
+                sessionSignal={recoverySession.signal}
+                disabled={storageBlocked || busy}
+                onBack={() => clearUserState()}
+                onRecovered={async () => {
+                  recoverySession.check();
+                  try {
+                    // Guard is checked INSIDE the serialized SecureStore queue.
+                    await tokenStore.clear(recoverySession);
+                    recoverySession.check();
+                  } catch (failure) {
+                    if (recoverySession.active()) setStorageBlocked(true);
+                    throw failure;
+                  }
+                  session.current = null;
+                  clearUserState();
+                  setNotice(
+                    "Пароль изменён. Все прежние сессии завершены. Войдите с новым паролем.",
+                  );
+                }}
+              />
             ) : !board ? (
               <Card>
                 <Text style={styles.title}>
@@ -434,6 +466,14 @@ export default function App() {
                   onPress={() =>
                     setMode(mode === "login" ? "register" : "login")
                   }
+                />
+                <Button
+                  title="Не помню пароль"
+                  disabled={busy || storageBlocked}
+                  onPress={() => {
+                    clearUserState();
+                    setMode("recover");
+                  }}
                 />
               </Card>
             ) : board.user.mustChangePassword || showPasswordChange ? (
@@ -866,6 +906,7 @@ export default function App() {
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: tokens.color.background },
   content: { padding: 20, paddingTop: 20, paddingBottom: 50, gap: 20 },
+  recoveryContent: { padding: 0, paddingTop: 0, gap: 0 },
   header: {
     flexDirection: "row",
     alignItems: "center",

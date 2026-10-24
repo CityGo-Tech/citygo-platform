@@ -36,6 +36,31 @@ const transport = (
   handler: (url: string, init: RequestInit) => Promise<Response>,
 ): typeof fetch =>
   (async (url, init) => handler(String(url), init!)) as typeof fetch;
+test("recovery Postbox template names password reset explicitly and preserves one signed plaintext recipient", async () => {
+  let calls = 0;
+  const send = createPostboxDelivery(config, {
+    clock,
+    purpose: "password_recovery",
+    fetch: transport(async (_url, init) => {
+      calls++;
+      const payload = JSON.parse(String(init.body));
+      assert.deepEqual(payload.Destination, { ToAddresses: [input().email] });
+      assert.equal(
+        payload.Content.Simple.Subject.Data,
+        "Восстановление доступа CityGo",
+      );
+      const text = payload.Content.Simple.Body.Text.Data;
+      assert.match(text, /Восстановление доступа CityGo/);
+      assert.match(text, /Код для сброса пароля: 012345/);
+      assert.match(text, /не подтверждение регистрации/);
+      assert.equal(Object.hasOwn(payload.Content.Simple.Body, "Html"), false);
+      return response();
+    }),
+  });
+  assert.equal(calls, 0);
+  assert.equal((await send(input())).accepted, true);
+  assert.equal(calls, 1);
+});
 async function rejects(
   promise: Promise<unknown>,
   code: PostboxDeliveryError["code"],

@@ -52,13 +52,13 @@ test("the upgrade rehearsal rejects a production project before Docker or databa
   );
 });
 
-test("literal 12-era fixture rewinds current 27, rolls back late ACL failure and reapplies without losing data", async (t) => {
+test("literal 12-era fixture rewinds current 28, rolls back late ACL failure and reapplies without losing data", async (t) => {
   const db = new PGlite();
   t.after(() => db.close());
   await db.waitReady;
-  assert.equal(migrations.length, 27);
+  assert.equal(migrations.length, 28);
   assert.equal(migrations[11].name, "0012_housing_answer_history.sql");
-  assert.equal(migrations.at(-1).name, "0027_phone_verification.sql");
+  assert.equal(migrations.at(-1).name, "0028_password_recovery.sql");
   await db.exec(
     "create role citygo_api; create role citygo_worker; create role citygo_backup; create table citygo_migrations(name text primary key,checksum text not null)",
   );
@@ -92,6 +92,32 @@ test("literal 12-era fixture rewinds current 27, rolls back late ACL failure and
     "Execute the helper's exact static rewind, not a second copy",
   );
   assert.equal(rewind[1].includes("${"), false);
+  const recoveryId = "00000000-0000-4000-8000-000000120028";
+  await db.query(
+    "insert into password_recovery_challenges(id,proof_hash,code_hash,recipient_key,expires_at) values($1,$2,$2,$2,clock_timestamp()+interval '10 minutes')",
+    [recoveryId, "ab".repeat(32)],
+  );
+  await assert.rejects(
+    db.exec(rewind[1]),
+    /Password recovery history cannot be rewound/,
+  );
+  await db.exec("rollback");
+  assert.deepEqual(
+    (
+      await db.query(`select
+      (select count(*)::int from password_recovery_challenges where id='${recoveryId}') as recovery,
+      (select count(*)::int from citygo_migrations) as migrations,
+      to_regclass('payment_admission') is not null as admission,
+      exists(select 1 from pg_proc where proname='citygo_guard_password_recovery') as guard`)
+    ).rows,
+    [{ recovery: 1, migrations: 28, admission: true, guard: true }],
+    "Rejected rewind retains recovery history and rolls back earlier DDL",
+  );
+  // Remove only this synthetic in-memory test row before the existing empty
+  // fixture rehearsal; runtime and release helpers never erase recovery history.
+  await db.query("delete from password_recovery_challenges where id=$1", [
+    recoveryId,
+  ]);
   await db.exec(rewind[1]);
   assert.deepEqual(
     (

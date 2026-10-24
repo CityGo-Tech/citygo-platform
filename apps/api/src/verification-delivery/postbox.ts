@@ -68,7 +68,11 @@ function cancel(response: Response | undefined) {
 /** Construction does not send mail. Transport/clock injection is per instance. */
 export function createPostboxDelivery(
   config: PostboxDeliveryConfig,
-  options: { fetch?: typeof globalThis.fetch; clock?: () => Date } = {},
+  options: {
+    fetch?: typeof globalThis.fetch;
+    clock?: () => Date;
+    purpose?: "registration" | "password_recovery";
+  } = {},
 ): (input: PostboxDeliveryInput) => Promise<PostboxAcceptedReceipt> {
   // The verified endpoint can take >5s even to validate an empty request.
   // Leave finite room for delivery while retaining one attempt and no retry.
@@ -89,6 +93,7 @@ export function createPostboxDelivery(
   const { accessKeyId, secretAccessKey, fromEmail } = config;
   const fetcher = options.fetch ?? globalThis.fetch;
   const clock = options.clock ?? (() => new Date());
+  const recovery = options.purpose === "password_recovery";
 
   return async (input) => {
     if (input.signal.aborted) throw new PostboxDeliveryError("aborted");
@@ -129,10 +134,17 @@ export function createPostboxDelivery(
       Destination: { ToAddresses: [input.email] },
       Content: {
         Simple: {
-          Subject: { Data: "Код подтверждения CityGo", Charset: "UTF-8" },
+          Subject: {
+            Data: recovery
+              ? "Восстановление доступа CityGo"
+              : "Код подтверждения CityGo",
+            Charset: "UTF-8",
+          },
           Body: {
             Text: {
-              Data: `Код подтверждения CityGo: ${input.code}\nДействителен до ${expires.toISOString()} (UTC).\nЕсли вы не регистрировались в CityGo, проигнорируйте письмо. Никому не сообщайте код.`,
+              Data: recovery
+                ? `Восстановление доступа CityGo\nКод для сброса пароля: ${input.code}\nЭто восстановление доступа, не подтверждение регистрации.\nДействителен до ${expires.toISOString()} (UTC).\nЕсли вы не запрашивали сброс пароля CityGo, проигнорируйте письмо. Никому не сообщайте код.`
+                : `Код подтверждения CityGo: ${input.code}\nДействителен до ${expires.toISOString()} (UTC).\nЕсли вы не регистрировались в CityGo, проигнорируйте письмо. Никому не сообщайте код.`,
               Charset: "UTF-8",
             },
           },

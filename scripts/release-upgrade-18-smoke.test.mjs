@@ -41,7 +41,7 @@ const migrations = readdirSync(migrationDirectory)
 const withoutTransaction = (sql) =>
   sql.replace(/^begin;\s*/i, "").replace(/commit;\s*$/i, "");
 
-test("18→27 rehearsal rejects a production project before fixture I/O", async () => {
+test("18→28 rehearsal rejects a production project before fixture I/O", async () => {
   const unexpected = () => assert.fail("No I/O before ownership guards");
   await assert.rejects(
     releaseUpgrade18Smoke({
@@ -55,11 +55,11 @@ test("18→27 rehearsal rejects a production project before fixture I/O", async 
   );
 });
 
-test("literal schema-18 fixture preserves budgets/orders/holds, rolls back late ACLs and reapplies only 19–27", async (t) => {
+test("literal schema-18 fixture preserves budgets/orders/holds, rolls back late ACLs and reapplies only 19–28", async (t) => {
   const db = new PGlite();
   t.after(() => db.close());
   await db.waitReady;
-  assert.equal(migrations.length, 27);
+  assert.equal(migrations.length, 28);
   assert.equal(migrations[17].name, "0018_payment_refunds.sql");
   assert.deepEqual(
     migrations.slice(18).map(({ name }) => name),
@@ -73,6 +73,7 @@ test("literal schema-18 fixture preserves budgets/orders/holds, rolls back late 
       "0025_assistant_conversations.sql",
       "0026_email_registration.sql",
       "0027_phone_verification.sql",
+      "0028_password_recovery.sql",
     ],
   );
   await db.exec(
@@ -99,6 +100,32 @@ test("literal schema-18 fixture preserves budgets/orders/holds, rolls back late 
     });
   await apply(migrations);
   const defaultBudget = (await db.query("select * from ai_budget")).rows;
+  const recoveryId = "00000000-0000-4000-8000-000000180028";
+  await db.query(
+    "insert into password_recovery_challenges(id,proof_hash,code_hash,recipient_key,expires_at) values($1,$2,$2,$2,clock_timestamp()+interval '10 minutes')",
+    [recoveryId, "ab".repeat(32)],
+  );
+  await assert.rejects(
+    db.exec(upgrade18RewindSql()),
+    /Password recovery history cannot be rewound/,
+  );
+  await db.exec("rollback");
+  assert.deepEqual(
+    (
+      await db.query(`select
+      (select count(*)::int from password_recovery_challenges where id='${recoveryId}') as recovery,
+      (select count(*)::int from citygo_migrations) as migrations,
+      to_regclass('payment_admission') is not null as admission,
+      exists(select 1 from pg_proc where proname='citygo_guard_password_recovery') as guard`)
+    ).rows,
+    [{ recovery: 1, migrations: 28, admission: true, guard: true }],
+    "Rejected rewind retains recovery history and rolls back earlier DDL",
+  );
+  // Remove only this synthetic in-memory test row before the existing empty
+  // fixture rehearsal; runtime and release helpers never erase recovery history.
+  await db.query("delete from password_recovery_challenges where id=$1", [
+    recoveryId,
+  ]);
   await db.exec(upgrade18RewindSql());
   assert.deepEqual(
     (
