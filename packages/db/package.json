@@ -14,7 +14,7 @@
     }
   },
   "scripts": {
-    "test": "node --import tsx --test --test-concurrency=3 src/**/*.test.ts",
+    "test": "node --import tsx --test --test-concurrency=3 \"src/**/*.test.ts\"",
     "build": "tsup src/index.ts src/cli.ts src/release-cli.ts --format esm --dts --clean",
     "dev": "tsup src/index.ts --format esm --dts --watch",
     "lint": "eslint src",

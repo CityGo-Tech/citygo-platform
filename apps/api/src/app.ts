@@ -17,6 +17,8 @@ import {
   favoriteMessagesQuerySchema,
   conversationStartSchema,
   conversationListQuerySchema,
+  conversationMessagesQuerySchema,
+  conversationHistoryIdSchema,
   conversationIdSchema,
   questionnaireSchema,
   aiConsentSchema,
@@ -705,6 +707,14 @@ export async function buildApp(options: {
     const user = await authenticate(request);
     const query = conversationListQuerySchema.parse(request.query);
     return repo.conversations(user.id, query.before);
+  });
+  app.get("/v1/conversations/:id/messages", async (request) => {
+    const user = await authenticate(request);
+    const id = conversationHistoryIdSchema.parse(
+      (request.params as { id: string }).id,
+    );
+    const query = conversationMessagesQuerySchema.parse(request.query);
+    return repo.conversationMessages(user.id, id, query.before);
   });
   app.get("/v1/conversations/:id", async (request) => {
     const user = await authenticate(request);

@@ -3,6 +3,7 @@ export * from "./platform.js";
 export * from "./email-registration.js";
 export * from "./phone-verification.js";
 export * from "./message-favorites.js";
+export * from "./conversation-history.js";
 export * from "./llm.js";
 export * from "./ai-access.js";
 export * from "./ai-budget.js";
