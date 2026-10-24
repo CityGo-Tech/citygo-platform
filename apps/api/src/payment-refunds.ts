@@ -92,6 +92,9 @@ export function registerPaymentRefunds(
     sessionName: string;
     client?: RefundClient;
     authenticate: (request: FastifyRequest) => Promise<{ id: string }>;
+    authenticateReconciliation?: (
+      request: FastifyRequest,
+    ) => Promise<{ id: string }>;
   },
 ) {
   const refunds = new PaymentRefunds(options.db);
@@ -104,8 +107,12 @@ export function registerPaymentRefunds(
       throw new DomainError(503, "Возвраты сейчас отключены");
     return options.client;
   };
-  async function context(request: FastifyRequest) {
-    const user = await options.authenticate(request);
+  async function context(request: FastifyRequest, reconciliation = false) {
+    const user = await (
+      reconciliation && options.authenticateReconciliation
+        ? options.authenticateReconciliation
+        : options.authenticate
+    )(request);
     const token = request.headers.authorization?.startsWith("Bearer ")
       ? request.headers.authorization.slice(7)
       : request.cookies[options.sessionName];
@@ -205,7 +212,7 @@ export function registerPaymentRefunds(
     "/v1/admin/payments/refunds/:id/reconcile",
     { config: { rateLimit: { max: 10, timeWindow: 60_000 } } },
     async (request) => {
-      const actor = await context(request),
+      const actor = await context(request, true),
         client = available(),
         { id } = input(params, request.params);
       input(empty, request.query);

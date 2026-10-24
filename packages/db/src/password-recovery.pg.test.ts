@@ -1,3 +1,4 @@
+import { syntheticServiceConsents } from "./test-service-consents.js";
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import { createHash, randomUUID } from "node:crypto";
@@ -28,6 +29,7 @@ function input(
   ip = "synthetic-ip",
 ) {
   return {
+    consents: syntheticServiceConsents,
     id: randomUUID(),
     email,
     passwordHash: "synthetic-hashed-password",

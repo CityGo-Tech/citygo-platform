@@ -1,3 +1,4 @@
+import { syntheticServiceConsents } from "./test-service-consents.js";
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import {
@@ -5,6 +6,7 @@ import {
   connectDatabase,
   migrate,
   Repository,
+  ServiceConsents,
 } from "@citygo/db";
 import { readConfig } from "@citygo/config";
 import {
@@ -109,7 +111,11 @@ async function fixture(
     method: "POST",
     url: "/v1/auth/email/register",
     headers,
-    payload: { email: "verified-phone@example.test", password: "abcdef" },
+    payload: {
+      consents: syntheticServiceConsents,
+      email: "verified-phone@example.test",
+      password: "abcdef",
+    },
   });
   assert.equal(begin.statusCode, 200);
   const binding = phoneVerificationChallengeSchema.parse(begin.json());
@@ -615,6 +621,7 @@ test("a legacy unverified email account cannot send an SMS or receive a gift", a
     await hashPassword("abcdef"),
   );
   const token = "synthetic-legacy-phone-session";
+  await new ServiceConsents(f.db).choose(userId, syntheticServiceConsents);
   await repo.createSession(userId, tokenHash(token));
   const response = await f.post(
     "start",

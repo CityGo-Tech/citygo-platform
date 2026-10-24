@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { syntheticServiceConsents } from "./test-service-consents.js";
 import test from "node:test";
 import { randomUUID } from "node:crypto";
 import {
@@ -187,6 +188,21 @@ test("closed restart reaches HTTP with revoked legacy identity, restricted admin
   assert.ok(reloginAuth.token);
   assert.equal(reloginAuth.user.mustChangePassword, false);
   assert.equal(reloginAuth.user.role, "super_admin");
+  assert.equal(reloginAuth.user.serviceConsentRequired, true);
+  const needsConsent = await call(
+    "GET",
+    "/v1/admin/accounts",
+    currentAuth.token,
+  );
+  assert.equal(needsConsent.statusCode, 403);
+  assert.equal(needsConsent.json().code, "SERVICE_CONSENT_REQUIRED");
+  const accepted = await call(
+    "POST",
+    "/v1/account/consents",
+    currentAuth.token,
+    syntheticServiceConsents,
+  );
+  assert.equal(accepted.statusCode, 200, accepted.body);
 
   const listing = await call("GET", "/v1/admin/accounts", currentAuth.token);
   assert.equal(listing.statusCode, 200, listing.body);

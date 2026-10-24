@@ -1,3 +1,4 @@
+import { syntheticConsentPolicy } from "./service-consent-fixture";
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
 import type {
   CreatePersonalPlanItem,
@@ -115,6 +116,18 @@ async function fixture(
     return route.abort();
   });
   await context.route("**/api/v1/**", async (route) => {
+    if (
+      route.request().method() === "GET" &&
+      new URL(route.request().url()).origin === "http://localhost:3000" &&
+      new URL(route.request().url()).pathname ===
+        "/api/v1/auth/registration-policy"
+    )
+      return route.fulfill({
+        json: {
+          emailVerification: "disabled",
+          consentPolicy: syntheticConsentPolicy,
+        },
+      });
     const request = route.request(),
       url = new URL(request.url()),
       path = url.pathname;
@@ -530,6 +543,7 @@ test("real local API persists chosen messages and CAS changes without spending o
     .getByLabel("Электронная почта", { exact: true })
     .fill("plan-" + crypto.randomUUID() + "@example.test");
   await page.getByLabel("Пароль", { exact: true }).fill("123456");
+  await page.locator("input[name=personalDataConsent]").check();
   await page
     .getByRole("button", { name: "Создать аккаунт", exact: true })
     .click();

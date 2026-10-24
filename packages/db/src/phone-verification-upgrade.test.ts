@@ -1,3 +1,7 @@
+import {
+  syntheticServiceConsents,
+  seedLegacyVerifiedEmail,
+} from "./test-service-consents.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createHash, randomUUID } from "node:crypto";
@@ -68,24 +72,7 @@ test("schema26→27 preserves all old accounts, financial rows, migration receip
   const db = await connectDatabase("pglite://:memory:");
   t.after(() => db.close());
   await through26(db);
-  const email = new EmailRegistration(db),
-    value = {
-      id: randomUUID(),
-      email: "synthetic-upgrade-email@example.test",
-      passwordHash: "synthetic-hash",
-      proofHash: hash("proof"),
-      codeHash: hash("code"),
-      recipientKey: hash("recipient"),
-      ipKey: hash("ip"),
-    };
-  await email.begin(value);
-  await email.markSent(value.id, value.codeHash);
-  await email.confirm({
-    id: value.id,
-    proofHash: value.proofHash,
-    codeHash: value.codeHash,
-    sessionHash: hash("session"),
-  });
+  await seedLegacyVerifiedEmail(db, "synthetic-upgrade-email@example.test");
   const before = await captureRestartRows(db),
     sequences = (
       await db.query(
@@ -162,6 +149,7 @@ for (const state of ["unbound", "bound-only", "pending", "claimed"] as const) {
     if (state === "pending" || state === "claimed") {
       const email = new EmailRegistration(db),
         value = {
+          consents: syntheticServiceConsents,
           id: randomUUID(),
           email: "synthetic-reset-phone@example.test",
           passwordHash: "synthetic-hash",

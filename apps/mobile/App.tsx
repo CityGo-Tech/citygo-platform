@@ -8,6 +8,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   StatusBar,
+  Linking,
 } from "react-native";
 import * as SecureStore from "expo-secure-store";
 import { randomUUID } from "expo-crypto";
@@ -18,6 +19,7 @@ import {
   createSessionGuard,
   createSessionStorage,
   createSessionLogout,
+  ApiError,
   type SessionTicket,
 } from "@citygo/api-client";
 import {
@@ -32,6 +34,14 @@ import { tokens } from "@citygo/design-tokens";
 import { Button, Card, Field } from "@citygo/ui-native";
 import { questChecklist } from "@citygo/content";
 import { MobilePasswordRecovery } from "./src/password-recovery";
+import { MobileServiceConsents } from "./src/service-consents";
+import {
+  changeServiceConsent,
+  createServiceConsentForm,
+  currentServiceConsentForm,
+  serviceConsentChoice,
+  type ServiceConsentForm,
+} from "./src/service-consent-state";
 import {
   hasEmptyChargeBalance,
   messageInterruptionLabel,
@@ -53,6 +63,7 @@ const tokenStore = createSessionStorage({
   set: (token) => SecureStore.setItemAsync("citygo.session", token),
   remove: () => SecureStore.deleteItemAsync("citygo.session"),
 });
+const webAppUrl = "https://app.xn--c1ajazlh.xn--p1ai";
 export default function App() {
   const session = useRef<string | null>(null);
   const [lifetime] = useState(createSessionGuard);
@@ -83,6 +94,15 @@ export default function App() {
   const [email, setEmail] = useState(""),
     [password, setPassword] = useState(""),
     [mode, setMode] = useState<"login" | "register" | "recover">("login");
+  const [consentForm, setConsentForm] = useState<ServiceConsentForm | null>(
+    null,
+  );
+  const [consentLoading, setConsentLoading] = useState(false),
+    [consentLoadError, setConsentLoadError] = useState(""),
+    [consentReload, setConsentReload] = useState(0);
+  const [registrationAvailability, setRegistrationAvailability] = useState<
+    "loading" | "disabled" | "required" | "unavailable"
+  >("loading");
   const [showPasswordChange, setShowPasswordChange] = useState(false),
     [currentPassword, setCurrentPassword] = useState(""),
     [newPassword, setNewPassword] = useState(""),
@@ -117,6 +137,10 @@ export default function App() {
     setEmail("");
     setPassword("");
     setMode("login");
+    setConsentForm(null);
+    setConsentLoading(false);
+    setConsentLoadError("");
+    setRegistrationAvailability("loading");
     setShowPasswordChange(false);
     setCurrentPassword("");
     setNewPassword("");
@@ -208,7 +232,18 @@ export default function App() {
       );
       return;
     }
-    const input = { mode, ...parsed.data };
+    const consents =
+      mode === "register"
+        ? serviceConsentChoice(consentForm, consentScope)
+        : undefined;
+    if (mode === "register" && !consents) {
+      setError(
+        "Прочитайте условия и подтвердите согласие на обработку данных.",
+      );
+      return;
+    }
+    // Capture this exact version and explicit choice before clearing the view.
+    const input = { mode, ...parsed.data, consents: consents ?? undefined };
     session.current = null;
     clearUserState();
     void act("auth", async (ticket) => {
@@ -228,6 +263,7 @@ export default function App() {
         ticket.check();
         if (policy.emailVerification !== "disabled") {
           setPassword("");
+          setMode("register");
           throw new Error(
             policy.emailVerification === "required"
               ? "Для регистрации с подтверждением почты откройте веб-версию CityGo. Затем войдите здесь с созданным аккаунтом."
@@ -235,12 +271,39 @@ export default function App() {
           );
         }
       }
-      const result = await api.auth(input.mode, input.email, input.password);
+      let result;
+      try {
+        result = await api.auth(
+          input.mode,
+          input.email,
+          input.password,
+          input.consents,
+        );
+      } catch (failure) {
+        if (ticket.active() && input.mode === "register") {
+          setMode("register");
+          setEmail(input.email);
+        }
+        throw failure;
+      }
       if (!result.token) throw new Error("Сервер не вернул сессию");
       await tokenStore.save(result.token, ticket);
       ticket.check();
       session.current = result.token;
       await refresh(ticket);
+    });
+  }
+  function acceptServiceConsents() {
+    if (operations.current() || storageBlocked || !board) return;
+    const choice = serviceConsentChoice(consentForm, consentScope);
+    if (!choice) return;
+    void act("refresh", async (ticket) => {
+      await api.setAccountConsents(choice);
+      ticket.check();
+      await refresh(ticket);
+      ticket.check();
+      setConsentForm(null);
+      setNotice("Согласия сохранены.");
     });
   }
   function changePassword() {
@@ -282,6 +345,8 @@ export default function App() {
           return;
         }
         session.current = result.token;
+        setConsentForm(null);
+        setConsentReload((version) => version + 1);
         setBoard((current) =>
           current?.user.id === owner
             ? { ...current, user: result.user }
@@ -334,13 +399,134 @@ export default function App() {
     try {
       await work(ticket, operation);
     } catch (e) {
-      if (ticket.active())
-        setError(e instanceof Error ? e.message : "Ошибка запроса");
+      if (ticket.active()) {
+        if (
+          e instanceof ApiError &&
+          e.serverCode === "SERVICE_CONSENT_REQUIRED"
+        ) {
+          setBoard((current) =>
+            current
+              ? {
+                  ...current,
+                  user: { ...current.user, serviceConsentRequired: true },
+                }
+              : null,
+          );
+          try {
+            await refresh(ticket);
+          } catch {
+            /* Keep the original rejection; the next refresh can retry. */
+          }
+        }
+        if (ticket.active()) {
+          if (
+            e instanceof ApiError &&
+            e.serverCode === "SERVICE_CONSENT_POLICY_CHANGED"
+          ) {
+            setConsentForm(null);
+            setConsentReload((version) => version + 1);
+          }
+          setError(e instanceof Error ? e.message : "Ошибка запроса");
+        }
+      }
     } finally {
       operation.finish();
     }
   }
   const recoverySession = lifetime.capture();
+  const consentScope = board?.user.serviceConsentRequired
+    ? { context: board.user.id, signal: recoverySession.signal }
+    : !board && mode === "register"
+      ? { context: "register", signal: recoverySession.signal }
+      : null;
+  const activeConsentForm = currentServiceConsentForm(
+    consentForm,
+    consentScope,
+  );
+  const consentChoice = serviceConsentChoice(consentForm, consentScope);
+  useEffect(() => {
+    const context = consentScope?.context;
+    const signal = recoverySession.signal;
+    setConsentForm(null);
+    setConsentLoadError("");
+    setConsentLoading(!!context);
+    if (!context || signal.aborted) return;
+    if (context === "register") setRegistrationAvailability("loading");
+    const controller = new AbortController();
+    const cancel = () => controller.abort();
+    signal.addEventListener("abort", cancel, { once: true });
+    const active = () => !signal.aborted && !controller.signal.aborted;
+    const publicApi = createClient(base, {
+      native: true,
+      fetch: expoFetch,
+      signal: () => controller.signal,
+    });
+    void (async () => {
+      if (context === "register") {
+        const registration = await publicApi.registrationPolicy();
+        if (!active()) return;
+        setRegistrationAvailability(registration.emailVerification);
+        if (registration.emailVerification !== "disabled") return;
+      }
+      const policy = await publicApi.legalConsentPolicy();
+      if (active())
+        setConsentForm(createServiceConsentForm(policy, { context, signal }));
+    })()
+      .catch(() => {
+        if (active())
+          setConsentLoadError(
+            "Не удалось загрузить актуальные условия. Проверьте связь и повторите.",
+          );
+      })
+      .finally(() => {
+        if (active()) setConsentLoading(false);
+      });
+    return () => {
+      signal.removeEventListener("abort", cancel);
+      controller.abort();
+    };
+  }, [base, consentScope?.context, recoverySession.signal, consentReload]);
+  function updateConsent(
+    purpose: "personalData" | "marketing",
+    granted: boolean,
+  ) {
+    setConsentForm((current) => {
+      const form = currentServiceConsentForm(current, consentScope);
+      return form ? changeServiceConsent(form, purpose, granted) : current;
+    });
+  }
+  function retryConsentPolicy() {
+    setConsentForm(null);
+    setConsentReload((version) => version + 1);
+  }
+  function openWebApp() {
+    const ticket = lifetime.capture();
+    void Linking.openURL(webAppUrl).catch(() => {
+      if (ticket.active())
+        setError("Не удалось открыть веб-версию CityGo. Повторите попытку.");
+    });
+  }
+  const consentFields = activeConsentForm ? (
+    <MobileServiceConsents
+      key={`${activeConsentForm.context}:${activeConsentForm.policy.version}`}
+      form={activeConsentForm}
+      disabled={busy || storageBlocked}
+      onChange={updateConsent}
+    />
+  ) : consentLoading || !consentLoadError ? (
+    <Text>Загружаем актуальные условия…</Text>
+  ) : (
+    <View style={{ gap: 10 }}>
+      <Text accessibilityRole="alert">
+        {consentLoadError || "Актуальные условия пока недоступны."}
+      </Text>
+      <Button
+        title="Повторить загрузку условий"
+        disabled={busy || storageBlocked}
+        onPress={retryConsentPolicy}
+      />
+    </View>
+  );
   return (
     <SafeAreaProvider>
       <SafeAreaView style={styles.screen}>
@@ -382,9 +568,12 @@ export default function App() {
               <Text accessibilityLiveRegion="polite">
                 {changingPassword
                   ? "Меняем пароль…"
-                  : pending.kind === "start" && !board?.thread
-                    ? "Открываем диалог…"
-                    : operationLabel(pending)}
+                  : pending.kind === "refresh" &&
+                      board?.user.serviceConsentRequired
+                    ? "Сохраняем согласия…"
+                    : pending.kind === "start" && !board?.thread
+                      ? "Открываем диалог…"
+                      : operationLabel(pending)}
               </Text>
             )}
             {storageBlocked && (
@@ -424,38 +613,82 @@ export default function App() {
                 <Text style={styles.title}>
                   {mode === "login" ? "С возвращением" : "Начнём переезд"}
                 </Text>
-                <Field
-                  label={
-                    mode === "login"
-                      ? "Логин или электронная почта"
-                      : "Электронная почта"
-                  }
-                  value={email}
-                  onChangeText={setEmail}
-                  autoCapitalize="none"
-                  keyboardType={mode === "login" ? "default" : "email-address"}
-                  autoComplete={mode === "login" ? "username" : "email"}
-                  maxLength={254}
-                  editable={!busy && !storageBlocked}
-                />
-                <Field
-                  label={
-                    mode === "login" ? "Пароль" : "Пароль · от 6 любых символов"
-                  }
-                  value={password}
-                  onChangeText={setPassword}
-                  secureTextEntry
-                  maxLength={128}
-                  editable={!busy && !storageBlocked}
-                  autoComplete={
-                    mode === "login" ? "current-password" : "new-password"
-                  }
-                />
-                <Button
-                  title={mode === "login" ? "Войти" : "Создать аккаунт"}
-                  disabled={busy || storageBlocked}
-                  onPress={authenticate}
-                />
+                {mode === "register" &&
+                registrationAvailability !== "disabled" ? (
+                  <>
+                    <Text>
+                      {registrationAvailability === "required"
+                        ? "Для регистрации с подтверждением почты откройте веб-версию CityGo. Затем войдите здесь с созданным аккаунтом."
+                        : registrationAvailability === "unavailable"
+                          ? "Регистрация временно недоступна: отправка писем ещё не подключена. Если аккаунт уже есть, войдите."
+                          : consentLoading || !consentLoadError
+                            ? "Проверяем способ регистрации…"
+                            : consentLoadError ||
+                              "Не удалось проверить способ регистрации."}
+                    </Text>
+                    {registrationAvailability === "required" ? (
+                      <Button
+                        title="Открыть веб-версию CityGo"
+                        disabled={busy || storageBlocked}
+                        onPress={openWebApp}
+                      />
+                    ) : (
+                      !consentLoading &&
+                      (registrationAvailability === "unavailable" ||
+                        !!consentLoadError) && (
+                        <Button
+                          title="Проверить регистрацию ещё раз"
+                          disabled={busy || storageBlocked}
+                          onPress={retryConsentPolicy}
+                        />
+                      )
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <Field
+                      label={
+                        mode === "login"
+                          ? "Логин или электронная почта"
+                          : "Электронная почта"
+                      }
+                      value={email}
+                      onChangeText={setEmail}
+                      autoCapitalize="none"
+                      keyboardType={
+                        mode === "login" ? "default" : "email-address"
+                      }
+                      autoComplete={mode === "login" ? "username" : "email"}
+                      maxLength={254}
+                      editable={!busy && !storageBlocked}
+                    />
+                    <Field
+                      label={
+                        mode === "login"
+                          ? "Пароль"
+                          : "Пароль · от 6 любых символов"
+                      }
+                      value={password}
+                      onChangeText={setPassword}
+                      secureTextEntry
+                      maxLength={128}
+                      editable={!busy && !storageBlocked}
+                      autoComplete={
+                        mode === "login" ? "current-password" : "new-password"
+                      }
+                    />
+                    {mode === "register" && consentFields}
+                    <Button
+                      title={mode === "login" ? "Войти" : "Создать аккаунт"}
+                      disabled={
+                        busy ||
+                        storageBlocked ||
+                        (mode === "register" && !consentChoice)
+                      }
+                      onPress={authenticate}
+                    />
+                  </>
+                )}
                 <Button
                   title={
                     mode === "login"
@@ -463,9 +696,11 @@ export default function App() {
                       : "Уже есть аккаунт"
                   }
                   disabled={busy || storageBlocked}
-                  onPress={() =>
-                    setMode(mode === "login" ? "register" : "login")
-                  }
+                  onPress={() => {
+                    const next = mode === "login" ? "register" : "login";
+                    clearUserState();
+                    setMode(next);
+                  }}
                 />
                 <Button
                   title="Не помню пароль"
@@ -518,6 +753,30 @@ export default function App() {
                     }}
                   />
                 )}
+              </Card>
+            ) : board.user.serviceConsentRequired ? (
+              <Card>
+                <Text style={styles.title}>Перед продолжением</Text>
+                <Text>
+                  Для использования CityGo подтвердите отдельное согласие на
+                  обработку персональных данных. Рекламная рассылка
+                  необязательна.
+                </Text>
+                {consentFields}
+                <Button
+                  title="Принять и продолжить"
+                  disabled={busy || storageBlocked || !consentChoice}
+                  onPress={acceptServiceConsents}
+                />
+                <Button
+                  title="Изменить пароль"
+                  disabled={busy || storageBlocked}
+                  onPress={() => {
+                    setShowPasswordChange(true);
+                    setCurrentPassword("");
+                    setNewPassword("");
+                  }}
+                />
               </Card>
             ) : (
               <>
@@ -890,6 +1149,11 @@ export default function App() {
                       setCurrentPassword("");
                       setNewPassword("");
                     }}
+                  />
+                  <Button
+                    title="Согласия и рассылки в веб-кабинете"
+                    disabled={busy}
+                    onPress={openWebApp}
                   />
                 </Card>
               </>

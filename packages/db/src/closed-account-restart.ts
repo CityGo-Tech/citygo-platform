@@ -6,6 +6,7 @@ import type { AccountResetBlocker } from "./account-reset.js";
 // One operator-only transition before the FIRST administrator bootstrap. This
 // is not account deletion, a public erasure API, a migration, or a reset job.
 const tables = [
+  "service_consent_events",
   "personal_plan_items",
   "password_recovery_challenges",
   "account_email_verifications",
@@ -71,6 +72,7 @@ const tables = [
 ] as const;
 // No money, attempt, receipt, policy, migration, catalog or usage row is rewritten.
 const retainedTables = [
+  "service_consent_events",
   "personal_plan_items",
   "phone_verification_challenges",
   "phone_verification_control",
@@ -313,6 +315,7 @@ async function inspect(tx: Sql, options: Options) {
   // account-reset retention policy. Preserve them and refuse ANY such history;
   // do not silently make old erasure authorization apply to the new tables.
   const verificationHistoryCount = [
+    "service_consent_events",
     "account_email_verifications",
     "email_registrations",
     "email_registration_rate_events",

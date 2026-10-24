@@ -1,5 +1,16 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
+import {
+  serviceConsentChoiceSchema,
+  serviceConsentPolicy,
+  type ServiceConsentChoice,
+  type ServiceConsentPolicy,
+} from "@citygo/contracts";
+import {
+  consentPolicyHash,
+  recordServiceConsent,
+  validateServiceConsent,
+} from "./service-consents.js";
 import type { Database, Sql } from "./index.js";
 import type { AccountInfo } from "./account-access.js";
 import { DomainError } from "./errors.js";
@@ -14,6 +25,7 @@ const beginSchema = z.strictObject({
   codeHash: digest,
   recipientKey: digest,
   ipKey: digest,
+  consents: serviceConsentChoiceSchema,
 });
 const resendSchema = z.strictObject({
   id: idSchema,
@@ -42,6 +54,10 @@ type PendingRegistration = {
   expiresAt: string;
   expired: boolean;
   consumed_user_id: string | null;
+  consent_choice: ServiceConsentChoice | null;
+  consent_policy: ServiceConsentPolicy | null;
+  consent_policy_hash: string | null;
+  consent_recorded_at: string | null;
 };
 
 function invalid() {
@@ -67,7 +83,9 @@ async function pending(tx: Sql, id: string) {
     await tx.query<PendingRegistration>(
       `select id::text,email,password_hash,proof_hash,code_hash,recipient_key,delivery,attempts,
        to_char(expires_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "expiresAt",
-       expires_at<=clock_timestamp() as expired,consumed_user_id::text
+       expires_at<=clock_timestamp() as expired,consumed_user_id::text,
+       consent_choice,consent_policy,consent_policy_hash,
+       consent_recorded_at::text
        from email_registrations where id=$1 for update`,
       [id],
     )
@@ -171,6 +189,7 @@ export class EmailRegistration {
 
   async begin(raw: EmailRegistrationBegin) {
     const input = parse(beginSchema, raw);
+    validateServiceConsent(input.consents);
     if (input.email !== input.email.trim().toLowerCase()) throw invalid();
     return this.db.transaction(async (tx) => {
       await lockSecurity(tx);
@@ -187,8 +206,8 @@ export class EmailRegistration {
       await quota(tx, input.recipientKey, input.ipKey, this.sendLimits);
       return (
         await tx.query<{ id: string; expiresAt: string }>(
-          `insert into email_registrations(id,email,password_hash,proof_hash,code_hash,recipient_key,expires_at)
-           values ($1,$2,$3,$4,$5,$6,clock_timestamp()+interval '10 minutes')
+          `insert into email_registrations(id,email,password_hash,proof_hash,code_hash,recipient_key,expires_at,consent_choice,consent_policy,consent_policy_hash,consent_recorded_at)
+           values ($1,$2,$3,$4,$5,$6,clock_timestamp()+interval '10 minutes',$7::jsonb,$8::jsonb,$9,clock_timestamp())
            returning id::text,to_char(expires_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "expiresAt"`,
           [
             input.id,
@@ -197,6 +216,9 @@ export class EmailRegistration {
             input.proofHash,
             input.codeHash,
             input.recipientKey,
+            JSON.stringify(input.consents),
+            JSON.stringify(serviceConsentPolicy),
+            consentPolicyHash(serviceConsentPolicy),
           ],
         )
       ).rows[0]!;
@@ -236,6 +258,14 @@ export class EmailRegistration {
       if (
         !current ||
         current.consumed_user_id ||
+        !current.consent_choice ||
+        !current.consent_policy ||
+        !current.consent_recorded_at ||
+        current.consent_choice.policyVersion !== serviceConsentPolicy.version ||
+        current.consent_policy_hash !==
+          consentPolicyHash(serviceConsentPolicy) ||
+        consentPolicyHash(current.consent_policy) !==
+          current.consent_policy_hash ||
         !equal(current.proof_hash, input.proofHash) ||
         equal(current.code_hash, input.codeHash)
       )
@@ -263,6 +293,14 @@ export class EmailRegistration {
       if (
         !current ||
         current.consumed_user_id ||
+        !current.consent_choice ||
+        !current.consent_policy ||
+        !current.consent_recorded_at ||
+        current.consent_choice.policyVersion !== serviceConsentPolicy.version ||
+        current.consent_policy_hash !==
+          consentPolicyHash(serviceConsentPolicy) ||
+        consentPolicyHash(current.consent_policy) !==
+          current.consent_policy_hash ||
         current.expired ||
         current.delivery !== "sent" ||
         current.attempts >= 5 ||
@@ -291,6 +329,14 @@ export class EmailRegistration {
         "insert into user_credentials(user_id,email,password_hash) values ($1,$2,$3)",
         [user.id, current.email, current.password_hash],
       );
+      await recordServiceConsent(tx, {
+        userId: user.id,
+        email: current.email,
+        choice: current.consent_choice,
+        source: "email-registration",
+        registrationId: input.id,
+        choiceRecordedAt: current.consent_recorded_at,
+      });
       await tx.query(
         "update email_registrations set consumed_user_id=$2,consumed_at=clock_timestamp() where id=$1",
         [input.id, user.id],
@@ -314,6 +360,7 @@ export class EmailRegistration {
           username: null,
           role: "user" as const,
           mustChangePassword: false,
+          serviceConsentRequired: false,
         },
       };
     });

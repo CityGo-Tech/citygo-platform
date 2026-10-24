@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import { root } from "./env.mjs";
 import { assertCleanContainerStop } from "./container-stop-check.mjs";
+import { syntheticServiceConsentChoice } from "./smoke-service-consents.mjs";
 
 export async function until(check, message, timeout = 5000) {
   const deadline = Date.now() + timeout;
@@ -88,6 +89,7 @@ export async function containerDrainSmoke({
     body: JSON.stringify({
       email: "drain-smoke@example.test",
       password: "Synthetic-drain-only-2026",
+      consents: await syntheticServiceConsentChoice(request),
     }),
   });
   assert.equal(registration.status, 200);

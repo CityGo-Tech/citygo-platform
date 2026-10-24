@@ -1,3 +1,4 @@
+import { syntheticServiceConsents } from "./test-service-consents.js";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { Writable } from "node:stream";
@@ -76,6 +77,7 @@ async function fixture(
     const proofHash = hash(id + "proof"),
       codeHash = hash(id + "code");
     await state.begin({
+      consents: syntheticServiceConsents,
       id,
       email: address,
       passwordHash: await hashPassword(oldPassword),

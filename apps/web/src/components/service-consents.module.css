@@ -1,0 +1,38 @@
+.choices {
+  display: grid;
+  gap: 14px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+  font-size: 14px;
+  line-height: 1.5;
+}
+.choices legend {
+  margin-bottom: 10px;
+  font-weight: 600;
+}
+.choices label {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  cursor: pointer;
+}
+.choices input {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  min-height: 0;
+  margin: 2px 0 0;
+  accent-color: var(--cg-color-primary-strong);
+}
+.choices a {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.panel {
+  display: grid;
+  gap: 18px;
+  max-width: 816px;
+  margin: 0 auto;
+}

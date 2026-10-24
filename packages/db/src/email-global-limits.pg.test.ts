@@ -1,3 +1,4 @@
+import { syntheticServiceConsents } from "./test-service-consents.js";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import test, { type TestContext } from "node:test";
@@ -23,6 +24,7 @@ const status = (value: number) => (error: unknown) =>
 function input() {
   const id = randomUUID();
   return {
+    consents: syntheticServiceConsents,
     id,
     email: `synthetic-${id}@example.test`,
     passwordHash: "synthetic-email-global-hashed-password",

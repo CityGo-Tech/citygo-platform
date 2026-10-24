@@ -38,6 +38,7 @@ export const accountUserSchema = z.object({
   username: z.string().min(1).max(64).nullable().optional(),
   role: accountRoleSchema.optional(),
   mustChangePassword: z.boolean().optional(),
+  serviceConsentRequired: z.boolean().optional(),
 });
 export type AccountUser = z.infer<typeof accountUserSchema>;
 export const changePasswordSchema = z.object({

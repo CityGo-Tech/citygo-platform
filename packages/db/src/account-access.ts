@@ -9,6 +9,7 @@ export type AccountInfo = {
   username: string | null;
   role: AccountRole;
   mustChangePassword: boolean;
+  serviceConsentRequired?: boolean;
 };
 export type AccountCredentials = AccountInfo & { password_hash: string };
 

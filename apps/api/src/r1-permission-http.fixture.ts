@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { registerSyntheticConsentingUser } from "./test-service-consents.js";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import type { TestContext } from "node:test";
@@ -223,7 +224,8 @@ export async function permissionHttpFixture(
   await app.ready();
   const repo = new Repository(base);
   async function person() {
-    const id = await repo.register(
+    const id = await registerSyntheticConsentingUser(
+      base,
       randomUUID() + "@example.test",
       "synthetic-unused-hash",
     );

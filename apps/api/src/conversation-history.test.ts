@@ -1,3 +1,4 @@
+import { registerSyntheticConsentingUser } from "./test-service-consents.js";
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import { randomUUID } from "node:crypto";
@@ -74,11 +75,13 @@ async function fixture(t: TestContext) {
     }
   });
   const repo = new Repository(db);
-  const owner = await repo.register(
+  const owner = await registerSyntheticConsentingUser(
+    db,
     "history-owner@example.test",
     "synthetic-hash",
   );
-  const other = await repo.register(
+  const other = await registerSyntheticConsentingUser(
+    db,
     "history-other@example.test",
     "synthetic-hash",
   );

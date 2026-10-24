@@ -1,8 +1,12 @@
+import {
+  seedLegacyVerifiedEmail,
+  applyFixtureMigration,
+} from "./test-service-consents.js";
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { readFile, readdir } from "node:fs/promises";
-import { EmailRegistration, connectDatabase, migrate } from "./index.js";
+import { connectDatabase } from "./index.js";
 import {
   captureRestartRows,
   migrateLegacyRestartFixture,
@@ -36,31 +40,15 @@ test("schema27 to29 preserves every account, verified email, wallet, financial r
       );
     });
   }
-  const reg = new EmailRegistration(db),
-    v = {
-      id: randomUUID(),
-      email: "upgrade-verified@example.test",
-      passwordHash: "synthetic-salted-hash",
-      proofHash: hash("proof"),
-      codeHash: hash("code"),
-      recipientKey: hash("recipient"),
-      ipKey: hash("ip"),
-    };
-  await reg.begin(v);
-  await reg.markSent(v.id, v.codeHash);
-  await reg.confirm({
-    id: v.id,
-    proofHash: v.proofHash,
-    codeHash: v.codeHash,
-    sessionHash: hash("session"),
-  });
+  await seedLegacyVerifiedEmail(db, "upgrade-verified@example.test");
   const before = await captureRestartRows(db),
     sequences = (
       await db.query(
         "select sequencename,last_value::text from pg_sequences where schemaname='public' order by sequencename",
       )
     ).rows;
-  await migrate(db);
+  await applyFixtureMigration(db, "0028_password_recovery.sql");
+  await applyFixtureMigration(db, "0029_personal_plan.sql");
   const after = await captureRestartRows(db);
   for (const [name, rows] of Object.entries(before))
     assert.deepEqual(
@@ -85,6 +73,7 @@ test("schema27 to29 preserves every account, verified email, wallet, financial r
     ),
     sequences,
   );
-  await migrate(db);
+  await applyFixtureMigration(db, "0028_password_recovery.sql");
+  await applyFixtureMigration(db, "0029_personal_plan.sql");
   assert.deepEqual(await captureRestartRows(db), after);
 });

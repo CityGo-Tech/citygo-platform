@@ -14,6 +14,7 @@ import { releaseMigrationSmoke } from "./release-migration-smoke.mjs";
 import { releaseUpgrade12Smoke } from "./release-upgrade-12-smoke.mjs";
 import { releaseUpgrade18Smoke } from "./release-upgrade-18-smoke.mjs";
 import { routerAiProfileSmoke } from "./routerai-profile-smoke.mjs";
+import { syntheticServiceConsentChoice } from "./smoke-service-consents.mjs";
 
 export async function pilotSmoke({
   apiImage,
@@ -183,6 +184,7 @@ export async function pilotSmoke({
       body: JSON.stringify({
         email: "pilot-fixture@example.test",
         password: "Synthetic-password-1234",
+        consents: await syntheticServiceConsentChoice(request),
       }),
     });
     assert.equal(registration.status, 200);

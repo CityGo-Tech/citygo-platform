@@ -1,10 +1,10 @@
+import { registerSyntheticConsentingUser } from "./test-service-consents.js";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import {
   AiCreditLedger,
   PaymentRefunds,
-  Repository,
   connectDatabase,
   migrate,
 } from "@citygo/db";
@@ -19,12 +19,13 @@ test("live refund transport accepts the journal's immutable payload and only a s
   const db = await connectDatabase("pglite://:memory:");
   t.after(() => db.close());
   await migrate(db);
-  const repo = new Repository(db);
-  const operatorId = await repo.register(
+  const operatorId = await registerSyntheticConsentingUser(
+    db,
     "refund-operator@example.test",
     "SYNTHETIC-NOT-A-PASSWORD-HASH",
   );
-  const buyerId = await repo.register(
+  const buyerId = await registerSyntheticConsentingUser(
+    db,
     "refund-buyer@example.test",
     "SYNTHETIC-NOT-A-PASSWORD-HASH",
   );

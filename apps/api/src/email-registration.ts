@@ -1,7 +1,8 @@
 import { createHmac, randomBytes, randomInt, randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import {
-  registrationCredentialsSchema,
+  registrationWithConsentsSchema,
+  serviceConsentPolicy,
   emailRegistrationConfirmSchema,
   emailRegistrationResendSchema,
 } from "@citygo/contracts";
@@ -92,6 +93,7 @@ export function registerEmailRegistration(
     }
   }
   app.get("/v1/auth/registration-policy", async () => ({
+    consentPolicy: serviceConsentPolicy,
     emailVerification:
       options.mode === "disabled"
         ? ("disabled" as const)
@@ -104,7 +106,7 @@ export function registerEmailRegistration(
   };
   app.post("/v1/auth/email/register", limits, async (request) => {
     unavailable();
-    const input = registrationCredentialsSchema.parse(request.body);
+    const input = registrationWithConsentsSchema.parse(request.body);
     const id = randomUUID();
     const proof = randomBytes(32).toString("hex");
     const otp = code();
@@ -117,6 +119,7 @@ export function registerEmailRegistration(
       codeHash,
       recipientKey: digest("registration-recipient", input.email),
       ipKey: digest("registration-ip", request.ip),
+      consents: input.consents,
     });
     await deliver(id, input.email, otp, codeHash, result.expiresAt);
     return {

@@ -1,3 +1,7 @@
+import {
+  syntheticConsentPolicy,
+  syntheticConsents,
+} from "./service-consent-fixture";
 import { expect, test, type Page } from "@playwright/test";
 import type { Dashboard, EmailRegistrationChallenge } from "@citygo/contracts";
 
@@ -53,7 +57,12 @@ async function install(page: Page) {
         json: state.authenticated ? board : { error: "Войдите в аккаунт" },
       });
     if (path === "/api/v1/auth/registration-policy")
-      return route.fulfill({ json: { emailVerification: state.policy } });
+      return route.fulfill({
+        json: {
+          emailVerification: state.policy,
+          consentPolicy: syntheticConsentPolicy,
+        },
+      });
     if (path === "/api/v1/auth/email/register") {
       state.begin.push(route.request().postDataJSON());
       if (state.delayBegin) await gate;
@@ -100,6 +109,7 @@ async function install(page: Page) {
 async function begin(page: Page, password = "123456") {
   await page.getByLabel("Электронная почта", { exact: true }).fill(user.email);
   await page.getByLabel("Пароль", { exact: true }).fill(password);
+  await page.locator("input[name=personalDataConsent]").check();
   await page
     .getByRole("button", { name: "Создать аккаунт", exact: true })
     .click();
@@ -125,7 +135,9 @@ test("real confirmation UI requires a code; resend replaces OTP while preserving
   await expect(
     page.getByRole("button", { name: "Подтвердить email" }),
   ).toBeDisabled();
-  expect(state.begin).toEqual([{ email: user.email, password: "123456" }]);
+  expect(state.begin).toEqual([
+    { email: user.email, password: "123456", consents: syntheticConsents },
+  ]);
   expect(state.legacy).toEqual([]);
   expect(state.authenticated).toBe(false);
   await page.screenshot({
@@ -200,7 +212,9 @@ test("unavailable email delivery never falls back to legacy registration; disabl
   await expect(
     page.getByRole("heading", { name: "Давайте начнём с того, что волнует" }),
   ).toBeVisible();
-  expect(state.legacy).toEqual([{ email: user.email, password: " аа!  " }]);
+  expect(state.legacy).toEqual([
+    { email: user.email, password: " аа!  ", consents: syntheticConsents },
+  ]);
   expect(state.unexpected).toEqual([]);
 });
 

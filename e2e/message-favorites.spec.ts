@@ -1,3 +1,4 @@
+import { syntheticConsentPolicy } from "./service-consent-fixture";
 import { test, expect } from "@playwright/test";
 import type { Dashboard } from "@citygo/contracts";
 
@@ -9,6 +10,7 @@ test("real local API: favorite own and assistant messages survives reload; remov
     .getByLabel("Электронная почта", { exact: true })
     .fill("favorites-" + crypto.randomUUID() + "@example.test");
   await page.getByLabel("Пароль", { exact: true }).fill("123456");
+  await page.locator("input[name=personalDataConsent]").check();
   await page
     .getByRole("button", { name: "Создать аккаунт", exact: true })
     .click();
@@ -89,6 +91,18 @@ test("late valid favorite response cannot reappear after logout", async ({
     aiAccess: { policy: null, granted: false, dailyLimit: 0 },
   };
   await page.route("**/api/v1/**", async (route) => {
+    if (
+      route.request().method() === "GET" &&
+      new URL(route.request().url()).origin === "http://localhost:3000" &&
+      new URL(route.request().url()).pathname ===
+        "/api/v1/auth/registration-policy"
+    )
+      return route.fulfill({
+        json: {
+          emailVerification: "disabled",
+          consentPolicy: syntheticConsentPolicy,
+        },
+      });
     const path = new URL(route.request().url()).pathname;
     if (path === "/api/v1/dashboard") return route.fulfill({ json: dashboard });
     if (path === "/api/v1/messages/favorites") {
@@ -147,6 +161,18 @@ test("favorites page through exact bigint IDs, remove only a bookmark and reload
   const removed = new Set<string>();
   const cursors: (string | null)[] = [];
   await page.route("**/api/v1/**", async (route) => {
+    if (
+      route.request().method() === "GET" &&
+      new URL(route.request().url()).origin === "http://localhost:3000" &&
+      new URL(route.request().url()).pathname ===
+        "/api/v1/auth/registration-policy"
+    )
+      return route.fulfill({
+        json: {
+          emailVerification: "disabled",
+          consentPolicy: syntheticConsentPolicy,
+        },
+      });
     const url = new URL(route.request().url());
     if (url.pathname === "/api/v1/dashboard")
       return route.fulfill({
@@ -236,6 +262,18 @@ test("an active favorite panel rejects another owner's page without rendering it
     aiAccess: { policy: null, granted: false, dailyLimit: 0 },
   };
   await page.route("**/api/v1/**", async (route) => {
+    if (
+      route.request().method() === "GET" &&
+      new URL(route.request().url()).origin === "http://localhost:3000" &&
+      new URL(route.request().url()).pathname ===
+        "/api/v1/auth/registration-policy"
+    )
+      return route.fulfill({
+        json: {
+          emailVerification: "disabled",
+          consentPolicy: syntheticConsentPolicy,
+        },
+      });
     const path = new URL(route.request().url()).pathname;
     if (path === "/api/v1/dashboard") return route.fulfill({ json: dashboard });
     if (path === "/api/v1/messages/favorites") {

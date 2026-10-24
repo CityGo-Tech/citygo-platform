@@ -1,3 +1,4 @@
+import { syntheticConsentPolicy } from "./service-consent-fixture";
 import { expect, test, type Page } from "@playwright/test";
 import type { Dashboard, Message } from "@citygo/contracts";
 
@@ -102,6 +103,18 @@ async function install(page: Page, total = 350, legacy = false) {
     return route.abort();
   });
   await page.route("**/api/v1/**", async (route) => {
+    if (
+      route.request().method() === "GET" &&
+      new URL(route.request().url()).origin === "http://localhost:3000" &&
+      new URL(route.request().url()).pathname ===
+        "/api/v1/auth/registration-policy"
+    )
+      return route.fulfill({
+        json: {
+          emailVerification: "disabled",
+          consentPolicy: syntheticConsentPolicy,
+        },
+      });
     const request = route.request(),
       url = new URL(request.url()),
       path = url.pathname;

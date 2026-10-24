@@ -1,6 +1,12 @@
 "use client";
 import { useEffect, useState, type FormEvent } from "react";
+import { createClient } from "@citygo/api-client";
+import type {
+  RegistrationPolicyResponse,
+  ServiceConsentChoice,
+} from "@citygo/contracts";
 import { Button, Card, Field } from "@citygo/ui-web";
+import { ConsentChoices } from "./service-consents";
 import {
   isEmailRegistrationCode,
   registrationClock,
@@ -14,6 +20,7 @@ export function EmailRegistration({
   busy,
   disabled,
   formVersion,
+  sessionSignal,
   onRegister,
   onConfirm,
   onResend,
@@ -23,13 +30,46 @@ export function EmailRegistration({
   busy: boolean;
   disabled: boolean;
   formVersion: number;
-  onRegister: (event: FormEvent<HTMLFormElement>) => void;
+  sessionSignal: AbortSignal;
+  onRegister: (
+    event: FormEvent<HTMLFormElement>,
+    consents: ServiceConsentChoice,
+  ) => void;
   onConfirm: (code: string) => void;
   onResend: () => void;
   onBack: () => void;
 }) {
   const [code, setCode] = useState("");
   const [now, setNow] = useState(Date.now);
+  const [policy, setPolicy] = useState<RegistrationPolicyResponse | null>(null);
+  const [policyError, setPolicyError] = useState("");
+  const [policyRevision, setPolicyRevision] = useState(0);
+  const [personalData, setPersonalData] = useState(false);
+  const [marketing, setMarketing] = useState(false);
+  useEffect(() => {
+    if (pending) return;
+    let active = true;
+    setPolicy(null);
+    setPolicyError("");
+    setPersonalData(false);
+    setMarketing(false);
+    void createClient("/api", { signal: () => sessionSignal })
+      .registrationPolicy()
+      .then((value) => {
+        if (active && !sessionSignal.aborted) setPolicy(value);
+      })
+      .catch((error: unknown) => {
+        if (active && !sessionSignal.aborted)
+          setPolicyError(
+            error instanceof Error
+              ? error.message
+              : "Не удалось загрузить согласия.",
+          );
+      });
+    return () => {
+      active = false;
+    };
+  }, [pending, policyRevision, sessionSignal]);
   useEffect(() => {
     if (!pending) return;
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
@@ -117,7 +157,18 @@ export function EmailRegistration({
         ) : (
           <>
             <p>Создайте аккаунт, чтобы сохранять диалоги.</p>
-            <form key={formVersion} onSubmit={onRegister}>
+            <form
+              key={formVersion}
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (!policy || !personalData || busy || disabled) return;
+                onRegister(event, {
+                  policyVersion: policy.consentPolicy.version,
+                  personalData: true,
+                  marketing,
+                });
+              }}
+            >
               <Field
                 id="registration-email"
                 label="Электронная почта"
@@ -139,12 +190,38 @@ export function EmailRegistration({
                 disabled={busy || disabled}
                 required
               />
+              {policy ? (
+                <ConsentChoices
+                  policy={policy.consentPolicy}
+                  personalData={personalData}
+                  marketing={marketing}
+                  disabled={busy || disabled}
+                  onPersonalData={setPersonalData}
+                  onMarketing={setMarketing}
+                />
+              ) : (
+                <p role={policyError ? "alert" : "status"}>
+                  {policyError || "Загружаем согласия…"}
+                </p>
+              )}
+              {policyError && (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => setPolicyRevision((value) => value + 1)}
+                >
+                  Обновить согласия
+                </Button>
+              )}
               <div className={styles.actions}>
-                <Button type="submit" disabled={busy || disabled}>
+                <Button
+                  type="submit"
+                  disabled={busy || disabled || !policy || !personalData}
+                >
                   {busy ? "Подождите…" : "Создать аккаунт"}
                 </Button>
                 <a
-                  href="https://app.xn--c1ajazlh.xn--p1ai/legal"
+                  href="/legal"
                   target="_blank"
                   rel="noopener noreferrer"
                   className="cg-button cg-button-secondary"
