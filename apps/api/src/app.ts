@@ -97,6 +97,10 @@ import {
   registerPaymentReconciliation,
 } from "./payment-admission.js";
 import type { PaymentReconcileScheduler } from "./payment-reconciler.js";
+import {
+  registerEmailRegistration,
+  type RegistrationEmailDelivery,
+} from "./email-registration.js";
 
 export async function buildApp(options: {
   db: Database;
@@ -110,10 +114,18 @@ export async function buildApp(options: {
   paymentClient?: PaymentClient;
   refundClient?: RefundClient;
   paymentReconcileScheduler?: PaymentReconcileScheduler;
+  emailRegistrationDelivery?: RegistrationEmailDelivery;
 }) {
   const drain = options.drain ?? new ApiDrain();
   const config = options.config ?? readConfig();
   validateCreditReservationConfig(config);
+  if (
+    options.emailRegistrationDelivery &&
+    (config.NODE_ENV !== "test" || options.testing !== true)
+  )
+    throw new Error(
+      "Synthetic registration delivery requires the isolated test harness",
+    );
   if (
     options.paymentReconcileScheduler &&
     (config.NODE_ENV !== "test" || options.testing !== true)
@@ -411,6 +423,22 @@ export async function buildApp(options: {
         "select name from citygo_migrations where name in ('0006_ai_budget.sql','0007_ai_user_daily_budget.sql','0008_ai_credit.sql','0009_ai_credit_charges.sql','0010_quest_plan_expand.sql','0011_quest_plan_validate.sql','0013_account_access.sql','0014_citygo_credit.sql','0015_yookassa_orders.sql','0016_npd_receipts.sql','0017_credit_source_lots.sql','0018_payment_refunds.sql','0019_yookassa_live_orders.sql','0020_ai_budget_provider_balance.sql','0021_payment_notifications.sql','0022_payment_admission.sql','0023_payment_receipt_snapshots.sql','0024_ai_credit_overdraft.sql','0025_assistant_conversations.sql')",
       );
       if (result.rows.length !== 19) throw new Error("Pending migration");
+      if (config.EMAIL_REGISTRATION_MODE === "required") {
+        const verification = await options.db.query(
+          "select name from citygo_migrations where name='0026_email_registration.sql'",
+        );
+        if (verification.rows.length !== 1)
+          throw new Error("Pending verification migration");
+        await options.db.query(
+          "select id,delivery,attempts from email_registrations limit 0",
+        );
+        await options.db.query(
+          "select key_hash from email_registration_rate_events limit 0",
+        );
+        await options.db.query(
+          "select user_id from account_email_verifications limit 0",
+        );
+      }
       if (config.R1_HOUSING_API_MODE === "synthetic")
         await verifyHousingReadiness(options.db);
     } catch {
@@ -516,6 +544,15 @@ export async function buildApp(options: {
       },
     );
   }
+  registerEmailRegistration(app, {
+    db: options.db,
+    mode: config.EMAIL_REGISTRATION_MODE,
+    secret: config.EMAIL_REGISTRATION_SECRET,
+    delivery: options.emailRegistrationDelivery,
+    setSession: (reply, token) => {
+      reply.setCookie(sessionName, token, cookieOptions);
+    },
+  });
   for (const action of ["register", "login"] as const) {
     app.post(
       "/v1/auth/" + action,
@@ -534,6 +571,11 @@ export async function buildApp(options: {
         let id: string;
         let expectedHash: string;
         if (action === "register") {
+          if (config.EMAIL_REGISTRATION_MODE === "required")
+            throw new DomainError(
+              503,
+              "Для регистрации необходимо подтверждение почты. Начните регистрацию заново.",
+            );
           expectedHash = await hashPassword(input.password);
           id = await repo.register(input.email, expectedHash);
         } else {

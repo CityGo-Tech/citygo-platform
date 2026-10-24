@@ -19,6 +19,12 @@ import { Journey } from "../components/journey";
 import { ConversationHome } from "../components/conversation-home";
 import { OwnerReceiptsPanel } from "../components/owner-receipts";
 import { MessageFavoritesPanel } from "../components/message-favorites";
+import { EmailRegistration } from "../components/email-registration";
+import {
+  pendingEmailRegistration,
+  type PendingEmailRegistration,
+} from "../components/email-registration-state";
+import registrationStyles from "../components/email-registration.module.css";
 import {
   readConversationSelection,
   writeConversationSelection,
@@ -43,6 +49,9 @@ export default function Home() {
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const [mode, setMode] = useState<"register" | "login">("register");
+  const [registration, setRegistration] =
+    useState<PendingEmailRegistration | null>(null);
+  const authPending = useRef(false);
   const [passwordOpen, setPasswordOpen] = useState(false);
   const [receiptsOpen, setReceiptsOpen] = useState(false);
   const [favoritesOpen, setFavoritesOpen] = useState(false);
@@ -95,6 +104,8 @@ export default function Home() {
     setLoading(false);
     setLogoutUnconfirmed(false);
     setPasswordOpen(false);
+    setRegistration(null);
+    authPending.current = false;
     setReceiptsOpen(false);
     setFavoritesOpen(false);
     setConversationView(false);
@@ -337,18 +348,101 @@ export default function Home() {
   }
   function auth(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (busy || logoutUnconfirmed) return;
+    if (busy || logoutUnconfirmed || authPending.current) return;
     const data = new FormData(event.currentTarget);
+    const authMode = mode;
+    const email = String(data.get("email"));
+    let password = String(data.get("password"));
+    data.delete("password");
     notifyBrowserSessionChange();
     clearUserState();
+    authPending.current = true;
     void act(async (ticket) => {
-      await api.auth(
-        mode,
-        String(data.get("email")),
-        String(data.get("password")),
-      );
-      ticket.check();
-      await refresh(ticket);
+      try {
+        if (authMode === "register") {
+          const policy = await api.registrationPolicy();
+          ticket.check();
+          if (policy.emailVerification === "unavailable") {
+            throw new Error(
+              "Регистрация временно недоступна: отправка писем ещё не подключена. Если аккаунт уже есть, войдите.",
+            );
+          }
+          if (policy.emailVerification === "required") {
+            const challenge = await api.beginEmailRegistration(email, password);
+            ticket.check();
+            setRegistration(
+              pendingEmailRegistration(email, challenge, Date.now()),
+            );
+            return;
+          }
+        }
+        await api.auth(authMode, email, password);
+        ticket.check();
+        await refresh(ticket);
+      } finally {
+        password = "";
+        if (ticket.active()) authPending.current = false;
+      }
+    });
+  }
+  function changeAuthMode(next: "register" | "login") {
+    // Cancel both the network lifetime and the memory-only pending proof.
+    const mustConfirmLogout = logoutUnconfirmed;
+    clearUserState();
+    setLogoutUnconfirmed(mustConfirmLogout);
+    setMode(next);
+  }
+  function resendRegistration() {
+    if (!registration || busy || logoutUnconfirmed || authPending.current)
+      return;
+    const current = registration;
+    authPending.current = true;
+    void act(async (ticket) => {
+      try {
+        const challenge = await api.resendEmailRegistration(
+          current.challengeId,
+          current.proof,
+        );
+        ticket.check();
+        setRegistration(
+          pendingEmailRegistration(current.email, challenge, Date.now()),
+        );
+        setNotice("Новый код отправлен. Предыдущий код больше не действует.");
+      } finally {
+        if (ticket.active()) authPending.current = false;
+      }
+    });
+  }
+  function confirmRegistration(code: string) {
+    if (!registration || busy || logoutUnconfirmed || authPending.current)
+      return;
+    const current = registration;
+    authPending.current = true;
+    void act(async (ticket) => {
+      try {
+        await api.confirmEmailRegistration(
+          current.challengeId,
+          current.proof,
+          code,
+        );
+        ticket.check();
+        notifyBrowserSessionChange();
+        clearUserState();
+        const confirmed = session.capture();
+        setBusy(true);
+        try {
+          await refresh(confirmed);
+        } catch {
+          if (confirmed.active())
+            setNotice(
+              "Email подтверждён, аккаунт создан. Не удалось загрузить кабинет — войдите с вашим паролем.",
+            );
+        } finally {
+          if (confirmed.active()) setBusy(false);
+        }
+      } finally {
+        if (ticket.active()) authPending.current = false;
+      }
     });
   }
   async function logout() {
@@ -499,7 +593,10 @@ export default function Home() {
     <div
       className={
         "shell" +
-        (board?.profile ? " shell-journey" : board ? " shell-onboarding" : "")
+        (board?.profile ? " shell-journey" : board ? " shell-onboarding" : "") +
+        (!board && mode === "register"
+          ? " " + registrationStyles.registrationShell
+          : "")
       }
     >
       <header className="topbar">
@@ -557,6 +654,15 @@ export default function Home() {
               Выйти
             </Button>
           </div>
+        ) : mode === "register" ? (
+          <div className={registrationStyles.headerActions}>
+            <Button variant="secondary" onClick={() => changeAuthMode("login")}>
+              Войти
+            </Button>
+            <Button onClick={() => changeAuthMode("register")}>
+              Начать разговор
+            </Button>
+          </div>
         ) : (
           <Badge>Личный помощник по переезду</Badge>
         )}
@@ -584,6 +690,22 @@ export default function Home() {
           <Card>
             <p role="status">Загружаем ваш маршрут…</p>
           </Card>
+        ) : !board && mode === "register" ? (
+          <EmailRegistration
+            key={
+              registration
+                ? registration.challengeId + ":" + registration.resendAt
+                : formVersion
+            }
+            pending={registration}
+            busy={busy}
+            disabled={logoutUnconfirmed}
+            formVersion={formVersion}
+            onRegister={auth}
+            onConfirm={confirmRegistration}
+            onResend={resendRegistration}
+            onBack={() => changeAuthMode(registration ? "register" : "login")}
+          />
         ) : !board ? (
           <div className="welcome-grid">
             <section className="welcome">
@@ -657,8 +779,7 @@ export default function Home() {
               <Button
                 variant="ghost"
                 onClick={() => {
-                  setMode(mode === "register" ? "login" : "register");
-                  setError("");
+                  changeAuthMode(mode === "register" ? "login" : "register");
                 }}
               >
                 {mode === "register"

@@ -42,6 +42,9 @@ const ownedTables = [
   "ai_credit_charges",
 ] as const;
 const retained = [
+  "account_email_verifications",
+  "email_registrations",
+  "email_registration_rate_events",
   "citygo_migrations",
   "citygo_migration_lock",
   "account_security_state",
@@ -139,6 +142,9 @@ export class AccountReset {
       // A retained singleton and append-only audit, not a deletion whitelist.
       // Security lock above serializes the supported admission writers.
       for (const table of [
+        "account_email_verifications",
+        "email_registrations",
+        "email_registration_rate_events",
         "payment_admission",
         "payment_admission_commands",
         "payment_admission_reconciliation_events",

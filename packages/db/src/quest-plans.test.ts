@@ -757,8 +757,9 @@ test("container smoke's actual synthetic rewind/seed SQL upgrades from 9 to 25 a
   const expectedNames = (await readdir(directory))
     .filter((name) => name.endsWith(".sql"))
     .sort();
-  assert.equal(expectedNames.length, 25);
-  assert.equal(expectedNames.at(-1), "0025_assistant_conversations.sql");
+  assert.equal(expectedNames.length, 26);
+  assert.equal(expectedNames[24], "0025_assistant_conversations.sql");
+  assert.equal(expectedNames.at(-1), "0026_email_registration.sql");
   assert.deepEqual(
     (await db.query("select name from citygo_migrations order by name")).rows,
     expectedNames.map((name) => ({ name })),

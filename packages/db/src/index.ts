@@ -2,6 +2,12 @@ import { PGlite } from "@electric-sql/pglite";
 import pg from "pg";
 export { Repository, DomainError } from "./repository.js";
 export { MessageFavorites } from "./message-favorites.js";
+export {
+  EmailRegistration,
+  type EmailRegistrationBegin,
+  type EmailRegistrationResend,
+  type EmailRegistrationConfirm,
+} from "./email-registration.js";
 export { AiCreditLedger } from "./ai-credit.js";
 export {
   AiCreditCharges,

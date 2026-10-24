@@ -220,6 +220,18 @@ export default function App() {
         );
       }
       ticket.check();
+      if (input.mode === "register") {
+        const policy = await api.registrationPolicy();
+        ticket.check();
+        if (policy.emailVerification !== "disabled") {
+          setPassword("");
+          throw new Error(
+            policy.emailVerification === "required"
+              ? "Для регистрации с подтверждением почты откройте веб-версию CityGo. Затем войдите здесь с созданным аккаунтом."
+              : "Регистрация временно недоступна: отправка писем ещё не подключена. Если аккаунт уже есть, войдите.",
+          );
+        }
+      }
       const result = await api.auth(input.mode, input.email, input.password);
       if (!result.token) throw new Error("Сервер не вернул сессию");
       await tokenStore.save(result.token, ticket);

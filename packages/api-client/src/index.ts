@@ -11,6 +11,11 @@ import {
   apiErrorResponseSchema,
   authResponseSchema,
   nativeAuthResponseSchema,
+  registrationCredentialsSchema,
+  registrationPolicyResponseSchema,
+  emailRegistrationChallengeSchema,
+  emailRegistrationResendSchema,
+  emailRegistrationConfirmSchema,
   adminNpdReceiptListSchema,
   adminNpdReceiptDetailSchema,
   ownerNpdReceiptListSchema,
@@ -229,6 +234,15 @@ export function createClient(
       throw new Error("Некорректные параметры операции с чеком НПД");
     return parsed.data;
   }
+  function emailRegistrationInput<T>(
+    schema: ResponseSchema<T>,
+    input: unknown,
+  ): T {
+    const parsed = schema.safeParse(input);
+    if (!parsed.success)
+      throw new Error("Некорректные параметры подтверждения email");
+    return parsed.data;
+  }
   async function receiptRequest(taskId: string, command?: NpdReceiptCommand) {
     const id = receiptInput(npdReceiptTaskIdSchema, taskId);
     const body =
@@ -287,6 +301,40 @@ export function createClient(
     return result;
   }
   return {
+    registrationPolicy: () =>
+      request("/v1/auth/registration-policy", registrationPolicyResponseSchema),
+    beginEmailRegistration: async (email: string, password: string) =>
+      request(
+        "/v1/auth/email/register",
+        emailRegistrationChallengeSchema,
+        emailRegistrationInput(registrationCredentialsSchema, {
+          email,
+          password,
+        }),
+      ),
+    resendEmailRegistration: async (challengeId: string, proof: string) =>
+      request(
+        "/v1/auth/email/resend",
+        emailRegistrationChallengeSchema,
+        emailRegistrationInput(emailRegistrationResendSchema, {
+          challengeId,
+          proof,
+        }),
+      ),
+    confirmEmailRegistration: async (
+      challengeId: string,
+      proof: string,
+      code: string,
+    ) =>
+      request(
+        "/v1/auth/email/confirm",
+        options.native ? nativeAuthResponseSchema : authResponseSchema,
+        emailRegistrationInput(emailRegistrationConfirmSchema, {
+          challengeId,
+          proof,
+          code,
+        }),
+      ),
     auth: (mode: "login" | "register", email: string, password: string) =>
       request(
         "/v1/auth/" + mode,

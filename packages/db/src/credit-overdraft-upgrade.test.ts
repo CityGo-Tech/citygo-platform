@@ -74,10 +74,11 @@ async function fixture(t: TestContext) {
   const names = (await readdir(directory))
     .filter((n) => n.endsWith(".sql"))
     .sort();
-  assert.equal(names.length, 25, "Update the literal schema23 upgrade fixture");
+  assert.equal(names.length, 26, "Update the literal schema23 upgrade fixture");
   assert.equal(names[22], "0023_payment_receipt_snapshots.sql");
   assert.equal(names[23], "0024_ai_credit_overdraft.sql");
   assert.equal(names[24], "0025_assistant_conversations.sql");
+  assert.equal(names[25], "0026_email_registration.sql");
   await db.exec(
     "create table citygo_migration_lock(id integer primary key); insert into citygo_migration_lock values(1); create table citygo_migrations(name text primary key,checksum text not null,applied_at timestamptz not null default now())",
   );
@@ -370,10 +371,8 @@ test("23→24 preserves paid money, exact historical receipts, pending full hold
     "Original checksum and applied_at remain intact",
   );
   assert.equal(upgradedJournal[23]!.name, "0024_ai_credit_overdraft.sql");
-  assert.equal(
-    upgradedJournal.at(-1)!.name,
-    "0025_assistant_conversations.sql",
-  );
+  assert.equal(upgradedJournal[24]!.name, "0025_assistant_conversations.sql");
+  assert.equal(upgradedJournal.at(-1)!.name, "0026_email_registration.sql");
   assert.deepEqual(
     (await db.query("select distinct reservation_mode from ai_credit_charges"))
       .rows,

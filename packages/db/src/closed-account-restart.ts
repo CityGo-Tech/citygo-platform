@@ -6,6 +6,7 @@ import type { AccountResetBlocker } from "./account-reset.js";
 // One operator-only transition before the FIRST administrator bootstrap. This
 // is not account deletion, a public erasure API, a migration, or a reset job.
 const tables = [
+  "account_email_verifications",
   "account_security_state",
   "agent_handoffs",
   "agent_threads",
@@ -33,6 +34,8 @@ const tables = [
   "credit_hold_allocations",
   "credit_refund_allocations",
   "credit_source_lots",
+  "email_registrations",
+  "email_registration_rate_events",
   "generated_artifacts",
   "knowledge_sources",
   "messages",
@@ -62,6 +65,9 @@ const tables = [
 ] as const;
 // No money, attempt, receipt, policy, migration, catalog or usage row is rewritten.
 const retainedTables = [
+  "account_email_verifications",
+  "email_registrations",
+  "email_registration_rate_events",
   "credit_charge_debts",
   "credit_debt_repayments",
   "credit_hold_allocations",
@@ -291,6 +297,19 @@ async function inspect(tx: Sql, options: Options) {
     blockers.push({ code: "EXPECTED_USER_COUNT_MISMATCH", count: 1 });
   if (options.maintenanceConfirmed !== true)
     blockers.push({ code: "MAINTENANCE_NOT_CONFIRMED", count: 1 });
+  // Verification identities and recipient/IP anti-abuse history are not an
+  // account-reset retention policy. Preserve them and refuse ANY such history;
+  // do not silently make old erasure authorization apply to the new tables.
+  const verificationHistoryCount = [
+    "account_email_verifications",
+    "email_registrations",
+    "email_registration_rate_events",
+  ].reduce((total, name) => total + snapshot.counts[name]!, 0);
+  if (verificationHistoryCount)
+    blockers.push({
+      code: "EMAIL_REGISTRATION_HISTORY_REQUIRES_REVIEW",
+      count: verificationHistoryCount,
+    });
   const block = async (code: string, sql: string) => {
     const count = (await tx.query<{ count: number }>(sql)).rows[0]!.count;
     if (count) blockers.push({ code, count });
