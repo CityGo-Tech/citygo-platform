@@ -313,6 +313,8 @@ export function MobilePasswordRecovery({
               value={password}
               onChangeText={setPassword}
               secureTextEntry
+              autoCapitalize="none"
+              autoCorrect={false}
               autoComplete="new-password"
               textContentType="newPassword"
               maxLength={128}
@@ -323,6 +325,8 @@ export function MobilePasswordRecovery({
               value={repeated}
               onChangeText={setRepeated}
               secureTextEntry
+              autoCapitalize="none"
+              autoCorrect={false}
               autoComplete="new-password"
               textContentType="newPassword"
               maxLength={128}

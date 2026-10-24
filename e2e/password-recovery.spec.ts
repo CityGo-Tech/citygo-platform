@@ -14,6 +14,7 @@ async function install(page: Page) {
   const state = {
     policy: "available" as "available" | "unavailable",
     ttl: 600_000,
+    expiresAt: "",
     authenticated: false,
     code: "654321",
     requests: [] as unknown[],
@@ -29,7 +30,7 @@ async function install(page: Page) {
   const challenge = (): PasswordRecoveryChallenge => ({
     challengeId: "123e4567-e89b-42d3-a456-426614174001",
     proof: "1".repeat(64),
-    expiresAt: new Date(Date.now() + state.ttl).toISOString(),
+    expiresAt: state.expiresAt,
     resendAfterSeconds: 60,
   });
   await page.route("**/api/v1/**", async (route) => {
@@ -43,6 +44,7 @@ async function install(page: Page) {
       return route.fulfill({ json: { passwordRecovery: state.policy } });
     if (path === "/api/v1/auth/password-recovery/request") {
       state.requests.push(route.request().postDataJSON());
+      state.expiresAt = new Date(Date.now() + state.ttl).toISOString();
       if (state.delay === "begin") await gate;
       try {
         return await route.fulfill({ json: challenge() });
