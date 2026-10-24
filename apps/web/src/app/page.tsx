@@ -20,6 +20,7 @@ import { ConversationHome } from "../components/conversation-home";
 import { OwnerReceiptsPanel } from "../components/owner-receipts";
 import { MessageFavoritesPanel } from "../components/message-favorites";
 import { EmailRegistration } from "../components/email-registration";
+import { PasswordRecovery } from "../components/password-recovery";
 import { PhoneVerificationPanel } from "../components/phone-verification";
 import { useConversationHistory } from "../components/use-conversation-history";
 import {
@@ -27,6 +28,7 @@ import {
   type PendingEmailRegistration,
 } from "../components/email-registration-state";
 import registrationStyles from "../components/email-registration.module.css";
+import recoveryStyles from "../components/password-recovery.module.css";
 import {
   readConversationSelection,
   writeConversationSelection,
@@ -50,7 +52,9 @@ export default function Home() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
-  const [mode, setMode] = useState<"register" | "login">("register");
+  const [mode, setMode] = useState<"register" | "login" | "recover">(
+    "register",
+  );
   const [registration, setRegistration] =
     useState<PendingEmailRegistration | null>(null);
   const authPending = useRef(false);
@@ -357,6 +361,7 @@ export default function Home() {
   }
   function auth(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (mode === "recover") return;
     if (busy || logoutUnconfirmed || authPending.current) return;
     const data = new FormData(event.currentTarget);
     const authMode = mode;
@@ -394,7 +399,7 @@ export default function Home() {
       }
     });
   }
-  function changeAuthMode(next: "register" | "login") {
+  function changeAuthMode(next: "register" | "login" | "recover") {
     // Cancel both the network lifetime and the memory-only pending proof.
     const mustConfirmLogout = logoutUnconfirmed;
     clearUserState();
@@ -599,14 +604,16 @@ export default function Home() {
       await refresh(session.capture());
     },
   };
+  const authViewSignal = session.capture().signal;
   return (
     <div
       className={
         "shell" +
         (board?.profile ? " shell-journey" : board ? " shell-onboarding" : "") +
-        (!board && mode === "register"
+        (!board && (mode === "register" || mode === "recover")
           ? " " + registrationStyles.registrationShell
-          : "")
+          : "") +
+        (!board && mode === "recover" ? " " + recoveryStyles.recoveryShell : "")
       }
     >
       <header className="topbar">
@@ -680,7 +687,7 @@ export default function Home() {
               Выйти
             </Button>
           </div>
-        ) : mode === "register" ? (
+        ) : mode === "register" || mode === "recover" ? (
           <div className={registrationStyles.headerActions}>
             <Button variant="secondary" onClick={() => changeAuthMode("login")}>
               Войти
@@ -716,6 +723,22 @@ export default function Home() {
           <Card>
             <p role="status">Загружаем ваш маршрут…</p>
           </Card>
+        ) : !board && mode === "recover" ? (
+          <PasswordRecovery
+            key={formVersion}
+            sessionSignal={authViewSignal}
+            disabled={logoutUnconfirmed}
+            onBack={() => changeAuthMode("login")}
+            onRecovered={() => {
+              if (authViewSignal.aborted) return;
+              notifyBrowserSessionChange();
+              clearUserState();
+              setMode("login");
+              setNotice(
+                "Пароль изменён. Все прежние сессии завершены. Войдите с новым паролем.",
+              );
+            }}
+          />
         ) : !board && mode === "register" ? (
           <EmailRegistration
             key={
@@ -811,6 +834,13 @@ export default function Home() {
                 {mode === "register"
                   ? "Уже есть аккаунт? Войти"
                   : "Впервые здесь? Создать аккаунт"}
+              </Button>
+              <Button
+                variant="ghost"
+                disabled={busy || logoutUnconfirmed}
+                onClick={() => changeAuthMode("recover")}
+              >
+                Не помню пароль
               </Button>
               <small>
                 AI помогает подготовиться, но не заменяет проверку жилья и

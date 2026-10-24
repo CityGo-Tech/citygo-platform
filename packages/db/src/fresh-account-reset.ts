@@ -6,6 +6,7 @@ import { DomainError } from "./errors.js";
 // registration, migrations, HTTP, or the accounting-preserving restart tool.
 // This inventory is deliberately not discovered into a deletion list.
 const tables = [
+  "password_recovery_challenges",
   "account_email_verifications",
   "account_security_state",
   "agent_handoffs",
@@ -109,6 +110,7 @@ const preserved = [
   "phone_verification_sends",
   "phone_welcome_claims",
   // No retention/anti-abuse deletion is authorized by the old TEST reset.
+  "password_recovery_challenges",
   "account_email_verifications",
   "email_registrations",
   "email_registration_rate_events",
@@ -387,6 +389,11 @@ async function inspect(tx: Sql, options: Options) {
     blockers.push({
       code: "EMAIL_REGISTRATION_HISTORY_REQUIRES_REVIEW",
       count: verificationHistoryCount,
+    });
+  if (snapshot.counts.password_recovery_challenges)
+    blockers.push({
+      code: "PASSWORD_RECOVERY_HISTORY_REQUIRES_REVIEW",
+      count: snapshot.counts.password_recovery_challenges,
     });
   const phoneHistoryCount = [
     "phone_verification_challenges",

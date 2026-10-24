@@ -106,8 +106,13 @@ import {
 } from "./email-registration.js";
 import {
   configuredEmailDelivery,
+  configuredPasswordRecoveryDelivery,
   configuredPhoneDelivery,
 } from "./verification-delivery/configured.js";
+import {
+  registerPasswordRecovery,
+  type PasswordRecoveryEmailDelivery,
+} from "./password-recovery.js";
 import {
   registerPhoneVerification,
   type PhoneVerificationDelivery,
@@ -126,6 +131,7 @@ export async function buildApp(options: {
   refundClient?: RefundClient;
   paymentReconcileScheduler?: PaymentReconcileScheduler;
   emailRegistrationDelivery?: RegistrationEmailDelivery;
+  passwordRecoveryDelivery?: PasswordRecoveryEmailDelivery;
   phoneVerificationDelivery?: PhoneVerificationDelivery;
 }) {
   const drain = options.drain ?? new ApiDrain();
@@ -133,7 +139,9 @@ export async function buildApp(options: {
   validateCreditReservationConfig(config);
   validateVerificationDeliveryConfig(config);
   if (
-    (options.emailRegistrationDelivery || options.phoneVerificationDelivery) &&
+    (options.emailRegistrationDelivery ||
+      options.passwordRecoveryDelivery ||
+      options.phoneVerificationDelivery) &&
     (config.NODE_ENV !== "test" || options.testing !== true)
   )
     throw new Error(
@@ -451,6 +459,14 @@ export async function buildApp(options: {
         await options.db.query(
           "select user_id from account_email_verifications limit 0",
         );
+        const recovery = await options.db.query(
+          "select name from citygo_migrations where name='0028_password_recovery.sql'",
+        );
+        if (recovery.rows.length !== 1)
+          throw new Error("Pending password recovery migration");
+        await options.db.query(
+          "select id,delivery,attempts from password_recovery_challenges limit 0",
+        );
       }
       if (config.PHONE_VERIFICATION_MODE !== "disabled") {
         const phone = await options.db.query(
@@ -592,6 +608,27 @@ export async function buildApp(options: {
     setSession: (reply, token) => {
       reply.setCookie(sessionName, token, cookieOptions);
     },
+  });
+  registerPasswordRecovery(app, {
+    db: options.db,
+    mode: config.EMAIL_REGISTRATION_MODE,
+    secret: config.EMAIL_REGISTRATION_SECRET,
+    delivery:
+      options.passwordRecoveryDelivery ??
+      configuredPasswordRecoveryDelivery(config),
+    sendLimits:
+      config.EMAIL_DELIVERY_PROVIDER === "yandex_postbox"
+        ? {
+            daily:
+              config.EMAIL_SEND_DAILY_LIMIT === "unlimited"
+                ? null
+                : config.EMAIL_SEND_DAILY_LIMIT,
+            total:
+              config.EMAIL_SEND_TOTAL_LIMIT === "unlimited"
+                ? null
+                : config.EMAIL_SEND_TOTAL_LIMIT,
+          }
+        : undefined,
   });
   registerPhoneVerification(app, {
     db: options.db,

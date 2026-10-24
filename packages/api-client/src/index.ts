@@ -16,6 +16,12 @@ import {
   emailRegistrationChallengeSchema,
   emailRegistrationResendSchema,
   emailRegistrationConfirmSchema,
+  passwordRecoveryPolicySchema,
+  passwordRecoveryRequestSchema,
+  passwordRecoveryChallengeSchema,
+  passwordRecoveryResendSchema,
+  passwordRecoveryConfirmSchema,
+  passwordRecoveryReceiptSchema,
   phoneVerificationPolicySchema,
   phoneVerificationStartSchema,
   phoneVerificationResendSchema,
@@ -261,6 +267,15 @@ export function createClient(
       throw new Error("Некорректные параметры подтверждения телефона");
     return parsed.data;
   }
+  function passwordRecoveryInput<T>(
+    schema: ResponseSchema<T>,
+    input: unknown,
+  ): T {
+    const parsed = schema.safeParse(input);
+    if (!parsed.success)
+      throw new Error("Некорректные параметры восстановления доступа");
+    return parsed.data;
+  }
   async function receiptRequest(taskId: string, command?: NpdReceiptCommand) {
     const id = receiptInput(npdReceiptTaskIdSchema, taskId);
     const body =
@@ -319,6 +334,54 @@ export function createClient(
     return result;
   }
   return {
+    passwordRecoveryPolicy: () =>
+      request(
+        "/v1/auth/password-recovery-policy",
+        passwordRecoveryPolicySchema,
+      ),
+    beginPasswordRecovery: async (email: string) =>
+      request(
+        "/v1/auth/password-recovery/request",
+        passwordRecoveryChallengeSchema,
+        passwordRecoveryInput(passwordRecoveryRequestSchema, { email }),
+      ),
+    resendPasswordRecovery: async (challengeId: string, proof: string) => {
+      const input = passwordRecoveryInput(passwordRecoveryResendSchema, {
+        challengeId,
+        proof,
+      });
+      const result = await request(
+        "/v1/auth/password-recovery/resend",
+        passwordRecoveryChallengeSchema,
+        input,
+      );
+      if (
+        result.challengeId.toLowerCase() !== input.challengeId.toLowerCase() ||
+        result.proof !== input.proof
+      )
+        throw new ApiError(
+          200,
+          "Ответ сервера не соответствует запросу восстановления доступа",
+          "invalid_response",
+        );
+      return result;
+    },
+    confirmPasswordRecovery: async (
+      challengeId: string,
+      proof: string,
+      code: string,
+      newPassword: string,
+    ) =>
+      request(
+        "/v1/auth/password-recovery/confirm",
+        passwordRecoveryReceiptSchema,
+        passwordRecoveryInput(passwordRecoveryConfirmSchema, {
+          challengeId,
+          proof,
+          code,
+          newPassword,
+        }),
+      ),
     registrationPolicy: () =>
       request("/v1/auth/registration-policy", registrationPolicyResponseSchema),
     beginEmailRegistration: async (email: string, password: string) =>

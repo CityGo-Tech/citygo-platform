@@ -202,6 +202,37 @@ test("native stale storage reads/writes cannot restore A, and deletion failure s
   assert.equal(revocations, 1);
 });
 
+test("a queued recovery clear from A cannot remove B's secure credential", async () => {
+  const session = createSessionGuard();
+  const blocker = deferred<string | null>();
+  let stored: string | null = "synthetic-token-B";
+  let removals = 0;
+  const storage = createSessionStorage({
+    get: async () => blocker.promise,
+    set: async (token) => {
+      stored = token;
+    },
+    remove: async () => {
+      removals++;
+      stored = null;
+    },
+  });
+  const old = session.capture();
+  const loading = storage.load(old);
+  const rejectedLoad = assert.rejects(loading, StaleSessionError);
+  await Promise.resolve();
+  const clearing = storage.clear(old);
+  const rejectedClear = assert.rejects(clearing, StaleSessionError);
+  session.reset("B");
+  blocker.resolve(stored);
+  await Promise.all([rejectedLoad, rejectedClear]);
+  assert.equal(stored, "synthetic-token-B");
+  assert.equal(removals, 0);
+  await storage.clear(session.capture());
+  assert.equal(stored, null);
+  assert.equal(removals, 1);
+});
+
 test("native deletion retry preserves the original server revocation intent and credential", async () => {
   let failDeletion = true;
   let stored: string | null = "synthetic-token-A";

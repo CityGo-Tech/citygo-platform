@@ -67,7 +67,13 @@ export function createSessionStorage(store: {
       });
       ticket.check();
     },
-    clear: () => enqueue(() => store.remove()),
+    async clear(ticket?: SessionTicket) {
+      await enqueue(async () => {
+        ticket?.check();
+        await store.remove();
+      });
+      ticket?.check();
+    },
   };
 }
 

@@ -3,6 +3,13 @@ import pg from "pg";
 export { Repository, DomainError } from "./repository.js";
 export { MessageFavorites } from "./message-favorites.js";
 export {
+  PasswordRecovery,
+  type PasswordRecoveryBegin,
+  type PasswordRecoveryResend,
+  type PasswordRecoveryConfirm,
+  type PasswordRecoveryChallenge,
+} from "./password-recovery.js";
+export {
   EmailRegistration,
   type EmailRegistrationBegin,
   type EmailRegistrationResend,
