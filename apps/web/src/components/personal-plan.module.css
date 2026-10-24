@@ -1,0 +1,226 @@
+.panel:global(.cg-card) {
+  display: grid;
+  gap: var(--cg-space-md);
+  padding: var(--cg-space-lg);
+  border: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.panel h1,
+.panel h2,
+.panel h3,
+.panel p,
+.composer h2,
+.composer p {
+  margin: 0;
+}
+.panel h1 {
+  font-size: 32px;
+  line-height: 1.2;
+  font-weight: 700;
+  letter-spacing: normal;
+}
+.panel h2 {
+  font-size: 20px;
+  line-height: 1.3;
+  font-weight: 700;
+  letter-spacing: normal;
+}
+.panel h3,
+.composer h2 {
+  font-size: 20px;
+  line-height: 1.3;
+}
+.eyebrow,
+.meta {
+  color: var(--cg-color-primary-strong);
+  font-size: 11px;
+  line-height: 1.4;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+.intro {
+  font-size: 15px;
+  line-height: 1.55;
+  color: var(--cg-color-muted);
+}
+.toolbar,
+.actions,
+.bottomActions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--cg-space-sm);
+}
+.toolbar {
+  justify-content: space-between;
+}
+.list {
+  display: grid;
+  gap: var(--cg-space-md);
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+.list li {
+  min-width: 0;
+}
+.item {
+  display: grid;
+  gap: var(--cg-space-sm);
+  padding: var(--cg-space-lg);
+  border: 1px solid var(--cg-color-border);
+  border-radius: var(--cg-radius-card);
+  background: var(--cg-color-surface);
+}
+.details {
+  font-size: 16px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+.item small,
+.detailsLabel small {
+  font-size: 13px;
+  color: var(--cg-color-muted);
+}
+.panel .actions button,
+.composer .actions button {
+  font-weight: 600;
+}
+.panel :global(.cg-button-secondary),
+.composer :global(.cg-button-secondary) {
+  background: var(--cg-color-surface);
+  color: var(--cg-color-foreground);
+  border-color: var(--cg-color-border);
+}
+.panel .source {
+  justify-self: start;
+  text-align: left;
+  color: var(--cg-color-primary-strong);
+}
+.empty {
+  display: grid;
+  gap: var(--cg-space-md);
+  border: 1px solid var(--cg-color-border);
+  border-radius: var(--cg-radius-card);
+  padding: var(--cg-space-lg);
+  background: color-mix(
+    in srgb,
+    var(--cg-color-primary-strong) 5%,
+    var(--cg-color-surface)
+  );
+}
+.empty p {
+  font-size: 16px;
+  line-height: 1.45;
+}
+.empty button {
+  justify-self: start;
+}
+.bottomActions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: var(--cg-space-sm);
+  gap: var(--cg-space-compact);
+}
+.bottomActions button {
+  width: 100%;
+}
+.error {
+  display: grid;
+  gap: var(--cg-space-sm);
+  color: var(--cg-color-danger);
+}
+.error button {
+  justify-self: start;
+}
+.composer {
+  display: grid;
+  gap: var(--cg-space-md);
+  padding: var(--cg-space-lg);
+  margin: var(--cg-space-md) auto;
+  max-width: 816px;
+  border: 1px solid var(--cg-color-primary-strong);
+  border-radius: var(--cg-radius-card);
+  background: var(--cg-color-primary-soft);
+}
+.composer p {
+  font-size: 15px;
+  line-height: 1.5;
+}
+.composer form,
+.editor {
+  display: grid;
+  gap: var(--cg-space-md);
+  min-width: 0;
+}
+.editor {
+  padding-top: var(--cg-space-md);
+  border-top: 1px solid var(--cg-color-border);
+}
+.detailsLabel {
+  display: grid;
+  gap: var(--cg-space-sm);
+  font-size: 14px;
+  font-weight: 600;
+}
+.detailsLabel textarea {
+  resize: vertical;
+  min-height: 120px;
+  font-weight: 400;
+}
+.confirmRemove {
+  display: grid;
+  gap: var(--cg-space-sm);
+  padding-top: var(--cg-space-sm);
+}
+.workspace {
+  grid-template-columns: 232px minmax(0, 1fr) 280px;
+}
+.workspace :global(.conversation-topics > .cg-card) {
+  padding: var(--cg-space-md);
+  border: 0;
+}
+.workspace :global(.conversation-context > .cg-card) {
+  padding: var(--cg-space-comfortable);
+  border: 0;
+}
+.workspace :global(.conversation-context img) {
+  width: 240px;
+  height: 240px;
+  border-radius: var(--cg-radius-card);
+}
+@media (max-width: 1100px) {
+  .workspace {
+    grid-template-columns: 180px minmax(0, 1fr);
+  }
+}
+@media (max-width: 700px) {
+  .workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .panel:global(.cg-card) {
+    padding: 0;
+    background: transparent;
+  }
+  .panel h1 {
+    font-size: 28px;
+  }
+  .item,
+  .empty {
+    padding: var(--cg-space-lg);
+  }
+  .composer {
+    padding: var(--cg-space-md);
+  }
+  .bottomActions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .actions {
+    align-items: stretch;
+  }
+  .actions button {
+    max-width: 100%;
+    white-space: normal;
+  }
+}

@@ -28,11 +28,11 @@ export async function releaseMigrationSmoke({
     }));
   assert.equal(
     migrations.length,
-    28,
+    29,
     "Update the disposable upgrade fixture when migrations change",
   );
   const last = migrations.at(-1);
-  assert.equal(last.name, "0028_password_recovery.sql");
+  assert.equal(last.name, "0029_personal_plan.sql");
   const plan = {
     version: 1,
     kind: "citygo-release-migration",
@@ -145,6 +145,13 @@ export async function releaseMigrationSmoke({
      drop table payment_admission_commands,payment_admission_reconciliation_events,payment_admission;
      drop function citygo_guard_payment_admission_history();
      do $$ begin
+      if exists(select 1 from personal_plan_items) then
+        raise exception 'Personal plan history cannot be rewound';
+      end if;
+    end $$;
+    drop table personal_plan_items;
+    drop function citygo_guard_personal_plan_item();
+    do $$ begin
        if exists(select 1 from password_recovery_challenges) then
          raise exception 'Password recovery history cannot be rewound';
        end if;
@@ -263,7 +270,7 @@ export async function releaseMigrationSmoke({
      alter table user_quests add constraint user_quests_user_id_quest_id_key unique(user_id,quest_id);
      alter table user_quests drop column plan_id, drop column plan_version;
      alter table relocation_plans drop constraint relocation_plans_owner_version_key;
-     delete from citygo_migrations where name in ('0010_quest_plan_expand.sql','0011_quest_plan_validate.sql','0012_housing_answer_history.sql','0013_account_access.sql','0014_citygo_credit.sql','0015_yookassa_orders.sql','0016_npd_receipts.sql','0017_credit_source_lots.sql','0018_payment_refunds.sql','0019_yookassa_live_orders.sql','0020_ai_budget_provider_balance.sql','0021_payment_notifications.sql','0022_payment_admission.sql','0023_payment_receipt_snapshots.sql','0024_ai_credit_overdraft.sql','0025_assistant_conversations.sql','0026_email_registration.sql','0027_phone_verification.sql','0028_password_recovery.sql');
+     delete from citygo_migrations where name in ('0010_quest_plan_expand.sql','0011_quest_plan_validate.sql','0012_housing_answer_history.sql','0013_account_access.sql','0014_citygo_credit.sql','0015_yookassa_orders.sql','0016_npd_receipts.sql','0017_credit_source_lots.sql','0018_payment_refunds.sql','0019_yookassa_live_orders.sql','0020_ai_budget_provider_balance.sql','0021_payment_notifications.sql','0022_payment_admission.sql','0023_payment_receipt_snapshots.sql','0024_ai_credit_overdraft.sql','0025_assistant_conversations.sql','0026_email_registration.sql','0027_phone_verification.sql','0028_password_recovery.sql','0029_personal_plan.sql');
      commit`,
   );
   // A populated OLD-schema fixture, not just empty-table DDL. Explicit user ID
@@ -344,7 +351,7 @@ export async function releaseMigrationSmoke({
   ]).trim();
   assert.match(
     migrationPath,
-    /^\/app\/node_modules\/[a-zA-Z0-9_@./+-]+\/migrations\/0028_password_recovery\.sql$/,
+    /^\/app\/node_modules\/[a-zA-Z0-9_@./+-]+\/migrations\/0029_personal_plan\.sql$/,
   );
   const sqlFile = join(directory, "synthetic-failing-migration.sql");
   // Sequence increments survive rollback: prove the executor reached the SQL,
@@ -508,7 +515,7 @@ export async function releaseMigrationSmoke({
     );
     docker(["rm", ident]); // Exact disposable fixtures ONLY; runtime retains them.
   }
-  assert.equal(psql("select count(*) from citygo_migrations"), "28");
+  assert.equal(psql("select count(*) from citygo_migrations"), "29");
   assertClosedPaymentAdmission(psql);
   assertPaymentAdmissionAcls(psql);
   assert.equal(

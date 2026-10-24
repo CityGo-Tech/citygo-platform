@@ -935,6 +935,8 @@ export default function Home() {
               <Experience
                 key={board.user.id}
                 board={history.board ?? board}
+                sessionSignal={session.capture().signal}
+                onAccessDenied={requireLogin}
                 history={history.state}
                 onOlderMessages={history.loadOlder}
                 onLatestMessages={() => {

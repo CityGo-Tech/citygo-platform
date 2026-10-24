@@ -37,6 +37,8 @@ const stateLabels: Record<Quest["state"], string> = {
 };
 export type JourneyProps = {
   board: Dashboard;
+  sessionSignal: AbortSignal;
+  onAccessDenied: () => void;
   busy: boolean;
   sending: boolean;
   draft: string;

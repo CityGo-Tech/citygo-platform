@@ -6,6 +6,7 @@ import type { AccountResetBlocker } from "./account-reset.js";
 // One operator-only transition before the FIRST administrator bootstrap. This
 // is not account deletion, a public erasure API, a migration, or a reset job.
 const tables = [
+  "personal_plan_items",
   "password_recovery_challenges",
   "account_email_verifications",
   "account_security_state",
@@ -70,6 +71,7 @@ const tables = [
 ] as const;
 // No money, attempt, receipt, policy, migration, catalog or usage row is rewritten.
 const retainedTables = [
+  "personal_plan_items",
   "phone_verification_challenges",
   "phone_verification_control",
   "phone_verification_sends",
@@ -319,6 +321,11 @@ async function inspect(tx: Sql, options: Options) {
     blockers.push({
       code: "EMAIL_REGISTRATION_HISTORY_REQUIRES_REVIEW",
       count: verificationHistoryCount,
+    });
+  if (snapshot.counts.personal_plan_items)
+    blockers.push({
+      code: "PERSONAL_PLAN_HISTORY_REQUIRES_REVIEW",
+      count: snapshot.counts.personal_plan_items,
     });
   if (snapshot.counts.password_recovery_challenges)
     blockers.push({
