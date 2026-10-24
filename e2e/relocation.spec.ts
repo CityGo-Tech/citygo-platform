@@ -54,9 +54,16 @@ test("six-character registration → conversation without questionnaire → save
     page.getByRole("log", { name: "История диалога" }),
   ).toBeVisible();
   await expectNoInventedPlan(page);
+  await page
+    .getByRole("region", { name: "Баланс и телефон", exact: true })
+    .getByRole("button", { name: "Пополнить баланс", exact: true })
+    .click();
   const credit = page.getByRole("region", { name: "Бесплатный баланс AI" });
   await expect(credit).toContainText("Разовый бонус 500 ₽ ещё не выдан");
   await expect(credit).toContainText("Доступно: 0 ₽");
+  await page
+    .getByRole("button", { name: "Вернуться в приложение", exact: true })
+    .click();
   await expect(
     page.getByRole("button", { name: "Отправить", exact: true }),
   ).toBeDisabled();
