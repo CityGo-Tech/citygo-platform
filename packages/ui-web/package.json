@@ -15,7 +15,7 @@
     "dev": "tsup src/index.tsx --format esm --dts --watch",
     "lint": "eslint src",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test src/*.test.tsx"
+    "test": "tsx --test \"src/*.test.tsx\""
   },
   "dependencies": {
     "@citygo/design-tokens": "workspace:*",

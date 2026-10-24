@@ -9,7 +9,7 @@
     "dev": "node ../../scripts/with-env.mjs build node ../../scripts/sync-assets.mjs && node ../../scripts/with-env.mjs web pnpm exec next dev",
     "lint": "eslint src",
     "start": "node ../../scripts/with-env.mjs web pnpm exec next start",
-    "test": "node --import tsx --test src/**/*.test.ts",
+    "test": "node --import tsx --test \"src/**/*.test.ts\"",
     "typecheck": "node ../../scripts/with-env.mjs web pnpm exec next typegen && node ../../scripts/with-env.mjs build pnpm exec tsc --noEmit"
   },
   "dependencies": {
