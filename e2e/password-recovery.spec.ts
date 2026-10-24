@@ -191,7 +191,7 @@ test("Figma recovery uses generic confirmation,60s resend, opaque passwords and 
   ]);
   await fillConfirm(page, "654321");
   await page.getByRole("button", { name: "Сохранить новый пароль" }).click();
-  await expect(page.getByRole("alert")).toContainText(
+  await expect(page.locator("main").getByRole("alert")).toContainText(
     "Не удалось изменить пароль",
   );
   await expect(page.getByLabel("Новый пароль", { exact: true })).toHaveValue(
@@ -258,7 +258,9 @@ test("expiry and cross-tab invalidation discard code, password and pending proof
   await fillConfirm(page, "654321");
   await page.clock.fastForward(2_000);
   await expect(page.getByLabel("Email", { exact: true })).toBeVisible();
-  await expect(page.getByRole("alert")).toContainText("Срок кода истёк");
+  await expect(page.locator("main").getByRole("alert")).toContainText(
+    "Срок кода истёк",
+  );
   await expect(page.getByLabel("Код из письма", { exact: true })).toHaveCount(
     0,
   );
