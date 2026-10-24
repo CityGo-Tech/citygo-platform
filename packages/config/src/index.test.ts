@@ -161,6 +161,104 @@ test("ProstoSMS is a separate explicit phone opt-in, never an SMS.ru credential 
   );
 });
 
+test("explicit unlimited SMS globals select live ProstoSMS only; zero and legacy SMS.ru keep their prior meaning", () => {
+  const selected = {
+    PHONE_VERIFICATION_MODE: "prosto_sms",
+    PHONE_VERIFICATION_SECRET: "b".repeat(64),
+    PROSTOSMS_MODE: "live",
+    PROSTOSMS_API_KEY: "synthetic-prosto-key-123456",
+    PROSTOSMS_SENDER: "citygo.rf",
+    EMAIL_REGISTRATION_MODE: "required",
+    EMAIL_REGISTRATION_SECRET: "a".repeat(64),
+    AI_CREDIT_MODE: "routerai_citygo_10x",
+    PHONE_SMS_GLOBAL_DAILY_LIMIT: "unlimited",
+    PHONE_SMS_GLOBAL_TOTAL_LIMIT: "unlimited",
+  };
+  for (const caps of [
+    {},
+    { PHONE_SMS_GLOBAL_DAILY_LIMIT: "10" },
+    { PHONE_SMS_GLOBAL_TOTAL_LIMIT: "20" },
+  ]) {
+    const input = { ...selected, ...caps };
+    const config = readConfig(input);
+    assert.equal(
+      config.PHONE_SMS_GLOBAL_DAILY_LIMIT,
+      input.PHONE_SMS_GLOBAL_DAILY_LIMIT === "unlimited" ? "unlimited" : 10,
+    );
+    assert.equal(
+      config.PHONE_SMS_GLOBAL_TOTAL_LIMIT,
+      input.PHONE_SMS_GLOBAL_TOTAL_LIMIT === "unlimited" ? "unlimited" : 20,
+    );
+    assert.equal(config.SMS_RU_MODE, "disabled");
+  }
+  for (const field of [
+    "PHONE_SMS_GLOBAL_DAILY_LIMIT",
+    "PHONE_SMS_GLOBAL_TOTAL_LIMIT",
+  ])
+    for (const value of [
+      undefined,
+      "0",
+      0,
+      "",
+      "Unlimited",
+      "unlimited ",
+      " unlimited",
+      "Infinity",
+      "NaN",
+      "-1",
+      "1.5",
+      "1000001",
+      true,
+      false,
+      null,
+      [],
+      [1],
+      {},
+    ])
+      assert.throws(() =>
+        readConfig({
+          ...selected,
+          [field]: value,
+        } as unknown as NodeJS.ProcessEnv),
+      );
+  assert.throws(() =>
+    readConfig({ ...selected, PHONE_SMS_GLOBAL_DAILY_LIMIT: "100001" }),
+  );
+  assert.throws(() =>
+    readConfig({ ...selected, PHONE_VERIFICATION_MODE: "disabled" }),
+  );
+  assert.throws(() => readConfig({ ...selected, PROSTOSMS_MODE: "disabled" }));
+  const legacy = {
+    ...selected,
+    PHONE_VERIFICATION_MODE: "sms_ru",
+    PROSTOSMS_MODE: "disabled",
+    SMS_RU_MODE: "live",
+    SMS_RU_API_ID: "synthetic-smsru-id",
+    SMS_RU_FROM: "CityGo",
+  };
+  assert.throws(() => readConfig(legacy));
+  for (const field of [
+    "PHONE_SMS_GLOBAL_DAILY_LIMIT",
+    "PHONE_SMS_GLOBAL_TOTAL_LIMIT",
+  ])
+    assert.throws(() =>
+      readConfig({
+        ...legacy,
+        PHONE_SMS_GLOBAL_DAILY_LIMIT: "10",
+        PHONE_SMS_GLOBAL_TOTAL_LIMIT: "20",
+        [field]: "unlimited",
+      }),
+    );
+  assert.equal(
+    readConfig({
+      ...legacy,
+      PHONE_SMS_GLOBAL_DAILY_LIMIT: "10",
+      PHONE_SMS_GLOBAL_TOTAL_LIMIT: "20",
+    }).PHONE_SMS_GLOBAL_TOTAL_LIMIT,
+    20,
+  );
+});
+
 test("email registration defaults disabled and cannot be enabled by an implicit secret or a truthy mode", () => {
   assert.equal(readConfig({}).EMAIL_REGISTRATION_MODE, "disabled");
   assert.equal(readConfig({}).EMAIL_REGISTRATION_SECRET, undefined);

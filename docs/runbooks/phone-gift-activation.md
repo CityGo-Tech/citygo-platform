@@ -100,6 +100,10 @@
 
 ## Подготовленный, но не активированный SMS runtime
 
+Для нового решения без общих суточных и суммарных SMS-квот подготовлен
+[отдельный профиль v11](prostosms-unlimited-runtime.md). Описанный ниже v10
+сохраняет прежние конечные квоты; его разрешение нельзя использовать для v11.
+
 Для выбранного ProstoSMS подготовлен отдельный профиль версии **10**:
 
 `citygo-api-web-routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-v1`

@@ -46,8 +46,14 @@ export function phoneVerificationPolicy(
       phoneHourly: 3,
       ipHourly: 10,
       cooldownSeconds: 60,
-      globalDaily: config.PHONE_SMS_GLOBAL_DAILY_LIMIT,
-      globalTotal: config.PHONE_SMS_GLOBAL_TOTAL_LIMIT,
+      globalDaily:
+        config.PHONE_SMS_GLOBAL_DAILY_LIMIT === "unlimited"
+          ? null
+          : config.PHONE_SMS_GLOBAL_DAILY_LIMIT,
+      globalTotal:
+        config.PHONE_SMS_GLOBAL_TOTAL_LIMIT === "unlimited"
+          ? null
+          : config.PHONE_SMS_GLOBAL_TOTAL_LIMIT,
     },
   };
 }

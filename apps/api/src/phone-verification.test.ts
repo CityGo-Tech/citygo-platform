@@ -15,6 +15,7 @@ import {
 } from "@citygo/contracts";
 import { buildApp } from "./app.js";
 import { hashPassword, tokenHash } from "./auth.js";
+import { ProstoSmsDeliveryError } from "./verification-delivery/prosto-sms.js";
 import {
   phoneVerificationPolicy,
   PHONE_DELIVERY_DEADLINE_MS,
@@ -49,6 +50,7 @@ async function fixture(
     bound?: boolean;
     disabled?: boolean;
     prostoSms?: boolean;
+    unlimitedGlobal?: boolean;
     delivery?: PhoneVerificationDelivery;
   } = {},
 ) {
@@ -70,6 +72,12 @@ async function fixture(
       : {}),
     ...(options.disabled
       ? { PHONE_VERIFICATION_MODE: "disabled", SMS_RU_MODE: "disabled" }
+      : {}),
+    ...(options.unlimitedGlobal
+      ? {
+          PHONE_SMS_GLOBAL_DAILY_LIMIT: "unlimited",
+          PHONE_SMS_GLOBAL_TOTAL_LIMIT: "unlimited",
+        }
       : {}),
   });
   if (options.bound !== false && !options.disabled)
@@ -252,6 +260,117 @@ test("ProstoSMS synthetic receipt confirms one phone and grants once, without SM
       giftStatus: "granted",
     },
   );
+});
+
+test("explicit unlimited ProstoSMS globals preserve cooldown, code checks and one gift beyond prior finite total counts", async (t) => {
+  const f = await fixture(t, { prostoSms: true, unlimitedGlobal: true });
+  assert.deepEqual(phoneVerificationPolicy(f.config)!.limits, {
+    userHourly: 3,
+    phoneHourly: 3,
+    ipHourly: 10,
+    cooldownSeconds: 60,
+    globalDaily: null,
+    globalTotal: null,
+  });
+  const first = await f.post("start", { phone });
+  assert.equal(first.statusCode, 200);
+  // Old synthetic admission history is outside every hourly window. It is
+  // intentionally above the former finite fixture's total20, without calling
+  // any provider or disabling a DB constraint.
+  await f.db.query(`insert into phone_verification_sends
+    (id,challenge_id,user_id,phone_key,ip_key,policy_fingerprint,created_at)
+    select gen_random_uuid(),s.challenge_id,s.user_id,repeat('c',64),repeat('d',64),s.policy_fingerprint,
+      clock_timestamp()-interval '2 hours'
+    from phone_verification_sends s cross join generate_series(1,21) n`);
+  assert.equal(
+    (await f.post("start", { phone: "+79990000002" })).statusCode,
+    429,
+  );
+  assert.equal(
+    f.sent.length,
+    1,
+    "Unlimited globals do not remove the owner cooldown",
+  );
+  await f.db.query(
+    "update phone_verification_sends set created_at=created_at-interval '61 seconds'",
+  );
+  const start = await f.post("start", { phone: "+79990000002" });
+  assert.equal(start.statusCode, 200);
+  assert.equal(f.sent.length, 2);
+  const binding = phoneVerificationChallengeSchema.parse(start.json());
+  const input = { ...binding, phone: "+79990000002", code: f.sent[1]!.code };
+  const confirm = {
+    challengeId: input.challengeId,
+    proof: input.proof,
+    phone: input.phone,
+    code: input.code,
+  };
+  assert.equal(
+    (
+      await f.post("confirm", {
+        ...confirm,
+        code: confirm.code === "000000" ? "111111" : "000000",
+      })
+    ).statusCode,
+    400,
+  );
+  assert.deepEqual(await f.money(), { entries: 0, claims: 0 });
+  const accepted = await f.post("confirm", confirm);
+  assert.equal(accepted.statusCode, 200);
+  const receipt = phoneVerificationReceiptSchema.parse(accepted.json());
+  assert.equal(receipt.grantedMicros, 500_000_000);
+  assert.deepEqual((await f.post("confirm", confirm)).json(), {
+    ...receipt,
+    alreadyGranted: true,
+  });
+  assert.deepEqual(await f.money(), { entries: 1, claims: 1 });
+  const bound = (
+    await f.db.query<{
+      policy: { limits: { globalDaily: null; globalTotal: null } };
+    }>("select policy from phone_verification_control where id=1")
+  ).rows[0]!.policy;
+  assert.equal(bound.limits.globalDaily, null);
+  assert.equal(bound.limits.globalTotal, null);
+});
+
+test("provider rejection with unlimited globals never grants a gift or retries and keeps the original three-per-user protection", async (t) => {
+  let calls = 0;
+  const f = await fixture(t, {
+    prostoSms: true,
+    unlimitedGlobal: true,
+    delivery: async () => {
+      calls++;
+      throw new ProstoSmsDeliveryError("rejected", "rejected");
+    },
+  });
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const response = await f.post("start", { phone });
+    assert.equal(response.statusCode, 503);
+    assert.equal(
+      calls,
+      attempt,
+      "Only an explicit new HTTP action invokes delivery",
+    );
+    assert.deepEqual(await f.money(), { entries: 0, claims: 0 });
+    await f.db.query(
+      "update phone_verification_sends set created_at=created_at-interval '61 seconds'",
+    );
+  }
+  assert.equal((await f.post("start", { phone })).statusCode, 429);
+  assert.equal(calls, 3);
+  assert.equal(
+    (await f.db.query("select 1 from phone_verification_sends")).rows.length,
+    3,
+  );
+  assert.deepEqual(
+    (
+      await f.db.query(
+        "select distinct delivery from phone_verification_challenges",
+      )
+    ).rows,
+    [{ delivery: "failed" }],
+  );
+  assert.deepEqual(await f.money(), { entries: 0, claims: 0 });
 });
 
 test("an accepted receipt from another SMS provider cannot unlock the selected ProstoSMS path", async (t) => {

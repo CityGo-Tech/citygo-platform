@@ -37,6 +37,10 @@ export async function routerAiProfileSmoke({
       "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-v1",
       "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-profile.fixture.json",
     ],
+    [
+      "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-unlimited-v1",
+      "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-unlimited-profile.fixture.json",
+    ],
   ])
     await mountedProfileSmoke({
       project,
@@ -197,7 +201,8 @@ async function mountedProfileSmoke({
     }
     if (
       marker.endsWith("-postbox-email-smsru-v1") ||
-      marker.endsWith("-postbox-email-prostosms-v1")
+      marker.endsWith("-postbox-email-prostosms-v1") ||
+      marker.endsWith("-postbox-email-prostosms-unlimited-v1")
     ) {
       const phoneProof = docker([
         "exec",
