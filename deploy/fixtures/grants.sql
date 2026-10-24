@@ -7,5 +7,8 @@ grant select on citygo_migrations to citygo_api;
 revoke update, delete on ai_credit_entries from citygo_api;
 revoke delete on ai_credit_accounts from citygo_api;
 revoke delete on ai_credit_charges from citygo_api;
+-- Match production consent evidence permissions despite the broad synthetic
+-- fixture grant above. The runtime must only read and append these records.
+revoke update, delete, truncate on service_consent_events from citygo_api;
 grant select, delete on sessions, analytics_events to citygo_worker;
 grant select, update on agent_threads, chat_requests to citygo_worker;
