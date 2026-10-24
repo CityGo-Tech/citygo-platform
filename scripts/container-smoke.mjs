@@ -195,7 +195,10 @@ try {
   ]) {
     const rejected = await request("/api/v1/auth/register", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        "x-citygo-client": "native",
+      },
       body: JSON.stringify({ ...credentials, consents }),
     });
     assert.equal(rejected.status, 400);
