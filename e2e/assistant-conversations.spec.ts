@@ -150,6 +150,10 @@ async function install(context: BrowserContext, withProfile = false) {
         json: { error: "Synthetic signed out" },
       });
     if (path === "/api/v1/dashboard") return route.fulfill({ json: board() });
+    if (path === "/api/v1/personal-plan" && request.method() === "GET")
+      return route.fulfill({
+        json: { userId: state.owner, items: [], nextBefore: null },
+      });
     if (path === "/api/v1/conversations" && request.method() === "GET") {
       const rows = (
         state.owner === "101" ? [...threads.values()] : [threadFor("110")!]
@@ -575,7 +579,7 @@ test("failed history read after a successful start never commits the new selecti
   expect(f.state.reads.at(-1)).toEqual({ owner: "101", id: ids.housing });
   await page.getByRole("button", { name: "Мой план", exact: true }).click();
   await page
-    .getByRole("button", { name: "Обсудить следующий шаг", exact: true })
+    .getByRole("button", { name: "Продолжить разговор", exact: true })
     .click();
   await expect(
     page.getByRole("heading", { name: names.housing, exact: true }),

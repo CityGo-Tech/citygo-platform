@@ -55,6 +55,14 @@ import {
   setMessageFavoriteSchema,
   messageFavoriteResultSchema,
   favoriteMessagesPageSchema,
+  personalPlanIdSchema,
+  personalPlanQuerySchema,
+  createPersonalPlanItemSchema,
+  updatePersonalPlanItemSchema,
+  removePersonalPlanItemSchema,
+  personalPlanPageSchema,
+  personalPlanItemResultSchema,
+  personalPlanRemoveResultSchema,
   conversationStartSchema,
   conversationListQuerySchema,
   conversationMessagesQuerySchema,
@@ -83,6 +91,8 @@ import {
   type Questionnaire,
   type AgentKey,
   type StreamEvent,
+  type CreatePersonalPlanItem,
+  type UpdatePersonalPlanItem,
 } from "@citygo/contracts";
 import {
   ApiError,
@@ -143,10 +153,11 @@ export function createClient(
     op: Operation,
     body?: unknown,
     streaming = false,
+    method?: "PATCH" | "DELETE",
   ) {
     op.check();
     const pending = (options.fetch ?? globalThis.fetch)(base + path, {
-      method: body === undefined ? "GET" : "POST",
+      method: method ?? (body === undefined ? "GET" : "POST"),
       credentials: "include",
       headers: headers(body !== undefined, streaming),
       signal: op.signal,
@@ -199,11 +210,12 @@ export function createClient(
     path: string,
     schema: ResponseSchema<T>,
     body?: unknown,
+    method?: "PATCH" | "DELETE",
   ): Promise<T> {
     const op = operation(limits.requestTimeoutMs, [options.signal?.()]);
     let response: Response | undefined;
     try {
-      response = await fetchResponse(path, op, body);
+      response = await fetchResponse(path, op, body, false, method);
       await checkStatus(response, path, op);
       const result = schema.safeParse(
         await readJson(response, op, limits.maxJsonBytes),
@@ -589,6 +601,89 @@ export function createClient(
         role,
       }),
     dashboard: () => request("/v1/dashboard", dashboardResponseSchema),
+    personalPlan: async (before?: string) => {
+      const query = personalPlanQuerySchema.parse(
+        before === undefined ? {} : { before },
+      );
+      const result = await request(
+        "/v1/personal-plan" +
+          (query.before === undefined ? "" : "?before=" + query.before),
+        personalPlanPageSchema,
+      );
+      if (
+        query.before !== undefined &&
+        result.items.some((item) => BigInt(item.id) >= BigInt(query.before!))
+      )
+        throw new ApiError(
+          200,
+          "Ответ сервера не соответствует странице личного плана",
+          "invalid_response",
+        );
+      return result;
+    },
+    createPersonalPlanItem: async (input: CreatePersonalPlanItem) => {
+      const body = createPersonalPlanItemSchema.parse(input);
+      const result = await request(
+        "/v1/personal-plan",
+        personalPlanItemResultSchema,
+        body,
+      );
+      // An idempotent replay may return an edited current item. Its immutable
+      // original source must still agree with the frozen creation request.
+      if (result.item.source.messageId !== body.sourceMessageId)
+        throw new ApiError(
+          200,
+          "Ответ сервера не соответствует источнику шага",
+          "invalid_response",
+        );
+      return result;
+    },
+    updatePersonalPlanItem: async (
+      itemId: string,
+      input: UpdatePersonalPlanItem,
+    ) => {
+      const id = personalPlanIdSchema.parse(itemId);
+      const body = updatePersonalPlanItemSchema.parse(input);
+      const result = await request(
+        "/v1/personal-plan/" + id,
+        personalPlanItemResultSchema,
+        body,
+        "PATCH",
+      );
+      if (
+        result.item.id !== id ||
+        result.item.revision !== body.expectedRevision + 1 ||
+        result.item.title !== body.title ||
+        result.item.details !== body.details ||
+        result.item.status !== body.status
+      )
+        throw new ApiError(
+          200,
+          "Ответ сервера не подтверждает изменение шага",
+          "invalid_response",
+        );
+      return result;
+    },
+    removePersonalPlanItem: async (
+      itemId: string,
+      expectedRevision: number,
+    ) => {
+      const id = personalPlanIdSchema.parse(itemId);
+      const body = removePersonalPlanItemSchema.parse({ expectedRevision });
+      const result = await request(
+        "/v1/personal-plan/" + id,
+        personalPlanRemoveResultSchema,
+        body,
+        "DELETE",
+      );
+      if (result.itemId !== id)
+        throw new ApiError(
+          200,
+          "Ответ сервера не подтверждает удаление шага",
+          "invalid_response",
+        );
+      return result;
+    },
     favoriteMessages: async (before?: string) =>
       request(
         "/v1/messages/favorites" +

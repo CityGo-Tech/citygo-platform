@@ -4,6 +4,7 @@ export * from "./email-registration.js";
 export * from "./password-recovery.js";
 export * from "./phone-verification.js";
 export * from "./message-favorites.js";
+export * from "./personal-plan.js";
 export * from "./conversation-history.js";
 export * from "./llm.js";
 export * from "./ai-access.js";

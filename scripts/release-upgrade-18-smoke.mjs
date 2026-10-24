@@ -1,4 +1,4 @@
-// Synthetic-only 18→28 rehearsal for the disposable pilot harness, while its
+// Synthetic-only 18→29 rehearsal for the disposable pilot harness, while its
 // PostgreSQL container is the sole project member. Never a production rollback
 // or migration tool; a successful receipt cannot authorize public traffic.
 import assert from "node:assert/strict";
@@ -52,6 +52,13 @@ export function upgrade18RewindSql() {
   return `begin;
     drop table payment_admission_commands,payment_admission_reconciliation_events,payment_admission;
     drop function citygo_guard_payment_admission_history();
+    do $$ begin
+      if exists(select 1 from personal_plan_items) then
+        raise exception 'Personal plan history cannot be rewound';
+      end if;
+    end $$;
+    drop table personal_plan_items;
+    drop function citygo_guard_personal_plan_item();
     do $$ begin
       if exists(select 1 from password_recovery_challenges) then
         raise exception 'Password recovery history cannot be rewound';
@@ -128,7 +135,7 @@ export function upgrade18RewindSql() {
     alter table payment_topup_orders add constraint payment_topup_orders_test_check check(test);
     ${legacyFunction}
     delete from citygo_migrations where name in (
-      '0019_yookassa_live_orders.sql','0020_ai_budget_provider_balance.sql','0021_payment_notifications.sql','0022_payment_admission.sql','0023_payment_receipt_snapshots.sql','0024_ai_credit_overdraft.sql','0025_assistant_conversations.sql','0026_email_registration.sql','0027_phone_verification.sql','0028_password_recovery.sql');
+      '0019_yookassa_live_orders.sql','0020_ai_budget_provider_balance.sql','0021_payment_notifications.sql','0022_payment_admission.sql','0023_payment_receipt_snapshots.sql','0024_ai_credit_overdraft.sql','0025_assistant_conversations.sql','0026_email_registration.sql','0027_phone_verification.sql','0028_password_recovery.sql','0029_personal_plan.sql');
     commit`;
 }
 
@@ -314,6 +321,7 @@ export async function releaseUpgrade18Smoke({
       "0026_email_registration.sql",
       "0027_phone_verification.sql",
       "0028_password_recovery.sql",
+      "0029_personal_plan.sql",
     ],
   );
   const expectedJournal = migrations.map(({ name }) => ({
@@ -502,6 +510,6 @@ export async function releaseUpgrade18Smoke({
   );
   assert.deepEqual(journal(), expectedJournal);
   console.log(
-    "Exact synthetic 18→28 rehearsal passed: ten migrations + ACLs, late-ACL transactional rollback, preserved legacy conversation/fixed budget/counters/test order/source hold and receipt-free v1 identity; empty pending-email schema and unbound phone policy, least-privilege runtime, closed checkout, no production authorization or provider calls",
+    "Exact synthetic 18→29 rehearsal passed: eleven migrations + ACLs, late-ACL transactional rollback, preserved legacy conversation/fixed budget/counters/test order/source hold and receipt-free v1 identity; empty pending-email schema and unbound phone policy, least-privilege runtime, closed checkout, no production authorization or provider calls",
   );
 }

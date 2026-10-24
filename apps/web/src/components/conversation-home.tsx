@@ -18,6 +18,12 @@ import {
   conversationHistoryStyles,
   useHistoryScrollAnchor,
 } from "./conversation-history";
+import {
+  PersonalPlanPanel,
+  PlanStepComposer,
+  type PlanMessageSource,
+} from "./personal-plan";
+import planStyles from "./personal-plan.module.css";
 
 const topics = [
   ["Понять и спланировать", "Не понимаю, с чего начать переезд в Москву."],
@@ -33,10 +39,12 @@ const topics = [
 const greeting =
   "Здравствуйте! Я координатор CityGo. Помогу разложить переезд на понятные шаги. Можно просто рассказать, что сейчас волнует — даже если бюджет и дата ещё неизвестны.";
 
-/** First conversational slice of Figma 6:14. No invented plan or profile. */
+/** Conversation home and user-selected plan, from Figma 6:14 / 6:24. */
 export function ConversationHome(props: JourneyProps) {
   const [tab, setTab] = useState("Диалоги");
   const [showList, setShowList] = useState(false);
+  const [planSource, setPlanSource] = useState<PlanMessageSource | null>(null);
+  const [planGeneration, setPlanGeneration] = useState(0);
   const { board, busy, sending } = props;
   const log = useRef<HTMLDivElement>(null);
   const historyScroll = useHistoryScrollAnchor(
@@ -50,6 +58,7 @@ export function ConversationHome(props: JourneyProps) {
     },
   );
   const agent = props.streamAgent ?? board.thread?.agentKey ?? "support";
+  const contextAgent = tab === "Мой план" ? "support" : agent;
   const canSend =
     !!board.thread &&
     board.provider !== "unconfigured" &&
@@ -65,6 +74,7 @@ export function ConversationHome(props: JourneyProps) {
   const begin = async (key?: AgentKey) => {
     const started = await props.onBegin?.(key);
     if (started) {
+      setPlanSource(null);
       setTab("Диалоги");
       setShowList(false);
     }
@@ -73,6 +83,7 @@ export function ConversationHome(props: JourneyProps) {
   const open = async (id: string) => {
     const opened = await props.onOpenConversation?.(id);
     if (opened) {
+      setPlanSource(null);
       setTab("Диалоги");
       setShowList(false);
     }
@@ -111,16 +122,16 @@ export function ConversationHome(props: JourneyProps) {
         <span className="eyebrow">ВАШ AI-ПОМОЩНИК</span>
         <Image
           src={
-            agent === "support"
+            contextAgent === "support"
               ? "/figma/support-assistant.png"
-              : `/characters/${agent}-640.webp`
+              : `/characters/${contextAgent}-640.webp`
           }
           width={240}
           height={240}
-          alt={agentNames[agent]}
+          alt={agentNames[contextAgent]}
         />
-        <h2>{agentNames[agent]}</h2>
-        <p>{assistantTitle(agent)}</p>
+        <h2>{agentNames[contextAgent]}</h2>
+        <p>{assistantTitle(contextAgent)}</p>
         <p>
           Начните с вопроса. Помощник уточнит только нужное по ходу разговора.
         </p>
@@ -158,24 +169,47 @@ export function ConversationHome(props: JourneyProps) {
           </Button>
         ))}
       </nav>
+      {planSource && (
+        <PlanStepComposer
+          key={board.user.id + ":" + planSource.messageId}
+          userId={board.user.id}
+          sessionSignal={props.sessionSignal}
+          onAccessDenied={props.onAccessDenied}
+          source={planSource}
+          onSaved={() => {
+            setPlanSource(null);
+            setPlanGeneration((current) => current + 1);
+            setTab("Мой план");
+          }}
+          onCancel={(checkPlan) => {
+            setPlanSource(null);
+            if (checkPlan) {
+              setPlanGeneration((current) => current + 1);
+              setTab("Мой план");
+            }
+          }}
+        />
+      )}
       {tab === "Мой план" ? (
-        <Card>
-          <h1>Ваш путь в Москву</h1>
-          <p>
-            План будет складываться из разговора и выбранных вами следующих
-            шагов. Пока бюджет, срок и обстоятельства неизвестны — мы их не
-            придумываем. Сохранение структурированного плана из диалога появится
-            в следующем этапе.
-          </p>
-          <Button
-            onClick={() => {
-              setTab("Диалоги");
-              setShowList(false);
-            }}
-          >
-            Обсудить следующий шаг
-          </Button>
-        </Card>
+        <div className={"conversation-workspace " + planStyles.workspace}>
+          {sidebar}
+          <div className="conversation-main">
+            <PersonalPlanPanel
+              key={board.user.id + ":plan:" + planGeneration}
+              userId={board.user.id}
+              sessionSignal={props.sessionSignal}
+              onAccessDenied={props.onAccessDenied}
+              navigationBusy={busy || sending}
+              onOpenConversation={open}
+              onContinue={() => {
+                setTab("Диалоги");
+                setShowList(false);
+              }}
+              onHelpers={() => setTab("Помощники")}
+            />
+          </div>
+          {rail}
+        </div>
       ) : tab === "Помощники" || (tab === "Диалоги" && showList) ? (
         <div className="conversation-workspace">
           {sidebar}
@@ -303,6 +337,20 @@ export function ConversationHome(props: JourneyProps) {
                         props.onFavorite?.(message.id, !message.favorite)
                       }
                     />
+                    <Button
+                      variant="ghost"
+                      disabled={busy || sending || !!planSource}
+                      onClick={() =>
+                        setPlanSource({
+                          messageId: message.id,
+                          threadId: board.thread!.id,
+                          role: message.role,
+                          content: message.content,
+                        })
+                      }
+                    >
+                      Добавить шаг в план
+                    </Button>
                   </article>
                 ))}
                 {props.pending && (

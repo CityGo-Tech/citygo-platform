@@ -74,6 +74,7 @@ import { createAiExecution } from "./ai-execution.js";
 import { ApiDrain, registerDrain } from "./shutdown.js";
 import { buildConversationContext } from "./conversation-context.js";
 import { registerSyntheticHousingApi } from "./housing.js";
+import { registerPersonalPlanApi } from "./personal-plan.js";
 import {
   preparePayments,
   registerPaymentTopups,
@@ -772,6 +773,7 @@ export async function buildApp(options: {
     const input = setMessageFavoriteSchema.parse(request.body);
     return favorites.set(user.id, id, input.saved);
   });
+  registerPersonalPlanApi(app, { db: options.db, authenticate });
   app.post("/v1/auth/logout", async (request, reply) => {
     const token =
       bearer(request.headers.authorization) ?? request.cookies[sessionName];

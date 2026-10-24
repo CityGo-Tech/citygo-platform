@@ -10,7 +10,7 @@ import {
 } from "./closed-account-restart-fixture.js";
 const hash = (s: string) => createHash("sha256").update(s).digest("hex");
 
-test("schema27 to28 preserves every account, verified email, wallet, financial row, message, session and migration receipt without recovery backfill", async (t) => {
+test("schema27 to29 preserves every account, verified email, wallet, financial row, message, session and migration receipt without recovery or personal-plan backfill", async (t) => {
   const db = await connectDatabase("pglite://:memory:");
   t.after(() => db.close());
   await migrateLegacyRestartFixture(db);
@@ -70,16 +70,19 @@ test("schema27 to28 preserves every account, verified email, wallet, financial r
     );
   assert.deepEqual(
     Object.keys(after).filter((name) => !(name in before)),
-    ["password_recovery_challenges"],
+    ["password_recovery_challenges", "personal_plan_items"],
   );
   assert.deepEqual(after.password_recovery_challenges, []);
-  assert.equal(after.citygo_migrations!.length, 28);
+  assert.deepEqual(after.personal_plan_items, []);
+  assert.equal(after.citygo_migrations!.length, 29);
   assert.deepEqual(
     (
       await db.query(
         "select sequencename,last_value::text from pg_sequences where schemaname='public' order by sequencename",
       )
-    ).rows,
+    ).rows.filter((row) =>
+      sequences.some((before) => before.sequencename === row.sequencename),
+    ),
     sequences,
   );
   await migrate(db);

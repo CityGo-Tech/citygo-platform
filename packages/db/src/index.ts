@@ -2,6 +2,7 @@ import { PGlite } from "@electric-sql/pglite";
 import pg from "pg";
 export { Repository, DomainError } from "./repository.js";
 export { MessageFavorites } from "./message-favorites.js";
+export { PersonalPlan } from "./personal-plan.js";
 export {
   PasswordRecovery,
   type PasswordRecoveryBegin,
