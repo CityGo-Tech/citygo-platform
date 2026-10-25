@@ -74,6 +74,7 @@ import { hashPassword, verifyPassword, tokenHash, newToken } from "./auth.js";
 import { createAiControl } from "./ai-control.js";
 import type { ProviderMap } from "./provider.js";
 import { createAiExecution } from "./ai-execution.js";
+import { createAssistantModes, type ModeProviders } from "./ai-modes.js";
 import { ApiDrain, registerDrain } from "./shutdown.js";
 import { buildConversationContext } from "./conversation-context.js";
 import { registerSyntheticHousingApi } from "./housing.js";
@@ -138,11 +139,19 @@ export async function buildApp(options: {
   emailRegistrationDelivery?: RegistrationEmailDelivery;
   passwordRecoveryDelivery?: PasswordRecoveryEmailDelivery;
   phoneVerificationDelivery?: PhoneVerificationDelivery;
+  modeProviders?: ModeProviders;
 }) {
   const drain = options.drain ?? new ApiDrain();
   const config = options.config ?? readConfig();
   validateCreditReservationConfig(config);
   validateVerificationDeliveryConfig(config);
+  if (
+    options.modeProviders &&
+    (config.NODE_ENV !== "test" || options.testing !== true)
+  )
+    throw new Error(
+      "Synthetic mode adapters require the isolated test harness",
+    );
   if (
     (options.emailRegistrationDelivery ||
       options.passwordRecoveryDelivery ||
@@ -170,7 +179,9 @@ export async function buildApp(options: {
   if (
     paymentClient &&
     config.YOOKASSA_MODE === "test" &&
-    (options.provider || Object.values(options.providers ?? {}).some(Boolean))
+    (options.provider ||
+      Object.values(options.providers ?? {}).some(Boolean) ||
+      Object.values(options.modeProviders ?? {}).some(Boolean))
   )
     throw new Error(
       "Test checkout cannot be combined with injected AI providers",
@@ -249,17 +260,24 @@ export async function buildApp(options: {
   async function reconcileCharge(userId: string, holdId: string) {
     const charge = await charges.get(userId, holdId);
     if (charge.receipt) return credit.status(userId);
-    const adapter = providers.routerai;
+    const adapter = [
+      ...(modes?.routes.map((route) => ({
+        adapter: route.provider,
+        upstream: route.upstream,
+      })) ?? []),
+      { adapter: providers.routerai, upstream: config.ROUTERAI_UPSTREAM },
+    ].find(
+      (profile) =>
+        profile.adapter?.name === "routerai" &&
+        profile.adapter.model === charge.model &&
+        profile.upstream === charge.upstream,
+    )?.adapter;
     if (!charge.response_complete || !charge.generation_id)
       throw new DomainError(
         409,
         "Ответ не подтверждён как завершённый. Нужна ручная сверка с RouterAI; автоматическое освобождение запрещено.",
       );
-    if (
-      !adapter?.readCharge ||
-      adapter.model !== charge.model ||
-      config.ROUTERAI_UPSTREAM !== charge.upstream
-    )
+    if (!adapter?.readCharge || adapter.model !== charge.model)
       throw new DomainError(
         409,
         "Для сверки требуется исходная конфигурация RouterAI.",
@@ -272,13 +290,20 @@ export async function buildApp(options: {
     await charges.settle(userId, holdId, receipt);
     return credit.status(userId);
   }
-  const control = createAiControl(config, providers);
-  const executions = control.options.flatMap((option) =>
-    option.policy ? [createAiExecution(config, option.policy)] : [],
-  );
+  const modes = createAssistantModes(config, options.modeProviders);
+  const control = createAiControl(config, providers, modes);
+  const executions = modes
+    ? modes.routes
+        .filter((route) => route.provider)
+        .map((route) => route.execution)
+    : control.options.flatMap((option) =>
+        option.policy ? [createAiExecution(config, option.policy)] : [],
+      );
   await repo.initializeAiRouting(
-    control.options.find((entry) => entry.provider === options.provider?.name)
-      ?.policy ?? null,
+    control.options.find(
+      (entry) =>
+        entry.provider === (modes ? "routerai" : options.provider?.name),
+    )?.policy ?? null,
   );
   const currentAi = async () => control.resolve(await repo.aiRouting());
   const app = Fastify({
@@ -465,9 +490,12 @@ export async function buildApp(options: {
   app.get("/ready", async () => {
     try {
       const result = await options.db.query(
-        "select name from citygo_migrations where name in ('0006_ai_budget.sql','0007_ai_user_daily_budget.sql','0008_ai_credit.sql','0009_ai_credit_charges.sql','0010_quest_plan_expand.sql','0011_quest_plan_validate.sql','0013_account_access.sql','0014_citygo_credit.sql','0015_yookassa_orders.sql','0016_npd_receipts.sql','0017_credit_source_lots.sql','0018_payment_refunds.sql','0019_yookassa_live_orders.sql','0020_ai_budget_provider_balance.sql','0021_payment_notifications.sql','0022_payment_admission.sql','0023_payment_receipt_snapshots.sql','0024_ai_credit_overdraft.sql','0025_assistant_conversations.sql','0030_service_consents.sql','0031_account_email_confirmation.sql','0032_phone_contact_bindings.sql')",
+        "select name from citygo_migrations where name in ('0006_ai_budget.sql','0007_ai_user_daily_budget.sql','0008_ai_credit.sql','0009_ai_credit_charges.sql','0010_quest_plan_expand.sql','0011_quest_plan_validate.sql','0013_account_access.sql','0014_citygo_credit.sql','0015_yookassa_orders.sql','0016_npd_receipts.sql','0017_credit_source_lots.sql','0018_payment_refunds.sql','0019_yookassa_live_orders.sql','0020_ai_budget_provider_balance.sql','0021_payment_notifications.sql','0022_payment_admission.sql','0023_payment_receipt_snapshots.sql','0024_ai_credit_overdraft.sql','0025_assistant_conversations.sql','0030_service_consents.sql','0031_account_email_confirmation.sql','0032_phone_contact_bindings.sql','0033_ai_request_modes.sql')",
       );
-      if (result.rows.length !== 22) throw new Error("Pending migration");
+      if (result.rows.length !== 23) throw new Error("Pending migration");
+      await options.db.query(
+        "select thread_id,request_id,mode,catalog_id from ai_request_modes limit 0",
+      );
       await options.db.query(
         "select user_id,policy_version,policy_hash,purpose,decision from service_consent_events limit 0",
       );
@@ -886,9 +914,38 @@ export async function buildApp(options: {
       active.policy,
       config.LLM_USER_DAILY_REQUEST_LIMIT,
     );
+    const modeCapabilities = await (async () => {
+      if (!modes) return {};
+      const catalog = modes.modeCatalog();
+      const budget = await repo.aiBudget(executions);
+      catalog.options = catalog.options.map((option) => {
+        const route = modes.routes.find((route) => route.id === option.id)!;
+        const approved = budget.settings.rules.some(
+          (rule) =>
+            rule.key === route.execution.key &&
+            rule.policy.id === route.policy.id &&
+            rule.policy.model === route.model &&
+            rule.maxInputBytes === route.execution.maxInputBytes &&
+            rule.maxOutputTokens === route.execution.maxOutputTokens,
+        );
+        return {
+          ...option,
+          available:
+            option.available &&
+            modes.ready(active.current) &&
+            budget.settings.enabled &&
+            approved,
+        };
+      });
+      return { modes: catalog };
+    })();
+    const result = {
+      ...dashboard,
+      aiAccess: { ...dashboard.aiAccess, ...modeCapabilities },
+    };
     return user.serviceConsentRequired
-      ? { ...dashboard, profile: null, quests: [], thread: null, xp: 0 }
-      : dashboard;
+      ? { ...result, profile: null, quests: [], thread: null, xp: 0 }
+      : result;
   });
   app.post("/v1/ai/consent", async (request) => {
     const user = await authenticate(request);
@@ -959,7 +1016,25 @@ export async function buildApp(options: {
         );
       // Immutable snapshot for this admission. A concurrent switch is caught by
       // the repository lock/revision check before any message or quota is stored.
-      const { provider, policy: aiPolicy, current } = await currentAi();
+      const active = await currentAi();
+      const aiPolicy = active.policy;
+      const current = active.current;
+      if (
+        !modes &&
+        (input.aiMode !== undefined || input.aiModeCatalogId !== undefined)
+      )
+        throw new DomainError(
+          409,
+          "Режимы ответа изменились. Обновите страницу.",
+          "AI_MODE_CHANGED",
+        );
+      const selectedMode = modes?.resolve(current, input);
+      const provider = selectedMode?.provider ?? active.provider;
+      const executionPolicy = selectedMode?.policy ?? aiPolicy;
+      const executionConfig = selectedMode?.config ?? config;
+      const upstream = selectedMode
+        ? selectedMode.upstream
+        : config.ROUTERAI_UPSTREAM;
       if (!provider || !aiPolicy)
         throw new DomainError(
           503,
@@ -974,16 +1049,27 @@ export async function buildApp(options: {
         );
       if (
         creditCharging &&
-        (provider.name !== "routerai" ||
-          !provider.readCharge ||
-          !config.ROUTERAI_UPSTREAM)
+        (provider.name !== "routerai" || !provider.readCharge || !upstream)
       )
         throw new DomainError(
           503,
           "Для этого провайдера списание с баланса не подключено.",
           "AI_CREDIT_UNAVAILABLE",
         );
-      const limits = effectiveLlmLimits(config, provider.name, provider.model);
+      if (!executionPolicy)
+        throw new DomainError(
+          503,
+          "Режим ответа сейчас недоступен.",
+          "AI_UNAVAILABLE",
+        );
+      const execution =
+        selectedMode?.execution ??
+        createAiExecution(executionConfig, executionPolicy);
+      const limits = effectiveLlmLimits(
+        executionConfig,
+        provider.name,
+        provider.model,
+      );
       const reservation = await repo.reserveChat(
         user.id,
         threadId,
@@ -995,6 +1081,17 @@ export async function buildApp(options: {
           userDailyLimit: config.LLM_USER_DAILY_REQUEST_LIMIT,
           globalDailyLimit: config.LLM_GLOBAL_DAILY_REQUEST_LIMIT,
           leaseMs: limits.chatLeaseMs,
+          ...(selectedMode && modes
+            ? {
+                modeSnapshot: {
+                  mode: selectedMode.id,
+                  catalogId: modes.catalogId,
+                  policy: executionPolicy,
+                  execution,
+                  ...(upstream ? { upstream } : {}),
+                },
+              }
+            : {}),
         },
       );
       const routing = routeAgent(input.text, reservation.thread.agent_key);
@@ -1049,12 +1146,18 @@ export async function buildApp(options: {
             attemptNumber: ++attemptNumber,
             provider: provider.name,
             model: provider.model,
-            policyId: aiPolicy.id,
+            policyId: executionPolicy.id,
+            ...(selectedMode && modes
+              ? {
+                  consentPolicyId: aiPolicy.id,
+                  mode: { id: selectedMode.id, catalogId: modes.catalogId },
+                }
+              : {}),
             routingRevision: current.revision,
             userDailyLimit: config.LLM_USER_DAILY_ATTEMPT_LIMIT,
             globalDailyLimit: config.LLM_GLOBAL_DAILY_ATTEMPT_LIMIT,
-            execution: createAiExecution(config, aiPolicy),
-            upstream: config.ROUTERAI_UPSTREAM,
+            execution,
+            upstream,
           });
         } catch (error) {
           if (error instanceof DomainError) attemptError = error;

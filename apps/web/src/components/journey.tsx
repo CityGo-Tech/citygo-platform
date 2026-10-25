@@ -6,6 +6,7 @@ import type {
   Dashboard,
   ConversationSummary,
   Quest,
+  AiModeId,
 } from "@citygo/contracts";
 import {
   AssistantMessage,
@@ -24,6 +25,8 @@ import {
   useHistoryScrollAnchor,
 } from "./conversation-history";
 import type { ConversationHistoryState } from "./conversation-history-state";
+import { AiModeSelector } from "./ai-mode-selector";
+import { isAiModeAvailable } from "@citygo/api-client";
 
 import { agentNames } from "./agent-names";
 export { agentNames } from "./agent-names";
@@ -46,6 +49,8 @@ export type JourneyProps = {
   onText: (value: string) => void;
   onChat: (event: FormEvent) => void;
   onStop: () => void;
+  aiMode?: AiModeId;
+  onAiMode?: (mode: AiModeId) => void;
   onStart: (id: string) => Promise<boolean>;
   onComplete: (id: string) => Promise<boolean>;
   onBegin?: (agentKey?: AgentKey) => Promise<boolean>;
@@ -138,7 +143,11 @@ export function Journey(props: JourneyProps) {
   const canChat =
     !!board.thread &&
     !board.thread.closed &&
-    board.provider !== "unconfigured" &&
+    isAiModeAvailable(
+      board.aiAccess.modes,
+      props.aiMode ?? "balanced",
+      board.provider !== "unconfigured",
+    ) &&
     !props.history?.detached &&
     !busy;
   const checkedCount = checks.filter(Boolean).length;
@@ -382,7 +391,11 @@ export function Journey(props: JourneyProps) {
               </div>
               <Badge>КВЕСТ: ЖИЛЬЁ</Badge>
             </header>
-            {board.provider === "unconfigured" && (
+            {!isAiModeAvailable(
+              board.aiAccess.modes,
+              props.aiMode ?? "balanced",
+              board.provider !== "unconfigured",
+            ) && (
               <p className="provider-warning" role="note">
                 Помощник временно недоступен. Попробуйте позже.
               </p>
@@ -489,6 +502,12 @@ export function Journey(props: JourneyProps) {
               </div>
             )}
             <form onSubmit={props.onChat} className="journey-composer">
+              <AiModeSelector
+                modes={board.aiAccess.modes}
+                selected={props.aiMode ?? "balanced"}
+                disabled={busy || sending || !props.onAiMode}
+                onSelect={(mode) => props.onAiMode?.(mode)}
+              />
               <EmptyAiCreditHint
                 access={board.aiAccess}
                 onBalance={props.onBalance}

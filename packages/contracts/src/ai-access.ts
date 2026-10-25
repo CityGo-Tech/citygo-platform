@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { AiCredit } from "./ai-credit.js";
+import type { AiModes } from "./ai-modes.js";
 import { aiProviderIdSchema, type AiProviderId } from "./llm.js";
 import type {
   AiBudgetStatus,
@@ -29,6 +30,8 @@ export type AiAccess = {
   dailyLimit: number;
   budget?: AiUserBudgetStatus;
   credit?: AiCredit;
+  // Absence means a legacy server: clients must not invent selectable modes.
+  modes?: AiModes;
 };
 
 const routingRevisionSchema = z.number().int().min(1).max(2147483647);

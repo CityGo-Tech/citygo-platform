@@ -20,6 +20,8 @@ import {
   createSessionStorage,
   createSessionLogout,
   ApiError,
+  captureAiModeSelection,
+  isAiModeAvailable,
   type SessionTicket,
 } from "@citygo/api-client";
 import {
@@ -29,11 +31,13 @@ import {
   formatMoneyMicros,
   formatSignedMoneyMicros,
   type Dashboard,
+  type AiModeId,
 } from "@citygo/contracts";
 import { tokens } from "@citygo/design-tokens";
 import { Button, Card, Field } from "@citygo/ui-native";
 import { questChecklist } from "@citygo/content";
 import { MobilePasswordRecovery } from "./src/password-recovery";
+import { MobileAiModeSelector } from "./src/ai-mode-selector";
 import { MobileServiceConsents } from "./src/service-consents";
 import {
   changeServiceConsent,
@@ -92,6 +96,7 @@ export default function App() {
   const [board, setBoard] = useState<Dashboard | null>(null),
     [ready, setReady] = useState(false),
     [error, setError] = useState("");
+  const [selectedAiMode, setSelectedAiMode] = useState<AiModeId>("balanced");
   const [email, setEmail] = useState(""),
     [password, setPassword] = useState(""),
     [mode, setMode] = useState<"login" | "register" | "recover">("login");
@@ -135,6 +140,7 @@ export default function App() {
     abort.current?.abort();
     abort.current = null;
     setBoard(null);
+    setSelectedAiMode("balanced");
     setEmail("");
     setPassword("");
     setMode("login");
@@ -925,8 +931,16 @@ export default function App() {
                     Не отправляйте документы и платёжные данные. Ответы AI нужно
                     проверять.
                   </Text>
-                  {board.provider === "unconfigured" && (
-                    <Text>AI пока не подключён на сервере.</Text>
+                  {!isAiModeAvailable(
+                    board.aiAccess.modes,
+                    selectedAiMode,
+                    board.provider !== "unconfigured",
+                  ) && (
+                    <Text>
+                      {board.aiAccess.modes
+                        ? "Выбранный режим временно недоступен."
+                        : "Помощники временно недоступны."}
+                    </Text>
                   )}
                   {board.aiAccess?.credit && (
                     <View
@@ -934,41 +948,27 @@ export default function App() {
                       collapsable={false}
                       testID="citygo-balance"
                     >
-                      <Text style={styles.title}>
-                        {board.aiAccess.credit.chargingStatus ===
-                        "routerai_citygo_10x"
-                          ? "Баланс CityGo"
-                          : "Бесплатный баланс AI"}{" "}
-                        · аккаунт {board.user.id}
-                      </Text>
+                      <Text style={styles.title}>Баланс CityGo</Text>
                       <Text>
                         {board.aiAccess.credit.bonusGranted
-                          ? "Разовые 500 ₽ начислены. Ежедневного восстановления нет."
-                          : board.aiAccess.credit.chargingStatus ===
-                              "routerai_citygo_10x"
-                            ? "Подарок 500 ₽ CityGo выдаётся после подтверждения телефона. Подтверждение пока не подключено."
-                            : "Разовый бонус 500 ₽ ещё не выдан. Обратитесь к владельцу пилота."}
+                          ? "Подарок 500 ₽ уже начислен."
+                          : "Проверить телефон и статус подарка 500 ₽ можно в веб-кабинете CityGo."}
                       </Text>
                       <Text>
                         Доступно:{" "}
                         {formatSignedMoneyMicros(
                           board.aiAccess.credit.availableMicros,
                         )}{" "}
-                        ₽. В резерве:{" "}
-                        {formatMoneyMicros(board.aiAccess.credit.heldMicros)} ₽.
-                        Учтено списаний:{" "}
+                        ₽. Потрачено:{" "}
                         {formatMoneyMicros(board.aiAccess.credit.spentMicros)}{" "}
                         ₽.
                       </Text>
                       {board.aiAccess.credit.reservationMode ===
                         "fixed5_overdraft" && (
                         <Text>
-                          Перед платным запросом резервируется 5 ₽ CityGo. Это
-                          не итоговая цена: спишется полная подтверждённая
-                          стоимость модели ×10. Если средств не хватит, баланс
-                          станет отрицательным. Новые платные запросы доступны
-                          после пополнения до 5 ₽ свободного баланса; пополнение
-                          сначала погашает задолженность.
+                          Ответы помощников оплачиваются с баланса. Если
+                          стоимость ответа превысит остаток, баланс может стать
+                          отрицательным.
                         </Text>
                       )}
                       {(board.aiAccess.credit.outstandingDebtMicros ?? 0) >
@@ -982,24 +982,16 @@ export default function App() {
                         </Text>
                       )}
                       <Text>
-                        {board.aiAccess.credit.chargingStatus ===
-                        "routerai_citygo_10x"
-                          ? "Расход модели 1 ₽ соответствует списанию 10 ₽ CityGo. Оплата 100 ₽ пополняет баланс на 100 ₽ CityGo. Неизвестная стоимость остаётся в резерве до сверки."
-                          : board.aiAccess.credit.chargingStatus ===
-                              "routerai_at_cost"
-                            ? "Ответы RouterAI — по подтверждённой стоимости без наценки. Неизвестная стоимость остаётся в резерве до сверки. Доли микрорубля округляются вниз."
-                            : "Автоматическое списание за ответы пока не подключено."}{" "}
                         {board.aiAccess.credit.topUpAvailable
                           ? "Для пополнения воспользуйтесь веб-кабинетом CityGo. В мобильном приложении оплата пока не подключена."
-                          : "Пополнение пока недоступно."}{" "}
-                        Баланс не включает ИИ.
+                          : "Пополнение пока недоступно."}
                       </Text>
-                      {board.aiAccess.credit.pending?.map((item) => (
-                        <Text key={item.holdId}>
-                          Резерв на сверке {item.holdId}:{" "}
-                          {formatMoneyMicros(item.amountMicros)} ₽.
+                      {!!board.aiAccess.credit.pending?.length && (
+                        <Text>
+                          Некоторые операции ещё обрабатываются. Баланс
+                          обновится после проверки.
                         </Text>
-                      ))}
+                      )}
                     </View>
                   )}
                   {board.thread?.messages.map((m) => (
@@ -1017,10 +1009,8 @@ export default function App() {
                   {hasEmptyChargeBalance(board.aiAccess) && (
                     <View>
                       <Text>
-                        {board.aiAccess.credit?.reservationMode ===
-                        "fixed5_overdraft"
-                          ? "Для нового платного ответа ИИ нужно не менее 5 ₽ CityGo доступного баланса. Пополнение сначала погашает задолженность. Проверку резерва выполняет сервер."
-                          : "На балансе недостаточно доступных средств для платного ответа ИИ. Необходимый резерв проверяется сервером."}
+                        Недостаточно средств для нового ответа. Пополните баланс
+                        CityGo.
                       </Text>
                       <Text
                         accessibilityRole="link"
@@ -1039,6 +1029,15 @@ export default function App() {
                     maxLength={4000}
                     editable={!busy}
                   />
+                  <MobileAiModeSelector
+                    key={board.user.id}
+                    modes={board.aiAccess.modes}
+                    selected={selectedAiMode}
+                    disabled={busy}
+                    onSelect={(value) => {
+                      if (!operations.current()) setSelectedAiMode(value);
+                    }}
+                  />
                   <Button
                     title="Отправить"
                     disabled={
@@ -1046,11 +1045,20 @@ export default function App() {
                       !text.trim() ||
                       !board.thread ||
                       !board.aiAccess?.granted ||
-                      board.provider === "unconfigured"
+                      !isAiModeAvailable(
+                        board.aiAccess.modes,
+                        selectedAiMode,
+                        board.provider !== "unconfigured",
+                      )
                     }
                     onPress={() =>
                       void act("chat", async (ticket, operation) => {
                         const message = text;
+                        const mode = captureAiModeSelection(
+                          board.aiAccess.modes,
+                          selectedAiMode,
+                        );
+                        const requestId = randomUUID();
                         setText("");
                         setDraft("");
                         const controller = new AbortController();
@@ -1059,7 +1067,7 @@ export default function App() {
                           await api.stream(
                             board.thread!.id,
                             message,
-                            randomUUID(),
+                            requestId,
                             (event) => {
                               if (!ticket.active()) return;
                               if (event.type === "delta")
@@ -1070,6 +1078,7 @@ export default function App() {
                             controller.signal,
                             board.aiAccess.policy?.id,
                             board.aiAccess.credit?.reservationMode,
+                            mode,
                           );
                         } catch (e) {
                           // A stale consent or quota rejection must not discard

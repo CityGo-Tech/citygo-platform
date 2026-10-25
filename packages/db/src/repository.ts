@@ -43,6 +43,14 @@ import {
   reserveAiMoney,
 } from "./ai-budget.js";
 
+import {
+  parseAiRequestModeSnapshot,
+  recordAiRequestMode,
+  assertAiRequestModeAttempt,
+  type AiRequestModeSnapshot,
+  type AiRequestModeDescriptor,
+} from "./ai-request-modes.js";
+
 export { DomainError } from "./errors.js";
 const fail = (
   status: number,
@@ -91,7 +99,17 @@ export class Repository {
     globalDailyLimit: number;
     execution: AiExecution;
     upstream?: string;
+    consentPolicyId?: string;
+    mode?: AiRequestModeDescriptor;
   }) {
+    // A caller may update its selector after send. Copy the accepted attempt
+    // values before awaiting any transaction so that cannot retarget this call.
+    input = {
+      ...input,
+      execution: structuredClone(input.execution),
+      ...(input.mode === undefined ? {} : { mode: { ...input.mode } }),
+    };
+    const consentPolicyId = input.consentPolicyId ?? input.policyId;
     if (
       this.creditCharging &&
       (input.provider !== "routerai" ||
@@ -132,7 +150,7 @@ export class Repository {
         [
           input.threadId,
           input.requestId,
-          input.policyId,
+          consentPolicyId,
           input.routingRevision,
         ],
       );
@@ -143,6 +161,19 @@ export class Repository {
         input.execution.policy.model !== input.model
       )
         fail(409, "Денежный резерв не соответствует запросу.");
+      await assertAiRequestModeAttempt(tx, {
+        userId: input.userId,
+        threadId: input.threadId,
+        requestId: input.requestId,
+        consentPolicyId,
+        policyId: input.policyId,
+        routingRevision: input.routingRevision,
+        provider: input.provider,
+        model: input.model,
+        execution: input.execution,
+        upstream: input.upstream,
+        mode: input.mode,
+      });
       const previous = (
         await tx.query<{
           attempt_number: number;
@@ -847,8 +878,15 @@ export class Repository {
       userDailyLimit: number;
       globalDailyLimit: number;
       leaseMs?: number;
+      modeSnapshot?: AiRequestModeSnapshot;
     },
   ) {
+    access = {
+      ...access,
+      ...(access.modeSnapshot === undefined
+        ? {}
+        : { modeSnapshot: parseAiRequestModeSnapshot(access.modeSnapshot) }),
+    };
     const leaseMs = access.leaseMs ?? 90000;
     if (!Number.isSafeInteger(leaseMs) || leaseMs < 90000 || leaseMs > 270000)
       fail(400, "Недопустимый срок блокировки чата.");
@@ -933,6 +971,17 @@ export class Repository {
         "insert into chat_requests(thread_id,request_id,status,ai_policy_id,ai_routing_revision) values ($1,$2,'running',$3,$4)",
         [threadId, requestId, access.policyId, access.revision],
       );
+      const modeSnapshot =
+        access.modeSnapshot === undefined
+          ? undefined
+          : await recordAiRequestMode(tx, {
+              userId,
+              threadId,
+              requestId,
+              consentPolicyId: access.policyId,
+              routingRevision: access.revision,
+              snapshot: access.modeSnapshot,
+            });
       await tx.query(
         "insert into messages(thread_id,role,content,metadata) values ($1,'user',$2,$3)",
         [
@@ -953,6 +1002,7 @@ export class Repository {
         lease,
         profile,
         messages: await this.history(tx, threadId),
+        ...(modeSnapshot ? { modeSnapshot } : {}),
       };
     });
   }

@@ -50,6 +50,7 @@ const retained = [
   "phone_welcome_claims",
   "phone_contact_bindings",
   "phone_contact_changes",
+  "ai_request_modes",
   "password_recovery_challenges",
   "account_email_confirmation_challenges",
   "account_email_verifications",
@@ -159,6 +160,7 @@ export class AccountReset {
         "phone_welcome_claims",
         "phone_contact_bindings",
         "phone_contact_changes",
+        "ai_request_modes",
         "password_recovery_challenges",
         "account_email_confirmation_challenges",
         "account_email_verifications",
@@ -207,6 +209,11 @@ export class AccountReset {
         blockers.push({
           code: "PHONE_CONTACT_HISTORY_REQUIRES_REVIEW",
           count: phoneContactHistoryCount,
+        });
+      if (counts.ai_request_modes)
+        blockers.push({
+          code: "AI_REQUEST_MODE_HISTORY_REQUIRES_REVIEW",
+          count: counts.ai_request_modes,
         });
       const admissionHistoryCount =
         counts.payment_admission_commands! +

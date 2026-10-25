@@ -31,6 +31,13 @@ export {
 } from "./email-registration.js";
 export { AiCreditLedger } from "./ai-credit.js";
 export {
+  parseAiRequestModeSnapshot,
+  recordAiRequestMode,
+  assertAiRequestModeAttempt,
+  type AiRequestModeSnapshot,
+  type AiRequestModeDescriptor,
+} from "./ai-request-modes.js";
+export {
   PhoneContacts,
   createPhoneContactBinding,
   type PhoneContactChangeInput,

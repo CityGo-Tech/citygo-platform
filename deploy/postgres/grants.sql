@@ -75,6 +75,10 @@ grant update (code_hash,delivery,attempts,consumed_at,invalidated_at)
 -- Private user-chosen steps have immutable owner/source/create identity.
 -- Runtime may edit content/state or tombstone, never delete or rewrite identity.
 grant select, insert on personal_plan_items to citygo_api;
+-- Each admitted request retains one server-selected public mode profile.
+-- API can append/read it; neither API nor Worker may rewrite or delete it.
+grant select,insert on ai_request_modes to citygo_api;
+
 grant update (title,details,status,revision,updated_at,deleted_at)
   on personal_plan_items to citygo_api;
 -- Phone identity policy is operator-bound, never writable/bindable by API.

@@ -23,6 +23,8 @@ import {
 } from "./personal-plan";
 import planStyles from "./personal-plan.module.css";
 import { AccountProfile } from "./account-profile";
+import { AiModeSelector } from "./ai-mode-selector";
+import { isAiModeAvailable } from "@citygo/api-client";
 
 const topics = [
   ["Понять и спланировать", "Не понимаю, с чего начать переезд в Москву."],
@@ -60,7 +62,11 @@ export function ConversationHome(props: JourneyProps) {
   const contextAgent = tab === "Мой план" ? "support" : agent;
   const canSend =
     !!board.thread &&
-    board.provider !== "unconfigured" &&
+    isAiModeAvailable(
+      board.aiAccess.modes,
+      props.aiMode ?? "balanced",
+      board.provider !== "unconfigured",
+    ) &&
     !board.thread.closed &&
     !props.history?.detached &&
     !busy;
@@ -368,6 +374,12 @@ export function ConversationHome(props: JourneyProps) {
                 </p>
               ) : (
                 <form onSubmit={props.onChat}>
+                  <AiModeSelector
+                    modes={board.aiAccess.modes}
+                    selected={props.aiMode ?? "balanced"}
+                    disabled={busy || sending || !props.onAiMode}
+                    onSelect={(mode) => props.onAiMode?.(mode)}
+                  />
                   <EmptyAiCreditHint
                     access={board.aiAccess}
                     onBalance={props.onBalance}

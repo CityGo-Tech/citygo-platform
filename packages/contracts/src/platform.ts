@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { AiProviderId, ModelGeneration } from "./llm.js";
 import { aiPolicyIdSchema, type AiAccess } from "./ai-access.js";
 import type { ApiErrorResponse } from "./protocol.js";
+import { aiModeIdSchema, aiModeCatalogIdSchema } from "./ai-modes.js";
 
 const accountEmailSchema = z
   .email()
@@ -105,15 +106,23 @@ export type ConversationList = {
   conversations: ConversationSummary[];
   nextCursor: string | null;
 };
-export const chatInputSchema = z.object({
-  text: z.string().trim().min(1).max(4000),
-  requestId: z.uuid(),
-  // Missing IDs from old clients fail closed at admission, without sending data.
-  policyId: aiPolicyIdSchema.optional(),
-  // Capability echo from the displayed balance. Old clients must not silently
-  // acquire an overdraft they do not know how to render.
-  creditReservationMode: z.enum(["full", "fixed5_overdraft"]).optional(),
-});
+export const chatInputSchema = z
+  .object({
+    text: z.string().trim().min(1).max(4000),
+    requestId: z.uuid(),
+    // Missing IDs from old clients fail closed at admission, without sending data.
+    policyId: aiPolicyIdSchema.optional(),
+    // Capability echo from the displayed balance. Old clients must not silently
+    // acquire an overdraft they do not know how to render.
+    creditReservationMode: z.enum(["full", "fixed5_overdraft"]).optional(),
+    aiMode: aiModeIdSchema.optional(),
+    aiModeCatalogId: aiModeCatalogIdSchema.optional(),
+  })
+  .refine(
+    (value) =>
+      (value.aiMode === undefined) === (value.aiModeCatalogId === undefined),
+    "Mode and catalog identity must be submitted together",
+  );
 // Concrete persisted plan version; this is NOT an R1 resource revision.
 export const questPlanReferenceSchema = z.object({
   id: z

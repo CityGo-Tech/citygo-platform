@@ -60,6 +60,7 @@ const tables = [
   "phone_welcome_claims",
   "phone_contact_bindings",
   "phone_contact_changes",
+  "ai_request_modes",
   "questionnaire_answers",
   "quests",
   "r1_housing_brief_revisions",
@@ -119,6 +120,7 @@ const preserved = [
   "phone_welcome_claims",
   "phone_contact_bindings",
   "phone_contact_changes",
+  "ai_request_modes",
   // No retention/anti-abuse deletion is authorized by the old TEST reset.
   "password_recovery_challenges",
   "account_email_confirmation_challenges",
@@ -425,6 +427,11 @@ async function inspect(tx: Sql, options: Options) {
       code: "PHONE_CONTACT_HISTORY_REQUIRES_REVIEW",
       count: phoneContactHistoryCount,
     });
+  if (snapshot.counts.ai_request_modes)
+    blockers.push({
+      code: "AI_REQUEST_MODE_HISTORY_REQUIRES_REVIEW",
+      count: snapshot.counts.ai_request_modes,
+    });
   const phoneHistoryCount = [
     "phone_verification_challenges",
     "phone_verification_sends",
@@ -559,6 +566,14 @@ export class FreshAccountReset {
         refuse("Данные изменились после dry-run; нужен новый снимок");
       if (plan.blockers.length)
         refuse("Полный тестовый сброс заблокирован; проверьте dry-run");
+      // This retained FK child may join the old parent TRUNCATE only while
+      // provably empty. The locked snapshot and this immediate recheck both
+      // reject ANY accepted mode evidence; no new parent deletion is added.
+      if (
+        snapshot.counts.ai_request_modes !== 0 ||
+        (await tx.query("select 1 from ai_request_modes limit 1")).rows.length
+      )
+        refuse("История режимов ИИ требует отдельного сохранения и ревью");
       // Truncate only reviewed child tables. Even EMPTY admission history has a
       // users FK and immutable TRUNCATE guard; it must never join this command.
       // Retained phone evidence also references credit entries. Even when empty
@@ -574,6 +589,7 @@ export class FreshAccountReset {
               ),
           ),
           ...protectedEmpty,
+          "ai_request_modes",
         ]
           .map((name) => `public.${name}`)
           .join(",")}`,

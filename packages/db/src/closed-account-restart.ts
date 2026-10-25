@@ -60,6 +60,7 @@ const tables = [
   "phone_welcome_claims",
   "phone_contact_bindings",
   "phone_contact_changes",
+  "ai_request_modes",
   "questionnaire_answers",
   "quests",
   "r1_housing_brief_revisions",
@@ -83,6 +84,7 @@ const retainedTables = [
   "phone_welcome_claims",
   "phone_contact_bindings",
   "phone_contact_changes",
+  "ai_request_modes",
   "password_recovery_challenges",
   "account_email_confirmation_challenges",
   "account_email_verifications",
@@ -353,6 +355,11 @@ async function inspect(tx: Sql, options: Options) {
     blockers.push({
       code: "PHONE_CONTACT_HISTORY_REQUIRES_REVIEW",
       count: phoneContactHistoryCount,
+    });
+  if (snapshot.counts.ai_request_modes)
+    blockers.push({
+      code: "AI_REQUEST_MODE_HISTORY_REQUIRES_REVIEW",
+      count: snapshot.counts.ai_request_modes,
     });
   const phoneHistoryCount = [
     "phone_verification_challenges",
