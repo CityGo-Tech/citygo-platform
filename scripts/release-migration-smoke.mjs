@@ -535,7 +535,7 @@ export async function releaseMigrationSmoke({
     );
     docker(["rm", ident]); // Exact disposable fixtures ONLY; runtime retains them.
   }
-  assert.equal(psql("select count(*) from citygo_migrations"), "30");
+  assert.equal(psql("select count(*) from citygo_migrations"), "31");
   assertClosedPaymentAdmission(psql);
   assertPaymentAdmissionAcls(psql);
   assert.equal(

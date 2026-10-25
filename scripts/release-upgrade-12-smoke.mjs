@@ -1,6 +1,6 @@
 // Only the disposable pilot harness, before its API/Worker starts. This is not
 // production rollback tooling: the harness already owns an empty current DB.
-// Rehearsing 12→30 here does not authorize any production release or alter the
+// Rehearsing 12→31 here does not authorize any production release or alter the
 // separately pinned historical 12→18 controller profile and approvals.
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
@@ -592,6 +592,6 @@ export async function releaseUpgrade12Smoke({
   assertClosedPaymentAdmission(psql);
   assertPaymentAdmissionAcls(psql);
   console.log(
-    "Exact synthetic 12→30 rehearsal passed: eighteen current migrations + ACLs, late-grants transactional rollback, preserved 12-era data and legacy conversation, conservative source backfill, empty pending-email schema and unbound phone policy, restricted runtime roles; closed checkout, no production authorization, deploy or provider calls",
+    "Exact synthetic 12→31 rehearsal passed: nineteen current migrations + ACLs, late-grants transactional rollback, preserved 12-era data and legacy conversation, conservative source backfill, empty pending-email schema and unbound phone policy, restricted runtime roles; closed checkout, no production authorization, deploy or provider calls",
   );
 }
