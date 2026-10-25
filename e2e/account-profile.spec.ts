@@ -293,6 +293,9 @@ test("explicit email code handles wrong code, resend cooldown and confirmation a
     name: /Отправить повторно через/,
   });
   await expect(resend).toBeDisabled();
+  await panel(page).screenshot({
+    path: info.outputPath("account-profile-email-code.png"),
+  });
   await panel(page).getByLabel("Код из письма", { exact: true }).fill("000000");
   await panel(page)
     .getByRole("button", { name: "Подтвердить email", exact: true })
@@ -313,6 +316,9 @@ test("explicit email code handles wrong code, resend cooldown and confirmation a
     .getByRole("button", { name: "Подтвердить email", exact: true })
     .click();
   await expect(panel(page)).toContainText("Email подтверждён");
+  await expect(
+    panel(page).getByRole("status").filter({ hasText: "Email подтверждён" }),
+  ).toHaveCount(1);
   await expect(
     panel(page).getByLabel("Код из письма", { exact: true }),
   ).toHaveCount(0);
@@ -408,10 +414,8 @@ test("profile read failure is retryable and consent/access denial closes private
     .click();
   await expect(panel(page)).toContainText("legacy@example.test");
   state.profileFailure = 403;
-  await page.getByRole("button", { name: "Диалоги", exact: true }).click();
-  await page
-    .getByRole("navigation", { name: "Личный кабинет CityGo" })
-    .getByRole("button", { name: "Профиль", exact: true })
+  await panel(page)
+    .getByRole("button", { name: "Обновить статус профиля", exact: true })
     .click();
   await expect(panel(page)).toHaveCount(0);
   await expect(

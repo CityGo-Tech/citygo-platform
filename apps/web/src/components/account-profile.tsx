@@ -150,6 +150,7 @@ export function AccountProfile({
               {profile.email ?? "Почта не указана"}
             </p>
             <p
+              role={profile.emailVerified ? "status" : undefined}
               className={
                 profile.emailVerified
                   ? "account-profile-confirmed"
@@ -255,10 +256,13 @@ export function AccountProfile({
             {state.error}
           </p>
         )}
-        {state?.notice && <p role="status">{state.notice}</p>}
+        {state?.notice && !profile?.emailVerified && (
+          <p role="status">{state.notice}</p>
+        )}
         {state && ["ready", "unavailable"].includes(state.phase) && (
           <Button
             variant="secondary"
+            className="account-profile-refresh"
             disabled={disabled || !!state.busy}
             onClick={() => void resource.current?.load()}
           >

@@ -36,6 +36,10 @@
 .account-profile-confirmation .account-profile-actions {
   margin: var(--cg-space-md) 0 var(--cg-space-sm);
 }
+.account-profile .account-profile-refresh {
+  display: block;
+  margin-top: var(--cg-space-sm);
+}
 .account-profile-error {
   color: var(--cg-color-danger);
 }
