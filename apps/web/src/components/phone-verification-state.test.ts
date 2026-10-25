@@ -148,6 +148,7 @@ test("disabled, unavailable, email-required and prior gift policies cannot send 
     ["unavailable", "unavailable", "unavailable"],
     ["required", "email_required", "email-required"],
     ["required", "granted", "already-granted"],
+    ["required", "phone_bound", "phone-bound"],
     ["required", "unavailable", "unavailable"],
   ] as const) {
     const s = setup();
@@ -165,6 +166,75 @@ test("disabled, unavailable, email-required and prior gift policies cannot send 
     assert.equal(s.granted(), 0);
     s.resource.dispose();
   }
+});
+
+test("active phone binding without an own gift is read-only and never emits a grant callback", async () => {
+  const s = setup();
+  s.client.phoneVerificationPolicy = async () => ({
+    phoneVerification: "required",
+    giftStatus: "phone_bound",
+    deliveryProvider: "prosto_sms",
+    giftAmountMicros: 500_000_000,
+  });
+  await s.resource.load();
+  assert.equal(s.last().phase, "phone-bound");
+  assert.equal(s.last().receipt, null);
+  assert.equal(s.last().challenge, null);
+  await s.resource.start(phone, true);
+  await s.resource.resend(true);
+  await s.resource.confirm("012345");
+  s.resource.reset();
+  await s.resource.load();
+  assert.equal(s.last().phase, "phone-bound");
+  assert.deepEqual(s.calls, []);
+  assert.equal(s.granted(), 0);
+  const projection = JSON.stringify(s.states);
+  for (const secret of [phone, challenge.challengeId, challenge.proof])
+    assert.equal(projection.includes(secret), false);
+  s.resource.dispose();
+});
+
+test("a newly attached contact discards an old pending capability before refresh, resend or confirm", async () => {
+  for (const action of ["load", "resend", "confirm"] as const) {
+    const s = setup();
+    await s.resource.load();
+    await s.resource.start(phone, true);
+    s.client.phoneVerificationPolicy = async () => ({
+      phoneVerification: "required",
+      giftStatus: "phone_bound",
+      deliveryProvider: "prosto_sms",
+      giftAmountMicros: 500_000_000,
+    });
+    s.advance();
+    if (action === "load") await s.resource.load();
+    else if (action === "resend") await s.resource.resend(true);
+    else await s.resource.confirm("012345");
+    assert.equal(s.last().phase, "phone-bound");
+    assert.equal(s.last().error, "");
+    assert.equal(s.last().challenge, null);
+    assert.equal(s.last().receipt, null);
+    await s.resource.confirm("012345");
+    assert.equal(s.calls.length, 1);
+    assert.equal(s.calls[0]?.[0], "start");
+    assert.equal(s.granted(), 0);
+    s.resource.dispose();
+  }
+});
+
+test("binding discovered before explicit send performs no SMS or financial acknowledgement", async () => {
+  const s = setup();
+  await s.resource.load();
+  s.client.phoneVerificationPolicy = async () => ({
+    phoneVerification: "required",
+    giftStatus: "phone_bound",
+    deliveryProvider: "prosto_sms",
+    giftAmountMicros: 500_000_000,
+  });
+  await s.resource.start(phone, true);
+  assert.equal(s.last().phase, "phone-bound");
+  assert.equal(s.last().busy, false);
+  assert.deepEqual(s.calls, []);
+  assert.equal(s.granted(), 0);
 });
 
 test("resend needs an explicit action after cooldown and preserves the private challenge", async () => {

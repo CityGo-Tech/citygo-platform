@@ -31,6 +31,12 @@ export {
 } from "./email-registration.js";
 export { AiCreditLedger } from "./ai-credit.js";
 export {
+  PhoneContacts,
+  createPhoneContactBinding,
+  type PhoneContactChangeInput,
+  type PhoneContactChangeReceipt,
+} from "./phone-contacts.js";
+export {
   PhoneVerification,
   configurePhoneVerification,
   type PhoneVerificationPolicy,

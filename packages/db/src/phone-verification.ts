@@ -7,6 +7,10 @@ import {
 } from "@citygo/contracts";
 import type { Database, Sql } from "./index.js";
 import { DomainError } from "./errors.js";
+import {
+  activePhoneContact,
+  createPhoneContactBinding,
+} from "./phone-contacts.js";
 
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
 const count = z.number().int().min(0).max(1_000_000);
@@ -168,13 +172,16 @@ export class PhoneVerification {
         [ctx.userId],
       );
       const alreadyGranted = granted.rows.length > 0;
+      const contact = await activePhoneContact(tx, ctx.userId);
       return {
         alreadyGranted,
         giftStatus: alreadyGranted
           ? ("granted" as const)
-          : ctx.emailVerified
-            ? ("eligible" as const)
-            : ("email_required" as const),
+          : contact
+            ? ("phone_bound" as const)
+            : ctx.emailVerified
+              ? ("eligible" as const)
+              : ("email_required" as const),
       };
     });
   }
@@ -232,7 +239,8 @@ export class PhoneVerification {
       (
         await tx.query(
           `select 1 from ai_credit_entries where user_id=$1 and kind='bonus'
-      union all select 1 from phone_welcome_claims where user_id=$1 or phone_key=$2`,
+      union all select 1 from phone_welcome_claims where user_id=$1 or phone_key=$2
+      union all select 1 from phone_contact_bindings where unlinked_at is null and (user_id=$1 or phone_key=$2)`,
           [userId, phoneKey],
         )
       ).rows.length
@@ -466,6 +474,16 @@ export class PhoneVerification {
         ).rows[0];
         if (!claim)
           throw new DomainError(503, "Подтверждение подарка требует сверки");
+        const contact = await activePhoneContact(tx, ctx.userId);
+        if (
+          !contact ||
+          contact.sourceChallengeId !== input.id ||
+          contact.phoneKey !== input.phoneKey
+        )
+          throw new DomainError(
+            409,
+            "Привязка телефона изменилась. Код больше не может её восстановить",
+          );
         return {
           receipt: {
             operationId: claim.operation_id,
@@ -528,6 +546,12 @@ export class PhoneVerification {
           AI_WELCOME_CREDIT_MICROS,
         ],
       );
+      await createPhoneContactBinding(tx, {
+        userId: ctx.userId,
+        phoneKey: input.phoneKey,
+        sourceChallengeId: input.id,
+        sourceClaimOperationId: operationId,
+      });
       await tx.query(
         `insert into audit_log(actor_user_id,action,entity_type,entity_id,payload)
         values($1,'ai-credit-phone-welcome-granted','ai-credit',$2,$3::jsonb)`,

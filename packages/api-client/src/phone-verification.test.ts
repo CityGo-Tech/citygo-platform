@@ -23,6 +23,33 @@ const policy = {
   giftAmountMicros: 500_000_000,
   giftStatus: "eligible",
 };
+
+test("phone-bound policy is returned by an authenticated GET without a gift receipt or follow-up command", async () => {
+  const requests: {
+    path: string;
+    method: string;
+    body: BodyInit | null | undefined;
+  }[] = [];
+  const bound = { ...policy, giftStatus: "phone_bound" };
+  const client = createClient("http://synthetic", {
+    fetch: async (url, init) => {
+      requests.push({
+        path: String(url),
+        method: init?.method ?? "GET",
+        body: init?.body,
+      });
+      return Response.json(bound);
+    },
+  });
+  assert.deepEqual(await client.phoneVerificationPolicy(), bound);
+  assert.deepEqual(requests, [
+    {
+      path: "http://synthetic/v1/phone-verification/policy",
+      method: "GET",
+      body: undefined,
+    },
+  ]);
+});
 const errorCode = (code: string) => (error: unknown) =>
   error instanceof ApiError && error.code === code;
 function deferred<T>() {

@@ -41,7 +41,7 @@ async function fixture(t: TestContext) {
   await migrate(db);
   assert.equal(
     (await db.query("select name from citygo_migrations")).rows.length,
-    31,
+    32,
   );
   const initial = (
     await db.query<{ owner: string; elevated: boolean; api: boolean }>(

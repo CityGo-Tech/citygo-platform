@@ -39,6 +39,7 @@ export const phoneVerificationPolicySchema = z
       "email_required",
       "eligible",
       "granted",
+      "phone_bound",
     ]),
   })
   .refine(

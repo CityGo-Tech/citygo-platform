@@ -48,6 +48,8 @@ const retained = [
   "phone_verification_challenges",
   "phone_verification_sends",
   "phone_welcome_claims",
+  "phone_contact_bindings",
+  "phone_contact_changes",
   "password_recovery_challenges",
   "account_email_confirmation_challenges",
   "account_email_verifications",
@@ -155,6 +157,8 @@ export class AccountReset {
         "phone_verification_challenges",
         "phone_verification_sends",
         "phone_welcome_claims",
+        "phone_contact_bindings",
+        "phone_contact_changes",
         "password_recovery_challenges",
         "account_email_confirmation_challenges",
         "account_email_verifications",
@@ -196,6 +200,13 @@ export class AccountReset {
         blockers.push({
           code: "ACCOUNT_EMAIL_CONFIRMATION_HISTORY_REQUIRES_REVIEW",
           count: counts.account_email_confirmation_challenges,
+        });
+      const phoneContactHistoryCount =
+        counts.phone_contact_bindings! + counts.phone_contact_changes!;
+      if (phoneContactHistoryCount)
+        blockers.push({
+          code: "PHONE_CONTACT_HISTORY_REQUIRES_REVIEW",
+          count: phoneContactHistoryCount,
         });
       const admissionHistoryCount =
         counts.payment_admission_commands! +

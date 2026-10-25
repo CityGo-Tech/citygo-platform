@@ -80,6 +80,13 @@ grant update (title,details,status,revision,updated_at,deleted_at)
 -- Phone identity policy is operator-bound, never writable/bindable by API.
 -- Quotas and spent gift rights are retained append-only; Worker gets no access.
 grant select on phone_verification_control to citygo_api;
+-- Runtime can attach only a freshly proven phone_code contact. Operator
+-- transfers, terminal unlink and their authority receipts have no API grants.
+grant select on phone_contact_bindings to citygo_api;
+grant insert(id,user_id,phone_key,proof_user_id,source_challenge_id,
+  source_claim_operation_id,policy_fingerprint,bind_operation_id)
+  on phone_contact_bindings to citygo_api;
+
 grant select,insert on phone_verification_challenges,phone_verification_sends,phone_welcome_claims to citygo_api;
 grant update (code_hash,delivery,attempts,expires_at,superseded_at,consumed_at,consumed_operation_id)
   on phone_verification_challenges to citygo_api;
