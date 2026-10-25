@@ -77,45 +77,48 @@ test("six-character registration → conversation without questionnaire → save
   await expect(
     page.getByRole("button", { name: "Отправить", exact: true }),
   ).toBeDisabled();
-  const approve = page.getByRole("button", {
-    name: "Продолжить",
-  });
-  await expect(approve).toBeDisabled();
-  await page
-    .getByRole("checkbox", {
-      name: "Согласен на обработку сообщений для ответов помощника.",
-    })
-    .check();
-  await approve.click();
-  await expect(
-    page.getByText("Настройки обработки сообщений", { exact: true }),
-  ).toBeVisible();
+  await expect(page.locator(".conversation-main > .ai-access")).toHaveCount(0);
   const message =
     "Хочу переехать в Москву, но пока не знаю бюджет и дату. С чего начать?";
   await page.getByLabel("Сообщение помощнику").fill(message);
   await page.getByRole("button", { name: "Отправить", exact: true }).click();
+  await page
+    .getByRole("dialog", { name: "Обработка сообщений", exact: true })
+    .getByRole("button", { name: "Разрешить и отправить", exact: true })
+    .click();
   // TestProvider is an in-process deterministic fixture, not a paid/live model.
   await expect(page.getByRole("log")).toContainText(
     "Тестовый ответ. Уточните район",
   );
   await expect(page.getByRole("log")).toContainText(message);
   await expectNoInventedPlan(page);
-  await page
-    .getByText("Настройки обработки сообщений", { exact: true })
+  await page.getByRole("button", { name: "Согласия", exact: true }).click();
+  const settings = page.getByRole("region", {
+    name: "Обработка сообщений",
+    exact: true,
+  });
+  await settings
+    .getByText("Условия обработки сообщений", { exact: true })
     .click();
-  await expect(page.locator(".ai-access:visible")).toContainText(
-    "Обработку выполняет OpenAI.",
-  );
-  await page.getByRole("button", { name: "Отозвать согласие" }).click();
-  await expect(page.getByRole("button", { name: "Продолжить" })).toBeDisabled();
+  await expect(settings).toContainText("Обработку выполняет OpenAI.");
+  await settings
+    .getByRole("button", {
+      name: "Отозвать согласие на обработку сообщений",
+      exact: true,
+    })
+    .click();
+  await expect(
+    settings.getByRole("button", {
+      name: "Отозвать согласие на обработку сообщений",
+      exact: true,
+    }),
+  ).toHaveCount(0);
   await page.reload();
   await expect(page.getByRole("log")).toContainText(
     "Тестовый ответ. Уточните район",
   );
   await expect(page.getByRole("log")).toContainText(message);
-  await expect(
-    page.getByRole("button", { name: "Отправить", exact: true }),
-  ).toBeDisabled();
+  await expect(page.getByLabel("Сообщение помощнику")).toBeEnabled();
   await expectNoInventedPlan(page);
   expect(questionnaireWrites).toEqual([]);
   expect(
@@ -136,18 +139,17 @@ test("six consecutive synthetic replies preserve numeric chat order and the last
   await page
     .getByRole("button", { name: "Начать диалог", exact: true })
     .click();
-  await page
-    .getByRole("checkbox", {
-      name: "Согласен на обработку сообщений для ответов помощника.",
-    })
-    .check();
-  await page.getByRole("button", { name: "Продолжить" }).click();
   const questions: string[] = [];
   for (let turn = 1; turn <= 6; turn++) {
     const question = `Вымышленный вопрос ${turn}: помоги подготовить переезд`;
     questions.push(question);
     await page.getByLabel("Сообщение помощнику").fill(question);
     await page.getByRole("button", { name: "Отправить", exact: true }).click();
+    if (turn === 1)
+      await page
+        .getByRole("dialog", { name: "Обработка сообщений", exact: true })
+        .getByRole("button", { name: "Разрешить и отправить", exact: true })
+        .click();
     await expect(page.getByLabel("Сообщение помощнику")).toBeEnabled();
     await expect(page.getByLabel("Сообщение помощнику")).toHaveValue("");
     await expect(page.getByRole("log").locator("article")).toHaveCount(

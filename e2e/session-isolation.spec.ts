@@ -129,18 +129,23 @@ test("changed user ID clears a no-profile dialog draft and unconfirmed AI permis
   await expect(page.getByLabel("Сообщение помощнику")).toHaveValue(
     "Черновик без анкеты пользователя A",
   );
-  const consent = page.getByRole("checkbox", {
-    name: "Согласен на обработку сообщений для ответов помощника.",
+  await page.getByRole("button", { name: "Отправить", exact: true }).click();
+  const consent = page.getByRole("dialog", {
+    name: "Обработка сообщений",
+    exact: true,
   });
-  await consent.check();
+  await expect(consent).toBeVisible();
   state.board = fixture("B", false);
   state.board.aiAccess.granted = false;
   const changedOwner = page.waitForResponse("**/api/v1/dashboard");
   await page.evaluate(() => window.dispatchEvent(new Event("focus")));
   await changedOwner;
   await expect(page.getByLabel("Сообщение помощнику")).toHaveValue("");
-  await expect(consent).not.toBeChecked();
-  await expect(page.getByRole("button", { name: "Продолжить" })).toBeDisabled();
+  await expect(consent).toHaveCount(0);
+  await expect(page.getByLabel("Сообщение помощнику")).toBeEnabled();
+  await expect(
+    page.getByRole("button", { name: "Отправить", exact: true }),
+  ).toBeDisabled();
   await expect(page.getByLabel("Откуда переезжаете")).toHaveCount(0);
   await expect(page.locator(".account")).toContainText("0 XP");
   expect(questionnaireWrites).toEqual([]);
