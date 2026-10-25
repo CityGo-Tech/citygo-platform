@@ -24,6 +24,7 @@ import {
   type PlanMessageSource,
 } from "./personal-plan";
 import planStyles from "./personal-plan.module.css";
+import { accountStyles } from "./account-overview";
 
 const topics = [
   ["Понять и спланировать", "Не понимаю, с чего начать переезд в Москву."],
@@ -234,7 +235,26 @@ export function ConversationHome(props: JourneyProps) {
         <Card>
           <h1>Личный кабинет</h1>
           <p>{board.user.username ?? board.user.email}</p>
-          <p>Роль: {board.user.role ?? "user"}</p>
+          <div className={accountStyles.profileCard}>
+            <span className={accountStyles.eyebrow}>БАЛАНС CITYGO</span>
+            <h2>Баланс и пополнение</h2>
+            <p>Пополнение и история операций.</p>
+            <Button disabled={busy || sending} onClick={props.onBalance}>
+              Баланс и пополнение
+            </Button>
+          </div>
+          <div className={accountStyles.profileCard}>
+            <span className={accountStyles.eyebrow}>КОНТАКТЫ АККАУНТА</span>
+            <h2>Телефон и подарок</h2>
+            <p>Подтвердите телефон и получите 500 ₽ CityGo.</p>
+            <Button
+              variant="secondary"
+              disabled={busy || sending}
+              onClick={props.onPhone}
+            >
+              Телефон и подарок
+            </Button>
+          </div>
           <Button variant="secondary" onClick={props.onFavorites}>
             Избранные сообщения
           </Button>
@@ -377,7 +397,10 @@ export function ConversationHome(props: JourneyProps) {
                 </p>
               ) : (
                 <form onSubmit={props.onChat}>
-                  <EmptyAiCreditHint access={board.aiAccess} />
+                  <EmptyAiCreditHint
+                    access={board.aiAccess}
+                    onBalance={props.onBalance}
+                  />
                   <label htmlFor="conversation-message">
                     Сообщение помощнику
                   </label>
@@ -413,6 +436,7 @@ export function ConversationHome(props: JourneyProps) {
                 onConsent={props.onConsent}
                 userId={board.user.id}
                 topups={props.topups}
+                onBalance={props.onBalance}
               />
             )}
           </div>

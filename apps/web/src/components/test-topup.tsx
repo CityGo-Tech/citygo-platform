@@ -7,7 +7,7 @@ import {
   type CreateTopupInput,
   type TopupOrder,
 } from "@citygo/contracts";
-import { Button } from "@citygo/ui-web";
+import { Button, Field } from "@citygo/ui-web";
 import {
   parsePaymentAttempt,
   paymentAmountKopeks,
@@ -24,12 +24,11 @@ export type TopupActions = {
 };
 
 const statusLabels: Record<TopupOrder["status"], string> = {
-  creating: "Платёж создаётся. Повторите проверку позже.",
-  pending: "Ожидается оплата.",
-  succeeded: "ЮKassa подтвердила оплату.",
+  creating: "Платёж создаётся…",
+  pending: "Ожидаем оплату.",
+  succeeded: "Оплата подтверждена.",
   canceled: "Платёж отменён.",
-  review_required:
-    "Нужна проверка владельцем сервиса. Новый платёж пока не создавайте.",
+  review_required: "Нужна проверка платежа. Не оплачивайте повторно.",
 };
 
 /** Explicit server-selected mode, never a return-URL settlement handler. */
@@ -88,13 +87,13 @@ export function TestTopupPanel({
           .catch(() => {
             if (active && loadedRevision === revision.current)
               setError(
-                "Не удалось загрузить платёж. Проверьте его состояние кнопкой ниже.",
+                "Не удалось загрузить платёж. Попробуйте проверить его ещё раз.",
               );
           });
       }
     } catch {
       setError(
-        "Не удалось безопасно восстановить платёж. Не создавайте повторный платёж: обратитесь к владельцу сервиса. Для нового платежа требуется доступное хранилище вкладки.",
+        "Не удалось восстановить платёж. Не оплачивайте повторно — обратитесь в поддержку.",
       );
     }
     return () => {
@@ -115,7 +114,7 @@ export function TestTopupPanel({
       await action();
     } catch {
       setError(
-        "Не удалось подтвердить результат. Повторите проверку; при повторе создания используется прежний ID, новый платёж автоматически не создаётся.",
+        "Не удалось проверить платёж. Попробуйте ещё раз. Если деньги уже списаны, не оплачивайте повторно.",
       );
     } finally {
       inFlight.current = false;
@@ -144,9 +143,7 @@ export function TestTopupPanel({
       },
     );
     if (!parsed.success) {
-      setError(
-        "Укажите действующий email покупателя для отправки чека ЮKassa.",
-      );
+      setError("Укажите email для чека.");
       return;
     }
     // Keep the browser's user activation: allocate the safe blank tab before
@@ -155,8 +152,8 @@ export function TestTopupPanel({
     pendingPopup.current = popup;
     setPopupNotice(
       popup.opened
-        ? "Готовим оплату в отдельной вкладке…"
-        : "Браузер не открыл отдельную вкладку. После создания платежа нажмите кнопку оплаты ниже.",
+        ? "Открываем страницу оплаты…"
+        : "Не удалось открыть вкладку. Нажмите «Перейти к оплате» ниже.",
     );
     void work(async () => {
       try {
@@ -178,9 +175,9 @@ export function TestTopupPanel({
         setPopupNotice(
           value.status === "pending" && value.confirmationUrl
             ? opened
-              ? "Оплата открыта в отдельной вкладке. Если вкладка не появилась, нажмите кнопку оплаты ниже."
-              : "Отдельная вкладка не открылась или была закрыта. Нажмите кнопку оплаты ниже — новый платёж не создаётся."
-            : "Платёж сейчас не ожидает оплаты. Вкладка закрыта; проверьте состояние платежа в CityGo.",
+              ? "Оплата открыта в новой вкладке."
+              : "Нажмите «Перейти к оплате», чтобы продолжить."
+            : "Проверьте статус платежа.",
         );
         if (value.credited) await actions.onCredited();
       } catch (error) {
@@ -216,58 +213,38 @@ export function TestTopupPanel({
   // existing order. Keep the saved identity and server verification available.
   if (!canCreate && !attempt) return error ? <p role="alert">{error}</p> : null;
   return (
-    <section aria-label="Пополнение баланса ЮKassa">
-      <h3>Пополнение баланса ЮKassa</h3>
-      <p>
-        Оплата 100 ₽ пополняет баланс на 100 ₽ CityGo. Создание платежа ещё не
-        списывает деньги и не подтверждает зачисление. Проверьте сумму и режим
-        ниже перед переходом на страницу ЮKassa.
-      </p>
+    <section className="citygo-topup" aria-label="Пополнение баланса">
+      <h3>Пополнение баланса</h3>
       {!canCreate && (
         <p role="status">
-          Приём новых платежей временно закрыт. Сохранённую попытку можно
-          проверить; новый платёж автоматически не создаётся.
+          Пополнение временно недоступно. Ранее созданный платёж можно
+          проверить.
         </p>
       )}
       {canCreate && (
         <form onSubmit={create}>
-          <label>
-            Сумма, ₽ CityGo{" "}
-            <input
-              aria-label="Сумма пополнения"
-              inputMode="decimal"
-              value={amount}
-              disabled={locked || !!attempt}
-              onChange={(event) => setAmount(event.target.value)}
+          <Field
+            label="Сумма пополнения"
+            hint="От 1 до 10 000 ₽"
+            inputMode="decimal"
+            value={amount}
+            disabled={locked || !!attempt}
+            onChange={(event) => setAmount(event.target.value)}
+          />
+          {!attempt && (
+            <Field
+              label="Email для чека"
+              hint="На этот адрес придёт чек."
+              type="email"
+              inputMode="email"
+              autoComplete="email"
+              required
+              maxLength={254}
+              value={receiptEmail}
+              disabled={locked}
+              onChange={(event) => setReceiptEmail(event.target.value)}
             />
-          </label>
-          {!attempt && (
-            <label>
-              Email покупателя для чека ЮKassa{" "}
-              <input
-                aria-label="Email для чека ЮKassa"
-                type="email"
-                inputMode="email"
-                autoComplete="email"
-                required
-                maxLength={254}
-                value={receiptEmail}
-                disabled={locked}
-                onChange={(event) => setReceiptEmail(event.target.value)}
-              />
-            </label>
           )}
-          {!attempt && (
-            <p>
-              Укажите свой действующий email: ЮKassa отправит чек на этот адрес.
-              Это не подтверждение владения email. В хранилище вкладки
-              сохраняются только ID попытки, сумма и ID созданного платежа.
-            </p>
-          )}
-          <p>
-            От 1 до 10 000 ₽. Оплата 100 ₽ соответствует 100 ₽ CityGo, не 1 000
-            ₽.
-          </p>
           {!attempt?.orderId && (!attempt || frozenCreate.current) && (
             <Button
               type="submit"
@@ -280,46 +257,34 @@ export function TestTopupPanel({
                     .success)
               }
             >
-              {attempt ? "Повторить создание с прежним ID" : "Создать платёж"}
+              {attempt ? "Продолжить оплату" : "Пополнить баланс"}
             </Button>
           )}
         </form>
       )}
-      {attempt && <p>ID попытки: {attempt.requestId}</p>}
       {popupNotice && <p role="status">{popupNotice}</p>}
       {attempt && !attempt.orderId && !frozenCreate.current && (
         <p>
-          Результат создания не подтверждён. Повторное создание сейчас
-          недоступно: исходный email для чека не хранится в браузере. Не
-          оплачивайте заново: сообщите владельцу сервиса ID сохранённой попытки
-          для проверки.
+          Платёж пока не подтверждён. Не оплачивайте повторно. Если статус не
+          обновляется, обратитесь в поддержку.
         </p>
       )}
       {order && (
         <div role="status">
-          <p>
-            {order.test
-              ? "Тестовый режим: настоящие деньги не списываются. Тестовый баланс не оплачивает реальные AI-запросы."
-              : "Боевой платёж: на странице ЮKassa будут списаны настоящие деньги."}
-          </p>
+          {order.test && <p>Тестовая оплата. Деньги не списываются.</p>}
           <p>{statusLabels[order.status]}</p>
           <p>
             {formatMoneyMicros(order.creditMicros)} ₽ CityGo ·{" "}
             {order.credited
-              ? "зачисление подтверждено сервером"
+              ? "зачислено на баланс"
               : "зачисление не подтверждено"}
           </p>
-          <p>ID платежа: {order.orderId}</p>
         </div>
       )}
       {order?.confirmationUrl && order.status === "pending" && (
         <div>
           {!canCreate && (
-            <p>
-              Ссылка относится к ранее созданному платежу. Перед продолжением
-              проверьте его состояние кнопкой «Проверить платёж» и не
-              оплачивайте повторно, если деньги уже списаны.
-            </p>
+            <p>Если деньги уже списаны, сначала проверьте платёж.</p>
           )}
           <p>
             <a
@@ -328,16 +293,14 @@ export function TestTopupPanel({
               target="_blank"
               rel="noopener noreferrer"
             >
-              {order.test
-                ? "Открыть тестовую оплату ЮKassa"
-                : "Перейти к оплате ЮKassa"}
+              {order.test ? "Открыть тестовую оплату" : "Перейти к оплате"}
             </a>
           </p>
         </div>
       )}
       {attempt && (
         <Button type="button" disabled={locked} onClick={check}>
-          {attempt.orderId ? "Проверить платёж" : "Найти сохранённый платёж"}
+          {attempt.orderId ? "Проверить платёж" : "Найти платёж"}
         </Button>
       )}
       {canCreate && terminal && (
@@ -356,18 +319,22 @@ export function TestTopupPanel({
               setError("");
             } catch {
               setError(
-                "Не удалось сбросить завершённую попытку. Новый платёж не создан.",
+                "Не удалось начать новое пополнение. Обновите страницу.",
               );
             }
           }}
         >
-          Новый платёж
+          Пополнить ещё
         </Button>
       )}
-      <p>
-        Возвращение со страницы оплаты не означает зачисление. Проверка
-        выполняется сервером по данным ЮKassa.
-      </p>
+      {attempt && !terminal && <p>После оплаты нажмите «Проверить платёж».</p>}
+      {attempt && (
+        <details>
+          <summary>Данные для поддержки</summary>
+          <p>Номер обращения: {attempt.requestId}</p>
+          {order && <p>Номер платежа: {order.orderId}</p>}
+        </details>
+      )}
       {error && <p role="alert">{error}</p>}
     </section>
   );

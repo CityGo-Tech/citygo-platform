@@ -36,17 +36,16 @@ function render(access: AiAccess) {
     }),
   ).replace(/<!--.*?-->/g, "");
 }
-test("balance panel displays signed availability, separate debt and the full-cost warning", () => {
+test("balance panel displays exact signed availability and actual debt without internal pricing", () => {
   const html = render(balance(-8_000_001, 3_000_001));
-  assert.match(html, /Доступно: -8\.000001 ₽/);
+  assert.match(html, /class="balance-amount">-8\.000001 ₽ CityGo/);
   assert.match(html, /Задолженность: 3\.000001 ₽ CityGo/);
-  assert.match(html, /резервируется 5 ₽ CityGo/);
-  assert.match(html, /Это не итоговая цена/);
-  assert.match(html, /стоимость модели ×10/);
-  assert.match(html, /баланс станет отрицательным/);
-  assert.match(html, /пополнение сначала погашает задолженность/);
-  assert.match(html, /Оплата 100 ₽ пополняет баланс на 100 ₽ CityGo/);
-  assert.doesNotMatch(html, /резервируется верхняя оценка/);
+  assert.match(html, /Пополнение сначала погасит её/);
+  assert.match(html, /баланс может стать отрицательным/);
+  assert.doesNotMatch(
+    html,
+    /резерв|×10|стоимость модели|RouterAI|DeepSeek|ЮKassa|ProstoSMS/i,
+  );
 });
 test("balance panel never invents outstanding debt from negative availability or reprices legacy mode", () => {
   const access = balance(-5_000_000);
@@ -61,7 +60,66 @@ test("balance panel never invents outstanding debt from negative availability or
     },
   };
   const html = render(legacy);
-  assert.match(html, /Доступно: -5 ₽/);
-  assert.match(html, /резервируется верхняя оценка/);
-  assert.doesNotMatch(html, /резервируется 5 ₽/);
+  assert.match(html, /class="balance-amount">-5 ₽ CityGo/);
+  assert.doesNotMatch(html, /Задолженность:|резерв|×10|стоимость модели/i);
+});
+
+test("dedicated wallet has no AI-consent mutations or stale SMS availability claim", () => {
+  const html = renderToStaticMarkup(
+    createElement(AiAccessPanel, {
+      access: balance(0),
+      busy: false,
+      balanceOnly: true,
+      onPhone() {},
+      onConsent() {},
+    }),
+  );
+  assert.match(html, /id="citygo-balance"/);
+  assert.match(html, /Получить подарок 500 ₽/);
+  assert.doesNotMatch(
+    html,
+    /<h2|резерв|×10|RouterAI|DeepSeek|ЮKassa|ProstoSMS/i,
+  );
+  assert.doesNotMatch(
+    html,
+    /Подтверждение пока не подключено|Отозвать согласие|Условия обработки сообщений/,
+  );
+});
+
+test("chat with account navigation has no second wallet or payment form", () => {
+  const html = renderToStaticMarkup(
+    createElement(AiAccessPanel, {
+      access: balance(0),
+      busy: false,
+      onBalance() {},
+      onConsent() {},
+    }),
+  );
+  assert.match(html, /Баланс и пополнение/);
+  assert.doesNotMatch(html, /id="citygo-balance"|Сумма пополнения/);
+  assert.match(
+    html,
+    /<details><summary>Настройки обработки сообщений<\/summary>/,
+  );
+  assert.match(html, /Отозвать согласие/);
+});
+
+test("wallet history keeps customer operations and hides temporary holds and releases", () => {
+  const access = balance(12_345_678);
+  access.credit!.history = ["bonus", "topup", "settle", "hold", "release"].map(
+    (kind, index) => ({
+      id: `synthetic-operation-${index}`,
+      kind: kind as "bonus" | "topup" | "settle" | "hold" | "release",
+      amountMicros: 1_000_000 + index,
+      createdAt: "2026-10-25T10:00:00.000Z",
+    }),
+  );
+  const html = render(access);
+  assert.match(html, /Подарок: 1 ₽/);
+  assert.match(html, /Пополнение: 1\.000001 ₽/);
+  assert.match(html, /Общение с помощником: 1\.000002 ₽/);
+  assert.doesNotMatch(
+    html,
+    /1\.000003|1\.000004|synthetic-operation|hold|release/,
+  );
 });

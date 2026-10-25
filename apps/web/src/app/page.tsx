@@ -22,6 +22,9 @@ import { MessageFavoritesPanel } from "../components/message-favorites";
 import { EmailRegistration } from "../components/email-registration";
 import { PasswordRecovery } from "../components/password-recovery";
 import { PhoneVerificationPanel } from "../components/phone-verification";
+import { AccountOverview, accountStyles } from "../components/account-overview";
+import { AiAccessPanel } from "../components/ai-access";
+import { chatBalanceTarget } from "../components/chat-readiness";
 import { useConversationHistory } from "../components/use-conversation-history";
 import {
   pendingEmailRegistration,
@@ -62,6 +65,7 @@ export default function Home() {
   const [receiptsOpen, setReceiptsOpen] = useState(false);
   const [favoritesOpen, setFavoritesOpen] = useState(false);
   const [phoneOpen, setPhoneOpen] = useState(false);
+  const [balanceOpen, setBalanceOpen] = useState(false);
   const [conversationView, setConversationView] = useState(false);
   const [text, setText] = useState("");
   const [draft, setDraft] = useState("");
@@ -121,6 +125,7 @@ export default function Home() {
     setReceiptsOpen(false);
     setFavoritesOpen(false);
     setPhoneOpen(false);
+    setBalanceOpen(false);
     setConversationView(false);
     selectedConversation.current = null;
     visibleThread.current = null;
@@ -474,7 +479,7 @@ export default function Home() {
       if (ticket.active()) {
         setLogoutUnconfirmed(true);
         setError(
-          "Локальные данные очищены. Не удалось подтвердить выход на сервере. Повторите выход перед использованием устройства другим человеком.",
+          "Не удалось завершить выход. Повторите попытку перед передачей устройства другому человеку.",
         );
       }
     } finally {
@@ -605,6 +610,41 @@ export default function Home() {
     },
   };
   const authViewSignal = session.capture().signal;
+  function openBalance() {
+    setPhoneOpen(false);
+    setReceiptsOpen(false);
+    setFavoritesOpen(false);
+    setBalanceOpen(true);
+  }
+  function openPhone() {
+    setBalanceOpen(false);
+    setFavoritesOpen(false);
+    setReceiptsOpen(false);
+    setPhoneOpen(true);
+  }
+  function returnToApp() {
+    setBalanceOpen(false);
+    setPhoneOpen(false);
+    requestAnimationFrame(() =>
+      document
+        .querySelector<HTMLButtonElement>("#citygo-account-overview button")
+        ?.focus(),
+    );
+  }
+  useEffect(() => {
+    if (!phoneOpen) return;
+    const target = document.getElementById("phone-gift-heading");
+    target?.scrollIntoView({ block: "start" });
+    target?.focus({ preventScroll: true });
+  }, [phoneOpen]);
+  useEffect(() => {
+    if (!balanceOpen) return;
+    const target =
+      document.getElementById(chatBalanceTarget) ??
+      document.getElementById("citygo-wallet-view");
+    target?.scrollIntoView({ block: "start" });
+    target?.focus({ preventScroll: true });
+  }, [balanceOpen]);
   return (
     <div
       className={
@@ -634,6 +674,7 @@ export default function Home() {
                   onClick={() => {
                     setConversationView(true);
                     setPhoneOpen(false);
+                    setBalanceOpen(false);
                     setFavoritesOpen(false);
                     setReceiptsOpen(false);
                   }}
@@ -648,6 +689,7 @@ export default function Home() {
                 onClick={() => {
                   setReceiptsOpen(false);
                   setPhoneOpen(false);
+                  setBalanceOpen(false);
                   setFavoritesOpen(true);
                 }}
               >
@@ -661,23 +703,11 @@ export default function Home() {
                 onClick={() => {
                   setFavoritesOpen(false);
                   setPhoneOpen(false);
+                  setBalanceOpen(false);
                   setReceiptsOpen(true);
                 }}
               >
                 Мои чеки
-              </Button>
-            )}
-            {!board.user.mustChangePassword && !passwordOpen && (
-              <Button
-                variant="ghost"
-                disabled={busy || sending}
-                onClick={() => {
-                  setFavoritesOpen(false);
-                  setReceiptsOpen(false);
-                  setPhoneOpen(true);
-                }}
-              >
-                Подарок 500 ₽
               </Button>
             )}
             <Button variant="ghost" onClick={() => setPasswordOpen(true)}>
@@ -716,7 +746,7 @@ export default function Home() {
         )}
         {logoutUnconfirmed && (
           <Button disabled={busy} onClick={() => void logout()}>
-            Повторить выход на сервере
+            Повторить выход
           </Button>
         )}
         {loading ? (
@@ -894,6 +924,42 @@ export default function Home() {
           </Card>
         ) : (
           <>
+            <AccountOverview
+              access={board.aiAccess}
+              disabled={busy || sending}
+              onBalance={openBalance}
+              onPhone={openPhone}
+            />
+            <section
+              id="citygo-wallet-view"
+              tabIndex={-1}
+              className={accountStyles.page}
+              hidden={!balanceOpen}
+              aria-label="Баланс и пополнение"
+            >
+              <span className={accountStyles.eyebrow}>
+                ЛИЧНЫЙ КАБИНЕТ · CITYGO
+              </span>
+              <h1>Баланс и пополнение</h1>
+              <Button variant="secondary" onClick={returnToApp}>
+                Вернуться в приложение
+              </Button>
+              <AiAccessPanel
+                key={board.user.id + ":balance:" + formVersion}
+                access={board.aiAccess}
+                userId={board.user.id}
+                busy={busy || sending}
+                topups={topups}
+                balanceOnly
+                onPhone={openPhone}
+                onConsent={() => {}}
+              />
+              {!board.aiAccess.credit && (
+                <p role="status">
+                  Не удалось загрузить баланс. Обновите страницу.
+                </p>
+              )}
+            </section>
             {phoneOpen ? (
               <PhoneVerificationPanel
                 key={board.user.id + ":phone:" + formVersion}
@@ -903,7 +969,7 @@ export default function Home() {
                 onGranted={() =>
                   void refresh(session.capture()).catch(() => {})
                 }
-                onClose={() => setPhoneOpen(false)}
+                onClose={returnToApp}
               />
             ) : favoritesOpen ? (
               <MessageFavoritesPanel
@@ -931,7 +997,11 @@ export default function Home() {
                   onAccessDenied={requireLogin}
                 />
               </section>
-            ) : (
+            ) : null}
+            <div
+              className={accountStyles.experience}
+              hidden={balanceOpen || phoneOpen || favoritesOpen || receiptsOpen}
+            >
               <Experience
                 key={board.user.id}
                 board={history.board ?? board}
@@ -953,6 +1023,8 @@ export default function Home() {
                 onChat={chat}
                 onStop={() => abort.current?.abort()}
                 onPassword={() => setPasswordOpen(true)}
+                onBalance={openBalance}
+                onPhone={openPhone}
                 onFavorites={() => setFavoritesOpen(true)}
                 onFavorite={(messageId, saved) =>
                   void act(async (ticket) => {
@@ -1007,13 +1079,13 @@ export default function Home() {
                   })
                 }
               />
-            )}
+            </div>
           </>
         )}
       </main>
       <footer>
         CityGo · Место для вашего нового начала{" "}
-        <span>Web · AI-помощники по переезду</span>
+        <span>Помощники по переезду</span>
       </footer>
     </div>
   );

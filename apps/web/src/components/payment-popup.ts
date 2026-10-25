@@ -40,10 +40,9 @@ export function openPaymentPopup(
     policy.content = "no-referrer";
     document.head.append(policy);
     const heading = document.createElement("h1");
-    heading.textContent = "Готовим страницу оплаты ЮKassa";
+    heading.textContent = "Готовим страницу оплаты";
     const message = document.createElement("p");
-    message.textContent =
-      "Пожалуйста, подождите. Если платёж не удалось создать, эта вкладка закроется. Состояние платежа можно проверить в CityGo.";
+    message.textContent = "Пожалуйста, подождите…";
     document.body.replaceChildren(heading, message);
   } catch {
     close();

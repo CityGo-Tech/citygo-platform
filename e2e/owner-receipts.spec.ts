@@ -116,7 +116,7 @@ async function fixture(page: Page, userId = "1") {
   return state;
 }
 const panel = (page: Page) =>
-  page.getByRole("region", { name: "Мои НПД-чеки", exact: true });
+  page.getByRole("region", { name: "Мои чеки", exact: true });
 const open = (page: Page) =>
   page.getByRole("button", { name: "Мои чеки", exact: true });
 
@@ -128,22 +128,25 @@ test("receipts are requested only after explicit open, show the owner's actual10
   await expect(panel(page)).toHaveCount(0);
   await open(page).click();
   await expect(
-    panel(page).getByText(`Платёж: ${receipt.paymentId}`, { exact: true }),
+    panel(page).getByText(`Номер оплаты: ${receipt.paymentId}`, {
+      exact: true,
+    }),
+  ).not.toBeVisible();
+  await panel(page).getByText("Данные для поддержки", { exact: true }).click();
+  await expect(
+    panel(page).getByText(`Номер оплаты: ${receipt.paymentId}`, {
+      exact: true,
+    }),
   ).toBeVisible();
   expect(state.reads).toBe(1);
   await expect(panel(page).locator("dl > dd").first()).toHaveText("100,00 ₽");
-  await expect(panel(page)).toContainText(
-    "Оплата 100 ₽ соответствует чеку на 100 ₽, без умножения на десять",
-  );
-  await expect(panel(page)).toContainText(
-    "Сверка оплаты сервером, не дата расчёта",
-  );
-  await expect(panel(page)).toContainText("Оформление отмечено оператором");
-  await expect(panel(page)).toContainText(
-    "Передача покупателю ещё не подтверждена",
-  );
-  await expect(panel(page)).toContainText(
-    "Квитанция ЮKassa не заменяет чек НПД",
+  await expect(panel(page).locator("dl > dd").nth(1)).toHaveText("0,00 ₽");
+  await expect(panel(page).locator("dl > dd").nth(2)).toHaveText("100,00 ₽");
+  await expect(panel(page)).toContainText("Дата подтверждения оплаты");
+  await expect(panel(page)).toContainText("Оформление чека отмечено");
+  await expect(panel(page)).toContainText("Отправка чека не подтверждена");
+  expect(await panel(page).innerText()).not.toMatch(
+    /ЮKassa|НПД|×10|умножения|стоимость модели/i,
   );
   const link = panel(page).getByRole("link", {
     name: "Открыть чек ФНС",
@@ -183,7 +186,7 @@ test("cross-tab logout clears a loaded receipt and a delayed refresh cannot repu
       .click();
     await expect.poll(() => state.reads).toBe(2);
     await expect(
-      page.getByText(`Платёж: ${receipt.paymentId}`, { exact: true }),
+      page.getByText(`Номер оплаты: ${receipt.paymentId}`, { exact: true }),
     ).toHaveCount(0);
     await page.evaluate(() =>
       window.dispatchEvent(
@@ -205,7 +208,7 @@ test("cross-tab logout clears a loaded receipt and a delayed refresh cannot repu
   await expect(panel(page)).toHaveCount(0);
   await expect(open(page)).toHaveCount(0);
   await expect(
-    page.getByText(`Платёж: ${receipt.paymentId}`, { exact: true }),
+    page.getByText(`Номер оплаты: ${receipt.paymentId}`, { exact: true }),
   ).toHaveCount(0);
   await expect(page.locator('a[href^="https://lknpd.nalog.ru/"]')).toHaveCount(
     0,
@@ -223,7 +226,7 @@ test("a legacy nonnumeric dashboard ID fails only the receipt panel with a gener
   expect(state.reads).toBe(0);
   await open(page).click();
   await expect(panel(page).getByRole("alert")).toHaveText(
-    "Не удалось загрузить чеки. Обновите список позже. Это не повтор оплаты и не запрос нового чека.",
+    "Не удалось загрузить чеки. Попробуйте позже.",
   );
   await expect(panel(page).getByRole("link")).toHaveCount(0);
   await expect(panel(page)).not.toContainText(receipt.paymentId);

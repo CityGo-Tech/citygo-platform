@@ -3,7 +3,6 @@ import * as React from "react";
 import {
   formatMoneyMicros,
   formatSignedMoneyMicros,
-  formatMoneyCounterMicros,
   type AiAccess,
   type AiConsentInput,
 } from "@citygo/contracts";
@@ -17,80 +16,62 @@ export function AiAccessPanel({
   onConsent,
   userId,
   topups,
+  balanceOnly = false,
+  onBalance,
+  onPhone,
 }: {
   access: AiAccess;
   busy: boolean;
   onConsent: (input: AiConsentInput) => void;
   userId?: string;
   topups?: TopupActions;
+  balanceOnly?: boolean;
+  onBalance?: () => void;
+  onPhone?: () => void;
 }) {
   const [checked, setChecked] = React.useState(false);
   const policy = access.policy;
   const citygoTariff = access.credit?.chargingStatus === "routerai_citygo_10x";
-  const description = policy && (
+  const operations =
+    access.credit?.history.filter((entry) =>
+      ["bonus", "topup", "settle"].includes(entry.kind),
+    ) ?? [];
+  // Keep the accepted processing terms available next to explicit consent.
+  // Internal model prices, reserves and routing controls are not account UI.
+  const terms = policy && (
     <>
-      <p>
-        Получатель: {policy.recipient}. Модель: {policy.model}.
-      </p>
+      <p>Обработку выполняет {policy.recipient}.</p>
       <p>{policy.routing}</p>
       <p>{policy.data}</p>
-      <p>
-        До {access.dailyLimit} принятых запросов чата в сутки (UTC). Возможен
-        общий лимит сервиса. Автоматического переключения нет.
-      </p>
     </>
   );
   return (
     <Card className="ai-access">
-      {access.credit && (
+      {onBalance && access.credit && (
+        <Button type="button" variant="secondary" onClick={onBalance}>
+          Баланс и пополнение
+        </Button>
+      )}
+      {!onBalance && access.credit && (
         <section
           id={chatBalanceTarget}
           tabIndex={-1}
           aria-label={citygoTariff ? "Баланс CityGo" : "Бесплатный баланс AI"}
         >
-          <h2>{citygoTariff ? "Баланс CityGo" : "Бесплатный баланс AI"}</h2>
-          {userId && <p>ID аккаунта: {userId}</p>}
-          <p>
-            {access.credit.bonusGranted
-              ? "Разовые 500 ₽ начислены. Ежедневного восстановления нет."
-              : citygoTariff
-                ? "Подарок 500 ₽ CityGo выдаётся после подтверждения телефона. Подтверждение пока не подключено."
-                : "Разовый бонус 500 ₽ ещё не выдан. Обратитесь к владельцу пилота."}
-          </p>
-          <p>
-            Доступно: {formatSignedMoneyMicros(access.credit.availableMicros)}{" "}
-            ₽. В резерве: {formatMoneyMicros(access.credit.heldMicros)} ₽.
-            Учтено списаний: {formatMoneyMicros(access.credit.spentMicros)} ₽.
-          </p>
-          {access.credit.reservationMode === "fixed5_overdraft" && (
-            <p role="note">
-              Перед платным запросом резервируется 5 ₽ CityGo. Это не итоговая
-              цена: спишется полная подтверждённая стоимость модели ×10. Если
-              средств не хватит, баланс станет отрицательным. Новые платные
-              запросы доступны после пополнения до 5 ₽ свободного баланса;
-              пополнение сначала погашает задолженность.
-            </p>
+          {!balanceOnly && (
+            <h2>{citygoTariff ? "Баланс CityGo" : "Бесплатный баланс AI"}</h2>
           )}
+          <strong className="balance-amount">
+            {formatSignedMoneyMicros(access.credit.availableMicros)} ₽
+            {citygoTariff ? " CityGo" : ""}
+          </strong>
           {(access.credit.outstandingDebtMicros ?? 0) > 0 && (
             <p role="status">
               Задолженность:{" "}
               {formatSignedMoneyMicros(access.credit.outstandingDebtMicros!)} ₽
-              CityGo. Она будет погашена из следующих пополнений.
+              CityGo. Пополнение сначала погасит её.
             </p>
           )}
-          <p>
-            {citygoTariff
-              ? access.credit.reservationMode === "fixed5_overdraft"
-                ? "Расход модели 1 ₽ соответствует списанию 10 ₽ CityGo. Оплата 100 ₽ пополняет баланс на 100 ₽ CityGo. Неизвестная стоимость остаётся на сверке; её нельзя считать нулевой."
-                : "Расход модели 1 ₽ соответствует списанию 10 ₽ CityGo. Оплата 100 ₽ пополняет баланс на 100 ₽ CityGo. Перед запросом резервируется верхняя оценка; неизвестная стоимость остаётся на сверке."
-              : access.credit.chargingStatus === "routerai_at_cost"
-                ? "Ответы RouterAI — по подтверждённой стоимости без наценки. Перед запросом сумма резервируется; при неизвестной стоимости резерв остаётся на сверке. Доли микрорубля округляются вниз."
-                : "Автоматическое списание за ответы пока не подключено."}{" "}
-            {access.credit.topUpAvailable === true
-              ? "Пополнение доступно ниже. Перед оплатой проверьте режим платежа."
-              : "Пополнение пока недоступно."}{" "}
-            Бонус не включает ИИ и не заменяет общий бюджет сервиса.
-          </p>
           {userId && topups && (
             <TestTopupPanel
               key={userId}
@@ -100,40 +81,50 @@ export function AiAccessPanel({
               canCreate={access.credit.topUpAvailable === true}
             />
           )}
-          {!!access.credit.pending?.length && (
-            <div role="status">
-              <p>Резервы на сверке. При обращении к владельцу укажите ID:</p>
-              <ul>
-                {access.credit.pending.map((item) => (
-                  <li key={item.holdId}>
-                    {item.holdId}: {formatMoneyMicros(item.amountMicros)} ₽ —{" "}
-                    {item.responseComplete
-                      ? "ответ сохранён, уточняется стоимость"
-                      : "результат запроса не подтверждён"}
-                  </li>
-                ))}
-              </ul>
-            </div>
+          {!access.credit.topUpAvailable && (
+            <p>Пополнение временно недоступно.</p>
           )}
-          {!!access.credit.history.length && (
+          {access.credit.reservationMode === "fixed5_overdraft" && (
+            <p>
+              Ответы помощников оплачиваются с баланса. Если стоимость ответа
+              превысит остаток, баланс может стать отрицательным.
+            </p>
+          )}
+          {access.credit.bonusGranted ? (
+            <p>Подарок 500 ₽ уже начислен.</p>
+          ) : (
+            onPhone && (
+              <Button type="button" variant="secondary" onClick={onPhone}>
+                Получить подарок 500 ₽
+              </Button>
+            )
+          )}
+          {!!access.credit.pending?.length && (
+            <p role="status">
+              Некоторые операции ещё обрабатываются. Баланс обновится после
+              проверки.
+            </p>
+          )}
+          {operations.length > 0 && (
             <details>
-              <summary>Последние операции баланса (до 20)</summary>
+              <summary>Последние операции</summary>
               <ul>
-                {access.credit.history.map((entry) => (
+                {operations.map((entry) => (
                   <li key={entry.id}>
                     {
                       {
-                        bonus: "Разовый бонус",
+                        bonus: "Подарок",
                         topup: "Пополнение",
-                        hold: "Резерв",
-                        settle: "Списание",
-                        release: "Освобождение резерва",
+                        settle: "Общение с помощником",
+                        hold: "",
+                        release: "",
                       }[entry.kind]
                     }
-                    {entry.kind === "release"
-                      ? " без списания"
-                      : `: ${formatMoneyMicros(entry.amountMicros)} ₽`}{" "}
-                    · {entry.createdAt}
+                    : {formatMoneyMicros(entry.amountMicros)} ₽ ·{" "}
+                    {new Date(entry.createdAt).toLocaleString("ru-RU", {
+                      dateStyle: "short",
+                      timeStyle: "short",
+                    })}
                   </li>
                 ))}
               </ul>
@@ -141,76 +132,59 @@ export function AiAccessPanel({
           )}
         </section>
       )}
-      {access.granted ? (
-        <details>
-          <summary>
-            Передача данных разрешена: {policy?.recipient} · {policy?.model}
-          </summary>
-          {description}
-        </details>
-      ) : (
-        <>
-          <h2>Передача данных AI</h2>
-          {description ?? (
+      {!balanceOnly &&
+        (access.granted ? (
+          <details>
+            <summary>Настройки обработки сообщений</summary>
+            {terms}
             <p>
-              Условия подключения недоступны. Обновите страницу перед отправкой
-              сообщения.
+              После отзыва согласия новые ответы будут недоступны. История
+              сохранится.
             </p>
-          )}
-          {policy && (
-            <label className="check">
-              <input
-                type="checkbox"
-                checked={checked}
-                disabled={busy}
-                onChange={(event) => setChecked(event.target.checked)}
-              />
-              <span>
-                Разрешаю передачу указанных данных этому получателю для
-                рекомендаций.
-              </span>
-            </label>
-          )}
-          {policy && (
             <Button
               type="button"
-              disabled={busy || !checked}
-              onClick={() =>
-                onConsent({ action: "granted", policyId: policy.id })
-              }
+              variant="ghost"
+              disabled={busy}
+              onClick={() => onConsent({ action: "revoked" })}
             >
-              Подтвердить получателя AI
+              Отозвать согласие
             </Button>
-          )}
-        </>
-      )}
-      {access.budget?.limitMicros != null && (
-        <p role="status">
-          Лимит AI вашего аккаунта:{" "}
-          {formatMoneyMicros(access.budget.limitMicros)}{" "}
-          {access.budget.currency ?? "(валюта не выбрана)"} в сутки.
-          Зарезервировано:{" "}
-          {formatMoneyCounterMicros(access.budget.reservedTodayMicros)}. Остаток
-          резерва: {formatMoneyMicros(access.budget.remainingMicros ?? 0)}.
-          Обновление в 00:00 UTC (03:00 по Москве). Это резерв, не фактическое
-          списание провайдера; общий бюджет сервиса также может ограничить
-          отправку.
-        </p>
-      )}
-      <p>
-        <small>
-          Отзыв блокирует новые запросы. Уже принятый запрос может завершиться;
-          переданные данные нельзя вернуть. План и история остаются доступны.
-        </small>
-      </p>
-      <Button
-        type="button"
-        variant="ghost"
-        disabled={busy}
-        onClick={() => onConsent({ action: "revoked" })}
-      >
-        Отозвать разрешение AI
-      </Button>
+          </details>
+        ) : (
+          <>
+            <h2>Перед началом</h2>
+            {policy ? (
+              <>
+                <details>
+                  <summary>Условия обработки сообщений</summary>
+                  {terms}
+                </details>
+                <label className="check">
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    disabled={busy}
+                    onChange={(event) => setChecked(event.target.checked)}
+                  />
+                  <span>
+                    Согласен на обработку сообщений для ответов помощника.
+                  </span>
+                </label>
+                <Button
+                  type="button"
+                  disabled={busy || !checked}
+                  onClick={() =>
+                    onConsent({ action: "granted", policyId: policy.id })
+                  }
+                >
+                  Продолжить
+                </Button>
+              </>
+            ) : (
+              <p>Помощник временно недоступен. Попробуйте позже.</p>
+            )}
+          </>
+        ))}
     </Card>
   );
 }

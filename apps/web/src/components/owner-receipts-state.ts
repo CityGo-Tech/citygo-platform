@@ -11,8 +11,7 @@ export type OwnerReceiptsState = {
   tasks: readonly OwnerNpdReceiptTask[];
 };
 
-export const receiptLoadError =
-  "Не удалось загрузить чеки. Обновите список позже. Это не повтор оплаты и не запрос нового чека.";
+export const receiptLoadError = "Не удалось загрузить чеки. Попробуйте позже.";
 
 /** A UI lifetime, not authentication. Even a transport ignoring abort cannot publish late data. */
 export function createOwnerReceiptsResource({
@@ -103,22 +102,22 @@ export function ownerReceiptPresentation(input: OwnerNpdReceiptTask) {
   const task = parsed.data;
   const statuses = [
     task.registrationStatus === "pending"
-      ? "Оформление чека ожидается"
-      : "Оформление отмечено оператором",
+      ? "Чек готовится"
+      : "Оформление чека отмечено",
     task.deliveryStatus === "pending"
-      ? "Передача покупателю ещё не подтверждена"
-      : "Передача отмечена оператором",
+      ? "Отправка чека не подтверждена"
+      : "Отправка чека отмечена",
   ];
   if (task.correctionStatus === "required")
-    statuses.push("После возврата требуется корректировка чека");
+    statuses.push("Чек уточняется после возврата");
   if (task.correctionStatus === "operator_reported")
-    statuses.push("Корректировка отмечена оператором");
+    statuses.push("Корректировка чека отмечена");
   if (task.reviewReason)
     statuses.push(
       {
-        registration_uncertain: "Оформление требует ручной сверки",
-        delivery_uncertain: "Передача требует ручной сверки",
-        correction_uncertain: "Корректировка требует ручной сверки",
+        registration_uncertain: "Оформление чека уточняется",
+        delivery_uncertain: "Отправка чека уточняется",
+        correction_uncertain: "Корректировка чека уточняется",
       }[task.reviewReason],
     );
   const uncertainDocument =

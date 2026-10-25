@@ -72,7 +72,7 @@ test("receipt amounts are actual exact roubles, without the AI ×10 markup", () 
     assert.throws(() => receiptMoney(bad), /Некорректная сумма/);
   const view = ownerReceiptPresentation(task());
   assert.equal(view.paid, "100,00 ₽");
-  assert.ok(view.statuses.includes("Передача покупателю ещё не подтверждена"));
+  assert.ok(view.statuses.includes("Отправка чека не подтверждена"));
 });
 
 test("a legacy nonnumeric dashboard ID fails only the receipt panel closed, without crashing the application", () => {
@@ -281,8 +281,8 @@ test("rendered receipts use exact amounts, safe FNS links and honest delivery/da
     createElement(OwnerReceiptList, { tasks: [task()] }),
   );
   assert.match(html, /100,00 ₽/);
-  assert.match(html, /Передача покупателю ещё не подтверждена/);
-  assert.match(html, /не дата расчёта/);
+  assert.match(html, /Отправка чека не подтверждена/);
+  assert.match(html, /Дата подтверждения оплаты/);
   assert.match(html, /href="https:\/\/lknpd\.nalog\.ru\//);
   assert.match(html, /target="_blank"/);
   assert.match(html, /rel="noopener noreferrer"/);
@@ -299,7 +299,7 @@ test("rendered receipts use exact amounts, safe FNS links and honest delivery/da
       ],
     }),
   );
-  assert.match(partial, /актуальность нужно уточнить/);
+  assert.match(partial, /Чек уточняется после возврата/);
   assert.match(partial, /ранее сохранённый документ ФНС/);
 });
 
@@ -312,7 +312,8 @@ test("initial panel has accessible loading/closed states and never claims viewin
     }),
   );
   assert.match(html, /Загружаем чеки/);
-  assert.match(html, /не означает фактическую передачу/);
+  assert.match(html, /Чеки по пополнениям и возвратам/);
+  assert.doesNotMatch(html, /ЮKassa|×10|не означает фактическую передачу/);
   assert.doesNotMatch(html, /receipt-synthetic/);
   active.abort();
   const closed = renderToStaticMarkup(
@@ -321,6 +322,6 @@ test("initial panel has accessible loading/closed states and never claims viewin
       sessionSignal: active.signal,
     }),
   );
-  assert.match(closed, /Сессия недоступна/);
+  assert.match(closed, /Войдите снова, чтобы увидеть чеки/);
   assert.doesNotMatch(closed, /href=/);
 });

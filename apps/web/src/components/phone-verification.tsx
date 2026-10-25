@@ -115,12 +115,10 @@ export function PhoneVerificationPanel({
   return (
     <Card className={styles.panel} aria-labelledby="phone-gift-heading">
       <span className="eyebrow">ЛИЧНЫЙ КАБИНЕТ · CITYGO</span>
-      <h1 id="phone-gift-heading">Подарок 500 ₽ CityGo</h1>
-      <p>
-        Один подарок после подтверждения вашего российского мобильного номера.
-        Это баланс для общения с помощниками, не выплата денег и не пополнение
-        картой.
-      </p>
+      <h1 id="phone-gift-heading" tabIndex={-1}>
+        Подтверждение телефона
+      </h1>
+      <p>Разовый подарок 500 ₽ CityGo после подтверждения номера.</p>
       {(!state || state.phase === "loading") && (
         <p role="status">Проверяем доступность подарка…</p>
       )}
@@ -130,30 +128,21 @@ export function PhoneVerificationPanel({
         </p>
       )}
       {state?.phase === "disabled" && (
-        <p role="status">
-          Подтверждение телефона пока выключено. В этом разделе подарок сейчас
-          не выдаётся; текущий остаток смотрите на балансе.
-        </p>
+        <p role="status">Подтверждение телефона пока недоступно.</p>
       )}
       {state?.phase === "unavailable" && (
         <p role="status">
-          Подтверждение телефона временно недоступно. В этом разделе подарок
-          сейчас не выдаётся; текущий остаток смотрите на балансе. SMS не
-          отправляется автоматически.
+          Не удалось загрузить подтверждение. Попробуйте позже.
         </p>
       )}
       {state?.phase === "email-required" && (
         <p role="status">
-          Сначала подтвердите электронную почту аккаунта. Без подтверждённого
-          email SMS и подарок недоступны. Если у вас старый аккаунт, обратитесь
-          в поддержку CityGo.
+          Сначала подтвердите электронную почту. Если нужна помощь, обратитесь в
+          поддержку.
         </p>
       )}
       {state?.phase === "already-granted" && (
-        <p role="status">
-          Разовый подарок уже использован для этого аккаунта. Новый подарок не
-          начислялся. Текущий остаток смотрите на балансе.
-        </p>
+        <p role="status">Подарок уже получен.</p>
       )}
       {state?.phase === "closed" && (
         <p role="status">
@@ -167,31 +156,22 @@ export function PhoneVerificationPanel({
               ? "Телефон подтверждён. Подарок уже был начислен."
               : "Телефон подтверждён. Начислено 500 ₽ CityGo."}
           </strong>
-          <p>
-            {state.receipt.alreadyGranted
-              ? "Повторного начисления нет."
-              : "Баланс обновляется по данным сервера."}{" "}
-            Дальнейшее использование подарка отражается в остатке баланса.
-          </p>
         </div>
       )}
       {state?.phase === "ready" && providerLabel && (
         <>
-          <div className={styles.notice}>
-            <strong>Подтверждение номера</strong>
+          <details>
+            <summary>Условия подтверждения</summary>
             <p>
-              По вашему действию CityGo передаст номер и код сервису{" "}
-              {providerLabel} только для SMS-подтверждения. История диалогов с
-              ИИ и сообщения помощников не передаются. Код и данные
-              подтверждения не сохраняются в браузерном хранилище. При выходе из
-              раздела потребуется начать заново.
+              Для доставки SMS номер и код передаются сервису {providerLabel}{" "}
+              только для подтверждения телефона.
             </p>
-          </div>
+          </details>
           {state.challenge ? (
             <>
               <p>
-                Код запрошен для <strong>{state.challenge.maskedPhone}</strong>.
-                Получение SMS само по себе не начисляет подарок.
+                Введите код из SMS для{" "}
+                <strong>{state.challenge.maskedPhone}</strong>.
               </p>
               <form
                 onSubmit={(event) => {
@@ -229,7 +209,7 @@ export function PhoneVerificationPanel({
               <small role="status">
                 {clock?.expired
                   ? "Срок кода истёк. Начните подтверждение заново."
-                  : "Никому не сообщайте код. Повторная SMS заменяет предыдущий код."}
+                  : "Никому не сообщайте код."}
               </small>
               <Button
                 type="button"
@@ -255,7 +235,7 @@ export function PhoneVerificationPanel({
                   resource.current?.reset();
                 }}
               >
-                Изменить номер / начать заново
+                Изменить номер
               </Button>
             </>
           ) : (
@@ -277,7 +257,6 @@ export function PhoneVerificationPanel({
                 onChange={(event) => setPhone(event.target.value)}
                 disabled={busy}
                 placeholder="+7 999 123-45-67"
-                hint="Подойдут +7 9XX…, 7 9XX… или 8 9XX…"
                 required
               />
               {phone && !normalizePhone(phone) && (
@@ -296,10 +275,7 @@ export function PhoneVerificationPanel({
                     )
                   }
                 />
-                <span>
-                  Согласен на передачу моего номера и кода сервису{" "}
-                  {providerLabel} только для SMS-подтверждения.
-                </span>
+                <span>Согласен на подтверждение номера по SMS.</span>
               </label>
               <Button
                 type="submit"

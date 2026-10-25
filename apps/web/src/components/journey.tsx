@@ -57,6 +57,8 @@ export type JourneyProps = {
   onConversations?: (before?: string) => void;
   onOpenConversation?: (id: string) => Promise<boolean>;
   onPassword?: () => void;
+  onBalance?: () => void;
+  onPhone?: () => void;
   onFavorites?: () => void;
   onFavorite?: (messageId: string, saved: boolean) => void;
   topups?: TopupActions;
@@ -386,8 +388,7 @@ export function Journey(props: JourneyProps) {
             </header>
             {board.provider === "unconfigured" && (
               <p className="provider-warning" role="note">
-                AI ещё не подключён. Для ответов нужен ключ провайдера на
-                сервере.
+                Помощник временно недоступен. Попробуйте позже.
               </p>
             )}
             <AiAccessPanel
@@ -403,6 +404,7 @@ export function Journey(props: JourneyProps) {
               busy={busy}
               onConsent={props.onConsent}
               topups={props.topups}
+              onBalance={props.onBalance}
             />
             {!board.thread && (
               <Card>
@@ -506,7 +508,10 @@ export function Journey(props: JourneyProps) {
               </div>
             )}
             <form onSubmit={props.onChat} className="journey-composer">
-              <EmptyAiCreditHint access={board.aiAccess} />
+              <EmptyAiCreditHint
+                access={board.aiAccess}
+                onBalance={props.onBalance}
+              />
               <label className="sr-only" htmlFor="journey-message">
                 Сообщение помощнику
               </label>
@@ -571,8 +576,7 @@ export function Journey(props: JourneyProps) {
                   ))}
                 </fieldset>
                 <p className="journey-completion-hint" id="completion-hint">
-                  Сначала обсудите этот квест с Housing Navigator, затем
-                  подтвердите все критерии. Завершение проверяется сервером.
+                  Обсудите задачу с помощником и подтвердите результат.
                 </p>
                 <Button
                   className="journey-finish"

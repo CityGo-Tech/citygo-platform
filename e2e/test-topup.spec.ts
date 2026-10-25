@@ -180,25 +180,36 @@ async function saveSyntheticAttempt(
   }, attempt);
 }
 
+async function openBalance(page: Page) {
+  await page
+    .getByRole("region", { name: "Баланс и телефон", exact: true })
+    .getByRole("button", { name: "Пополнить баланс", exact: true })
+    .click();
+  await expect(page.locator("#citygo-balance")).toBeVisible();
+}
+
 test("checkout is hidden without the server capability; return parameters do not grant money", async ({
   page,
 }) => {
   const state = await fixture(page, { available: false });
   await page.goto("/?payment=succeeded&credited=true&amount=10000");
+  await openBalance(page);
   await expect(
-    page.getByRole("heading", { name: "Баланс CityGo", exact: true }),
+    page.getByRole("heading", { name: "Баланс и пополнение", exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByText("9007199254.740991", { exact: false }),
-  ).toBeVisible();
+    page
+      .locator("#citygo-wallet-view")
+      .getByText("9007199254.740991", { exact: false }),
+  ).toHaveCount(0);
   await expect(
     page.getByRole("heading", {
-      name: "Пополнение баланса ЮKassa",
+      name: "Пополнение баланса",
       exact: true,
     }),
   ).toHaveCount(0);
   await expect(
-    page.getByText("Пополнение пока недоступно.", { exact: false }),
+    page.getByText("Пополнение временно недоступно.", { exact: false }),
   ).toBeVisible();
   expect(state.creates).toEqual([]);
   expect(state.reconciles).toBe(0);
@@ -211,19 +222,23 @@ test("ambiguous create retries the frozen email and key in memory; only explicit
 }) => {
   const state = await fixture(page, { failFirst: true });
   await page.goto("/");
+  await openBalance(page);
   await expect(page.getByLabel("Сумма пополнения")).toHaveValue("100");
-  await expect(page.getByLabel("Email для чека ЮKassa")).toHaveValue("");
+  await expect(page.getByLabel("Email для чека")).toHaveValue("");
   await page
-    .getByLabel("Email для чека ЮKassa")
+    .getByLabel("Email для чека")
     .fill("receipt-buyer@synthetic-citygo-mail.ru");
   await expect(
-    page.getByRole("button", { name: "Создать платёж", exact: true }),
+    page
+      .getByRole("region", { name: "Пополнение баланса", exact: true })
+      .getByRole("button", { name: "Пополнить баланс", exact: true }),
   ).toBeEnabled();
   await page
-    .getByRole("button", { name: "Создать платёж", exact: true })
+    .getByRole("region", { name: "Пополнение баланса", exact: true })
+    .getByRole("button", { name: "Пополнить баланс", exact: true })
     .click();
   await expect(page.locator(".ai-access [role=alert]")).toContainText(
-    "Не удалось подтвердить результат",
+    "Не удалось проверить платёж",
   );
   expect(state.creates).toHaveLength(1);
   expect(
@@ -234,16 +249,16 @@ test("ambiguous create retries the frozen email and key in memory; only explicit
     requestId: state.creates[0]!.requestId,
     amountKopeks: order.amountKopeks,
   });
-  await expect(page.getByLabel("Email для чека ЮKassa")).toHaveCount(0);
+  await expect(page.getByLabel("Email для чека")).toHaveCount(0);
   const retry = page.getByRole("button", {
-    name: "Повторить создание с прежним ID",
+    name: "Продолжить оплату",
     exact: true,
   });
   await expect(retry).toBeEnabled();
   await expect(page.getByLabel("Сумма пополнения")).toBeDisabled();
   await retry.click();
   const checkout = page.getByRole("link", {
-    name: "Открыть тестовую оплату ЮKassa",
+    name: "Открыть тестовую оплату",
     exact: true,
   });
   await expect(checkout).toHaveAttribute("href", order.confirmationUrl!);
@@ -257,6 +272,7 @@ test("ambiguous create retries the frozen email and key in memory; only explicit
   );
   expect(state.reconciles).toBe(0);
   await page.goto(`/?payment=succeeded&credited=true&orderId=${order.orderId}`);
+  await openBalance(page);
   await expect(
     page.getByText("зачисление не подтверждено", { exact: false }),
   ).toBeVisible();
@@ -265,16 +281,16 @@ test("ambiguous create retries the frozen email and key in memory; only explicit
     .getByRole("button", { name: "Проверить платёж", exact: true })
     .click();
   await expect(
-    page.getByText("зачисление подтверждено сервером", {
+    page.getByText("зачислено на баланс", {
       exact: false,
     }),
   ).toBeVisible();
   expect(state.reconciles).toBe(1);
   await expect(
-    page.getByText("настоящие деньги не списываются", { exact: false }),
+    page.getByText("Деньги не списываются", { exact: false }),
   ).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "Новый платёж", exact: true }),
+    page.getByRole("button", { name: "Пополнить ещё", exact: true }),
   ).toBeVisible();
   expect(state.unexpected).toEqual([]);
 });
@@ -284,24 +300,26 @@ test("a malformed checkout response never exposes an unsafe payment link or retr
 }) => {
   const state = await fixture(page, { unsafeUrl: true });
   await page.goto("/");
+  await openBalance(page);
   await page
-    .getByLabel("Email для чека ЮKassa")
+    .getByLabel("Email для чека")
     .fill("receipt-buyer@synthetic-citygo-mail.ru");
   await page
-    .getByRole("button", { name: "Создать платёж", exact: true })
+    .getByRole("region", { name: "Пополнение баланса", exact: true })
+    .getByRole("button", { name: "Пополнить баланс", exact: true })
     .click();
   await expect(page.locator(".ai-access [role=alert]")).toContainText(
-    "Не удалось подтвердить результат",
+    "Не удалось проверить платёж",
   );
   await expect(
     page.getByRole("link", {
-      name: "Открыть тестовую оплату ЮKassa",
+      name: "Открыть тестовую оплату",
       exact: true,
     }),
   ).toHaveCount(0);
   await expect(
     page.getByRole("button", {
-      name: "Повторить создание с прежним ID",
+      name: "Продолжить оплату",
       exact: true,
     }),
   ).toBeEnabled();
@@ -310,35 +328,32 @@ test("a malformed checkout response never exposes an unsafe payment link or retr
   expect(state.unexpected).toEqual([]);
 });
 
-test("live checkout explicitly warns about real money, credits 100 to 100 and never settles from return URL or an automatic GET", async ({
+test("live checkout distinguishes test mode, credits 100 to 100 and never settles from return URL or an automatic GET", async ({
   page,
 }) => {
   const state = await fixture(page, { live: true });
   await page.goto("/?payment=succeeded&credited=true&amount=10000");
-  const panel = page.getByRole("region", { name: "Пополнение баланса ЮKassa" });
+  await openBalance(page);
+  const panel = page.getByRole("region", { name: "Пополнение баланса" });
   await expect(panel).toBeVisible();
   await expect(
     page.getByRole("region", { name: "Баланс CityGo", exact: true }),
-  ).toContainText("Доступно: 0 ₽");
+  ).toContainText("0 ₽ CityGo");
   await expect(panel.getByLabel("Сумма пополнения")).toHaveValue("100");
-  await expect(panel.getByLabel("Email для чека ЮKassa")).toHaveValue("");
+  await expect(panel.getByLabel("Email для чека")).toHaveValue("");
   await panel
-    .getByLabel("Email для чека ЮKassa")
+    .getByLabel("Email для чека")
     .fill("receipt-buyer@synthetic-citygo-mail.ru");
   expect(state.creates).toHaveLength(0);
   expect(state.reconciles).toBe(0);
   await panel
-    .getByRole("button", { name: "Создать платёж", exact: true })
+    .getByRole("button", { name: "Пополнить баланс", exact: true })
     .click();
-  await expect(panel).toContainText(
-    "Боевой платёж: на странице ЮKassa будут списаны настоящие деньги.",
-  );
+  await expect(panel).not.toContainText("Тестовая оплата");
   await expect(panel).toContainText("100 ₽ CityGo");
-  await expect(panel).toContainText(
-    "Оплата 100 ₽ соответствует 100 ₽ CityGo, не 1 000 ₽.",
-  );
+  await expect(panel).not.toContainText(/ЮKassa|×10|стоимость модели|резерв/i);
   const checkout = panel.getByRole("link", {
-    name: "Перейти к оплате ЮKassa",
+    name: "Перейти к оплате",
     exact: true,
   });
   await expect(checkout).toHaveAttribute("href", order.confirmationUrl!);
@@ -346,7 +361,7 @@ test("live checkout explicitly warns about real money, credits 100 to 100 and ne
   await expect(checkout).toHaveAttribute("target", "_blank");
   await expect(
     panel.getByRole("link", {
-      name: "Открыть тестовую оплату ЮKassa",
+      name: "Открыть тестовую оплату",
       exact: true,
     }),
   ).toHaveCount(0);
@@ -362,24 +377,25 @@ test("live checkout explicitly warns about real money, credits 100 to 100 and ne
   expect(stored).not.toContain("receiptEmail");
   expect(state.reconciles).toBe(0);
   await page.goto(`/?payment=succeeded&credited=true&orderId=${order.orderId}`);
+  await openBalance(page);
   await expect(panel).toContainText("зачисление не подтверждено");
   await expect.poll(() => state.reads).toBe(1);
   expect(state.creates).toHaveLength(1);
   expect(state.reconciles).toBe(0);
   await expect(
     page.getByRole("region", { name: "Баланс CityGo", exact: true }),
-  ).toContainText("Доступно: 0 ₽");
+  ).toContainText("0 ₽ CityGo");
   await panel
     .getByRole("button", { name: "Проверить платёж", exact: true })
     .click();
-  await expect(panel).toContainText("зачисление подтверждено сервером");
+  await expect(panel).toContainText("зачислено на баланс");
   await expect(
     page.getByRole("region", { name: "Баланс CityGo", exact: true }),
-  ).toContainText("Доступно: 100 ₽");
+  ).toContainText("100 ₽ CityGo");
   expect(state.reconciles).toBe(1);
   expect(state.creates).toHaveLength(1);
   await expect(
-    panel.getByRole("button", { name: "Новый платёж", exact: true }),
+    panel.getByRole("button", { name: "Пополнить ещё", exact: true }),
   ).toBeVisible();
   expect(state.unexpected).toEqual([]);
 });
@@ -390,36 +406,40 @@ test("closed checkout keeps a saved pending payment readable and explicitly reco
   const state = await fixture(page, { available: false, live: true });
   await saveSyntheticAttempt(page, savedAttempt);
   await page.goto("/?payment=succeeded&credited=true");
-  const panel = page.getByRole("region", { name: "Пополнение баланса ЮKassa" });
-  await expect(panel).toContainText("Приём новых платежей временно закрыт");
+  await openBalance(page);
+  const panel = page.getByRole("region", { name: "Пополнение баланса" });
+  await expect(panel).toContainText("Пополнение временно недоступно");
+  await panel.getByText("Данные для поддержки", { exact: true }).click();
   await expect(panel).toContainText(savedAttempt.requestId);
   await expect.poll(() => state.reads).toBe(1);
   await expect(panel).toContainText("зачисление не подтверждено");
   await expect(panel).toContainText(
-    "Ссылка относится к ранее созданному платежу",
+    "Если деньги уже списаны, сначала проверьте платёж",
   );
   await expect(panel.getByLabel("Сумма пополнения")).toHaveCount(0);
-  await expect(panel.getByLabel("Email для чека ЮKassa")).toHaveCount(0);
+  await expect(panel.getByLabel("Email для чека")).toHaveCount(0);
   await expect(
-    panel.getByRole("button", { name: /создан|Новый платёж/i }),
+    panel.getByRole("button", {
+      name: /Пополнить баланс|Продолжить оплату|Пополнить ещё/i,
+    }),
   ).toHaveCount(0);
   await expect(
-    panel.getByRole("link", { name: "Перейти к оплате ЮKassa", exact: true }),
+    panel.getByRole("link", { name: "Перейти к оплате", exact: true }),
   ).toHaveAttribute("href", order.confirmationUrl!);
   expect(state.creates).toEqual([]);
   expect(state.reconciles).toBe(0);
   await panel
     .getByRole("button", { name: "Проверить платёж", exact: true })
     .click();
-  await expect(panel).toContainText("зачисление подтверждено сервером");
+  await expect(panel).toContainText("зачислено на баланс");
   await expect(
     page.getByRole("region", { name: "Баланс CityGo", exact: true }),
-  ).toContainText("Доступно: 100 ₽");
+  ).toContainText("100 ₽ CityGo");
   await expect(
-    panel.getByRole("link", { name: "Перейти к оплате ЮKassa", exact: true }),
+    panel.getByRole("link", { name: "Перейти к оплате", exact: true }),
   ).toHaveCount(0);
   await expect(
-    panel.getByRole("button", { name: "Новый платёж", exact: true }),
+    panel.getByRole("button", { name: "Пополнить ещё", exact: true }),
   ).toHaveCount(0);
   expect(state.creates).toEqual([]);
   expect(state.reconciles).toBe(1);
@@ -436,18 +456,22 @@ test("closed checkout preserves an ambiguous attempt without POST, automatic ret
   };
   await saveSyntheticAttempt(page, ambiguous);
   await page.goto("/");
-  const panel = page.getByRole("region", { name: "Пополнение баланса ЮKassa" });
+  await openBalance(page);
+  const panel = page.getByRole("region", { name: "Пополнение баланса" });
+  await panel.getByText("Данные для поддержки", { exact: true }).click();
   await expect(panel).toContainText(ambiguous.requestId);
-  await expect(panel).toContainText("Результат создания не подтверждён");
-  await expect(panel).toContainText("Повторное создание сейчас недоступно");
+  await expect(panel).toContainText("Платёж пока не подтверждён");
+  await expect(panel).toContainText("Не оплачивайте повторно");
   await expect(
     panel.getByRole("button", {
-      name: "Найти сохранённый платёж",
+      name: "Найти платёж",
       exact: true,
     }),
   ).toBeEnabled();
   await expect(panel.getByRole("link")).toHaveCount(0);
   await page.reload();
+  await openBalance(page);
+  await panel.getByText("Данные для поддержки", { exact: true }).click();
   await expect(panel).toContainText(ambiguous.requestId);
   expect(
     await page.evaluate(() =>
@@ -466,20 +490,24 @@ test("closing new checkout after creation preserves the existing payment and doe
 }) => {
   const state = await fixture(page, { live: true });
   await page.goto("/");
+  await openBalance(page);
   await page
-    .getByLabel("Email для чека ЮKassa")
+    .getByLabel("Email для чека")
     .fill("receipt-buyer@synthetic-citygo-mail.ru");
   await page
-    .getByRole("button", { name: "Создать платёж", exact: true })
+    .getByRole("region", { name: "Пополнение баланса", exact: true })
+    .getByRole("button", { name: "Пополнить баланс", exact: true })
     .click();
-  const panel = page.getByRole("region", { name: "Пополнение баланса ЮKassa" });
+  const panel = page.getByRole("region", { name: "Пополнение баланса" });
   await expect(
-    panel.getByRole("link", { name: "Перейти к оплате ЮKassa", exact: true }),
+    panel.getByRole("link", { name: "Перейти к оплате", exact: true }),
   ).toBeVisible();
   const firstRequest = state.creates[0]!;
   state.available = false;
   await page.reload();
-  await expect(panel).toContainText("Приём новых платежей временно закрыт");
+  await openBalance(page);
+  await expect(panel).toContainText("Пополнение временно недоступно");
+  await panel.getByText("Данные для поддержки", { exact: true }).click();
   await expect(panel).toContainText(firstRequest.requestId);
   await expect.poll(() => state.reads).toBe(1);
   await expect(
@@ -487,9 +515,14 @@ test("closing new checkout after creation preserves the existing payment and doe
   ).toBeEnabled();
   state.userId = "102";
   await page.reload();
+  await page
+    .getByRole("navigation", { name: "Личный кабинет CityGo", exact: true })
+    .getByRole("button", { name: "Профиль", exact: true })
+    .click();
   await expect(
-    page.getByText("ID аккаунта: 102", { exact: true }),
+    page.getByText("checkout-102@example.test", { exact: true }),
   ).toBeVisible();
+  await openBalance(page);
   await expect(panel).toHaveCount(0);
   await expect(
     page.getByText(firstRequest.requestId, { exact: false }),
@@ -505,11 +538,14 @@ test("new checkout requires an explicit buyer email without using the account em
 }) => {
   const state = await fixture(page);
   await page.goto("/");
-  const email = page.getByLabel("Email для чека ЮKassa");
-  const create = page.getByRole("button", {
-    name: "Создать платёж",
-    exact: true,
-  });
+  await openBalance(page);
+  const email = page.getByLabel("Email для чека");
+  const create = page
+    .getByRole("region", { name: "Пополнение баланса", exact: true })
+    .getByRole("button", {
+      name: "Пополнить баланс",
+      exact: true,
+    });
   await expect(email).toHaveValue("");
   await expect(create).toBeDisabled();
   await email.fill("not-an-email");
@@ -530,26 +566,30 @@ test("reloaded ambiguous checkout never replaces the original buyer email or POS
 }) => {
   const state = await fixture(page, { failFirst: true });
   await page.goto("/");
+  await openBalance(page);
   await page
-    .getByLabel("Email для чека ЮKassa")
+    .getByLabel("Email для чека")
     .fill("original-buyer@synthetic-citygo-mail.ru");
   await page
-    .getByRole("button", { name: "Создать платёж", exact: true })
+    .getByRole("region", { name: "Пополнение баланса", exact: true })
+    .getByRole("button", { name: "Пополнить баланс", exact: true })
     .click();
   await expect(page.locator(".ai-access [role=alert]")).toContainText(
-    "Не удалось подтвердить результат",
+    "Не удалось проверить платёж",
   );
   expect(state.creates).toHaveLength(1);
   const original = state.creates[0]!;
   await page.reload();
-  const panel = page.getByRole("region", { name: "Пополнение баланса ЮKassa" });
+  await openBalance(page);
+  const panel = page.getByRole("region", { name: "Пополнение баланса" });
+  await panel.getByText("Данные для поддержки", { exact: true }).click();
   await expect(panel).toContainText(original.requestId);
-  await expect(panel).toContainText("исходный email для чека не хранится");
+  await expect(panel).toContainText("Платёж пока не подтверждён");
   await expect.poll(() => state.attemptReads).toBe(1);
-  await expect(panel.getByLabel("Email для чека ЮKassa")).toHaveCount(0);
+  await expect(panel.getByLabel("Email для чека")).toHaveCount(0);
   await expect(
     panel.getByRole("button", {
-      name: /создать|Повторить создание|Новый платёж/,
+      name: /Пополнить баланс|Продолжить оплату|Пополнить ещё/,
     }),
   ).toHaveCount(0);
   expect(
@@ -577,11 +617,13 @@ test("an ambiguous attempt recovers through an authenticated read-only lookup wi
     amountKopeks: savedAttempt.amountKopeks,
   });
   await page.goto("/");
-  const panel = page.getByRole("region", { name: "Пополнение баланса ЮKassa" });
-  await expect(panel).toContainText("Приём новых платежей временно закрыт");
+  await openBalance(page);
+  const panel = page.getByRole("region", { name: "Пополнение баланса" });
+  await expect(panel).toContainText("Пополнение временно недоступно");
   await expect.poll(() => state.attemptReads).toBe(1);
+  await panel.getByText("Данные для поддержки", { exact: true }).click();
   await expect(panel).toContainText(order.orderId);
-  await expect(panel.getByLabel("Email для чека ЮKassa")).toHaveCount(0);
+  await expect(panel.getByLabel("Email для чека")).toHaveCount(0);
   await expect(
     panel.getByRole("button", { name: "Проверить платёж", exact: true }),
   ).toBeEnabled();
@@ -596,7 +638,7 @@ test("an ambiguous attempt recovers through an authenticated read-only lookup wi
   await panel
     .getByRole("button", { name: "Проверить платёж", exact: true })
     .click();
-  await expect(panel).toContainText("зачисление подтверждено сервером");
+  await expect(panel).toContainText("зачислено на баланс");
   expect(state.reconciles).toBe(1);
   expect(state.creates).toEqual([]);
   expect(state.unexpected).toEqual([]);
@@ -612,16 +654,18 @@ test("an explicit create opens a safe loading tab synchronously, then hands the 
   const state = await fixture(page, { createGate });
   try {
     await page.goto("/");
+    await openBalance(page);
     await page
-      .getByLabel("Email для чека ЮKassa")
+      .getByLabel("Email для чека")
       .fill("receipt-buyer@synthetic-citygo-mail.ru");
     const opened = page.waitForEvent("popup");
     await page
-      .getByRole("button", { name: "Создать платёж", exact: true })
+      .getByRole("region", { name: "Пополнение баланса", exact: true })
+      .getByRole("button", { name: "Пополнить баланс", exact: true })
       .click();
     const popup = await opened;
     await expect(
-      popup.getByRole("heading", { name: "Готовим страницу оплаты ЮKassa" }),
+      popup.getByRole("heading", { name: "Готовим страницу оплаты" }),
     ).toBeVisible();
     expect(popup.url()).toBe("about:blank");
     expect(await popup.evaluate(() => window.opener === null)).toBe(true);
@@ -639,7 +683,7 @@ test("an explicit create opens a safe loading tab synchronously, then hands the 
     ).toBeVisible();
     expect(await popup.evaluate(() => window.opener === null)).toBe(true);
     await expect(
-      page.getByText("Оплата открыта в отдельной вкладке.", { exact: false }),
+      page.getByText("Оплата открыта в новой вкладке.", { exact: false }),
     ).toBeVisible();
     expect(state.creates).toHaveLength(1);
     expect(state.reconciles).toBe(0);
@@ -657,21 +701,23 @@ test("a blocked popup presents a prominent safe fallback without another payment
   });
   const state = await fixture(page);
   await page.goto("/");
+  await openBalance(page);
   await page
-    .getByLabel("Email для чека ЮKassa")
+    .getByLabel("Email для чека")
     .fill("receipt-buyer@synthetic-citygo-mail.ru");
   await page
-    .getByRole("button", { name: "Создать платёж", exact: true })
+    .getByRole("region", { name: "Пополнение баланса", exact: true })
+    .getByRole("button", { name: "Пополнить баланс", exact: true })
     .click();
   const link = page.getByRole("link", {
-    name: "Открыть тестовую оплату ЮKassa",
+    name: "Открыть тестовую оплату",
     exact: true,
   });
   await expect(link).toBeVisible();
   await expect(link).toHaveClass(/cg-button-primary/);
   await expect(link).toHaveAttribute("rel", "noopener noreferrer");
   await expect(
-    page.getByText("Отдельная вкладка не открылась или была закрыта.", {
+    page.getByText("Нажмите «Перейти к оплате», чтобы продолжить.", {
       exact: false,
     }),
   ).toBeVisible();
@@ -692,17 +738,19 @@ for (const options of [{ failFirst: true }, { unsafeUrl: true }]) {
   }) => {
     const state = await fixture(page, options);
     await page.goto("/");
+    await openBalance(page);
     await page
-      .getByLabel("Email для чека ЮKassa")
+      .getByLabel("Email для чека")
       .fill("receipt-buyer@synthetic-citygo-mail.ru");
     const opened = page.waitForEvent("popup");
     await page
-      .getByRole("button", { name: "Создать платёж", exact: true })
+      .getByRole("region", { name: "Пополнение баланса", exact: true })
+      .getByRole("button", { name: "Пополнить баланс", exact: true })
       .click();
     const popup = await opened;
     await expect.poll(() => popup.isClosed()).toBe(true);
     await expect(page.locator(".ai-access [role=alert]")).toContainText(
-      "Не удалось подтвердить результат",
+      "Не удалось проверить платёж",
     );
     expect(state.creates).toHaveLength(1);
     expect(state.reconciles).toBe(0);
@@ -716,21 +764,23 @@ for (const responseStatus of ["creating", "succeeded"] as const) {
   }) => {
     const state = await fixture(page, { responseStatus });
     await page.goto("/");
+    await openBalance(page);
     await page
-      .getByLabel("Email для чека ЮKassa")
+      .getByLabel("Email для чека")
       .fill("receipt-buyer@synthetic-citygo-mail.ru");
     const opened = page.waitForEvent("popup");
     await page
-      .getByRole("button", { name: "Создать платёж", exact: true })
+      .getByRole("region", { name: "Пополнение баланса", exact: true })
+      .getByRole("button", { name: "Пополнить баланс", exact: true })
       .click();
     const popup = await opened;
     await expect.poll(() => popup.isClosed()).toBe(true);
     await expect(
-      page.getByText("Платёж сейчас не ожидает оплаты.", { exact: false }),
+      page.getByText("Проверьте статус платежа.", { exact: false }),
     ).toBeVisible();
     await expect(
       page.getByRole("link", {
-        name: "Открыть тестовую оплату ЮKassa",
+        name: "Открыть тестовую оплату",
         exact: true,
       }),
     ).toHaveCount(0);
@@ -750,24 +800,26 @@ test("closing the loading tab uses fallback when the same request finishes, with
   const state = await fixture(page, { createGate });
   try {
     await page.goto("/");
+    await openBalance(page);
     await page
-      .getByLabel("Email для чека ЮKassa")
+      .getByLabel("Email для чека")
       .fill("receipt-buyer@synthetic-citygo-mail.ru");
     const opened = page.waitForEvent("popup");
     await page
-      .getByRole("button", { name: "Создать платёж", exact: true })
+      .getByRole("region", { name: "Пополнение баланса", exact: true })
+      .getByRole("button", { name: "Пополнить баланс", exact: true })
       .click();
     const popup = await opened;
     await popup.close();
     release();
     await expect(
       page.getByRole("link", {
-        name: "Открыть тестовую оплату ЮKassa",
+        name: "Открыть тестовую оплату",
         exact: true,
       }),
     ).toBeVisible();
     await expect(
-      page.getByText("Отдельная вкладка не открылась или была закрыта.", {
+      page.getByText("Нажмите «Перейти к оплате», чтобы продолжить.", {
         exact: false,
       }),
     ).toBeVisible();
@@ -797,12 +849,14 @@ for (const destination of ["same-origin", "cross-origin"] as const) {
     );
     try {
       await page.goto("/");
+      await openBalance(page);
       await page
-        .getByLabel("Email для чека ЮKassa")
+        .getByLabel("Email для чека")
         .fill("receipt-buyer@synthetic-citygo-mail.ru");
       const opened = page.waitForEvent("popup");
       await page
-        .getByRole("button", { name: "Создать платёж", exact: true })
+        .getByRole("region", { name: "Пополнение баланса", exact: true })
+        .getByRole("button", { name: "Пополнить баланс", exact: true })
         .click();
       const popup = await opened;
       const detour =
@@ -816,12 +870,12 @@ for (const destination of ["same-origin", "cross-origin"] as const) {
       release();
       await expect(
         page.getByRole("link", {
-          name: "Открыть тестовую оплату ЮKassa",
+          name: "Открыть тестовую оплату",
           exact: true,
         }),
       ).toBeVisible();
       await expect(
-        page.getByText("Отдельная вкладка не открылась или была закрыта.", {
+        page.getByText("Нажмите «Перейти к оплате», чтобы продолжить.", {
           exact: false,
         }),
       ).toBeVisible();
