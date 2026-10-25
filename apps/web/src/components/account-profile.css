@@ -1,0 +1,58 @@
+.account-profile {
+  width: 100%;
+  padding: var(--cg-space-lg);
+  overflow-wrap: anywhere;
+}
+.account-profile h1 {
+  margin: var(--cg-space-sm) 0 var(--cg-space-lg);
+}
+.account-profile .account-profile-balance {
+  font-size: 32px;
+  line-height: 1.2;
+  margin: var(--cg-space-sm) 0;
+}
+.account-profile-contact {
+  color: var(--cg-color-foreground);
+  font-weight: 700;
+  margin-bottom: var(--cg-space-xs);
+}
+.account-profile-confirmed {
+  color: var(--cg-color-primary-strong);
+  font-weight: 600;
+}
+.account-profile-muted {
+  color: var(--cg-color-muted);
+}
+.account-profile-confirmation {
+  max-width: 560px;
+  margin-top: var(--cg-space-md);
+}
+.account-profile-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--cg-space-sm);
+}
+.account-profile-confirmation .account-profile-actions {
+  margin: var(--cg-space-md) 0 var(--cg-space-sm);
+}
+.account-profile-error {
+  color: var(--cg-color-danger);
+}
+.account-profile [role="status"],
+.account-profile [role="alert"] {
+  margin-top: var(--cg-space-md);
+}
+@media (max-width: 700px) {
+  .account-profile {
+    padding: var(--cg-space-md);
+  }
+  .account-profile .account-profile-balance {
+    font-size: 28px;
+  }
+  .account-profile-actions .cg-button {
+    flex: 1 1 180px;
+    white-space: normal;
+    min-width: 0;
+  }
+}

@@ -129,7 +129,7 @@ async function accountExists(tx: Sql, email: string) {
 // null is explicit unlimited admission for this field; numeric zero still denies.
 // An omitted object preserves the historical recipient/IP-only configuration.
 export type EmailSendLimits = { daily: number | null; total: number | null };
-async function quota(
+export async function consumeEmailSendQuota(
   tx: Sql,
   recipientKey: string,
   ipKey: string,
@@ -231,7 +231,12 @@ export class EmailRegistration {
         ).rows.length
       )
         throw new DomainError(409, "Попытка регистрации уже существует");
-      await quota(tx, input.recipientKey, input.ipKey, this.sendLimits);
+      await consumeEmailSendQuota(
+        tx,
+        input.recipientKey,
+        input.ipKey,
+        this.sendLimits,
+      );
       return (
         await tx.query<{ id: string; expiresAt: string }>(
           `insert into email_registrations(id,email,password_hash,proof_hash,code_hash,recipient_key,expires_at,consent_choice,consent_policy,consent_policy_hash,consent_recorded_at)
@@ -294,7 +299,12 @@ export class EmailRegistration {
         throw invalid();
       if (await accountExists(tx, current.email))
         throw new DomainError(409, "Аккаунт с этой почтой уже существует");
-      await quota(tx, current.recipient_key, input.ipKey, this.sendLimits);
+      await consumeEmailSendQuota(
+        tx,
+        current.recipient_key,
+        input.ipKey,
+        this.sendLimits,
+      );
       const next = (
         await tx.query<{ expiresAt: string }>(
           `update email_registrations set code_hash=$2,delivery='pending',attempts=0,

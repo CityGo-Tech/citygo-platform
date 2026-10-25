@@ -9,6 +9,7 @@ const tables = [
   "service_consent_events",
   "personal_plan_items",
   "password_recovery_challenges",
+  "account_email_confirmation_challenges",
   "account_email_verifications",
   "account_security_state",
   "agent_handoffs",
@@ -79,6 +80,7 @@ const retainedTables = [
   "phone_verification_sends",
   "phone_welcome_claims",
   "password_recovery_challenges",
+  "account_email_confirmation_challenges",
   "account_email_verifications",
   "email_registrations",
   "email_registration_rate_events",
@@ -334,6 +336,11 @@ async function inspect(tx: Sql, options: Options) {
     blockers.push({
       code: "PASSWORD_RECOVERY_HISTORY_REQUIRES_REVIEW",
       count: snapshot.counts.password_recovery_challenges,
+    });
+  if (snapshot.counts.account_email_confirmation_challenges)
+    blockers.push({
+      code: "ACCOUNT_EMAIL_CONFIRMATION_HISTORY_REQUIRES_REVIEW",
+      count: snapshot.counts.account_email_confirmation_challenges,
     });
   const phoneHistoryCount = [
     "phone_verification_challenges",

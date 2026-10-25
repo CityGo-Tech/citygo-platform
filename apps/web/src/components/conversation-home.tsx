@@ -1,7 +1,6 @@
 "use client";
 import { useRef, useState } from "react";
 import Image from "next/image";
-import Link from "next/link";
 import { Button, Card, Badge, AssistantMessage } from "@citygo/ui-web";
 import { agentNames, type JourneyProps } from "./journey";
 import { FavoriteButton } from "./message-favorites";
@@ -23,7 +22,7 @@ import {
   type PlanMessageSource,
 } from "./personal-plan";
 import planStyles from "./personal-plan.module.css";
-import { accountStyles } from "./account-overview";
+import { AccountProfile } from "./account-profile";
 
 const topics = [
   ["Понять и спланировать", "Не понимаю, с чего начать переезд в Москву."],
@@ -230,45 +229,19 @@ export function ConversationHome(props: JourneyProps) {
           {rail}
         </div>
       ) : tab === "Профиль" ? (
-        <Card>
-          <h1>Личный кабинет</h1>
-          <p>{board.user.username ?? board.user.email}</p>
-          <div className={accountStyles.profileCard}>
-            <span className={accountStyles.eyebrow}>БАЛАНС CITYGO</span>
-            <h2>Баланс и пополнение</h2>
-            <p>Пополнение и история операций.</p>
-            <Button disabled={busy || sending} onClick={props.onBalance}>
-              Баланс и пополнение
-            </Button>
-          </div>
-          <div className={accountStyles.profileCard}>
-            <span className={accountStyles.eyebrow}>КОНТАКТЫ АККАУНТА</span>
-            <h2>Телефон и подарок</h2>
-            <p>Подтвердите телефон и получите 500 ₽ CityGo.</p>
-            <Button
-              variant="secondary"
-              disabled={busy || sending}
-              onClick={props.onPhone}
-            >
-              Телефон и подарок
-            </Button>
-          </div>
-          <Button variant="secondary" onClick={props.onFavorites}>
-            Избранные сообщения
-          </Button>
-          <Button variant="secondary" onClick={props.onPassword}>
-            Изменить пароль
-          </Button>
-          {["admin", "super_admin"].includes(board.user.role ?? "") && (
-            <p>
-              <Link href="/admin">Открыть админку сервиса</Link>
-            </p>
-          )}
-          <p>
-            Бюджет, срок переезда и тип жилья можно уточнить в диалоге, когда
-            будете готовы.
-          </p>
-        </Card>
+        <AccountProfile
+          key={board.user.id}
+          userId={board.user.id}
+          sessionSignal={props.sessionSignal}
+          onAccessDenied={props.onAccessDenied}
+          access={board.aiAccess}
+          disabled={busy || sending}
+          admin={["admin", "super_admin"].includes(board.user.role ?? "")}
+          onBalance={props.onBalance}
+          onPhone={props.onPhone}
+          onFavorites={props.onFavorites}
+          onPassword={props.onPassword}
+        />
       ) : (
         <div className="conversation-workspace">
           {sidebar}

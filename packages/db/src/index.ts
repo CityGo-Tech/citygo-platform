@@ -5,6 +5,10 @@ export { MessageFavorites } from "./message-favorites.js";
 export { PersonalPlan } from "./personal-plan.js";
 export { ServiceConsents } from "./service-consents.js";
 export {
+  AccountProfile,
+  type AccountProfileContext,
+} from "./account-profile.js";
+export {
   buildServiceConsentPolicy,
   consentPolicyHash,
   readServiceConsentContext,

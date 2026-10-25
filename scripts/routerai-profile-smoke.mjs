@@ -194,6 +194,7 @@ async function mountedProfileSmoke({
         "email_registrations",
         "email_registration_rate_events",
         "account_email_verifications",
+        "account_email_confirmation_challenges",
         "phone_verification_sends",
         "phone_welcome_claims",
       ])

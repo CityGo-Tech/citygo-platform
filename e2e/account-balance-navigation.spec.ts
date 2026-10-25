@@ -82,6 +82,17 @@ async function install(
       calls.dashboard++;
       return route.fulfill({ json: board });
     }
+    if (path === "/api/v1/account/profile" && request.method() === "GET")
+      return route.fulfill({
+        json: {
+          userId: board.user.id,
+          email: board.user.email,
+          emailVerified: true,
+          phoneVerified: false,
+          giftStatus: "available",
+          emailConfirmation: "available",
+        },
+      });
     if (
       path === "/api/v1/phone-verification/policy" &&
       request.method() === "GET"
