@@ -497,9 +497,11 @@ test("a saved acceptance followed by a failed refresh never sends; later refresh
   await page.goto("/");
   await mandatory(page).check();
   await accept(page).click();
-  await expect(page.getByRole("alert")).toContainText(
-    "Не удалось загрузить тестовый кабинет",
-  );
+  await expect(
+    page.getByRole("alert").filter({
+      hasText: "Не удалось загрузить тестовый кабинет",
+    }),
+  ).toHaveText("Не удалось загрузить тестовый кабинет");
   expect(state.granted).toBe(true);
   expect(state.choices).toHaveLength(1);
   expect(state.streamPosts).toEqual([]);
