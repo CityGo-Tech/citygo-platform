@@ -32,6 +32,7 @@ function render(access: AiAccess) {
     createElement(AiAccessPanel, {
       access,
       busy: false,
+      balanceOnly: true,
       onConsent() {},
     }),
   ).replace(/<!--.*?-->/g, "");
@@ -86,22 +87,27 @@ test("dedicated wallet has no AI-consent mutations or stale SMS availability cla
   );
 });
 
-test("chat with account navigation has no second wallet or payment form", () => {
-  const html = renderToStaticMarkup(
-    createElement(AiAccessPanel, {
-      access: balance(0),
-      busy: false,
-      onBalance() {},
-      onConsent() {},
-    }),
+test("wallet is independent of AI consent and never includes the removed pre-chat card", () => {
+  const access = balance(23_000_000);
+  access.policy = {
+    id: "a".repeat(64),
+    version: "synthetic-policy",
+    provider: "routerai",
+    model: "synthetic/private-model",
+    recipient: "SYNTHETIC_PRIVATE_RECIPIENT",
+    routing: "SYNTHETIC_PRIVATE_ROUTING",
+    data: "SYNTHETIC_PRIVATE_DATA",
+  };
+  const grantedHtml = render(access);
+  access.granted = false;
+  const ungrantedHtml = render(access);
+  assert.equal(ungrantedHtml, grantedHtml);
+  assert.match(ungrantedHtml, /id="citygo-balance"/);
+  assert.match(ungrantedHtml, /23 ₽ CityGo/);
+  assert.doesNotMatch(
+    ungrantedHtml,
+    /Перед началом|Настройки обработки сообщений|Условия обработки сообщений|Отозвать согласие|SYNTHETIC_PRIVATE|<input[^>]+checkbox|<h2/,
   );
-  assert.match(html, /Баланс и пополнение/);
-  assert.doesNotMatch(html, /id="citygo-balance"|Сумма пополнения/);
-  assert.match(
-    html,
-    /<details><summary>Настройки обработки сообщений<\/summary>/,
-  );
-  assert.match(html, /Отозвать согласие/);
 });
 
 test("wallet history keeps customer operations and hides temporary holds and releases", () => {

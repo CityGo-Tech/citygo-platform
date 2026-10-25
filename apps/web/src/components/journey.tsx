@@ -3,7 +3,6 @@ import Image from "next/image";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import type {
   AgentKey,
-  AiConsentInput,
   Dashboard,
   ConversationSummary,
   Quest,
@@ -16,7 +15,6 @@ import {
   Progress,
 } from "@citygo/ui-web";
 import { questChecklist } from "@citygo/content";
-import { AiAccessPanel } from "./ai-access";
 import type { TopupActions } from "./test-topup";
 import { FavoriteButton } from "./message-favorites";
 import { EmptyAiCreditHint, messageInterruptionLabel } from "./chat-readiness";
@@ -48,7 +46,6 @@ export type JourneyProps = {
   onText: (value: string) => void;
   onChat: (event: FormEvent) => void;
   onStop: () => void;
-  onConsent: (input: AiConsentInput) => void;
   onStart: (id: string) => Promise<boolean>;
   onComplete: (id: string) => Promise<boolean>;
   onBegin?: (agentKey?: AgentKey) => Promise<boolean>;
@@ -142,7 +139,6 @@ export function Journey(props: JourneyProps) {
     !!board.thread &&
     !board.thread.closed &&
     board.provider !== "unconfigured" &&
-    !!board.aiAccess?.granted &&
     !props.history?.detached &&
     !busy;
   const checkedCount = checks.filter(Boolean).length;
@@ -391,21 +387,6 @@ export function Journey(props: JourneyProps) {
                 Помощник временно недоступен. Попробуйте позже.
               </p>
             )}
-            <AiAccessPanel
-              userId={board.user.id}
-              key={`${board.user.id}:${board.aiAccess?.policy?.id}:${board.aiAccess?.granted}`}
-              access={
-                board.aiAccess ?? {
-                  policy: null,
-                  granted: false,
-                  dailyLimit: 0,
-                }
-              }
-              busy={busy}
-              onConsent={props.onConsent}
-              topups={props.topups}
-              onBalance={props.onBalance}
-            />
             {!board.thread && (
               <Card>
                 <p>Начните жилищный квест, чтобы открыть диалог.</p>

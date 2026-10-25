@@ -3,7 +3,6 @@ import { useRef, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { Button, Card, Badge, AssistantMessage } from "@citygo/ui-web";
-import { AiAccessPanel } from "./ai-access";
 import { agentNames, type JourneyProps } from "./journey";
 import { FavoriteButton } from "./message-favorites";
 import { EmptyAiCreditHint, messageInterruptionLabel } from "./chat-readiness";
@@ -63,7 +62,6 @@ export function ConversationHome(props: JourneyProps) {
   const canSend =
     !!board.thread &&
     board.provider !== "unconfigured" &&
-    board.aiAccess.granted &&
     !board.thread.closed &&
     !props.history?.detached &&
     !busy;
@@ -428,17 +426,6 @@ export function ConversationHome(props: JourneyProps) {
                 </form>
               )}
             </Card>
-            {board.thread && (
-              <AiAccessPanel
-                key={`${board.user.id}:${board.aiAccess.policy?.id}:${board.aiAccess.granted}`}
-                access={board.aiAccess}
-                busy={busy}
-                onConsent={props.onConsent}
-                userId={board.user.id}
-                topups={props.topups}
-                onBalance={props.onBalance}
-              />
-            )}
           </div>
           {rail}
         </div>

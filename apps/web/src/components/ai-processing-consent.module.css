@@ -1,0 +1,80 @@
+.dialog {
+  width: min(560px, calc(100% - 32px));
+  max-height: calc(100dvh - 48px);
+  margin: auto;
+  padding: 28px;
+  overflow: auto;
+  border: 1px solid var(--cg-color-border);
+  border-radius: 24px;
+  color: var(--cg-color-foreground);
+  background: var(--cg-color-surface, #fff);
+  font: inherit;
+  box-shadow: 0 20px 64px #11182729;
+}
+.dialog[open],
+.settings {
+  display: grid;
+  gap: 16px;
+}
+.dialog::backdrop {
+  background: #11182780;
+}
+.dialog h2,
+.dialog p,
+.settings h2,
+.settings p {
+  margin: 0;
+}
+.terms {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.terms summary {
+  width: fit-content;
+  max-width: 100%;
+  color: var(--cg-color-primary-strong);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.terms summary:focus-visible {
+  outline: 3px solid var(--cg-color-primary-strong);
+  outline-offset: 3px;
+}
+.terms > div {
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+  font-size: 14px;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.actions button {
+  flex: 1 1 auto;
+}
+.settings {
+  min-width: 0;
+  padding-top: 20px;
+  border-top: 1px solid var(--cg-color-border);
+}
+.settings button {
+  justify-self: start;
+  max-width: 100%;
+  white-space: normal;
+}
+@media (max-width: 480px) {
+  .dialog {
+    max-height: calc(100dvh - 32px);
+    padding: 20px;
+    border-radius: 20px;
+  }
+  .actions {
+    flex-direction: column;
+  }
+  .actions button {
+    width: 100%;
+  }
+}
