@@ -73,6 +73,11 @@ grant update (code_hash,delivery,attempts,consumed_at,invalidated_at)
 grant select, insert on personal_plan_items to citygo_api;
 grant update (title,details,status,revision,updated_at,deleted_at)
   on personal_plan_items to citygo_api;
+-- Confirmed private facts retain their creation identity; removing a fact clears
+-- its text and keeps only a replay tombstone. Worker has no memory access.
+grant select, insert on personal_memory_items to citygo_api;
+grant update (label,value,revision,updated_at,deleted_at)
+  on personal_memory_items to citygo_api;
 -- Phone identity policy is operator-bound, never writable/bindable by API.
 -- Quotas and spent gift rights are retained append-only; Worker gets no access.
 grant select on phone_verification_control to citygo_api;

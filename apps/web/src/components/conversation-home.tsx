@@ -25,6 +25,7 @@ import {
 } from "./personal-plan";
 import planStyles from "./personal-plan.module.css";
 import { accountStyles } from "./account-overview";
+import { PersonalMemoryComposer, PersonalMemoryPanel } from "./personal-memory";
 
 const topics = [
   ["Понять и спланировать", "Не понимаю, с чего начать переезд в Москву."],
@@ -46,6 +47,10 @@ export function ConversationHome(props: JourneyProps) {
   const [showList, setShowList] = useState(false);
   const [planSource, setPlanSource] = useState<PlanMessageSource | null>(null);
   const [planGeneration, setPlanGeneration] = useState(0);
+  const [memorySource, setMemorySource] = useState<PlanMessageSource | null>(
+    null,
+  );
+  const [memoryGeneration, setMemoryGeneration] = useState(0);
   const { board, busy, sending } = props;
   const log = useRef<HTMLDivElement>(null);
   const historyScroll = useHistoryScrollAnchor(
@@ -76,6 +81,7 @@ export function ConversationHome(props: JourneyProps) {
     const started = await props.onBegin?.(key);
     if (started) {
       setPlanSource(null);
+      setMemorySource(null);
       setTab("Диалоги");
       setShowList(false);
     }
@@ -85,6 +91,7 @@ export function ConversationHome(props: JourneyProps) {
     const opened = await props.onOpenConversation?.(id);
     if (opened) {
       setPlanSource(null);
+      setMemorySource(null);
       setTab("Диалоги");
       setShowList(false);
     }
@@ -143,6 +150,13 @@ export function ConversationHome(props: JourneyProps) {
         >
           Сменить помощника
         </Button>
+        <Button
+          variant="secondary"
+          disabled={busy || sending}
+          onClick={() => setTab("Память")}
+        >
+          Память разговора
+        </Button>
         <small>
           Ответы AI — ориентир, не проверенная сделка и не бронирование.
         </small>
@@ -191,7 +205,47 @@ export function ConversationHome(props: JourneyProps) {
           }}
         />
       )}
-      {tab === "Мой план" ? (
+      {memorySource && (
+        <PersonalMemoryComposer
+          key={board.user.id + ":memory:" + memorySource.messageId}
+          userId={board.user.id}
+          sessionSignal={props.sessionSignal}
+          onAccessDenied={props.onAccessDenied}
+          source={memorySource}
+          onSaved={() => {
+            setMemorySource(null);
+            setMemoryGeneration((current) => current + 1);
+            setTab("Память");
+          }}
+          onCancel={(checkMemory) => {
+            setMemorySource(null);
+            if (checkMemory) {
+              setMemoryGeneration((current) => current + 1);
+              setTab("Память");
+            }
+          }}
+        />
+      )}
+      {tab === "Память" ? (
+        <div className={"conversation-workspace " + planStyles.workspace}>
+          {sidebar}
+          <div className="conversation-main">
+            <PersonalMemoryPanel
+              key={board.user.id + ":memory:" + memoryGeneration}
+              userId={board.user.id}
+              sessionSignal={props.sessionSignal}
+              onAccessDenied={props.onAccessDenied}
+              navigationBusy={busy || sending}
+              onOpenConversation={open}
+              onContinue={() => {
+                setTab("Диалоги");
+                setShowList(false);
+              }}
+            />
+          </div>
+          {rail}
+        </div>
+      ) : tab === "Мой план" ? (
         <div className={"conversation-workspace " + planStyles.workspace}>
           {sidebar}
           <div className="conversation-main">
@@ -257,6 +311,13 @@ export function ConversationHome(props: JourneyProps) {
           </div>
           <Button variant="secondary" onClick={props.onFavorites}>
             Избранные сообщения
+          </Button>
+          <Button
+            variant="secondary"
+            disabled={busy || sending}
+            onClick={() => setTab("Память")}
+          >
+            Память разговора
           </Button>
           <Button variant="secondary" onClick={props.onPassword}>
             Изменить пароль
@@ -359,7 +420,9 @@ export function ConversationHome(props: JourneyProps) {
                     />
                     <Button
                       variant="ghost"
-                      disabled={busy || sending || !!planSource}
+                      disabled={
+                        busy || sending || !!planSource || !!memorySource
+                      }
                       onClick={() =>
                         setPlanSource({
                           messageId: message.id,
@@ -371,6 +434,25 @@ export function ConversationHome(props: JourneyProps) {
                     >
                       Добавить шаг в план
                     </Button>
+                    {message.status === "complete" &&
+                      message.content.trim() && (
+                        <Button
+                          variant="ghost"
+                          disabled={
+                            busy || sending || !!planSource || !!memorySource
+                          }
+                          onClick={() =>
+                            setMemorySource({
+                              messageId: message.id,
+                              threadId: board.thread!.id,
+                              role: message.role,
+                              content: message.content,
+                            })
+                          }
+                        >
+                          Запомнить
+                        </Button>
+                      )}
                   </article>
                 ))}
                 {props.pending && (

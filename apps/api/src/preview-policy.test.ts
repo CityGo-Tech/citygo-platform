@@ -54,7 +54,7 @@ test("policy preview ignores inherited credentials, approvals and runtime config
   assert.doesNotMatch(result.stdout, /canary/);
 });
 
-test("owner-approved CN public snapshot is pinned explicitly and preview does not inherit activation or secrets", () => {
+test("memory preview does not reuse the historical CN approval or inherit activation and secrets", () => {
   const fields = JSON.parse(
     readFileSync(
       new URL(
@@ -81,8 +81,9 @@ test("owner-approved CN public snapshot is pinned explicitly and preview does no
   const result = preview(fields);
   assert.equal(result.status, 0, result.stderr);
   const policy = JSON.parse(result.stdout);
-  assert.equal(policy.id, approvedId);
-  assert.equal(policy.version, "ai-recipient-v2");
+  assert.notEqual(policy.id, approvedId);
+  assert.equal(policy.version, "ai-recipient-v3-confirmed-memory");
+  assert.match(policy.data, /явно сохранённых вами в памяти разговора/);
   assert.equal(policy.provider, "routerai");
   assert.equal(policy.recipient, "RouterAI");
   assert.ok(policy.data.endsWith(fields.ROUTERAI_DATA_NOTICE));

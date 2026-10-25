@@ -53,6 +53,13 @@ export function upgrade18RewindSql() {
     drop table payment_admission_commands,payment_admission_reconciliation_events,payment_admission;
     drop function citygo_guard_payment_admission_history();
     do $$ begin
+      if exists(select 1 from personal_memory_items) then
+        raise exception 'Personal memory history cannot be rewound';
+      end if;
+    end $$;
+    drop table personal_memory_items;
+    drop function citygo_guard_personal_memory_item();
+    do $$ begin
       if exists(select 1 from service_consent_events)
         or exists(select 1 from email_registrations where consent_choice is not null) then
         raise exception 'Service consent history cannot be rewound';
@@ -148,7 +155,7 @@ export function upgrade18RewindSql() {
     alter table payment_topup_orders add constraint payment_topup_orders_test_check check(test);
     ${legacyFunction}
     delete from citygo_migrations where name in (
-      '0019_yookassa_live_orders.sql','0020_ai_budget_provider_balance.sql','0021_payment_notifications.sql','0022_payment_admission.sql','0023_payment_receipt_snapshots.sql','0024_ai_credit_overdraft.sql','0025_assistant_conversations.sql','0026_email_registration.sql','0027_phone_verification.sql','0028_password_recovery.sql','0029_personal_plan.sql','0030_service_consents.sql');
+      '0019_yookassa_live_orders.sql','0020_ai_budget_provider_balance.sql','0021_payment_notifications.sql','0022_payment_admission.sql','0023_payment_receipt_snapshots.sql','0024_ai_credit_overdraft.sql','0025_assistant_conversations.sql','0026_email_registration.sql','0027_phone_verification.sql','0028_password_recovery.sql','0029_personal_plan.sql','0030_service_consents.sql','0031_personal_memory.sql');
     commit`;
 }
 
@@ -336,6 +343,7 @@ export async function releaseUpgrade18Smoke({
       "0028_password_recovery.sql",
       "0029_personal_plan.sql",
       "0030_service_consents.sql",
+      "0031_personal_memory.sql",
     ],
   );
   const expectedJournal = migrations.map(({ name }) => ({

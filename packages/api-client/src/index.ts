@@ -66,6 +66,13 @@ import {
   personalPlanPageSchema,
   personalPlanItemResultSchema,
   personalPlanRemoveResultSchema,
+  personalMemoryIdSchema,
+  createPersonalMemoryItemSchema,
+  updatePersonalMemoryItemSchema,
+  removePersonalMemoryItemSchema,
+  personalMemoryListSchema,
+  personalMemoryItemResultSchema,
+  personalMemoryRemoveResultSchema,
   conversationStartSchema,
   conversationListQuerySchema,
   conversationMessagesQuerySchema,
@@ -96,6 +103,8 @@ import {
   type StreamEvent,
   type CreatePersonalPlanItem,
   type UpdatePersonalPlanItem,
+  type CreatePersonalMemoryItem,
+  type UpdatePersonalMemoryItem,
   type ServiceConsentChoice,
 } from "@citygo/contracts";
 import {
@@ -724,6 +733,69 @@ export function createClient(
         throw new ApiError(
           200,
           "Ответ сервера не подтверждает удаление шага",
+          "invalid_response",
+        );
+      return result;
+    },
+    listPersonalMemory: () =>
+      request("/v1/personal-memory", personalMemoryListSchema),
+    createPersonalMemoryItem: async (input: CreatePersonalMemoryItem) => {
+      const body = createPersonalMemoryItemSchema.parse(input);
+      const result = await request(
+        "/v1/personal-memory",
+        personalMemoryItemResultSchema,
+        body,
+      );
+      // A replay can return a subsequently edited item. Its source is immutable.
+      if (result.item.source.messageId !== body.sourceMessageId)
+        throw new ApiError(
+          200,
+          "Ответ сервера не соответствует источнику сведения",
+          "invalid_response",
+        );
+      return result;
+    },
+    updatePersonalMemoryItem: async (
+      itemId: string,
+      input: UpdatePersonalMemoryItem,
+    ) => {
+      const id = personalMemoryIdSchema.parse(itemId);
+      const body = updatePersonalMemoryItemSchema.parse(input);
+      const result = await request(
+        "/v1/personal-memory/" + id,
+        personalMemoryItemResultSchema,
+        body,
+        "PATCH",
+      );
+      if (
+        result.item.id !== id ||
+        result.item.revision !== body.expectedRevision + 1 ||
+        result.item.label !== body.label ||
+        result.item.value !== body.value
+      )
+        throw new ApiError(
+          200,
+          "Ответ сервера не подтверждает изменение сведения",
+          "invalid_response",
+        );
+      return result;
+    },
+    removePersonalMemoryItem: async (
+      itemId: string,
+      expectedRevision: number,
+    ) => {
+      const id = personalMemoryIdSchema.parse(itemId);
+      const body = removePersonalMemoryItemSchema.parse({ expectedRevision });
+      const result = await request(
+        "/v1/personal-memory/" + id,
+        personalMemoryRemoveResultSchema,
+        body,
+        "DELETE",
+      );
+      if (result.itemId !== id)
+        throw new ApiError(
+          200,
+          "Ответ сервера не подтверждает удаление сведения",
           "invalid_response",
         );
       return result;
