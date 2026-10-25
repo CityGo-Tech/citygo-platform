@@ -2,7 +2,6 @@ import { randomUUID, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import {
   serviceConsentChoiceSchema,
-  serviceConsentPolicy,
   type ServiceConsentChoice,
   type ServiceConsentPolicy,
 } from "@citygo/contracts";
@@ -11,6 +10,10 @@ import {
   recordServiceConsent,
   validateServiceConsent,
 } from "./service-consents.js";
+import {
+  readServiceConsentContext,
+  type ServiceAiPolicyResolver,
+} from "./service-consent-context.js";
 import type { Database, Sql } from "./index.js";
 import type { AccountInfo } from "./account-access.js";
 import { DomainError } from "./errors.js";
@@ -62,6 +65,29 @@ type PendingRegistration = {
 
 function invalid() {
   return new DomainError(400, "Код подтверждения недействителен или истёк");
+}
+function hasCurrentConsent(
+  current: PendingRegistration | undefined,
+  policy: ServiceConsentPolicy,
+) {
+  if (
+    !current?.consent_choice ||
+    !current.consent_policy ||
+    !current.consent_recorded_at ||
+    current.consent_choice.policyVersion !== current.consent_policy.version ||
+    consentPolicyHash(current.consent_policy) !== current.consent_policy_hash
+  )
+    return false;
+  if (
+    current.consent_choice.policyVersion !== policy.version ||
+    current.consent_policy_hash !== consentPolicyHash(policy)
+  )
+    throw new DomainError(
+      409,
+      "Условия изменились. Начните регистрацию заново и подтвердите новый текст согласия.",
+      "SERVICE_CONSENT_POLICY_CHANGED",
+    );
+  return true;
 }
 function parse<T>(schema: z.ZodType<T>, input: unknown): T {
   const parsed = schema.safeParse(input);
@@ -164,6 +190,7 @@ export class EmailRegistration {
   constructor(
     private db: Database,
     sendLimits?: EmailSendLimits,
+    private resolveAiPolicy?: ServiceAiPolicyResolver,
   ) {
     if (sendLimits !== undefined) {
       if (
@@ -189,9 +216,10 @@ export class EmailRegistration {
 
   async begin(raw: EmailRegistrationBegin) {
     const input = parse(beginSchema, raw);
-    validateServiceConsent(input.consents);
     if (input.email !== input.email.trim().toLowerCase()) throw invalid();
     return this.db.transaction(async (tx) => {
+      const context = await readServiceConsentContext(tx, this.resolveAiPolicy);
+      validateServiceConsent(input.consents, context.policy);
       await lockSecurity(tx);
       if (await accountExists(tx, input.email))
         throw new DomainError(409, "Аккаунт с этой почтой уже существует");
@@ -217,8 +245,8 @@ export class EmailRegistration {
             input.codeHash,
             input.recipientKey,
             JSON.stringify(input.consents),
-            JSON.stringify(serviceConsentPolicy),
-            consentPolicyHash(serviceConsentPolicy),
+            JSON.stringify(context.policy),
+            consentPolicyHash(context.policy),
           ],
         )
       ).rows[0]!;
@@ -253,19 +281,13 @@ export class EmailRegistration {
   async resend(raw: EmailRegistrationResend) {
     const input = parse(resendSchema, raw);
     return this.db.transaction(async (tx) => {
+      const context = await readServiceConsentContext(tx, this.resolveAiPolicy);
       await lockSecurity(tx);
       const current = await pending(tx, input.id);
       if (
         !current ||
         current.consumed_user_id ||
-        !current.consent_choice ||
-        !current.consent_policy ||
-        !current.consent_recorded_at ||
-        current.consent_choice.policyVersion !== serviceConsentPolicy.version ||
-        current.consent_policy_hash !==
-          consentPolicyHash(serviceConsentPolicy) ||
-        consentPolicyHash(current.consent_policy) !==
-          current.consent_policy_hash ||
+        !hasCurrentConsent(current, context.policy) ||
         !equal(current.proof_hash, input.proofHash) ||
         equal(current.code_hash, input.codeHash)
       )
@@ -288,19 +310,13 @@ export class EmailRegistration {
   async confirm(raw: EmailRegistrationConfirm): Promise<AccountInfo> {
     const input = parse(confirmSchema, raw);
     const result = await this.db.transaction(async (tx) => {
+      const context = await readServiceConsentContext(tx, this.resolveAiPolicy);
       await lockSecurity(tx);
       const current = await pending(tx, input.id);
       if (
         !current ||
         current.consumed_user_id ||
-        !current.consent_choice ||
-        !current.consent_policy ||
-        !current.consent_recorded_at ||
-        current.consent_choice.policyVersion !== serviceConsentPolicy.version ||
-        current.consent_policy_hash !==
-          consentPolicyHash(serviceConsentPolicy) ||
-        consentPolicyHash(current.consent_policy) !==
-          current.consent_policy_hash ||
+        !hasCurrentConsent(current, context.policy) ||
         current.expired ||
         current.delivery !== "sent" ||
         current.attempts >= 5 ||
@@ -329,14 +345,18 @@ export class EmailRegistration {
         "insert into user_credentials(user_id,email,password_hash) values ($1,$2,$3)",
         [user.id, current.email, current.password_hash],
       );
-      await recordServiceConsent(tx, {
-        userId: user.id,
-        email: current.email,
-        choice: current.consent_choice,
-        source: "email-registration",
-        registrationId: input.id,
-        choiceRecordedAt: current.consent_recorded_at,
-      });
+      await recordServiceConsent(
+        tx,
+        {
+          userId: user.id,
+          email: current.email,
+          choice: current.consent_choice!,
+          source: "email-registration",
+          registrationId: input.id,
+          choiceRecordedAt: current.consent_recorded_at!,
+        },
+        context,
+      );
       await tx.query(
         "update email_registrations set consumed_user_id=$2,consumed_at=clock_timestamp() where id=$1",
         [input.id, user.id],

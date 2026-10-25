@@ -20,10 +20,6 @@ test("real local API: favorite own and assistant messages survives reload; remov
   const text = "Сохранить мой вопрос: как начать переезд?";
   await page.getByLabel("Сообщение помощнику").fill(text);
   await page.getByRole("button", { name: "Отправить", exact: true }).click();
-  await page
-    .getByRole("dialog", { name: "Обработка сообщений", exact: true })
-    .getByRole("button", { name: "Разрешить и отправить", exact: true })
-    .click();
   const log = page.getByRole("log");
   await expect(log).toContainText("Тестовый ответ");
   await log

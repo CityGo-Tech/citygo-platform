@@ -57,11 +57,13 @@ async function fixture(t: TestContext) {
       db,
       "owner@example.test",
       "synthetic",
+      app,
     ),
     other = await registerSyntheticConsentingUser(
       db,
       "other@example.test",
       "synthetic",
+      app,
     );
   await db.query("update users set role='super_admin' where id=$1", [other]);
   const tokens = [randomUUID(), randomUUID()];

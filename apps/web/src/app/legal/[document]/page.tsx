@@ -1,17 +1,17 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import Link from "next/link";
-import { serviceConsentPolicy } from "@citygo/contracts";
+import { CurrentConsentDocument } from "../current-consent-document";
 import styles from "../legal.module.css";
 
 const documents = {
   "personal-data-consent": {
     title: "Согласие на обработку персональных данных",
-    document: serviceConsentPolicy.personalData,
+    purpose: "personalData" as const,
   },
   "marketing-consent": {
     title: "Согласие на рекламную рассылку",
-    document: serviceConsentPolicy.marketing,
+    purpose: "marketing" as const,
   },
 };
 
@@ -45,15 +45,7 @@ export default async function ConsentDocument({
       <Link className={styles.brand} href="/">
         CityGo
       </Link>
-      <article className={styles.paper}>
-        <h1>{entry.title}</h1>
-        <p className={styles.version}>
-          Редакция {serviceConsentPolicy.version}
-        </p>
-        {entry.document.text.split("\n\n").map((paragraph, index) => (
-          <p key={index}>{paragraph}</p>
-        ))}
-      </article>
+      <CurrentConsentDocument title={entry.title} purpose={entry.purpose} />
       <Link className={styles.back} href="/">
         Вернуться в CityGo
       </Link>

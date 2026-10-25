@@ -6,6 +6,7 @@ import {
   changeServiceConsent,
   createServiceConsentForm,
   currentServiceConsentForm,
+  registrationConsentMatchesPolicy,
   serviceConsentChoice,
 } from "./service-consent-state.js";
 
@@ -81,4 +82,70 @@ test("choices from another account, auth mode or session cannot be submitted", (
     }),
     null,
   );
+});
+
+test("native registration keeps the server's processing snapshot and never substitutes the separate legal policy version", () => {
+  const scope = { context: "register", signal: new AbortController().signal };
+  const registration = {
+    emailVerification: "disabled" as const,
+    consentPolicy: {
+      ...serviceConsentPolicy,
+      version: "synthetic-registration-processing-v2",
+      personalData: {
+        ...serviceConsentPolicy.personalData,
+        text: "Synthetic exact registration processing terms and AI recipient snapshot.",
+      },
+    },
+  };
+  const form = changeServiceConsent(
+    createServiceConsentForm(registration.consentPolicy, scope),
+    "personalData",
+    true,
+  );
+  const choice = serviceConsentChoice(form, scope)!;
+  assert.equal(form.policy, registration.consentPolicy);
+  assert.equal(
+    form.policy.personalData.text,
+    registration.consentPolicy.personalData.text,
+  );
+  assert.equal(choice.policyVersion, registration.consentPolicy.version);
+  assert.equal(
+    registrationConsentMatchesPolicy(choice, registration.consentPolicy),
+    true,
+  );
+  assert.equal(
+    registrationConsentMatchesPolicy(choice, serviceConsentPolicy),
+    false,
+  );
+  assert.equal(choice.marketing, false);
+});
+
+test("native registration preflight rejects a changed processing version without changing the captured choices", () => {
+  const scope = { context: "register", signal: new AbortController().signal };
+  const viewed = {
+    ...serviceConsentPolicy,
+    version: "synthetic-processing-viewed",
+  };
+  const next = {
+    ...serviceConsentPolicy,
+    version: "synthetic-processing-current",
+  };
+  const selected = changeServiceConsent(
+    changeServiceConsent(
+      createServiceConsentForm(viewed, scope),
+      "personalData",
+      true,
+    ),
+    "marketing",
+    true,
+  );
+  const choice = serviceConsentChoice(selected, scope)!;
+  const before = structuredClone(choice);
+  assert.equal(registrationConsentMatchesPolicy(choice, next), false);
+  assert.deepEqual(choice, before);
+  assert.equal(registrationConsentMatchesPolicy(undefined, next), false);
+  const fresh = createServiceConsentForm(next, scope);
+  assert.equal(serviceConsentChoice(fresh, scope), null);
+  assert.equal(fresh.personalData, false);
+  assert.equal(fresh.marketing, false);
 });

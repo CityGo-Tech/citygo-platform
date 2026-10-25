@@ -54,3 +54,13 @@ export function serviceConsentChoice(
       }
     : null;
 }
+
+/** Registration must submit the exact version the person read and selected. */
+export function registrationConsentMatchesPolicy(
+  choice: ServiceConsentChoice | undefined,
+  policy: ServiceConsentPolicy,
+): boolean {
+  return (
+    choice?.personalData === true && choice.policyVersion === policy.version
+  );
+}

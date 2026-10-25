@@ -36,3 +36,30 @@
   max-width: 816px;
   margin: 0 auto;
 }
+.choice {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.document {
+  margin-left: 28px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.document summary {
+  cursor: pointer;
+  color: var(--cg-color-primary-strong);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.document article {
+  margin-top: 12px;
+}
+.document p {
+  margin-bottom: 12px;
+  white-space: pre-wrap;
+}
+.version {
+  font-size: 12px;
+  color: var(--cg-color-primary-strong);
+}

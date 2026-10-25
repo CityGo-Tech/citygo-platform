@@ -1,10 +1,14 @@
-import { syntheticServiceConsents } from "./test-service-consents.js";
+import {
+  acceptSyntheticServiceConsents,
+  chooseSyntheticServiceConsents,
+  syntheticConsentsFor,
+  syntheticServiceConsents,
+} from "./test-service-consents.js";
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import { randomUUID } from "node:crypto";
 import {
   AccountAccess,
-  ServiceConsents,
   connectDatabase,
   migrate,
   type AccountInfo,
@@ -63,7 +67,6 @@ async function fixture(t: TestContext) {
   await migrate(db);
   const accounts = new AccountAccess(db);
   const bootstrap = await accounts.bootstrapAdmin(await hashPassword("admin"));
-  await new ServiceConsents(db).choose(bootstrap.id, syntheticServiceConsents);
   const provider = new SyntheticConversationProvider();
   const origin = "http://localhost:3000";
   const config = readConfig({
@@ -77,6 +80,7 @@ async function fixture(t: TestContext) {
   await seedTestBudget(db, config, { openai: provider });
   const currentApp = await buildApp({ db, provider, testing: true, config });
   cleanup.app = currentApp;
+  await chooseSyntheticServiceConsents(db, bootstrap.id, currentApp);
   const call = (
     method: "GET" | "POST",
     url: string,
@@ -122,7 +126,7 @@ async function fixture(t: TestContext) {
   ) => {
     const email = randomUUID() + "@example.test";
     const reply = await call("POST", "/v1/auth/register", "", {
-      consents: syntheticServiceConsents,
+      consents: await syntheticConsentsFor(currentApp),
       email,
       password,
       ...extra,
@@ -560,7 +564,7 @@ test("a fresh user's conversation starts without questionnaire and opening it ag
   assert.equal(f.provider.calls.length, 0);
 });
 
-test("profile-free chat still requires AI consent and sends unknown context only to the synthetic adapter", async (t) => {
+test("profile-free chat requires current service processing consent after revocation and sends unknown context only to the synthetic adapter", async (t) => {
   const f = await fixture(t);
   const user = await f.register();
   const start = await f.call("POST", "/v1/conversations/start", user.token, {});
@@ -574,19 +578,19 @@ test("profile-free chat still requires AI consent and sends unknown context only
     requestId: randomUUID(),
     policyId: board.aiAccess.policy!.id,
   });
+  const revoked = await f.call("POST", "/v1/ai/consent", user.token, {
+    action: "revoked",
+  });
+  assert.equal(revoked.statusCode, 200, revoked.body);
   const denied = await f.call("POST", url, user.token, body());
   assert.equal(denied.statusCode, 403, denied.body);
-  assert.equal(denied.json().code, "AI_CONSENT_REQUIRED");
+  assert.equal(denied.json().code, "SERVICE_CONSENT_REQUIRED");
   assert.equal(f.provider.calls.length, 0);
   assert.deepEqual(
     (await f.db.query("select count(*)::int as total from messages")).rows,
     [{ total: 0 }],
   );
-  const consent = await f.call("POST", "/v1/ai/consent", user.token, {
-    action: "granted",
-    policyId: board.aiAccess.policy!.id,
-  });
-  assert.equal(consent.statusCode, 200, consent.body);
+  await acceptSyntheticServiceConsents(f.app, user.token);
   const answer = await f.call("POST", url, user.token, body());
   assert.equal(answer.statusCode, 200, answer.body);
   assert.match(answer.body, /"type":"done"/);

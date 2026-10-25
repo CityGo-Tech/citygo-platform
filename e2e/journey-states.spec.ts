@@ -63,7 +63,7 @@ async function dashboard(page: Page, board: Dashboard) {
   );
 }
 
-test("internal daily budget stays hidden while processing terms remain available after reload", async ({
+test("internal processing and budget details stay out of the chat and there is no permanent consent area", async ({
   page,
 }) => {
   const board = fixture();
@@ -78,45 +78,18 @@ test("internal daily budget stays hidden while processing terms remain available
   await dashboard(page, board);
   await page.goto("/#chat");
   await expect(page.locator(".journey-chat .ai-access")).toHaveCount(0);
-  await page.getByRole("button", { name: "Согласия", exact: true }).click();
-  const access = page.getByRole("region", {
-    name: "Обработка сообщений",
-    exact: true,
-  });
-  expect(await access.innerText()).not.toMatch(
-    /резерв|RUB|500|120|380|03:00|OpenAI|test-model|×10/i,
-  );
-  const terms = access.getByText("Условия обработки сообщений", {
-    exact: true,
-  });
-  await expect(terms).toBeVisible();
   await expect(
-    access.getByRole("button", {
-      name: "Отозвать согласие на обработку сообщений",
-      exact: true,
-    }),
-  ).toBeVisible();
-  await terms.click();
-  await expect(access).toContainText("Обработку выполняет OpenAI.");
-  await expect(access).toContainText(board.aiAccess.policy!.routing);
-  await expect(access).toContainText(board.aiAccess.policy!.data);
-  await expect(access).not.toContainText("test-model");
-  await expect(
-    access.getByRole("button", {
-      name: "Отозвать согласие на обработку сообщений",
-      exact: true,
-    }),
-  ).toBeVisible();
-  await page.reload();
-  await page.getByRole("button", { name: "Согласия", exact: true }).click();
-  expect(await access.innerText()).not.toMatch(
+    page.getByRole("button", { name: "Согласия", exact: true }),
+  ).toHaveCount(0);
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  expect(await page.locator(".journey-chat").innerText()).not.toMatch(
     /резерв|RUB|500|120|380|03:00|OpenAI|test-model|×10/i,
   );
   board.aiAccess.budget.reservedTodayMicros = 500000000;
   board.aiAccess.budget.remainingMicros = 0;
   await page.reload();
-  await page.getByRole("button", { name: "Согласия", exact: true }).click();
-  expect(await access.innerText()).not.toMatch(
+  await expect(page.locator(".journey-chat .ai-access")).toHaveCount(0);
+  expect(await page.locator(".journey-chat").innerText()).not.toMatch(
     /резерв|RUB|500|03:00|OpenAI|test-model|×10/i,
   );
   expect(
@@ -308,92 +281,47 @@ for (const status of ["complete", "interrupted"] as const) {
   });
 }
 
-test("changed recipient cancels the first-send intent until a fresh explicit confirmation", async ({
+test("a legacy account requiring current registration terms exposes no chat or silent client AI grant", async ({
   page,
 }) => {
   const board = fixture();
+  board.user.serviceConsentRequired = true;
   board.aiAccess.granted = false;
-  let confirmations = 0;
-  let messages = 0;
+  let grants = 0,
+    messages = 0;
   await dashboard(page, board);
+  await page.route("**/api/v1/account/consents", (route) =>
+    route.fulfill({
+      json: {
+        policy: syntheticConsentPolicy,
+        personalDataGranted: false,
+        marketingGranted: false,
+        serviceConsentRequired: true,
+      },
+    }),
+  );
+  await page.route("**/api/v1/ai/consent", (route) => {
+    grants++;
+    return route.fulfill({ status: 500, json: { error: "Unexpected grant" } });
+  });
   await page.route("**/api/v1/threads/*/messages", (route) => {
     messages++;
-    expect(confirmations).toBe(2);
-    expect(route.request().postDataJSON().policyId).toBe("b".repeat(64));
-    board.thread!.messages = [
-      {
-        id: "explicit-second-policy-result",
-        role: "assistant",
-        agentKey: "housing",
-        status: "complete",
-        content: "Ответ после нового подтверждения",
-      },
-    ];
-    return route.fulfill({
-      contentType: "text/event-stream",
-      body: 'data: {"type":"delta","text":"Ответ после нового подтверждения"}\n\ndata: {"type":"done","messageId":"explicit-second-policy-result"}\n\n',
-    });
-  });
-  await page.route("**/api/v1/ai/consent", (route) => {
-    confirmations++;
-    const input = route.request().postDataJSON();
-    expect(input.action).toBe("granted");
-    if (confirmations === 1) {
-      expect(input.policyId).toBe("a".repeat(64));
-      board.provider = "routerai";
-      board.aiAccess.policy = {
-        ...board.aiAccess.policy!,
-        id: "b".repeat(64),
-        provider: "routerai",
-        recipient: "RouterAI",
-        model: "test/new-model",
-        routing: "Дополнительный получатель: test-upstream",
-      };
-      return route.fulfill({
-        status: 409,
-        json: { error: "AI-получатель изменился", code: "AI_POLICY_CHANGED" },
-      });
-    }
-    expect(input.policyId).toBe("b".repeat(64));
-    board.aiAccess.granted = true;
-    return route.fulfill({ json: { ok: true } });
+    return route.fulfill({ status: 500, json: { error: "Unexpected send" } });
   });
   await page.goto("/#chat");
-  const draft = "Помоги с переездом после смены получателя";
-  await page.getByLabel("Сообщение помощнику").fill(draft);
-  await page.getByRole("button", { name: "Отправить", exact: true }).click();
-  const dialog = page.getByRole("dialog", {
-    name: "Обработка сообщений",
-    exact: true,
-  });
-  const confirm = dialog.getByRole("button", {
-    name: "Разрешить и отправить",
-    exact: true,
-  });
-  await confirm.click();
-  await expect(page.locator(".alert[role='alert']")).toContainText(
-    "Условия обновились",
-  );
-  await expect(dialog).toHaveCount(0);
-  await expect(page.getByLabel("Сообщение помощнику")).toHaveValue(draft);
-  expect(confirmations).toBe(1);
-  expect(messages).toBe(0);
-  await page.getByRole("button", { name: "Отправить", exact: true }).click();
-  await expect(dialog).toBeVisible();
-  expect(await dialog.innerText()).not.toContain("RouterAI");
-  await dialog
-    .getByText("Условия обработки сообщений", { exact: true })
-    .click();
   await expect(
-    dialog.getByText("Обработку выполняет RouterAI.", { exact: true }),
+    page.getByRole("heading", {
+      name: "Согласие для работы сервиса",
+      exact: true,
+    }),
   ).toBeVisible();
-  await expect(dialog).not.toContainText("test/new-model");
-  await confirm.click();
-  await expect(page.getByRole("log")).toContainText(
-    "Ответ после нового подтверждения",
-  );
-  expect(confirmations).toBe(2);
-  expect(messages).toBe(1);
+  await expect(
+    page.locator("input[name=personalDataConsent]"),
+  ).not.toBeChecked();
+  await expect(page.getByLabel("Сообщение помощнику")).toHaveCount(0);
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  expect(grants).toBe(0);
+  expect(messages).toBe(0);
 });
 
 test("plan, chat and completion fit 320px, tablet and desktop; back navigation works", async ({

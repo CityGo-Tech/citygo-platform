@@ -12,7 +12,7 @@ export default function LegalDocuments() {
       </Link>
       <article className={styles.paper}>
         <h1>Документы CityGo</h1>
-        <p>Согласия оформляются отдельно. Рассылка добровольная.</p>
+        <p>Условия обработки данных CityGo. Рассылка добровольная.</p>
         <ul className={styles.links}>
           <li>
             <Link href={serviceConsentPolicy.personalData.url}>

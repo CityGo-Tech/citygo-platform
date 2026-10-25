@@ -9,7 +9,6 @@ import {
   completionSchema,
   questStartSchema,
   registrationWithConsentsSchema,
-  serviceConsentPolicy,
   serviceConsentChoiceSchema,
   loginSchema,
   changePasswordSchema,
@@ -39,6 +38,7 @@ import {
   type StreamEvent,
   type ModelGeneration,
   type AiPolicy,
+  type AiRouting,
   type HousingStorageLimits,
 } from "@citygo/contracts";
 import {
@@ -222,7 +222,9 @@ export async function buildApp(options: {
     config.AI_CREDIT_RESERVATION_MODE,
   );
   const accounts = new AccountAccess(options.db);
-  const serviceConsents = new ServiceConsents(options.db);
+  const registrationAiPolicy = (routing: AiRouting) =>
+    control.resolve(routing).policy;
+  const serviceConsents = new ServiceConsents(options.db, registrationAiPolicy);
   const credit = new AiCreditLedger(
     options.db,
     chargingStatus,
@@ -617,6 +619,7 @@ export async function buildApp(options: {
   }
   registerEmailRegistration(app, {
     db: options.db,
+    policyResolver: registrationAiPolicy,
     mode: config.EMAIL_REGISTRATION_MODE,
     secret: config.EMAIL_REGISTRATION_SECRET,
     delivery:
@@ -739,7 +742,7 @@ export async function buildApp(options: {
       },
     );
   }
-  app.get("/v1/legal/consent-policy", async () => serviceConsentPolicy);
+  app.get("/v1/legal/consent-policy", async () => serviceConsents.policy());
   app.get("/v1/account/consents", async (request) => {
     const user = await authenticate(request, true);
     return serviceConsents.state(user.id);
