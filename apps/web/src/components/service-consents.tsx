@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { createClient } from "@citygo/api-client";
+import { ApiError, createClient } from "@citygo/api-client";
 import type {
   ServiceConsentChoice,
   ServiceConsentPolicy,
@@ -26,63 +26,64 @@ export function ConsentChoices({
 }) {
   return (
     <fieldset className={styles.choices} disabled={disabled}>
-      <legend>Согласия</legend>
-      <label>
-        <input
-          type="checkbox"
-          name="personalDataConsent"
-          aria-label={policy.personalData.label}
-          checked={personalData}
-          onChange={(event) => onPersonalData(event.target.checked)}
-          required
-        />
-        <span>
-          {policy.personalData.label} <span aria-hidden="true">*</span>{" "}
-          <a
-            href={policy.personalData.url}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Читать согласие
-          </a>
-        </span>
-      </label>
-      <label>
-        <input
-          type="checkbox"
-          name="marketingConsent"
-          aria-label={policy.marketing.label}
-          checked={marketing}
-          onChange={(event) => onMarketing(event.target.checked)}
-        />
-        <span>
-          {policy.marketing.label}{" "}
-          <a
-            href={policy.marketing.url}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Читать согласие
-          </a>
-        </span>
-      </label>
-      <small>* Обязательно для регистрации и работы сервиса.</small>
+      <legend>Условия работы</legend>
+      {(["personalData", "marketing"] as const).map((purpose) => {
+        const document = policy[purpose];
+        const required = purpose === "personalData";
+        return (
+          <div key={purpose} className={styles.choice}>
+            <label>
+              <input
+                type="checkbox"
+                name={required ? "personalDataConsent" : "marketingConsent"}
+                aria-label={document.label}
+                checked={required ? personalData : marketing}
+                onChange={(event) =>
+                  (required ? onPersonalData : onMarketing)(
+                    event.target.checked,
+                  )
+                }
+                required={required}
+              />
+              <span>
+                {document.label}
+                {required && <span aria-hidden="true"> *</span>}
+              </span>
+            </label>
+            <details
+              key={policy.version + ":" + purpose}
+              className={styles.document}
+            >
+              <summary>
+                Читать согласие{" "}
+                {required ? "на обработку данных" : "на рассылку"}
+              </summary>
+              <article aria-label={document.label}>
+                <p className={styles.version}>Редакция {policy.version}</p>
+                {document.text.split("\n\n").map((paragraph, index) => (
+                  <p key={index}>{paragraph}</p>
+                ))}
+              </article>
+            </details>
+          </div>
+        );
+      })}
+      <small>
+        * Обязательно для регистрации и работы сервиса. Рассылка добровольная.
+      </small>
     </fieldset>
   );
 }
 
+/** A one-time required acceptance gate, never an account settings destination. */
 export function ServiceConsentsPanel({
   sessionSignal,
   onAccessDenied,
   onSaved,
-  onClose,
-  required,
 }: {
   sessionSignal: AbortSignal;
   onAccessDenied: () => void;
   onSaved: () => Promise<void>;
-  onClose?: () => void;
-  required: boolean;
 }) {
   const [state, setState] = useState<ServiceConsentState | null>(null);
   const [personalData, setPersonalData] = useState(false);
@@ -90,6 +91,7 @@ export function ServiceConsentsPanel({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [revision, setRevision] = useState(0);
+  const submitting = useRef(false);
   const denied = useRef(onAccessDenied);
   denied.current = onAccessDenied;
   const api = useMemo(
@@ -109,57 +111,68 @@ export function ServiceConsentsPanel({
     void api
       .accountConsents()
       .then((next) => {
-        if (!active || sessionSignal.aborted) return;
-        setState(next);
-        // An existing-account gate always requires a fresh explicit choice.
-        if (!required) {
-          setPersonalData(next.personalDataGranted);
-          setMarketing(next.marketingGranted);
-        }
+        if (active && !sessionSignal.aborted) setState(next);
       })
-      .catch((error: unknown) => {
+      .catch((cause: unknown) => {
         if (active && !sessionSignal.aborted)
           setError(
-            error instanceof Error
-              ? error.message
-              : "Не удалось загрузить согласия.",
+            cause instanceof Error
+              ? cause.message
+              : "Не удалось загрузить условия.",
           );
       });
     return () => {
       active = false;
     };
-  }, [api, sessionSignal, revision, required]);
+  }, [api, sessionSignal, revision]);
   async function save() {
-    if (!state || !personalData || busy || sessionSignal.aborted) return;
+    if (
+      !state ||
+      !personalData ||
+      busy ||
+      submitting.current ||
+      sessionSignal.aborted
+    )
+      return;
     const choice: ServiceConsentChoice = {
       policyVersion: state.policy.version,
       personalData: true,
       marketing,
     };
+    submitting.current = true;
     setBusy(true);
     setError("");
     try {
       await api.setAccountConsents(choice);
       if (!sessionSignal.aborted) await onSaved();
-    } catch (error) {
-      if (!sessionSignal.aborted)
-        setError(
-          error instanceof Error
-            ? error.message
-            : "Не удалось сохранить согласия.",
-        );
+    } catch (cause) {
+      if (!sessionSignal.aborted) {
+        if (cause instanceof ApiError && cause.status === 409) {
+          // Fresh snapshots always require a fresh explicit checkbox choice.
+          setState(null);
+          setPersonalData(false);
+          setMarketing(false);
+          setRevision((value) => value + 1);
+        } else {
+          setError(
+            cause instanceof Error
+              ? cause.message
+              : "Не удалось сохранить выбор.",
+          );
+        }
+      }
     } finally {
+      submitting.current = false;
       if (!sessionSignal.aborted) setBusy(false);
     }
   }
   return (
     <Card className={styles.panel} aria-labelledby="service-consents-heading">
-      <h1 id="service-consents-heading">
-        {required ? "Согласие для работы сервиса" : "Ваши согласия"}
-      </h1>
-      {required && (
-        <p>Для продолжения нужно согласие на обработку персональных данных.</p>
-      )}
+      <h1 id="service-consents-heading">Согласие для работы сервиса</h1>
+      <p>
+        Обновились условия CityGo. Прочитайте их и подтвердите выбор, чтобы
+        продолжить.
+      </p>
       {error && <p role="alert">{error}</p>}
       {state ? (
         <form
@@ -177,28 +190,19 @@ export function ServiceConsentsPanel({
             onMarketing={setMarketing}
           />
           <Button type="submit" disabled={busy || !personalData}>
-            {busy
-              ? "Сохраняем…"
-              : required
-                ? "Продолжить"
-                : "Сохранить согласия"}
+            {busy ? "Сохраняем…" : "Принять и продолжить"}
           </Button>
         </form>
       ) : (
-        !error && <p role="status">Загружаем согласия…</p>
+        !error && <p role="status">Загружаем условия…</p>
       )}
       <Button
         variant="secondary"
         disabled={busy}
         onClick={() => setRevision((value) => value + 1)}
       >
-        Обновить согласия
+        Обновить условия
       </Button>
-      {onClose && (
-        <Button variant="ghost" onClick={onClose}>
-          Назад
-        </Button>
-      )}
     </Card>
   );
 }

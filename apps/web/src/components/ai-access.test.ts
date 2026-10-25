@@ -32,8 +32,6 @@ function render(access: AiAccess) {
     createElement(AiAccessPanel, {
       access,
       busy: false,
-      balanceOnly: true,
-      onConsent() {},
     }),
   ).replace(/<!--.*?-->/g, "");
 }
@@ -70,9 +68,7 @@ test("dedicated wallet has no AI-consent mutations or stale SMS availability cla
     createElement(AiAccessPanel, {
       access: balance(0),
       busy: false,
-      balanceOnly: true,
       onPhone() {},
-      onConsent() {},
     }),
   );
   assert.match(html, /id="citygo-balance"/);

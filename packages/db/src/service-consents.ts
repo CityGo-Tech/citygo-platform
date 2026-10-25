@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import {
   serviceConsentChoiceSchema,
   serviceConsentPolicy,
@@ -8,30 +8,25 @@ import {
 } from "@citygo/contracts";
 import type { Database, Sql } from "./index.js";
 import { DomainError } from "./errors.js";
+import {
+  consentPolicyHash,
+  readServiceConsentContext,
+  type ServiceAiPolicyResolver,
+  type ServiceConsentContext,
+} from "./service-consent-context.js";
+export { consentPolicyHash } from "./service-consent-context.js";
 
-// JSONB may reorder keys; sort recursively so the digest survives SQL storage.
-function canonical(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonical);
-  if (value && typeof value === "object")
-    return Object.fromEntries(
-      Object.entries(value)
-        .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
-        .map(([key, item]) => [key, canonical(item)]),
-    );
-  return value;
-}
-export const consentPolicyHash = (policy: ServiceConsentPolicy) =>
-  createHash("sha256")
-    .update(JSON.stringify(canonical(policy)))
-    .digest("hex");
-export function validateServiceConsent(raw: unknown): ServiceConsentChoice {
+export function validateServiceConsent(
+  raw: unknown,
+  policy: ServiceConsentPolicy = serviceConsentPolicy,
+): ServiceConsentChoice {
   const choice = serviceConsentChoiceSchema.safeParse(raw);
   if (!choice.success)
     throw new DomainError(
       400,
       "Для регистрации необходимо явное согласие на обработку персональных данных",
     );
-  if (choice.data.policyVersion !== serviceConsentPolicy.version)
+  if (choice.data.policyVersion !== policy.version)
     throw new DomainError(
       409,
       "Текст согласия изменился. Ознакомьтесь с текущей версией и подтвердите выбор заново.",
@@ -40,16 +35,17 @@ export function validateServiceConsent(raw: unknown): ServiceConsentChoice {
   return choice.data;
 }
 
-async function state(tx: Sql, userId: string): Promise<ServiceConsentState> {
+async function state(
+  tx: Sql,
+  userId: string,
+  context: ServiceConsentContext,
+): Promise<ServiceConsentState> {
+  const { policy } = context;
   const latest = (
     await tx.query<{ purpose: string; decision: string }>(
       `select distinct on (purpose) purpose,decision from service_consent_events
      where user_id=$1 and policy_version=$2 and policy_hash=$3 order by purpose,id desc`,
-      [
-        userId,
-        serviceConsentPolicy.version,
-        consentPolicyHash(serviceConsentPolicy),
-      ],
+      [userId, policy.version, consentPolicyHash(policy)],
     )
   ).rows;
   const personalDataGranted = latest.some(
@@ -58,11 +54,19 @@ async function state(tx: Sql, userId: string): Promise<ServiceConsentState> {
   const marketingGranted = latest.some(
     (row) => row.purpose === "marketing" && row.decision === "granted",
   );
+  const aiGranted =
+    !context.aiPolicy ||
+    !!(
+      await tx.query(
+        "select 1 from ai_consents where user_id=$1 and policy_id=$2 and granted=true",
+        [userId, context.aiPolicy.id],
+      )
+    ).rows.length;
   return {
-    policy: serviceConsentPolicy,
+    policy,
     personalDataGranted,
     marketingGranted,
-    serviceConsentRequired: !personalDataGranted,
+    serviceConsentRequired: !personalDataGranted || !aiGranted,
   };
 }
 
@@ -78,22 +82,20 @@ export async function recordServiceConsent(
     registrationId?: string;
     choiceRecordedAt?: string;
   },
+  context: ServiceConsentContext,
 ) {
-  const choice = validateServiceConsent(input.choice);
-  const previous = await state(tx, input.userId);
+  const { policy } = context;
+  const choice = validateServiceConsent(input.choice, policy);
+  const previous = await state(tx, input.userId, context);
   const priorMarketing = (
     await tx.query<{ decision: string }>(
       `select decision from service_consent_events where user_id=$1 and policy_version=$2
      and policy_hash=$3 and purpose='marketing' order by id desc limit 1`,
-      [
-        input.userId,
-        choice.policyVersion,
-        consentPolicyHash(serviceConsentPolicy),
-      ],
+      [input.userId, choice.policyVersion, consentPolicyHash(policy)],
     )
   ).rows[0];
   const decisions: [string, string][] = [];
-  if (!previous.personalDataGranted)
+  if (previous.serviceConsentRequired)
     decisions.push(["personal-data", "granted"]);
   if (!priorMarketing || previous.marketingGranted !== choice.marketing)
     decisions.push([
@@ -113,25 +115,51 @@ export async function recordServiceConsent(
         input.email,
         input.registrationId ?? null,
         choice.policyVersion,
-        JSON.stringify(serviceConsentPolicy),
-        consentPolicyHash(serviceConsentPolicy),
+        JSON.stringify(policy),
+        consentPolicyHash(policy),
         purpose,
         decision,
         input.source,
         input.choiceRecordedAt ?? null,
       ],
     );
-  return state(tx, input.userId);
+  if (
+    context.aiPolicy &&
+    decisions.some(([purpose]) => purpose === "personal-data")
+  ) {
+    await tx.query(
+      "insert into ai_consents(user_id,policy_id,granted) values ($1,$2,true) on conflict (user_id) do update set policy_id=$2,granted=true,updated_at=now()",
+      [input.userId, context.aiPolicy.id],
+    );
+    await tx.query(
+      "insert into consent_events(user_id,consent_key,action,policy_version,details) values ($1,'ai-recipient','granted',$2,$3::jsonb)",
+      [input.userId, context.aiPolicy.id, JSON.stringify(context.aiPolicy)],
+    );
+  }
+  return state(tx, input.userId, context);
 }
 
 export class ServiceConsents {
-  constructor(private db: Database) {}
+  constructor(
+    private db: Database,
+    private resolveAiPolicy?: ServiceAiPolicyResolver,
+  ) {}
+  async policy() {
+    return this.db.transaction(
+      async (tx) =>
+        (await readServiceConsentContext(tx, this.resolveAiPolicy)).policy,
+    );
+  }
   async state(userId: string) {
-    return state(this.db, userId);
+    return this.db.transaction(async (tx) => {
+      const context = await readServiceConsentContext(tx, this.resolveAiPolicy);
+      return state(tx, userId, context);
+    });
   }
   async choose(userId: string, raw: unknown) {
-    const choice = validateServiceConsent(raw);
     return this.db.transaction(async (tx) => {
+      const context = await readServiceConsentContext(tx, this.resolveAiPolicy);
+      const choice = validateServiceConsent(raw, context.policy);
       const user = (
         await tx.query<{ email: string }>(
           `select c.email from users u join user_credentials c on c.user_id=u.id
@@ -140,12 +168,16 @@ export class ServiceConsents {
         )
       ).rows[0];
       if (!user) throw new DomainError(401, "Войдите в аккаунт");
-      return recordServiceConsent(tx, {
-        userId,
-        email: user.email,
-        choice,
-        source: "existing-account",
-      });
+      return recordServiceConsent(
+        tx,
+        {
+          userId,
+          email: user.email,
+          choice,
+          source: "existing-account",
+        },
+        context,
+      );
     });
   }
   // Legacy email/password signup still requires the same explicit choices.
@@ -156,8 +188,9 @@ export class ServiceConsents {
     sessionHash: string,
     raw: unknown,
   ) {
-    const choice = validateServiceConsent(raw);
     return this.db.transaction(async (tx) => {
+      const context = await readServiceConsentContext(tx, this.resolveAiPolicy);
+      const choice = validateServiceConsent(raw, context.policy);
       await tx.query(
         "select id from account_security_state where id=1 for update",
       );
@@ -180,12 +213,16 @@ export class ServiceConsents {
         "insert into user_credentials(user_id,email,password_hash) values ($1,$2,$3)",
         [user.id, email, passwordHash],
       );
-      await recordServiceConsent(tx, {
-        userId: user.id,
-        email,
-        choice,
-        source: "signup",
-      });
+      await recordServiceConsent(
+        tx,
+        {
+          userId: user.id,
+          email,
+          choice,
+          source: "signup",
+        },
+        context,
+      );
       await tx.query(
         "insert into sessions(token_hash,user_id,expires_at) values ($1,$2,clock_timestamp()+interval '7 days')",
         [sessionHash, user.id],

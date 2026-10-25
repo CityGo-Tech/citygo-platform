@@ -131,6 +131,52 @@ const mandatory = (page: Page) =>
   page.locator("input[name=personalDataConsent]");
 const marketing = (page: Page) => page.locator("input[name=marketingConsent]");
 
+test("public documents use the current API snapshot and never substitute a stale built-in document on load failure", async ({
+  page,
+}) => {
+  let revision = "synthetic-current-A";
+  let failed = false;
+  await page.route("**/api/v1/legal/consent-policy", (route) =>
+    failed
+      ? route.fulfill({ status: 503, json: { error: "Unavailable" } })
+      : route.fulfill({
+          json: {
+            ...syntheticConsentPolicy,
+            version: revision,
+            personalData: {
+              ...syntheticConsentPolicy.personalData,
+              text: "CURRENT_API_DOCUMENT_" + revision,
+            },
+          },
+        }),
+  );
+  await page.goto("/legal/personal-data-consent");
+  const document = page.getByRole("article");
+  await expect(document).toContainText(
+    "CURRENT_API_DOCUMENT_synthetic-current-A",
+  );
+  failed = true;
+  await page.reload();
+  await expect(document.getByRole("alert")).toContainText(
+    "Не удалось загрузить актуальный документ",
+  );
+  await expect(document).not.toContainText("CURRENT_API_DOCUMENT_");
+  await expect(document).not.toContainText(
+    syntheticConsentPolicy.personalData.text,
+  );
+  failed = false;
+  revision = "synthetic-current-B";
+  await document
+    .getByRole("button", { name: "Обновить документ", exact: true })
+    .click();
+  await expect(document).toContainText(
+    "CURRENT_API_DOCUMENT_synthetic-current-B",
+  );
+  await expect(document).not.toContainText(
+    "CURRENT_API_DOCUMENT_synthetic-current-A",
+  );
+});
+
 test("both consent documents are readable before login and unknown documents return404", async ({
   page,
 }) => {
@@ -168,11 +214,20 @@ test("signup has two independent unchecked choices and sends an explicit optiona
   await expect(mandatory(page)).toHaveAttribute("required", "");
   await expect(marketing(page)).not.toHaveAttribute("required", "");
   await expect(
-    page.locator('a[href="/legal/personal-data-consent"]'),
+    page.getByText("Читать согласие на обработку данных", { exact: true }),
   ).toBeVisible();
   await expect(
-    page.locator('a[href="/legal/marketing-consent"]'),
+    page.getByText("Читать согласие на рассылку", { exact: true }),
   ).toBeVisible();
+  await page
+    .getByText("Читать согласие на обработку данных", { exact: true })
+    .click();
+  await expect(
+    page.getByRole("article", {
+      name: syntheticConsentPolicy.personalData.label,
+      exact: true,
+    }),
+  ).toContainText(syntheticConsentPolicy.personalData.text);
   await expect(marketing(page).locator("..")).not.toContainText("*");
   await page.screenshot({
     path: info.outputPath("registration-consents.png"),
@@ -282,7 +337,9 @@ test("existing account gate hides private service views and requires explicit ac
   expect(state.serviceReads).toEqual([]);
   expect(state.choices).toEqual([]);
   await mandatory(page).check();
-  await page.getByRole("button", { name: "Продолжить", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Принять и продолжить", exact: true })
+    .click();
   await expect(
     page.getByRole("heading", { name: "Давайте начнём с того, что волнует" }),
   ).toBeVisible();
@@ -297,27 +354,22 @@ test("existing account gate hides private service views and requires explicit ac
   expect(state.unexpected).toEqual([]);
 });
 
-test("marketing can be revoked in account settings without blocking the service", async ({
+test("an accepted account has no persistent consent settings or first-send dialog", async ({
   page,
 }) => {
   const state = await fixture(page, true);
   state.required = false;
   state.marketing = true;
   await page.goto("/");
-  await page.getByRole("button", { name: "Согласия", exact: true }).click();
-  await expect(marketing(page)).toBeChecked();
-  await marketing(page).uncheck();
-  await page.getByRole("button", { name: "Сохранить согласия" }).click();
+  await expect(
+    page.getByRole("button", { name: "Согласия", exact: true }),
+  ).toHaveCount(0);
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(marketing(page)).toHaveCount(0);
   await expect(
     page.getByRole("heading", { name: "Давайте начнём с того, что волнует" }),
   ).toBeVisible();
-  expect(state.choices).toEqual([
-    {
-      policyVersion: syntheticConsentPolicy.version,
-      personalData: true,
-      marketing: false,
-    },
-  ]);
+  expect(state.choices).toEqual([]);
   expect(state.required).toBe(false);
 });
 
@@ -330,7 +382,9 @@ test("owner replacement clears unchecked gate choices and ignores a late accepta
     await page.goto("/");
     await mandatory(page).check();
     await marketing(page).check();
-    await page.getByRole("button", { name: "Продолжить", exact: true }).click();
+    await page
+      .getByRole("button", { name: "Принять и продолжить", exact: true })
+      .click();
     await expect.poll(() => state.choices.length).toBe(1);
     state.owner = "202";
     await page.evaluate(() => window.dispatchEvent(new Event("focus")));
@@ -341,7 +395,9 @@ test("owner replacement clears unchecked gate choices and ignores a late accepta
     await expect(
       page.getByRole("heading", { name: "Согласие для работы сервиса" }),
     ).toBeVisible();
-    await expect(page.getByText("Согласия сохранены.")).toHaveCount(0);
+    await expect(
+      page.getByText("Условия приняты. Можно продолжить работу."),
+    ).toHaveCount(0);
   } finally {
     state.releaseSave();
   }

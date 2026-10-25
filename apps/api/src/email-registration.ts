@@ -2,13 +2,14 @@ import { createHmac, randomBytes, randomInt, randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import {
   registrationWithConsentsSchema,
-  serviceConsentPolicy,
   emailRegistrationConfirmSchema,
   emailRegistrationResendSchema,
 } from "@citygo/contracts";
 import {
   DomainError,
   EmailRegistration,
+  ServiceConsents,
+  type ServiceAiPolicyResolver,
   type Database,
   type EmailSendLimits,
 } from "@citygo/db";
@@ -32,10 +33,16 @@ export function registerEmailRegistration(
     secret?: string;
     delivery?: RegistrationEmailDelivery;
     sendLimits?: EmailSendLimits;
+    policyResolver?: ServiceAiPolicyResolver;
     setSession: (reply: FastifyReply, token: string) => void;
   },
 ) {
-  const state = new EmailRegistration(options.db, options.sendLimits);
+  const state = new EmailRegistration(
+    options.db,
+    options.sendLimits,
+    options.policyResolver,
+  );
+  const consentState = new ServiceConsents(options.db, options.policyResolver);
   const available =
     options.mode === "required" &&
     !!options.delivery &&
@@ -93,7 +100,7 @@ export function registerEmailRegistration(
     }
   }
   app.get("/v1/auth/registration-policy", async () => ({
-    consentPolicy: serviceConsentPolicy,
+    consentPolicy: await consentState.policy(),
     emailVerification:
       options.mode === "disabled"
         ? ("disabled" as const)

@@ -79,11 +79,13 @@ async function fixture(t: TestContext) {
     db,
     "history-owner@example.test",
     "synthetic-hash",
+    app,
   );
   const other = await registerSyntheticConsentingUser(
     db,
     "history-other@example.test",
     "synthetic-hash",
+    app,
   );
   await db.query("update users set role='super_admin' where id=$1", [other]);
   const ownerToken = randomUUID(),

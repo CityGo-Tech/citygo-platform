@@ -70,6 +70,15 @@ async function install(page: Page, withProfile = true) {
     } else if (/\/auth\/(login|register)$/.test(path)) {
       state.board = fixture("B", withProfile);
       await route.fulfill({ json: { user: state.board.user } });
+    } else if (path.endsWith("/account/consents")) {
+      await route.fulfill({
+        json: {
+          policy: syntheticConsentPolicy,
+          personalDataGranted: !state.board?.user.serviceConsentRequired,
+          marketingGranted: false,
+          serviceConsentRequired: !!state.board?.user.serviceConsentRequired,
+        },
+      });
     } else {
       await route.fulfill({ json: { ok: true } });
     }
@@ -106,7 +115,7 @@ test("logout A → login B clears chat drafts and allows a fresh B draft", async
   await expect(page.getByLabel("Сообщение помощнику")).toHaveValue("Только B");
 });
 
-test("changed user ID clears a no-profile dialog draft and unconfirmed AI permission", async ({
+test("changed user ID clears a no-profile draft and unchecked current-registration choices", async ({
   page,
 }) => {
   const state = await install(page, false);
@@ -123,31 +132,28 @@ test("changed user ID clears a no-profile dialog draft and unconfirmed AI permis
     .getByLabel("Сообщение помощнику")
     .fill("Черновик без анкеты пользователя A");
   state.board!.aiAccess.granted = false;
+  state.board!.user.serviceConsentRequired = true;
   const revoked = page.waitForResponse("**/api/v1/dashboard");
   await page.evaluate(() => window.dispatchEvent(new Event("focus")));
   await revoked;
-  await expect(page.getByLabel("Сообщение помощнику")).toHaveValue(
-    "Черновик без анкеты пользователя A",
-  );
-  await page.getByRole("button", { name: "Отправить", exact: true }).click();
-  const consent = page.getByRole("dialog", {
-    name: "Обработка сообщений",
-    exact: true,
-  });
-  await expect(consent).toBeVisible();
+  const required = page.locator("input[name=personalDataConsent]");
+  await expect(required).not.toBeChecked();
+  await required.check();
   state.board = fixture("B", false);
   state.board.aiAccess.granted = false;
+  state.board.user.serviceConsentRequired = true;
   const changedOwner = page.waitForResponse("**/api/v1/dashboard");
   await page.evaluate(() => window.dispatchEvent(new Event("focus")));
   await changedOwner;
-  await expect(page.getByLabel("Сообщение помощнику")).toHaveValue("");
-  await expect(consent).toHaveCount(0);
-  await expect(page.getByLabel("Сообщение помощнику")).toBeEnabled();
+  await expect(required).not.toBeChecked();
   await expect(
-    page.getByRole("button", { name: "Отправить", exact: true }),
+    page.getByRole("button", { name: "Принять и продолжить", exact: true }),
   ).toBeDisabled();
-  await expect(page.getByLabel("Откуда переезжаете")).toHaveCount(0);
-  await expect(page.locator(".account")).toContainText("0 XP");
+  await expect(page.getByLabel("Сообщение помощнику")).toHaveCount(0);
+  await expect(
+    page.getByText("Черновик без анкеты пользователя A"),
+  ).toHaveCount(0);
+  await expect(page.getByRole("dialog")).toHaveCount(0);
   expect(questionnaireWrites).toEqual([]);
 });
 

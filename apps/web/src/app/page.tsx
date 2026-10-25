@@ -12,7 +12,6 @@ import {
 } from "@citygo/api-client";
 import type {
   AgentKey,
-  AiPolicy,
   Dashboard,
   ConversationSummary,
   ServiceConsentChoice,
@@ -28,10 +27,6 @@ import { PasswordRecovery } from "../components/password-recovery";
 import { PhoneVerificationPanel } from "../components/phone-verification";
 import { AccountOverview, accountStyles } from "../components/account-overview";
 import { AiAccessPanel } from "../components/ai-access";
-import {
-  AiProcessingConsentDialog,
-  AiProcessingSettings,
-} from "../components/ai-processing-consent";
 import { chatBalanceTarget } from "../components/chat-readiness";
 import { useConversationHistory } from "../components/use-conversation-history";
 import {
@@ -53,30 +48,13 @@ function conversationStorage() {
   }
 }
 
-type ChatConsentIntent = {
-  message: string;
-  userId: string;
-  threadId: string;
-  policy: AiPolicy;
-  epoch: number;
-  ticket: SessionTicket;
-};
-
 export default function Home() {
   const [session] = useState(createSessionGuard);
   const [formVersion, setFormVersion] = useState(0);
   const [logoutUnconfirmed, setLogoutUnconfirmed] = useState(false);
   const refreshVersion = useRef(0);
   const [board, setBoard] = useState<Dashboard | null>(null);
-  const latestBoard = useRef(board);
-  latestBoard.current = board;
-  const [chatConsent, setChatConsent] = useState<ChatConsentIntent | null>(
-    null,
-  );
-  const chatConsentRef = useRef<ChatConsentIntent | null>(null);
-  const consentSubmitting = useRef(false);
   const chatSubmitting = useRef(false);
-  const [chatConsentError, setChatConsentError] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -92,7 +70,6 @@ export default function Home() {
   const [favoritesOpen, setFavoritesOpen] = useState(false);
   const [phoneOpen, setPhoneOpen] = useState(false);
   const [balanceOpen, setBalanceOpen] = useState(false);
-  const [consentsOpen, setConsentsOpen] = useState(false);
   const [conversationView, setConversationView] = useState(false);
   const [text, setText] = useState("");
   const [draft, setDraft] = useState("");
@@ -136,9 +113,6 @@ export default function Home() {
     abort.current?.abort();
     abort.current = null;
     setBoard(null);
-    latestBoard.current = null;
-    cancelChatConsent();
-    consentSubmitting.current = false;
     chatSubmitting.current = false;
     setText("");
     setDraft("");
@@ -157,7 +131,6 @@ export default function Home() {
     setFavoritesOpen(false);
     setPhoneOpen(false);
     setBalanceOpen(false);
-    setConsentsOpen(false);
     setConversationView(false);
     selectedConversation.current = null;
     visibleThread.current = null;
@@ -244,7 +217,6 @@ export default function Home() {
     ticket.check();
     if (version !== refreshVersion.current) return false;
     visibleThread.current = next.thread?.id ?? null;
-    latestBoard.current = next;
     setBoard(next);
     return true;
   }
@@ -425,7 +397,9 @@ export default function Home() {
       if (
         ticket.active() &&
         e instanceof ApiError &&
-        e.serverCode === "SERVICE_CONSENT_REQUIRED"
+        ["SERVICE_CONSENT_REQUIRED", "AI_POLICY_CHANGED"].includes(
+          e.serverCode ?? "",
+        )
       )
         await refresh(ticket).catch(() => {});
       if (ticket.active())
@@ -602,87 +576,6 @@ export default function Home() {
       }
     });
   }
-  function cancelChatConsent() {
-    chatConsentRef.current = null;
-    setChatConsent(null);
-    setChatConsentError("");
-  }
-  function currentChatConsent(intent: ChatConsentIntent) {
-    const current = latestBoard.current;
-    return (
-      chatConsentRef.current === intent &&
-      intent.ticket.active() &&
-      intent.epoch === conversationEpoch.current &&
-      visibleThread.current === intent.threadId &&
-      current?.user.id === intent.userId &&
-      !current.user.serviceConsentRequired &&
-      !current.user.mustChangePassword &&
-      current.provider !== "unconfigured" &&
-      !history.detached &&
-      current.thread?.id === intent.threadId &&
-      !current.thread.closed &&
-      current.aiAccess.policy?.id === intent.policy.id
-    );
-  }
-  useEffect(() => {
-    const intent = chatConsentRef.current;
-    if (intent && !currentChatConsent(intent)) cancelChatConsent();
-  }, [board, history.detached]);
-  async function confirmChatConsent() {
-    const intent = chatConsentRef.current;
-    if (!intent || consentSubmitting.current || !currentChatConsent(intent))
-      return;
-    consentSubmitting.current = true;
-    setBusy(true);
-    setChatConsentError("");
-    let admitted: Dashboard | null = null;
-    try {
-      // An explicit choice grants only the policy the user was shown. A failed
-      // grant/refresh, cancellation or changed account must never send a draft.
-      await api.aiConsent({ action: "granted", policyId: intent.policy.id });
-      if (!currentChatConsent(intent)) return;
-      const refreshed = await refresh(intent.ticket);
-      if (!refreshed || !currentChatConsent(intent)) return;
-      if (!latestBoard.current?.aiAccess.granted)
-        throw new Error("Не удалось подтвердить согласие. Попробуйте снова.");
-      admitted = latestBoard.current;
-    } catch (error) {
-      if (intent.ticket.active()) {
-        if (
-          error instanceof ApiError &&
-          error.serverCode === "SERVICE_CONSENT_REQUIRED"
-        ) {
-          cancelChatConsent();
-          await refresh(intent.ticket).catch(() => {});
-        } else if (
-          error instanceof ApiError &&
-          error.serverCode === "AI_POLICY_CHANGED"
-        ) {
-          cancelChatConsent();
-          await refresh(intent.ticket).catch(() => {});
-          if (intent.ticket.active())
-            setError(
-              "Условия обновились. Отправьте сообщение снова, чтобы проверить их.",
-            );
-        } else if (currentChatConsent(intent)) {
-          setChatConsentError(
-            error instanceof Error
-              ? error.message
-              : "Не удалось сохранить согласие.",
-          );
-        }
-      }
-    } finally {
-      if (intent.ticket.active()) {
-        consentSubmitting.current = false;
-        setBusy(false);
-      }
-    }
-    if (admitted && currentChatConsent(intent)) {
-      cancelChatConsent();
-      await sendChat(admitted, intent.message, intent.epoch, intent.ticket);
-    }
-  }
   async function chat(event: FormEvent) {
     event.preventDefault();
     if (
@@ -696,27 +589,19 @@ export default function Home() {
       busy ||
       sending ||
       conversationSwitch.current ||
-      chatSubmitting.current ||
-      consentSubmitting.current ||
-      chatConsentRef.current
+      chatSubmitting.current
     )
       return;
     if (!board.aiAccess.granted) {
-      if (!board.aiAccess.policy) {
-        setError("Помощник временно недоступен. Попробуйте позже.");
-        return;
-      }
-      const intent: ChatConsentIntent = {
-        message: text,
-        userId: board.user.id,
-        threadId: board.thread.id,
-        policy: board.aiAccess.policy,
-        epoch: conversationEpoch.current,
-        ticket: session.capture(),
-      };
-      chatConsentRef.current = intent;
-      setChatConsentError("");
-      setChatConsent(intent);
+      // Only explicit registration/reacceptance can authorize processing.
+      // A stale dashboard may be refreshed, but never grants or sends a draft.
+      await act(async (ticket) => {
+        await refresh(ticket);
+        ticket.check();
+        setNotice(
+          "Обновлены условия доступа. Отправьте сообщение снова после подтверждения условий.",
+        );
+      });
       return;
     }
     await sendChat(board, text, conversationEpoch.current, session.capture());
@@ -926,17 +811,6 @@ export default function Home() {
                   }}
                 >
                   Мои чеки
-                </Button>
-              )}
-            {!board.user.mustChangePassword &&
-              !board.user.serviceConsentRequired &&
-              !passwordOpen && (
-                <Button
-                  variant="ghost"
-                  disabled={busy || sending}
-                  onClick={() => setConsentsOpen(true)}
-                >
-                  Согласия
                 </Button>
               )}
             <Button variant="ghost" onClick={() => setPasswordOpen(true)}>
@@ -1152,40 +1026,18 @@ export default function Home() {
               </Button>
             )}
           </Card>
-        ) : board.user.serviceConsentRequired || consentsOpen ? (
-          <>
-            <ServiceConsentsPanel
-              key={board.user.id + ":consents:" + formVersion}
-              required={!!board.user.serviceConsentRequired}
-              sessionSignal={session.capture().signal}
-              onAccessDenied={requireLogin}
-              onSaved={async () => {
-                const ticket = session.capture();
-                await refresh(ticket);
-                ticket.check();
-                setConsentsOpen(false);
-                setNotice("Согласия сохранены.");
-              }}
-              onClose={
-                board.user.serviceConsentRequired
-                  ? undefined
-                  : () => setConsentsOpen(false)
-              }
-            />
-            {!board.user.serviceConsentRequired && (
-              <AiProcessingSettings
-                access={board.aiAccess}
-                busy={busy}
-                onRevoke={() =>
-                  void act(async (ticket) => {
-                    await api.aiConsent({ action: "revoked" });
-                    ticket.check();
-                    await refresh(ticket);
-                  })
-                }
-              />
-            )}
-          </>
+        ) : board.user.serviceConsentRequired ? (
+          <ServiceConsentsPanel
+            key={board.user.id + ":consents:" + formVersion}
+            sessionSignal={session.capture().signal}
+            onAccessDenied={requireLogin}
+            onSaved={async () => {
+              const ticket = session.capture();
+              await refresh(ticket);
+              ticket.check();
+              setNotice("Условия приняты. Можно продолжить работу.");
+            }}
+          />
         ) : (
           <>
             <AccountOverview
@@ -1214,9 +1066,7 @@ export default function Home() {
                 userId={board.user.id}
                 busy={busy || sending}
                 topups={topups}
-                balanceOnly
                 onPhone={openPhone}
-                onConsent={() => {}}
               />
               {!board.aiAccess.credit && (
                 <p role="status">
@@ -1336,22 +1186,6 @@ export default function Home() {
               />
             </div>
           </>
-        )}
-        {chatConsent && (
-          <AiProcessingConsentDialog
-            key={
-              chatConsent.userId +
-              ":" +
-              chatConsent.threadId +
-              ":" +
-              chatConsent.policy.id
-            }
-            policy={chatConsent.policy}
-            busy={consentSubmitting.current}
-            error={chatConsentError}
-            onConfirm={() => void confirmChatConsent()}
-            onCancel={cancelChatConsent}
-          />
         )}
       </main>
       <footer>

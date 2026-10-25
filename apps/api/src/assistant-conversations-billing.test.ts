@@ -1,4 +1,4 @@
-import { syntheticServiceConsents } from "./test-service-consents.js";
+import { syntheticConsentsFor } from "./test-service-consents.js";
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import { randomUUID } from "node:crypto";
@@ -123,7 +123,7 @@ async function fixture(t: TestContext) {
     });
   const register = async () => {
     const response = await call("POST", "/v1/auth/register", "", {
-      consents: syntheticServiceConsents,
+      consents: await syntheticConsentsFor(app),
       email: randomUUID() + "@example.test",
       password: "123456",
     });

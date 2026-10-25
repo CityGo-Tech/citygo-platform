@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { syntheticServiceConsents } from "./test-service-consents.js";
+import { syntheticConsentsFor } from "./test-service-consents.js";
 import test from "node:test";
 import { randomUUID } from "node:crypto";
 import {
@@ -200,7 +200,7 @@ test("closed restart reaches HTTP with revoked legacy identity, restricted admin
     "POST",
     "/v1/account/consents",
     currentAuth.token,
-    syntheticServiceConsents,
+    await syntheticConsentsFor(app),
   );
   assert.equal(accepted.statusCode, 200, accepted.body);
 

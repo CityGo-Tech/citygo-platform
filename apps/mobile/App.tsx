@@ -39,6 +39,7 @@ import {
   changeServiceConsent,
   createServiceConsentForm,
   currentServiceConsentForm,
+  registrationConsentMatchesPolicy,
   serviceConsentChoice,
   type ServiceConsentForm,
 } from "./src/service-consent-state";
@@ -270,6 +271,20 @@ export default function App() {
               : "Регистрация временно недоступна: отправка писем ещё не подключена. Если аккаунт уже есть, войдите.",
           );
         }
+        if (
+          !registrationConsentMatchesPolicy(
+            input.consents,
+            policy.consentPolicy,
+          )
+        ) {
+          setMode("register");
+          setEmail(input.email);
+          setConsentForm(null);
+          setConsentReload((version) => version + 1);
+          throw new Error(
+            "Условия регистрации изменились. Прочитайте актуальные условия и подтвердите согласие заново.",
+          );
+        }
       }
       let result;
       try {
@@ -402,8 +417,11 @@ export default function App() {
       if (ticket.active()) {
         if (
           e instanceof ApiError &&
-          e.serverCode === "SERVICE_CONSENT_REQUIRED"
+          (e.serverCode === "SERVICE_CONSENT_REQUIRED" ||
+            e.serverCode === "AI_POLICY_CHANGED")
         ) {
+          setConsentForm(null);
+          setConsentReload((version) => version + 1);
           setBoard((current) =>
             current
               ? {
@@ -456,19 +474,27 @@ export default function App() {
     const cancel = () => controller.abort();
     signal.addEventListener("abort", cancel, { once: true });
     const active = () => !signal.aborted && !controller.signal.aborted;
-    const publicApi = createClient(base, {
+    const policyApi = createClient(base, {
       native: true,
       fetch: expoFetch,
       signal: () => controller.signal,
+      ...(context === "register" ? {} : { token: () => session.current }),
     });
     void (async () => {
       if (context === "register") {
-        const registration = await publicApi.registrationPolicy();
+        const registration = await policyApi.registrationPolicy();
         if (!active()) return;
         setRegistrationAvailability(registration.emailVerification);
         if (registration.emailVerification !== "disabled") return;
+        setConsentForm(
+          createServiceConsentForm(registration.consentPolicy, {
+            context,
+            signal,
+          }),
+        );
+        return;
       }
-      const policy = await publicApi.legalConsentPolicy();
+      const { policy } = await policyApi.accountConsents();
       if (active())
         setConsentForm(createServiceConsentForm(policy, { context, signal }));
     })()
@@ -758,9 +784,8 @@ export default function App() {
               <Card>
                 <Text style={styles.title}>Перед продолжением</Text>
                 <Text>
-                  Для использования CityGo подтвердите отдельное согласие на
-                  обработку персональных данных. Рекламная рассылка
-                  необязательна.
+                  Для продолжения примите актуальные условия обработки данных.
+                  Рекламная рассылка необязательна.
                 </Text>
                 {consentFields}
                 <Button
@@ -903,7 +928,6 @@ export default function App() {
                   {board.provider === "unconfigured" && (
                     <Text>AI пока не подключён на сервере.</Text>
                   )}
-                  <Text style={styles.title}>Передача данных AI</Text>
                   {board.aiAccess?.credit && (
                     <View
                       ref={balanceSection}
@@ -978,64 +1002,6 @@ export default function App() {
                       ))}
                     </View>
                   )}
-                  {board.aiAccess?.policy ? (
-                    <>
-                      <Text>
-                        Получатель: {board.aiAccess.policy.recipient}. Модель:{" "}
-                        {board.aiAccess.policy.model}.
-                      </Text>
-                      <Text>{board.aiAccess.policy.routing}</Text>
-                      <Text>{board.aiAccess.policy.data}</Text>
-                      <Text>
-                        До {board.aiAccess.dailyLimit} принятых запросов в сутки
-                        (UTC). Возможен общий лимит сервиса. Автоматического
-                        переключения нет.
-                      </Text>
-                      {board.aiAccess.granted ? (
-                        <Text>Передача разрешена.</Text>
-                      ) : (
-                        <Button
-                          title="Разрешить передачу этому AI-получателю"
-                          disabled={busy}
-                          onPress={() =>
-                            void act("consent", async (ticket) => {
-                              try {
-                                await api.aiConsent({
-                                  action: "granted",
-                                  policyId: board.aiAccess.policy!.id,
-                                });
-                              } finally {
-                                if (ticket.active()) await refresh(ticket);
-                              }
-                            })
-                          }
-                        />
-                      )}
-                    </>
-                  ) : (
-                    <Text>
-                      Условия подключения недоступны. Обновите приложение перед
-                      отправкой сообщения.
-                    </Text>
-                  )}
-                  <Text>
-                    Отзыв блокирует новые запросы. Уже принятый запрос может
-                    завершиться; переданные данные нельзя вернуть. План и
-                    история остаются доступны.
-                  </Text>
-                  <Button
-                    title="Отозвать разрешение AI"
-                    disabled={busy}
-                    onPress={() =>
-                      void act("consent", async (ticket) => {
-                        try {
-                          await api.aiConsent({ action: "revoked" });
-                        } finally {
-                          if (ticket.active()) await refresh(ticket);
-                        }
-                      })
-                    }
-                  />
                   {board.thread?.messages.map((m) => (
                     <View key={m.id} style={styles.message}>
                       <Text style={{ fontWeight: "700" }}>
@@ -1149,11 +1115,6 @@ export default function App() {
                       setCurrentPassword("");
                       setNewPassword("");
                     }}
-                  />
-                  <Button
-                    title="Согласия и рассылки в веб-кабинете"
-                    disabled={busy}
-                    onPress={openWebApp}
                   />
                 </Card>
               </>

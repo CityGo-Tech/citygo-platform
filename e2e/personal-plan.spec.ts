@@ -554,10 +554,6 @@ test("real local API persists chosen messages and CAS changes without spending o
     .getByLabel("Сообщение помощнику")
     .fill("Синтетический вопрос для локального плана");
   await page.getByRole("button", { name: "Отправить", exact: true }).click();
-  await page
-    .getByRole("dialog", { name: "Обработка сообщений", exact: true })
-    .getByRole("button", { name: "Разрешить и отправить", exact: true })
-    .click();
   await expect(page.getByRole("log")).toContainText("Тестовый ответ");
   const form = await chooseMessage(page, 0);
   await form

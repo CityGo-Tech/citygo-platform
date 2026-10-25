@@ -1,39 +1,63 @@
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
-import type { AiConsentInput, Dashboard, Message } from "@citygo/contracts";
+import type {
+  Dashboard,
+  Message,
+  ServiceConsentChoice,
+} from "@citygo/contracts";
 import { syntheticConsentPolicy } from "./service-consent-fixture";
 
-const consentDialog = (page: Page) =>
-  page.getByRole("dialog", { name: "Обработка сообщений", exact: true });
 const send = (page: Page) =>
   page.getByRole("button", { name: "Отправить", exact: true });
-const confirm = (page: Page) =>
-  consentDialog(page).getByRole("button", {
-    name: "Разрешить и отправить",
+const accept = (page: Page) =>
+  page.getByRole("button", { name: "Принять и продолжить", exact: true });
+const mandatory = (page: Page) =>
+  page.locator("input[name=personalDataConsent]");
+const marketing = (page: Page) => page.locator("input[name=marketingConsent]");
+const gate = (page: Page) =>
+  page.getByRole("heading", {
+    name: "Согласие для работы сервиса",
     exact: true,
   });
 
-/** Entirely synthetic transport. No provider, SMS or payment endpoint is allowed. */
-async function fixture(context: BrowserContext, granted = false) {
+/** Server-authorized fixtures only: the browser never creates an AI grant. */
+async function fixture(context: BrowserContext, required = false) {
   const state = {
     owner: "101",
     authenticated: true,
-    granted,
-    policyId: "a".repeat(64),
-    consentPosts: [] as AiConsentInput[],
-    streamPosts: [] as { text: string; policyId: string; requestId: string }[],
+    required,
+    granted: !required,
+    aiPolicyId: "a".repeat(64),
+    policyVersion: syntheticConsentPolicy.version,
     messages: [] as Message[],
-    dashboardReads: 0,
-    failDashboardAfterGrant: false,
-    failNextDashboard: false,
-    consentReplies: 0,
-    conflictNext: false,
-    holdConsent: false,
-    releaseConsent: () => {},
-    forbidden: [] as string[],
+    choices: [] as ServiceConsentChoice[],
+    registrations: [] as { consents: ServiceConsentChoice }[],
+    streamPosts: [] as { text: string; policyId: string }[],
+    providerDispatches: 0,
+    aiConsentPosts: 0,
     external: 0,
+    unexpected: [] as string[],
+    gateConflict: false,
+    rejectStream: null as
+      "AI_POLICY_CHANGED" | "SERVICE_CONSENT_REQUIRED" | null,
+    holdChoice: false,
+    releaseChoice: () => {},
+    choiceReplies: 0,
+    failDashboardAfterChoice: false,
+    failNextDashboard: false,
   };
-  const consentGate = new Promise<void>((resolve) => {
-    state.releaseConsent = resolve;
+  const choiceGate = new Promise<void>((resolve) => {
+    state.releaseChoice = resolve;
+  });
+  const policy = () => ({
+    ...syntheticConsentPolicy,
+    version: state.policyVersion,
+    personalData: {
+      ...syntheticConsentPolicy.personalData,
+      text:
+        syntheticConsentPolicy.personalData.text +
+        "\n\nEXACT_API_PROCESSING_SNAPSHOT_" +
+        state.aiPolicyId,
+    },
   });
   const board = (): Dashboard => ({
     user: {
@@ -41,6 +65,7 @@ async function fixture(context: BrowserContext, granted = false) {
       email: "owner-" + state.owner + "@example.test",
       role: "user",
       mustChangePassword: false,
+      serviceConsentRequired: state.required,
     },
     profile: null,
     quests: [],
@@ -57,16 +82,13 @@ async function fixture(context: BrowserContext, granted = false) {
       granted: state.granted,
       dailyLimit: 100,
       policy: {
-        id: state.policyId,
-        version: "synthetic-first-send",
+        id: state.aiPolicyId,
+        version: "synthetic-server-binding",
         provider: "routerai",
-        model: "test/model-never-dispatched",
-        recipient:
-          state.policyId === "a".repeat(64)
-            ? "Первый синтетический получатель"
-            : "Новый синтетический получатель",
-        routing: "Тестовый маршрут без внешних запросов",
-        data: "Вымышленная переписка для проверки интерфейса",
+        model: "synthetic-never-dispatched",
+        recipient: "Синтетический получатель",
+        routing: "Без внешних запросов",
+        data: "Вымышленная переписка",
       },
       credit: {
         currency: "RUB",
@@ -93,19 +115,29 @@ async function fixture(context: BrowserContext, granted = false) {
       path = new URL(request.url()).pathname;
     if (path === "/api/v1/auth/registration-policy")
       return route.fulfill({
-        json: {
-          emailVerification: "disabled",
-          consentPolicy: syntheticConsentPolicy,
-        },
+        json: { emailVerification: "disabled", consentPolicy: policy() },
       });
+    if (path === "/api/v1/legal/consent-policy")
+      return route.fulfill({ json: policy() });
     if (path === "/api/v1/auth/logout") {
       state.authenticated = false;
       return route.fulfill({ json: { ok: true } });
     }
+    if (path === "/api/v1/auth/register") {
+      const input = request.postDataJSON() as {
+        consents: ServiceConsentChoice;
+      };
+      state.registrations.push(input);
+      expect(input.consents.personalData).toBe(true);
+      expect(input.consents.policyVersion).toBe(state.policyVersion);
+      state.authenticated = true;
+      state.required = false;
+      state.granted = true;
+      return route.fulfill({ json: { user: board().user } });
+    }
     if (!state.authenticated)
       return route.fulfill({ status: 401, json: { error: "Signed out" } });
     if (path === "/api/v1/dashboard") {
-      state.dashboardReads++;
       if (state.failNextDashboard) {
         state.failNextDashboard = false;
         return route.fulfill({
@@ -115,47 +147,63 @@ async function fixture(context: BrowserContext, granted = false) {
       }
       return route.fulfill({ json: board() });
     }
-    if (path === "/api/v1/account/consents" && request.method() === "GET")
+    if (path === "/api/v1/ai/consent") {
+      state.aiConsentPosts++;
       return route.fulfill({
-        json: {
-          policy: syntheticConsentPolicy,
-          personalDataGranted: true,
-          marketingGranted: false,
-          serviceConsentRequired: false,
-        },
+        status: 500,
+        json: { error: "Browser must not grant AI consent" },
       });
-    if (path === "/api/v1/ai/consent" && request.method() === "POST") {
-      const input = request.postDataJSON() as AiConsentInput;
-      state.consentPosts.push(input);
-      const owner = state.owner;
-      if (input.action === "granted") {
-        expect(input.policyId).toBe(state.policyId);
-        if (state.conflictNext) {
-          state.conflictNext = false;
-          state.policyId = "b".repeat(64);
+    }
+    if (path === "/api/v1/account/consents") {
+      if (request.method() === "POST") {
+        const input = request.postDataJSON() as ServiceConsentChoice;
+        const owner = state.owner,
+          shown = policy();
+        state.choices.push(input);
+        expect(input.personalData).toBe(true);
+        expect(input.policyVersion).toBe(state.policyVersion);
+        if (state.gateConflict) {
+          state.gateConflict = false;
+          state.aiPolicyId = "b".repeat(64);
+          state.policyVersion = "synthetic-new-binding";
           return route.fulfill({
             status: 409,
             json: {
-              error: "Условия обработки изменились. Проверьте их ещё раз.",
-              code: "AI_POLICY_CHANGED",
+              error: "Условия изменились",
+              code: "SERVICE_CONSENT_POLICY_CHANGED",
             },
           });
         }
-        if (state.holdConsent) await consentGate;
+        if (state.holdChoice) await choiceGate;
+        if (owner === state.owner) {
+          state.required = false;
+          state.granted = true;
+          if (state.failDashboardAfterChoice) state.failNextDashboard = true;
+        }
+        try {
+          await route.fulfill({
+            json: {
+              policy: shown,
+              personalDataGranted: true,
+              marketingGranted: input.marketing,
+              serviceConsentRequired: false,
+            },
+          });
+        } catch {
+          /* The old authenticated lifetime has ended. */
+        } finally {
+          state.choiceReplies++;
+        }
+        return;
       }
-      if (owner === state.owner) {
-        state.granted = input.action === "granted";
-        if (state.granted && state.failDashboardAfterGrant)
-          state.failNextDashboard = true;
-      }
-      try {
-        await route.fulfill({ json: { ok: true } });
-      } catch {
-        /* The old session cancelled its request. */
-      } finally {
-        state.consentReplies++;
-      }
-      return;
+      return route.fulfill({
+        json: {
+          policy: policy(),
+          personalDataGranted: !state.required,
+          marketingGranted: false,
+          serviceConsentRequired: state.required,
+        },
+      });
     }
     if (
       /^\/api\/v1\/threads\/(10|30)\/messages$/.test(path) &&
@@ -164,14 +212,26 @@ async function fixture(context: BrowserContext, granted = false) {
       const input = request.postDataJSON() as {
         text: string;
         policyId: string;
-        requestId: string;
       };
       state.streamPosts.push(input);
+      if (state.rejectStream) {
+        const code = state.rejectStream;
+        state.rejectStream = null;
+        state.required = true;
+        state.granted = false;
+        state.aiPolicyId = "b".repeat(64);
+        state.policyVersion = "synthetic-new-binding";
+        return route.fulfill({
+          status: code === "AI_POLICY_CHANGED" ? 409 : 403,
+          json: { code, error: "Условия обновились" },
+        });
+      }
       expect(state.granted).toBe(true);
-      expect(input.policyId).toBe(state.policyId);
-      const index = state.streamPosts.length;
-      const reply = "Синтетический ответ " + index;
-      const id = String(20 + index * 2);
+      expect(state.required).toBe(false);
+      expect(input.policyId).toBe(state.aiPolicyId);
+      state.providerDispatches++;
+      const id = String(20 + state.providerDispatches * 2),
+        reply = "Синтетический ответ " + state.providerDispatches;
       state.messages.push(
         {
           id,
@@ -199,7 +259,7 @@ async function fixture(context: BrowserContext, granted = false) {
           .join(""),
       });
     }
-    state.forbidden.push(request.method() + " " + path);
+    state.unexpected.push(request.method() + " " + path);
     return route.fulfill({
       status: 500,
       json: { error: "Unexpected synthetic request" },
@@ -207,317 +267,248 @@ async function fixture(context: BrowserContext, granted = false) {
   });
   return state;
 }
+async function assertNoConsentSurface(page: Page) {
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Согласия", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("heading", { name: "Перед началом", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("heading", { name: "Обработка сообщений", exact: true }),
+  ).toHaveCount(0);
+  await expect(page.locator(".conversation-main .ai-access")).toHaveCount(0);
+}
 
-test("chat has no pre-start card; cancel or Escape retain the draft without granting or sending", async ({
+test("a server-bound registration allows direct first and later sends without a dialog, consent menu or client AI grant", async ({
   page,
   context,
 }, info) => {
   const state = await fixture(context);
   await page.goto("/");
-  await expect(page.getByLabel("Сообщение помощнику")).toBeEnabled();
-  await expect(
-    page.getByRole("heading", { name: "Перед началом", exact: true }),
-  ).toHaveCount(0);
-  await expect(page.locator(".conversation-main .ai-access")).toHaveCount(0);
-  await expect(
-    page
-      .locator(".conversation-main")
-      .getByRole("button", { name: "Баланс и пополнение", exact: true }),
-  ).toHaveCount(0);
-  const draft = "С чего начать переезд, если бюджет пока неизвестен?";
-  await page.getByLabel("Сообщение помощнику").fill(draft);
+  await assertNoConsentSurface(page);
+  const first = "Первый вопрос после регистрации";
+  await page.getByLabel("Сообщение помощнику").fill(first);
   await page.screenshot({
-    path: info.outputPath("chat-without-prestart-card.png"),
+    path: info.outputPath("chat-without-consent-ui.png"),
     fullPage: true,
   });
   await send(page).click();
-  const dialog = consentDialog(page);
-  await expect(dialog).toBeVisible();
-  await expect(dialog.getByRole("checkbox")).toHaveCount(0);
-  expect(await dialog.innerText()).not.toContain(
-    "Первый синтетический получатель",
-  );
-  await dialog.screenshot({
-    path: info.outputPath("compact-first-send-consent.png"),
-  });
-  await dialog.getByRole("button", { name: "Отмена", exact: true }).click();
-  await expect(dialog).toHaveCount(0);
-  await expect(page.getByLabel("Сообщение помощнику")).toHaveValue(draft);
+  await expect(page.getByRole("log")).toContainText("Синтетический ответ 1");
+  await assertNoConsentSurface(page);
+  const second = "Продолжим разговор";
+  await page.getByLabel("Сообщение помощнику").fill(second);
   await send(page).click();
-  await expect(dialog).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(dialog).toHaveCount(0);
-  await expect(page.getByLabel("Сообщение помощнику")).toHaveValue(draft);
-  expect(state.consentPosts).toEqual([]);
-  expect(state.streamPosts).toEqual([]);
+  await expect(page.getByRole("log")).toContainText("Синтетический ответ 2");
+  expect(state.streamPosts.map((input) => input.text)).toEqual([first, second]);
+  expect(state.aiConsentPosts).toBe(0);
+  expect(state.choices).toEqual([]);
   expect(state.external).toBe(0);
-  expect(state.forbidden).toEqual([]);
+  expect(state.unexpected).toEqual([]);
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
 });
 
-test("explicit first-send confirmation grants exactly once and sends only the captured question; later questions need no dialog", async ({
+test("signup shows exact API terms behind the required checkbox and records optional marketing refusal without a separate AI request", async ({
   page,
   context,
 }) => {
   const state = await fixture(context);
-  state.holdConsent = true;
-  try {
-    await page.goto("/");
-    const first = "Мой первый явный вопрос";
-    await page.getByLabel("Сообщение помощнику").fill(first);
-    await send(page).click();
-    await consentDialog(page)
-      .getByText("Условия обработки сообщений", { exact: true })
-      .click();
-    await expect(consentDialog(page)).toContainText(
-      "Обработку выполняет Первый синтетический получатель.",
-    );
-    await confirm(page).evaluate((button: HTMLButtonElement) => {
-      button.click();
-      button.click();
-    });
-    await expect.poll(() => state.consentPosts.length).toBe(1);
-    await expect(confirm(page)).toBeDisabled();
-    expect(state.streamPosts).toEqual([]);
-    state.releaseConsent();
-    await expect(page.getByRole("log")).toContainText("Синтетический ответ 1");
-    await expect(consentDialog(page)).toHaveCount(0);
-    expect(state.consentPosts).toEqual([
-      { action: "granted", policyId: "a".repeat(64) },
-    ]);
-    expect(state.streamPosts).toHaveLength(1);
-    expect(state.streamPosts[0]?.text).toBe(first);
-    const second = "Следующий вопрос в том же диалоге";
-    await page.getByLabel("Сообщение помощнику").fill(second);
-    await send(page).click();
-    await expect(page.getByRole("log")).toContainText("Синтетический ответ 2");
-    await expect(consentDialog(page)).toHaveCount(0);
-    expect(state.consentPosts).toHaveLength(1);
-    expect(state.streamPosts.map((input) => input.text)).toEqual([
-      first,
-      second,
-    ]);
-    expect(state.external).toBe(0);
-    expect(state.forbidden).toEqual([]);
-  } finally {
-    state.releaseConsent();
-  }
+  state.authenticated = false;
+  await page.goto("/");
+  await expect(mandatory(page)).not.toBeChecked();
+  await expect(marketing(page)).not.toBeChecked();
+  await page
+    .getByText("Читать согласие на обработку данных", { exact: true })
+    .click();
+  await expect(
+    page.getByRole("article", {
+      name: syntheticConsentPolicy.personalData.label,
+      exact: true,
+    }),
+  ).toContainText("EXACT_API_PROCESSING_SNAPSHOT_" + "a".repeat(64));
+  await expect(
+    page.getByRole("button", { name: "Создать аккаунт", exact: true }),
+  ).toBeDisabled();
+  await page
+    .getByLabel("Электронная почта", { exact: true })
+    .fill("registered@example.test");
+  await page.getByLabel("Пароль", { exact: true }).fill("123456");
+  await mandatory(page).check();
+  await page
+    .getByRole("button", { name: "Создать аккаунт", exact: true })
+    .click();
+  await page.getByLabel("Сообщение помощнику").fill("Вопрос нового аккаунта");
+  await send(page).click();
+  await expect(page.getByRole("log")).toContainText("Синтетический ответ 1");
+  expect(state.registrations).toHaveLength(1);
+  expect(state.registrations[0]?.consents.marketing).toBe(false);
+  expect(state.aiConsentPosts).toBe(0);
+  expect(state.choices).toEqual([]);
+  expect(state.unexpected).toEqual([]);
 });
 
-for (const method of ["button", "escape"] as const) {
-  test(`${method} cancellation during a delayed grant keeps the draft and prevents automatic dispatch after the receipt`, async ({
-    page,
-    context,
-  }) => {
-    const state = await fixture(context);
-    state.holdConsent = true;
-    try {
-      await page.goto("/");
-      const draft = "Я передумал отправлять этот вопрос";
-      await page.getByLabel("Сообщение помощнику").fill(draft);
-      await send(page).click();
-      await confirm(page).click();
-      await expect.poll(() => state.consentPosts.length).toBe(1);
-      if (method === "button")
-        await consentDialog(page)
-          .getByRole("button", { name: "Отмена", exact: true })
-          .click();
-      else await page.keyboard.press("Escape");
-      await expect(consentDialog(page)).toHaveCount(0);
-      await expect(page.getByLabel("Сообщение помощнику")).toHaveValue(draft);
-      state.releaseConsent();
-      await expect.poll(() => state.consentReplies).toBe(1);
-      await expect(page.getByLabel("Сообщение помощнику")).toBeEnabled();
-      await expect(page.getByLabel("Сообщение помощнику")).toHaveValue(draft);
-      // The server may already have recorded consent, but cancelling the send
-      // intent must prevent this question from reaching a model afterwards.
-      expect(state.granted).toBe(true);
-      expect(state.streamPosts).toEqual([]);
-      expect(state.consentPosts).toHaveLength(1);
-      expect(state.forbidden).toEqual([]);
-    } finally {
-      state.releaseConsent();
-    }
+test("an older unbound account stays gated until an explicit current choice; acceptance never submits a question", async ({
+  page,
+  context,
+}, info) => {
+  const state = await fixture(context, true);
+  state.messages = [
+    {
+      id: "11",
+      role: "user",
+      agentKey: "support",
+      status: "complete",
+      content: "PRIVATE_BEFORE_ACCEPTANCE",
+    },
+  ];
+  await page.goto("/");
+  await expect(gate(page)).toBeVisible();
+  await expect(mandatory(page)).not.toBeChecked();
+  await expect(page.getByText("PRIVATE_BEFORE_ACCEPTANCE")).toHaveCount(0);
+  await expect(page.getByLabel("Сообщение помощнику")).toHaveCount(0);
+  await expect(accept(page)).toBeDisabled();
+  await mandatory(page).check();
+  await accept(page).click();
+  await expect(page.getByLabel("Сообщение помощнику")).toBeEnabled();
+  await assertNoConsentSurface(page);
+  expect(state.streamPosts).toEqual([]);
+  expect(state.aiConsentPosts).toBe(0);
+  expect(state.choices).toEqual([
+    {
+      policyVersion: syntheticConsentPolicy.version,
+      personalData: true,
+      marketing: false,
+    },
+  ]);
+  await page.screenshot({
+    path: info.outputPath("accepted-account-no-consent-menu.png"),
+    fullPage: true,
   });
-}
-
-test("a policy change discovered on focus invalidates an open dialog without sending or granting", async ({
-  page,
-  context,
-}) => {
-  const state = await fixture(context);
-  await page.goto("/");
-  const draft = "Вопрос при обновлении условий в другой вкладке";
-  await page.getByLabel("Сообщение помощнику").fill(draft);
-  await send(page).click();
-  await expect(consentDialog(page)).toBeVisible();
-  state.policyId = "b".repeat(64);
-  const fresh = page.waitForResponse("**/api/v1/dashboard");
-  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
-  await fresh;
-  await expect(consentDialog(page)).toHaveCount(0);
-  await expect(page.getByLabel("Сообщение помощнику")).toHaveValue(draft);
-  expect(state.consentPosts).toEqual([]);
-  expect(state.streamPosts).toEqual([]);
-  await send(page).click();
-  await consentDialog(page)
-    .getByText("Условия обработки сообщений", { exact: true })
-    .click();
-  await expect(consentDialog(page)).toContainText(
-    "Новый синтетический получатель",
-  );
-  await confirm(page).click();
-  await expect(page.getByRole("log")).toContainText("Синтетический ответ 1");
-  expect(state.consentPosts).toEqual([
-    { action: "granted", policyId: "b".repeat(64) },
-  ]);
-  expect(state.streamPosts).toHaveLength(1);
-  expect(state.forbidden).toEqual([]);
 });
 
-test("a successful grant followed by a failed dashboard refresh never dispatches or retries the question", async ({
-  page,
-  context,
-}) => {
-  const state = await fixture(context);
-  state.failDashboardAfterGrant = true;
-  await page.goto("/");
-  const draft = "Этот вопрос нельзя отправлять при сбое проверки кабинета";
-  await page.getByLabel("Сообщение помощнику").fill(draft);
-  await send(page).click();
-  await confirm(page).click();
-  await expect(consentDialog(page).getByRole("alert")).toContainText(
-    "Не удалось загрузить тестовый кабинет",
-  );
-  await expect(confirm(page)).toBeEnabled();
-  expect(state.granted).toBe(true);
-  expect(state.consentPosts).toHaveLength(1);
-  expect(state.streamPosts).toEqual([]);
-  await consentDialog(page)
-    .getByRole("button", { name: "Отмена", exact: true })
-    .click();
-  await expect(consentDialog(page)).toHaveCount(0);
-  await expect(page.getByLabel("Сообщение помощнику")).toHaveValue(draft);
-  expect(state.streamPosts).toEqual([]);
-  expect(state.forbidden).toEqual([]);
-});
-
-test("a policy conflict refreshes terms but never repeats a consent or sends until another explicit confirmation", async ({
-  page,
-  context,
-}) => {
-  const state = await fixture(context);
-  state.conflictNext = true;
-  await page.goto("/");
-  const draft = "Вопрос после смены условий";
-  await page.getByLabel("Сообщение помощнику").fill(draft);
-  await send(page).click();
-  await confirm(page).click();
-  await expect(page.locator(".alert[role=alert]")).toContainText(
-    "Условия обновились",
-  );
-  await expect(consentDialog(page)).toHaveCount(0);
-  await expect(page.getByLabel("Сообщение помощнику")).toHaveValue(draft);
-  await expect.poll(() => state.dashboardReads).toBeGreaterThan(1);
-  expect(state.consentPosts).toHaveLength(1);
-  expect(state.streamPosts).toEqual([]);
-  await send(page).click();
-  await consentDialog(page)
-    .getByText("Условия обработки сообщений", { exact: true })
-    .click();
-  await expect(consentDialog(page)).toContainText(
-    "Новый синтетический получатель",
-  );
-  await confirm(page).click();
-  await expect(page.getByRole("log")).toContainText("Синтетический ответ 1");
-  expect(state.consentPosts).toEqual([
-    { action: "granted", policyId: "a".repeat(64) },
-    { action: "granted", policyId: "b".repeat(64) },
-  ]);
-  expect(state.streamPosts).toHaveLength(1);
-  expect(state.streamPosts[0]?.text).toBe(draft);
-  expect(state.forbidden).toEqual([]);
-});
-
-test("cross-tab logout cancels a pending confirmation and its late receipt cannot send the previous owner's question", async ({
-  page,
-  context,
-}) => {
-  const state = await fixture(context);
-  state.holdConsent = true;
-  try {
-    await page.goto("/");
-    await page
-      .getByLabel("Сообщение помощнику")
-      .fill("PRIVATE_PENDING_QUESTION_A");
-    await send(page).click();
-    await confirm(page).click();
-    await expect.poll(() => state.consentPosts.length).toBe(1);
-    const other = await context.newPage();
-    await other.goto("/");
-    await other.getByRole("button", { name: "Выйти", exact: true }).click();
-    await expect(
-      page.getByRole("button", { name: "Создать аккаунт", exact: true }),
-    ).toBeVisible();
-    await expect(consentDialog(page)).toHaveCount(0);
-    state.owner = "202";
-    state.authenticated = true;
-    state.granted = false;
-    await page.reload();
-    await expect(page.getByLabel("Сообщение помощнику")).toHaveValue("");
-    state.releaseConsent();
-    await expect(page.getByText("PRIVATE_PENDING_QUESTION_A")).toHaveCount(0);
-    await expect(consentDialog(page)).toHaveCount(0);
-    expect(state.streamPosts).toEqual([]);
-    expect(state.consentPosts).toHaveLength(1);
-    expect(state.forbidden).toEqual([]);
-    await other.close();
-  } finally {
-    state.releaseConsent();
-  }
-});
-
-test("processing terms and revocation live in account consents rather than in chat", async ({
+test("a changed required-policy snapshot clears both choices and needs a new explicit acceptance", async ({
   page,
   context,
 }) => {
   const state = await fixture(context, true);
+  state.gateConflict = true;
   await page.goto("/");
-  await expect(page.locator(".conversation-main .ai-access")).toHaveCount(0);
-  await page.getByRole("button", { name: "Согласия", exact: true }).click();
-  const settings = page.getByRole("region", {
-    name: "Обработка сообщений",
-    exact: true,
-  });
-  await expect(settings).toBeVisible();
-  expect(await settings.innerText()).not.toContain(
-    "Первый синтетический получатель",
-  );
-  await settings
-    .getByText("Условия обработки сообщений", { exact: true })
-    .click();
-  await expect(settings).toContainText("Первый синтетический получатель");
-  await settings
-    .getByRole("button", {
-      name: "Отозвать согласие на обработку сообщений",
-      exact: true,
-    })
+  await mandatory(page).check();
+  await marketing(page).check();
+  await accept(page).click();
+  await expect(mandatory(page)).not.toBeChecked();
+  await expect(marketing(page)).not.toBeChecked();
+  await expect(accept(page)).toBeDisabled();
+  await page
+    .getByText("Читать согласие на обработку данных", { exact: true })
     .click();
   await expect(
-    settings.getByRole("button", {
-      name: "Отозвать согласие на обработку сообщений",
+    page.getByRole("article", {
+      name: syntheticConsentPolicy.personalData.label,
       exact: true,
     }),
-  ).toHaveCount(0);
-  expect(state.consentPosts).toEqual([{ action: "revoked" }]);
-  await page.getByRole("button", { name: "Назад", exact: true }).click();
-  await page.getByLabel("Сообщение помощнику").fill("Вопрос после отзыва");
-  await send(page).click();
-  await expect(consentDialog(page)).toBeVisible();
-  await consentDialog(page)
-    .getByRole("button", { name: "Отмена", exact: true })
-    .click();
-  expect(state.consentPosts).toHaveLength(1);
+  ).toContainText("EXACT_API_PROCESSING_SNAPSHOT_" + "b".repeat(64));
+  expect(state.choices).toHaveLength(1);
   expect(state.streamPosts).toEqual([]);
-  expect(state.external).toBe(0);
-  expect(state.forbidden).toEqual([]);
+  await mandatory(page).check();
+  await accept(page).click();
+  await expect(page.getByLabel("Сообщение помощнику")).toBeEnabled();
+  expect(state.choices[1]?.policyVersion).toBe("synthetic-new-binding");
+  expect(state.choices[1]?.marketing).toBe(false);
+  expect(state.aiConsentPosts).toBe(0);
+  expect(state.streamPosts).toEqual([]);
+});
+
+for (const code of ["AI_POLICY_CHANGED", "SERVICE_CONSENT_REQUIRED"] as const) {
+  test(
+    code +
+      " refreshes the required gate without granting, replaying or dispatching the rejected question",
+    async ({ page, context }) => {
+      const state = await fixture(context);
+      state.rejectStream = code;
+      await page.goto("/");
+      await page
+        .getByLabel("Сообщение помощнику")
+        .fill("Вопрос по прежним условиям");
+      await send(page).click();
+      await expect(gate(page)).toBeVisible();
+      expect(state.providerDispatches).toBe(0);
+      expect(state.streamPosts).toHaveLength(1);
+      expect(state.aiConsentPosts).toBe(0);
+      expect(state.choices).toEqual([]);
+      await mandatory(page).check();
+      await accept(page).click();
+      await expect(page.getByLabel("Сообщение помощнику")).toBeEnabled();
+      expect(state.streamPosts).toHaveLength(1);
+      await page.getByLabel("Сообщение помощнику").fill("Явный новый вопрос");
+      await send(page).click();
+      await expect(page.getByRole("log")).toContainText(
+        "Синтетический ответ 1",
+      );
+      expect(state.streamPosts.map((input) => input.text)).toEqual([
+        "Вопрос по прежним условиям",
+        "Явный новый вопрос",
+      ]);
+      expect(state.providerDispatches).toBe(1);
+      expect(state.aiConsentPosts).toBe(0);
+      expect(state.unexpected).toEqual([]);
+    },
+  );
+}
+
+test("a late acceptance cannot enter another account or confirm its unchecked choices", async ({
+  page,
+  context,
+}) => {
+  const state = await fixture(context, true);
+  state.holdChoice = true;
+  try {
+    await page.goto("/");
+    await mandatory(page).check();
+    await accept(page).click();
+    await expect.poll(() => state.choices.length).toBe(1);
+    state.owner = "202";
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await expect(mandatory(page)).not.toBeChecked();
+    state.releaseChoice();
+    await expect.poll(() => state.choiceReplies).toBe(1);
+    await expect(gate(page)).toBeVisible();
+    await expect(accept(page)).toBeDisabled();
+    expect(state.required).toBe(true);
+    expect(state.granted).toBe(false);
+    expect(state.streamPosts).toEqual([]);
+    expect(state.aiConsentPosts).toBe(0);
+  } finally {
+    state.releaseChoice();
+  }
+});
+
+test("a saved acceptance followed by a failed refresh never sends; later refresh restores the account without replay", async ({
+  page,
+  context,
+}) => {
+  const state = await fixture(context, true);
+  state.failDashboardAfterChoice = true;
+  await page.goto("/");
+  await mandatory(page).check();
+  await accept(page).click();
+  await expect(
+    page.getByRole("alert").filter({
+      hasText: "Не удалось загрузить тестовый кабинет",
+    }),
+  ).toHaveText("Не удалось загрузить тестовый кабинет");
+  expect(state.granted).toBe(true);
+  expect(state.choices).toHaveLength(1);
+  expect(state.streamPosts).toEqual([]);
+  expect(state.aiConsentPosts).toBe(0);
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await expect(page.getByLabel("Сообщение помощнику")).toBeEnabled();
+  await assertNoConsentSurface(page);
+  expect(state.streamPosts).toEqual([]);
+  expect(state.choices).toHaveLength(1);
 });

@@ -1,4 +1,8 @@
-import { syntheticServiceConsents } from "./test-service-consents.js";
+import {
+  acceptSyntheticServiceConsents,
+  syntheticConsentsFor,
+  syntheticServiceConsents,
+} from "./test-service-consents.js";
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import { randomUUID } from "node:crypto";
@@ -92,7 +96,7 @@ test("production RouterAI approval still requires user consent, monetary approva
     });
   const register = async () => {
     const reply = await call("POST", "/v1/auth/register", "", {
-      consents: syntheticServiceConsents,
+      consents: await syntheticConsentsFor(f.app),
       email: randomUUID() + "@example.test",
       password: "Synthetic-password-123",
     });
@@ -132,8 +136,13 @@ test("production RouterAI approval still requires user consent, monetary approva
     requestId: randomUUID(),
     policyId,
   });
+  const revoked = await call("POST", "/v1/ai/consent", user, {
+    action: "revoked",
+  });
+  assert.equal(revoked.statusCode, 200, revoked.body);
   assert.equal((await call("POST", url, user, message())).statusCode, 403);
   assert.equal(calls, 0);
+  await acceptSyntheticServiceConsents(f.app, user);
   assert.equal(
     (
       await call("POST", "/v1/ai/consent", user, {
@@ -195,6 +204,7 @@ test("production RouterAI approval still requires user consent, monetary approva
     await call("GET", "/v1/dashboard", user, undefined, changed)
   ).json<Dashboard>();
   assert.equal(beforeSelection.provider, "unconfigured");
+  await acceptSyntheticServiceConsents(changed, admin);
   const current = (
     await call("GET", "/v1/admin/ai", admin, undefined, changed)
   ).json<AiControlStatus>();
@@ -218,11 +228,20 @@ test("production RouterAI approval still requires user consent, monetary approva
     await call("GET", "/v1/dashboard", user, undefined, changed)
   ).json<Dashboard>();
   assert.equal(after.aiAccess.granted, false);
-  assert.deepEqual(after.thread!.messages, history);
+  assert.equal(
+    after.thread,
+    null,
+    "old recipient evidence does not expose protected history",
+  );
+  assert.deepEqual(
+    await new Repository(f.db).history(f.db, start.json().id),
+    history,
+  );
   assert.equal(
     (await call("POST", url, user, message(nextPolicy.id), changed)).statusCode,
     403,
   );
+  await acceptSyntheticServiceConsents(changed, user);
   assert.equal(
     (
       await call(
@@ -627,6 +646,7 @@ async function fixture(
       });
     };
     async function consent(token: string, target = app) {
+      await acceptSyntheticServiceConsents(target, token);
       const headers = { origin, cookie: "citygo=" + token };
       const board = (
         await target.inject({ method: "GET", url: "/v1/dashboard", headers })
@@ -646,6 +666,7 @@ async function fixture(
       target = app,
       selected?: AiProviderId | "disabled",
     ) {
+      await acceptSyntheticServiceConsents(target, token);
       const headers = { origin, cookie: "citygo=" + token };
       const response = await target.inject({
         method: "GET",
@@ -674,7 +695,7 @@ async function fixture(
     async function register() {
       const email = randomUUID() + "@example.test";
       const result = await call("POST", "/v1/auth/register", "", {
-        consents: syntheticServiceConsents,
+        consents: await syntheticConsentsFor(app),
         email,
         password: "CityGo-test-password",
       });
@@ -764,6 +785,12 @@ async function chatUser(f: Awaited<ReturnType<typeof fixture>>, grant = true) {
     )
   ).json().id as string;
   if (grant) await f.consent(user.token);
+  else {
+    const revoked = await f.call("POST", "/v1/ai/consent", user.token, {
+      action: "revoked",
+    });
+    assert.equal(revoked.statusCode, 200, revoked.body);
+  }
   return {
     ...user,
     userId: board.user.id,
@@ -914,13 +941,13 @@ test("AI consent, policy, money, quota and CAS errors remain distinguishable ove
   assert.equal(blockedVersion.json().code, "CONTRACT_VERSION_UNSUPPORTED");
   const noConsent = await f.call("POST", path, user.token, message());
   assert.equal(noConsent.statusCode, 403);
-  assert.equal(noConsent.json().code, "AI_CONSENT_REQUIRED");
+  assert.equal(noConsent.json().code, "SERVICE_CONSENT_REQUIRED");
+  await f.consent(user.token);
   const wrongPolicy = await f.call("POST", path, user.token, {
     ...message(),
     policyId: "0".repeat(64),
   });
   assert.equal(wrongPolicy.json().code, "AI_POLICY_CHANGED");
-  await f.consent(user.token);
   await f.approveBudget(user.token, f.app, { enabled: false });
   for (const expected of ["AI_BUDGET_UNAVAILABLE", "AI_BUDGET_EXHAUSTED"]) {
     if (expected === "AI_BUDGET_EXHAUSTED")
@@ -966,7 +993,7 @@ test("runtime response schemas accept the actual API journey and admin payloads"
   const f = await fixture(true, { ADMIN_USER_IDS: "1" });
   t.after(f.close);
   const auth = await f.call("POST", "/v1/auth/register", "", {
-    consents: syntheticServiceConsents,
+    consents: await syntheticConsentsFor(f.app),
     email: "schemas@example.test",
     password: "Synthetic-test-password",
   });
@@ -1972,7 +1999,7 @@ test("admin switching is authorized, audited, persistent and never grants user c
   );
   t.after(f.close);
   const admin = await chatUser(f);
-  const other = await f.register();
+  const other = await chatUser(f);
   const get = async () =>
     (await f.call("GET", "/v1/admin/ai", admin.token)).json<AiControlStatus>();
   const initial = await get();
@@ -2060,6 +2087,12 @@ test("admin switching is authorized, audited, persistent and never grants user c
     (await f.call("POST", "/v1/admin/ai", admin.token, input)).json().revision,
     2,
   );
+  const afterSwitch = (
+    await f.call("GET", "/v1/dashboard", admin.token)
+  ).json<Dashboard>();
+  assert.equal(afterSwitch.aiAccess.granted, false);
+  assert.equal(afterSwitch.thread, null);
+  await acceptSyntheticServiceConsents(f.app, admin.token);
   assert.equal(
     (await f.call("POST", "/v1/admin/ai", admin.token, input)).statusCode,
     409,
@@ -2087,11 +2120,16 @@ test("admin switching is authorized, audited, persistent and never grants user c
   );
   assert.equal(
     (
-      await f.call("POST", path, admin.token, {
-        text: "Квартира",
-        requestId: randomUUID(),
-        policyId: giga.id,
-      })
+      await f.call(
+        "POST",
+        `/v1/threads/${other.thread}/messages`,
+        other.token,
+        {
+          text: "Квартира",
+          requestId: randomUUID(),
+          policyId: giga.id,
+        },
+      )
     ).statusCode,
     403,
   );
@@ -2110,6 +2148,7 @@ test("admin switching is authorized, audited, persistent and never grants user c
     /"type":"done"/,
   );
   await f.activate(admin.token, f.app, "disabled");
+  await acceptSyntheticServiceConsents(f.app, admin.token);
   assert.equal(
     (
       await f.call("POST", path, admin.token, {
@@ -2130,7 +2169,16 @@ test("admin switching is authorized, audited, persistent and never grants user c
     await f.call("GET", "/v1/dashboard", admin.token)
   ).json<Dashboard>();
   assert.equal(board.aiAccess.granted, false);
-  assert.equal(board.thread!.messages.at(-1)!.generation?.provider, "gigachat");
+  assert.equal(board.thread, null);
+  assert.equal(
+    (
+      await f.db.query<{ provider: string }>(
+        "select metadata->'generation'->>'provider' as provider from messages where thread_id=$1 and role='assistant' order by id desc limit 1",
+        [admin.thread],
+      )
+    ).rows[0]!.provider,
+    "gigachat",
+  );
   assert.equal(
     (
       await f.db.query<{ accepted_requests: number }>(
@@ -2147,6 +2195,7 @@ test("admin switching is authorized, audited, persistent and never grants user c
     config: readConfig({ NODE_ENV: "test", ADMIN_USER_IDS: "1" }),
   });
   t.after(() => restarted.close());
+  await acceptSyntheticServiceConsents(restarted, admin.token);
   const response = await restarted.inject({
     method: "GET",
     url: "/v1/admin/ai",
@@ -2212,11 +2261,20 @@ test("concurrent admins on two API instances cannot overwrite a newer routing re
       }),
     ),
   );
-  assert.deepEqual(
-    results.map((result) => result.statusCode).sort(),
-    [200, 409],
-  );
+  assert.equal(results.filter((result) => result.statusCode === 200).length, 1);
   const winner = results.findIndex((result) => result.statusCode === 200);
+  const loser = 1 - winner;
+  if (results[loser]!.statusCode === 403)
+    assert.equal(results[loser]!.json().code, "SERVICE_CONSENT_REQUIRED");
+  else assert.equal(results[loser]!.statusCode, 409, results[loser]!.body);
+  await acceptSyntheticServiceConsents(f.app, admins[loser]!.token);
+  const stale = await f.call("POST", "/v1/admin/ai", admins[loser]!.token, {
+    provider: options[loser]!.provider,
+    policyId: options[loser]!.policy!.id,
+    expectedRevision: initial.current.revision,
+  });
+  assert.equal(stale.statusCode, 409, stale.body);
+  await acceptSyntheticServiceConsents(f.app, admins[0]!.token);
   const final = (
     await f.call("GET", "/v1/admin/ai", admins[0]!.token)
   ).json<AiControlStatus>();
@@ -2260,6 +2318,7 @@ test("admin API cannot bypass server disable or production recipient blocks", as
       testing: true,
     });
     t.after(() => guarded.close());
+    await acceptSyntheticServiceConsents(guarded, admin.token);
     const headers = {
       origin: config.WEB_ORIGIN,
       cookie: (production ? "__Host-citygo=" : "citygo=") + admin.token,
@@ -2291,6 +2350,7 @@ test("admin API cannot bypass server disable or production recipient blocks", as
       409,
     );
   }
+  await acceptSyntheticServiceConsents(f.app, admin.token);
   assert.equal(
     (await f.call("GET", "/v1/admin/ai", admin.token)).json<AiControlStatus>()
       .audit.length,
@@ -2448,6 +2508,15 @@ test("configuration drift fails closed until admin explicitly accepts the new mo
     requestId: randomUUID(),
     policyId: admin.policyId,
   };
+  const policyGate = await replica.inject({
+    method: "POST",
+    url: path,
+    headers,
+    payload,
+  });
+  assert.equal(policyGate.statusCode, 403, policyGate.body);
+  assert.equal(policyGate.json().code, "SERVICE_CONSENT_REQUIRED");
+  await acceptSyntheticServiceConsents(replica, admin.token);
   assert.equal(
     (await replica.inject({ method: "POST", url: path, headers, payload }))
       .statusCode,
@@ -2455,6 +2524,7 @@ test("configuration drift fails closed until admin explicitly accepts the new mo
   );
   assert.equal(calls, 0);
   await f.activate(admin.token, replica, "openai");
+  await acceptSyntheticServiceConsents(replica, admin.token);
   await f.approveBudget(admin.token, replica);
   assert.equal(
     (await f.call("POST", path, admin.token, payload)).statusCode,
@@ -2506,6 +2576,11 @@ test("routing changes between lookup and admission reject stale grants and messa
     origin: "http://localhost:3000",
     cookie: "citygo=" + admin.token,
   };
+  const originalConsentCount = (
+    await f.db.query(
+      "select * from consent_events where consent_key='ai-recipient'",
+    )
+  ).rows.length;
   intercept = true;
   assert.equal(
     (
@@ -2524,9 +2599,10 @@ test("routing changes between lookup and admission reject stale grants and messa
         "select * from consent_events where consent_key='ai-recipient'",
       )
     ).rows.length,
-    1,
+    originalConsentCount,
   );
   await f.activate(admin.token, f.app, "openai");
+  await acceptSyntheticServiceConsents(f.app, admin.token);
   intercept = true;
   assert.equal(
     (
@@ -2599,13 +2675,13 @@ test("AI admission requires explicit current-recipient consent; revoke preserves
         policyId: "a".repeat(64),
       })
     ).statusCode,
-    409,
+    403,
   );
   assert.equal((await f.call("POST", path, user.token, body)).statusCode, 403);
   assert.equal(
     (await f.call("POST", path, user.token, { ...body, policyId: undefined }))
       .statusCode,
-    409,
+    403,
   );
   assert.equal(calls, 0);
   assert.equal(
@@ -2618,10 +2694,27 @@ test("AI admission requires explicit current-recipient consent; revoke preserves
     0,
   );
   await f.consent(user.token);
+  assert.equal(
+    (await f.call("POST", path, user.token, { ...body, policyId: undefined }))
+      .statusCode,
+    409,
+  );
+  assert.equal(
+    (
+      await f.call("POST", "/v1/ai/consent", user.token, {
+        ...grant,
+        policyId: "a".repeat(64),
+      })
+    ).statusCode,
+    409,
+  );
   assert.match(
     (await f.call("POST", path, user.token, body)).body,
     /"type":"done"/,
   );
+  const completedHistory = (
+    await f.call("GET", "/v1/dashboard", user.token)
+  ).json<Dashboard>().thread!.messages;
   assert.equal((await f.call("POST", path, user.token, body)).statusCode, 409);
   const other = await chatUser(f, false);
   assert.equal(
@@ -2635,6 +2728,7 @@ test("AI admission requires explicit current-recipient consent; revoke preserves
     ).statusCode,
     403,
   );
+  await acceptSyntheticServiceConsents(f.app, other.token);
   assert.equal(
     (
       await f.call("POST", path, other.token, {
@@ -2662,7 +2756,11 @@ test("AI admission requires explicit current-recipient consent; revoke preserves
     await f.call("GET", "/v1/dashboard", user.token)
   ).json<Dashboard>();
   assert.equal(board.aiAccess.granted, false);
-  assert.equal(board.thread!.messages.length, 2);
+  assert.equal(board.thread, null);
+  assert.deepEqual(
+    await new Repository(f.db).history(f.db, user.thread),
+    completedHistory,
+  );
   assert.equal(calls, 1);
   const events = (
     await f.db.query<{ action: string; details: { id?: string } }>(
@@ -2672,7 +2770,7 @@ test("AI admission requires explicit current-recipient consent; revoke preserves
   ).rows;
   assert.deepEqual(
     events.map((event) => event.action),
-    ["granted", "revoked"],
+    ["granted", "revoked", "granted", "granted", "revoked"],
   );
   assert.equal(events[0]!.details.id, user.policyId);
   assert.equal(
@@ -3760,8 +3858,8 @@ test("interrupted replies are persisted but do not qualify for XP", async (t) =>
   });
   t.after(() => broken.close());
   await f.activate(user.token, broken);
-  await f.approveBudget(user.token, broken);
   const brokenPolicyId = await f.consent(user.token, broken);
+  await f.approveBudget(user.token, broken);
   const response = await broken.inject({
     method: "POST",
     url: "/v1/threads/" + thread + "/messages",
@@ -3793,8 +3891,8 @@ test("interrupted replies are persisted but do not qualify for XP", async (t) =>
     409,
   );
   await f.activate(user.token);
-  await f.approveBudget(user.token);
   await f.consent(user.token);
+  await f.approveBudget(user.token);
   const recovered = await f.call(
     "POST",
     "/v1/threads/" + thread + "/messages",
@@ -3902,7 +4000,6 @@ test("changing injected providers between API instances preserves history and re
   });
   t.after(() => replacement.close());
   await f.activate(user.token, replacement);
-  await f.approveBudget(user.token, replacement);
   const headers = {
     origin: "http://localhost:3000",
     cookie: "citygo=" + user.token,
@@ -3911,7 +4008,11 @@ test("changing injected providers between API instances preserves history and re
     await replacement.inject({ method: "GET", url: "/v1/dashboard", headers })
   ).json<Dashboard>();
   assert.equal(changed.aiAccess.granted, false);
-  assert.deepEqual(changed.thread!.messages, before.thread!.messages);
+  assert.equal(changed.thread, null);
+  assert.deepEqual(
+    await new Repository(f.db).history(f.db, thread),
+    before.thread!.messages,
+  );
   const rejected = await replacement.inject({
     method: "POST",
     url: `/v1/threads/${thread}/messages`,
@@ -3925,6 +4026,7 @@ test("changing injected providers between API instances preserves history and re
   assert.equal(rejected.statusCode, 403);
   assert.deepEqual({ receivedHistory }, { receivedHistory: undefined });
   const replacementPolicyId = await f.consent(user.token, replacement);
+  await f.approveBudget(user.token, replacement);
   const response = await replacement.inject({
     method: "POST",
     url: `/v1/threads/${thread}/messages`,

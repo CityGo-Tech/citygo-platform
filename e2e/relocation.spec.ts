@@ -82,37 +82,16 @@ test("six-character registration → conversation without questionnaire → save
     "Хочу переехать в Москву, но пока не знаю бюджет и дату. С чего начать?";
   await page.getByLabel("Сообщение помощнику").fill(message);
   await page.getByRole("button", { name: "Отправить", exact: true }).click();
-  await page
-    .getByRole("dialog", { name: "Обработка сообщений", exact: true })
-    .getByRole("button", { name: "Разрешить и отправить", exact: true })
-    .click();
   // TestProvider is an in-process deterministic fixture, not a paid/live model.
   await expect(page.getByRole("log")).toContainText(
     "Тестовый ответ. Уточните район",
   );
   await expect(page.getByRole("log")).toContainText(message);
   await expectNoInventedPlan(page);
-  await page.getByRole("button", { name: "Согласия", exact: true }).click();
-  const settings = page.getByRole("region", {
-    name: "Обработка сообщений",
-    exact: true,
-  });
-  await settings
-    .getByText("Условия обработки сообщений", { exact: true })
-    .click();
-  await expect(settings).toContainText("Обработку выполняет OpenAI.");
-  await settings
-    .getByRole("button", {
-      name: "Отозвать согласие на обработку сообщений",
-      exact: true,
-    })
-    .click();
   await expect(
-    settings.getByRole("button", {
-      name: "Отозвать согласие на обработку сообщений",
-      exact: true,
-    }),
+    page.getByRole("button", { name: "Согласия", exact: true }),
   ).toHaveCount(0);
+  await expect(page.getByRole("dialog")).toHaveCount(0);
   await page.reload();
   await expect(page.getByRole("log")).toContainText(
     "Тестовый ответ. Уточните район",
@@ -145,11 +124,6 @@ test("six consecutive synthetic replies preserve numeric chat order and the last
     questions.push(question);
     await page.getByLabel("Сообщение помощнику").fill(question);
     await page.getByRole("button", { name: "Отправить", exact: true }).click();
-    if (turn === 1)
-      await page
-        .getByRole("dialog", { name: "Обработка сообщений", exact: true })
-        .getByRole("button", { name: "Разрешить и отправить", exact: true })
-        .click();
     await expect(page.getByLabel("Сообщение помощнику")).toBeEnabled();
     await expect(page.getByLabel("Сообщение помощнику")).toHaveValue("");
     await expect(page.getByRole("log").locator("article")).toHaveCount(
