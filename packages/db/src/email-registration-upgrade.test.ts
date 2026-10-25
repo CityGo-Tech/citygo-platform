@@ -1,3 +1,4 @@
+import { syntheticServiceConsents } from "./test-service-consents.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createHash, randomUUID } from "node:crypto";
@@ -127,6 +128,7 @@ for (const state of ["pending", "quotas-only", "verified"] as const) {
       const registration = new EmailRegistration(db),
         id = randomUUID();
       const value = {
+        consents: syntheticServiceConsents,
         id,
         email: "synthetic-protected@example.test",
         passwordHash: "synthetic-hash",

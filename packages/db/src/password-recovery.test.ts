@@ -1,3 +1,4 @@
+import { syntheticServiceConsents } from "./test-service-consents.js";
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import { createHash, randomUUID } from "node:crypto";
@@ -44,6 +45,7 @@ async function age(db: Database) {
 async function verified(db: Database, email = "verified@example.test") {
   const r = new EmailRegistration(db),
     value = {
+      consents: syntheticServiceConsents,
       ...input(email),
       passwordHash: "old-synthetic-salted-password-hash",
     };
@@ -359,7 +361,11 @@ test("recovery and registration share durable recipient/IP/global quotas includi
   await f.store.cancelDelivery(v.id, v.codeHash);
   const reg = new EmailRegistration(f.db);
   await assert.rejects(
-    reg.begin({ ...input(v.email), passwordHash: "hash" }),
+    reg.begin({
+      consents: syntheticServiceConsents,
+      ...input(v.email),
+      passwordHash: "hash",
+    }),
     status(429),
   );
   for (let n = 2; n <= 3; n++) {

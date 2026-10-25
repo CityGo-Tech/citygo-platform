@@ -1,3 +1,4 @@
+import { syntheticServiceConsents } from "./test-service-consents.js";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { Writable } from "node:stream";
@@ -7,6 +8,7 @@ import { connectDatabase, migrate } from "@citygo/db";
 import { readConfig } from "@citygo/config";
 import {
   CONTRACT_VERSION_HEADER,
+  serviceConsentPolicy,
   emailRegistrationChallengeSchema,
 } from "@citygo/contracts";
 import { redactPaths } from "@citygo/observability";
@@ -66,10 +68,16 @@ test("disabled flow preserves six-character registration, but cannot fake confir
   const { app, post, db } = await fixture(t, "disabled");
   assert.deepEqual(
     (await app.inject({ url: "/v1/auth/registration-policy", headers })).json(),
-    { emailVerification: "disabled" },
+    { emailVerification: "disabled", consentPolicy: serviceConsentPolicy },
   );
   assert.equal(
-    (await post("/v1/auth/email/register", { email, password })).statusCode,
+    (
+      await post("/v1/auth/email/register", {
+        consents: syntheticServiceConsents,
+        email,
+        password,
+      })
+    ).statusCode,
     503,
   );
   assert.equal(
@@ -77,7 +85,13 @@ test("disabled flow preserves six-character registration, but cannot fake confir
     0,
   );
   assert.equal(
-    (await post("/v1/auth/register", { email, password })).statusCode,
+    (
+      await post("/v1/auth/register", {
+        consents: syntheticServiceConsents,
+        email,
+        password,
+      })
+    ).statusCode,
     200,
   );
 });
@@ -99,11 +113,16 @@ test("explicit unlimited global email caps preserve OTP, recipient cooldown and 
       EMAIL_SEND_TOTAL_LIMIT: "unlimited",
     },
   );
-  const first = await post("/v1/auth/email/register", { email, password });
+  const first = await post("/v1/auth/email/register", {
+    consents: syntheticServiceConsents,
+    email,
+    password,
+  });
   assert.equal(first.statusCode, 200);
   assert.equal(
     (
       await post("/v1/auth/email/register", {
+        consents: syntheticServiceConsents,
         email: "other-synthetic-email@example.test",
         password,
       })
@@ -112,7 +131,13 @@ test("explicit unlimited global email caps preserve OTP, recipient cooldown and 
   );
   assert.equal(delivered.length, 2);
   assert.equal(
-    (await post("/v1/auth/email/register", { email, password })).statusCode,
+    (
+      await post("/v1/auth/email/register", {
+        consents: syntheticServiceConsents,
+        email,
+        password,
+      })
+    ).statusCode,
     429,
   );
   assert.equal(delivered.length, 2);
@@ -167,12 +192,19 @@ test("one unlimited global email cap never bypasses the other numeric cap", asyn
       },
     );
     assert.equal(
-      (await post("/v1/auth/email/register", { email, password })).statusCode,
+      (
+        await post("/v1/auth/email/register", {
+          consents: syntheticServiceConsents,
+          email,
+          password,
+        })
+      ).statusCode,
       200,
     );
     assert.equal(
       (
         await post("/v1/auth/email/register", {
+          consents: syntheticServiceConsents,
           email: "other-synthetic-email@example.test",
           password,
         })
@@ -193,14 +225,26 @@ test("required without delivery is honest unavailable, denies legacy bypass but 
   const { app, post, db } = await fixture(t, "required");
   assert.deepEqual(
     (await app.inject({ url: "/v1/auth/registration-policy", headers })).json(),
-    { emailVerification: "unavailable" },
+    { emailVerification: "unavailable", consentPolicy: serviceConsentPolicy },
   );
   assert.equal(
-    (await post("/v1/auth/register", { email, password })).statusCode,
+    (
+      await post("/v1/auth/register", {
+        consents: syntheticServiceConsents,
+        email,
+        password,
+      })
+    ).statusCode,
     503,
   );
   assert.equal(
-    (await post("/v1/auth/email/register", { email, password })).statusCode,
+    (
+      await post("/v1/auth/email/register", {
+        consents: syntheticServiceConsents,
+        email,
+        password,
+      })
+    ).statusCode,
     503,
   );
   assert.equal((await db.query("select id from users")).rows.length, 0);
@@ -208,7 +252,13 @@ test("required without delivery is honest unavailable, denies legacy bypass but 
   const { Repository } = await import("@citygo/db");
   await new Repository(db).register(email, await hashPassword(password));
   assert.equal(
-    (await post("/v1/auth/login", { email, password })).statusCode,
+    (
+      await post("/v1/auth/login", {
+        consents: syntheticServiceConsents,
+        email,
+        password,
+      })
+    ).statusCode,
     200,
   );
   assert.equal(
@@ -225,9 +275,13 @@ test("real HTTP boundary requires delivered code and browser proof before mintin
   });
   assert.deepEqual(
     (await app.inject({ url: "/v1/auth/registration-policy", headers })).json(),
-    { emailVerification: "required" },
+    { emailVerification: "required", consentPolicy: serviceConsentPolicy },
   );
-  const begun = await post("/v1/auth/email/register", { email, password });
+  const begun = await post("/v1/auth/email/register", {
+    consents: syntheticServiceConsents,
+    email,
+    password,
+  });
   assert.equal(begun.statusCode, 200);
   assert.ok(!begun.headers["set-cookie"]);
   const challenge = emailRegistrationChallengeSchema.parse(begun.json());
@@ -296,7 +350,11 @@ test("delivery failure never creates an account or returns upstream secrets and 
   const { post, db } = await fixture(t, "required", async () => {
     throw Error("synthetic-private-provider-detail");
   });
-  const response = await post("/v1/auth/email/register", { email, password });
+  const response = await post("/v1/auth/email/register", {
+    consents: syntheticServiceConsents,
+    email,
+    password,
+  });
   assert.equal(response.statusCode, 503);
   assert.ok(!response.body.includes("synthetic-private-provider-detail"));
   assert.equal((await db.query("select id from users")).rows.length, 0);
@@ -309,7 +367,13 @@ test("delivery failure never creates an account or returns upstream secrets and 
     1,
   );
   assert.equal(
-    (await post("/v1/auth/email/register", { email, password })).statusCode,
+    (
+      await post("/v1/auth/email/register", {
+        consents: syntheticServiceConsents,
+        email,
+        password,
+      })
+    ).statusCode,
     429,
   );
 });
@@ -341,7 +405,11 @@ test("HTTP resend preserves its browser proof, replaces the OTP and creates exac
   const { post, db } = await fixture(t, "required", async (input) => {
     delivered.push(input);
   });
-  const begun = await post("/v1/auth/email/register", { email, password });
+  const begun = await post("/v1/auth/email/register", {
+    consents: syntheticServiceConsents,
+    email,
+    password,
+  });
   const challenge = emailRegistrationChallengeSchema.parse(begun.json());
   const binding = {
     challengeId: challenge.challengeId,
@@ -407,7 +475,11 @@ test("late failed delivery from an older HTTP resend cannot cancel the newly del
       await staleSender.promise;
     }
   });
-  const begun = await post("/v1/auth/email/register", { email, password });
+  const begun = await post("/v1/auth/email/register", {
+    consents: syntheticServiceConsents,
+    email,
+    password,
+  });
   const challenge = emailRegistrationChallengeSchema.parse(begun.json());
   const binding = {
     challengeId: challenge.challengeId,
@@ -469,7 +541,11 @@ test("a sender acknowledged after the former eight-second cutoff remains one del
   });
   t.mock.timers.enable({ apis: ["setTimeout"] });
   try {
-    const pending = post("/v1/auth/email/register", { email, password });
+    const pending = post("/v1/auth/email/register", {
+      consents: syntheticServiceConsents,
+      email,
+      password,
+    });
     const sent = await entered.promise;
     t.mock.timers.tick(8_001);
     assert.equal(sent.signal.aborted, false);
@@ -509,7 +585,11 @@ test("an unresponsive sender reaches the twenty-five-second deadline, aborts and
   });
   t.mock.timers.enable({ apis: ["setTimeout"] });
   try {
-    const pending = post("/v1/auth/email/register", { email, password });
+    const pending = post("/v1/auth/email/register", {
+      consents: syntheticServiceConsents,
+      email,
+      password,
+    });
     const sent = await entered.promise;
     t.mock.timers.tick(24_999);
     assert.equal(sent.signal.aborted, false);
@@ -563,7 +643,13 @@ test("only an explicit native confirmation returns a bearer token, backed by its
     delivered = input;
   });
   const challenge = emailRegistrationChallengeSchema.parse(
-    (await post("/v1/auth/email/register", { email, password })).json(),
+    (
+      await post("/v1/auth/email/register", {
+        consents: syntheticServiceConsents,
+        email,
+        password,
+      })
+    ).json(),
   );
   const confirmed = await app.inject({
     method: "POST",
@@ -602,7 +688,13 @@ test("all registration writes obey Origin and contract-version guards before del
     delivered.push(input);
   });
   const challenge = emailRegistrationChallengeSchema.parse(
-    (await post("/v1/auth/email/register", { email, password })).json(),
+    (
+      await post("/v1/auth/email/register", {
+        consents: syntheticServiceConsents,
+        email,
+        password,
+      })
+    ).json(),
   );
   const binding = {
     challengeId: challenge.challengeId,
@@ -611,7 +703,11 @@ test("all registration writes obey Origin and contract-version guards before del
   const cases = [
     {
       url: "/v1/auth/email/register",
-      payload: { email: "other-synthetic@example.test", password },
+      payload: {
+        consents: syntheticServiceConsents,
+        email: "other-synthetic@example.test",
+        password,
+      },
     },
     { url: "/v1/auth/email/resend", payload: binding },
     {
@@ -700,6 +796,7 @@ test("structured registration logs redact email, password, OTP, proof and creden
           cookie: canaries.cookie,
         },
         body: {
+          consents: syntheticServiceConsents,
           email: canaries.email,
           phone: canaries.phone,
           password: canaries.password,

@@ -1,3 +1,4 @@
+import { registerSyntheticConsentingUser } from "./test-service-consents.js";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -5,7 +6,6 @@ import test, { type TestContext } from "node:test";
 import {
   AiCreditLedger,
   PaymentTopupOrders,
-  Repository,
   connectDatabase,
   migrate,
   type Database,
@@ -95,7 +95,8 @@ async function fixture(t: TestContext) {
     "The race must use independent PostgreSQL connections",
   );
   await migrate(first);
-  const userId = await new Repository(first).register(
+  const userId = await registerSyntheticConsentingUser(
+    first,
     "notification-pg@example.test",
     "SYNTHETIC-NOT-A-REAL-PASSWORD",
   );

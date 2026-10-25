@@ -8,7 +8,9 @@ import {
   chatInputSchema,
   completionSchema,
   questStartSchema,
-  credentialsSchema,
+  registrationWithConsentsSchema,
+  serviceConsentPolicy,
+  serviceConsentChoiceSchema,
   loginSchema,
   changePasswordSchema,
   changeRoleSchema,
@@ -42,6 +44,7 @@ import {
 import {
   Repository,
   AccountAccess,
+  ServiceConsents,
   MessageFavorites,
   ensureConversation,
   DomainError,
@@ -219,6 +222,7 @@ export async function buildApp(options: {
     config.AI_CREDIT_RESERVATION_MODE,
   );
   const accounts = new AccountAccess(options.db);
+  const serviceConsents = new ServiceConsents(options.db);
   const credit = new AiCreditLedger(
     options.db,
     chargingStatus,
@@ -330,6 +334,7 @@ export async function buildApp(options: {
       cookies: Record<string, string | undefined>;
     },
     allowPasswordChange = false,
+    allowConsentRecovery = false,
   ) {
     const token =
       bearer(request.headers.authorization) ?? request.cookies[sessionName];
@@ -342,12 +347,27 @@ export async function buildApp(options: {
         403,
         "Сначала измените временный пароль в личном кабинете",
       );
-    return account;
+    const consent = await serviceConsents.state(account.id);
+    if (
+      consent.serviceConsentRequired &&
+      !allowPasswordChange &&
+      !allowConsentRecovery
+    )
+      throw new DomainError(
+        403,
+        "Подтвердите согласие на обработку персональных данных для использования CityGo.",
+        "SERVICE_CONSENT_REQUIRED",
+      );
+    return {
+      ...account,
+      serviceConsentRequired: consent.serviceConsentRequired,
+    };
   }
   async function authenticateAdmin(
     request: Parameters<typeof authenticate>[0],
+    allowConsentRecovery = false,
   ) {
-    const user = await authenticate(request);
+    const user = await authenticate(request, false, allowConsentRecovery);
     if (user.role !== "admin" && user.role !== "super_admin")
       throw new DomainError(403, "Доступ только для администратора");
     return user;
@@ -442,9 +462,15 @@ export async function buildApp(options: {
   app.get("/ready", async () => {
     try {
       const result = await options.db.query(
-        "select name from citygo_migrations where name in ('0006_ai_budget.sql','0007_ai_user_daily_budget.sql','0008_ai_credit.sql','0009_ai_credit_charges.sql','0010_quest_plan_expand.sql','0011_quest_plan_validate.sql','0013_account_access.sql','0014_citygo_credit.sql','0015_yookassa_orders.sql','0016_npd_receipts.sql','0017_credit_source_lots.sql','0018_payment_refunds.sql','0019_yookassa_live_orders.sql','0020_ai_budget_provider_balance.sql','0021_payment_notifications.sql','0022_payment_admission.sql','0023_payment_receipt_snapshots.sql','0024_ai_credit_overdraft.sql','0025_assistant_conversations.sql')",
+        "select name from citygo_migrations where name in ('0006_ai_budget.sql','0007_ai_user_daily_budget.sql','0008_ai_credit.sql','0009_ai_credit_charges.sql','0010_quest_plan_expand.sql','0011_quest_plan_validate.sql','0013_account_access.sql','0014_citygo_credit.sql','0015_yookassa_orders.sql','0016_npd_receipts.sql','0017_credit_source_lots.sql','0018_payment_refunds.sql','0019_yookassa_live_orders.sql','0020_ai_budget_provider_balance.sql','0021_payment_notifications.sql','0022_payment_admission.sql','0023_payment_receipt_snapshots.sql','0024_ai_credit_overdraft.sql','0025_assistant_conversations.sql','0030_service_consents.sql')",
       );
-      if (result.rows.length !== 19) throw new Error("Pending migration");
+      if (result.rows.length !== 20) throw new Error("Pending migration");
+      await options.db.query(
+        "select user_id,policy_version,policy_hash,purpose,decision from service_consent_events limit 0",
+      );
+      await options.db.query(
+        "select consent_choice,consent_policy,consent_policy_hash,consent_recorded_at from email_registrations limit 0",
+      );
       if (config.EMAIL_REGISTRATION_MODE === "required") {
         const verification = await options.db.query(
           "select name from citygo_migrations where name='0026_email_registration.sql'",
@@ -507,6 +533,7 @@ export async function buildApp(options: {
     config,
     client: paymentClient,
     authenticate,
+    authenticateReconciliation: (request) => authenticate(request, false, true),
   });
   registerPaymentAdmission(app, {
     admission: paymentAdmission,
@@ -525,6 +552,7 @@ export async function buildApp(options: {
     sessionName,
     client: refundClient,
     authenticate,
+    authenticateReconciliation: (request) => authenticate(request, false, true),
   });
   if (paymentClient && refundClient && config.YOOKASSA_MODE === "live") {
     const refundJournal = new PaymentRefunds(options.db);
@@ -579,7 +607,7 @@ export async function buildApp(options: {
         config: { rateLimit: { max: 5, timeWindow: 60_000 } },
       },
       async (request) => {
-        await authenticateAdmin(request);
+        await authenticateAdmin(request, true);
         const command = z
           .strictObject({ limit: z.number().int().min(1).max(25).default(10) })
           .parse(request.body);
@@ -655,20 +683,32 @@ export async function buildApp(options: {
         },
       },
       async (request, reply) => {
-        const input = (
-          action === "register" ? credentialsSchema : loginSchema
-        ).parse(request.body);
-        let id: string;
-        let expectedHash: string;
+        const token = newToken();
         if (action === "register") {
+          const input = registrationWithConsentsSchema.parse(request.body);
           if (config.EMAIL_REGISTRATION_MODE === "required")
             throw new DomainError(
               503,
               "Для регистрации необходимо подтверждение почты. Начните регистрацию заново.",
             );
-          expectedHash = await hashPassword(input.password);
-          id = await repo.register(input.email, expectedHash);
-        } else {
+          const user = await serviceConsents.register(
+            input.email,
+            await hashPassword(input.password),
+            tokenHash(token),
+            input.consents,
+          );
+          reply.setCookie(sessionName, token, cookieOptions);
+          return {
+            user,
+            ...(request.headers["x-citygo-client"] === "native"
+              ? { token }
+              : {}),
+          };
+        }
+        const input = loginSchema.parse(request.body);
+        let id: string;
+        let expectedHash: string;
+        {
           const candidate = await accounts.credentials(input.email);
           const valid = await verifyPassword(
             input.password,
@@ -679,7 +719,6 @@ export async function buildApp(options: {
           id = candidate.id;
           expectedHash = candidate.password_hash;
         }
-        const token = newToken();
         // Recheck the verified hash under the same lock as password rotation.
         // A pending login with an old password cannot mint a fresh session.
         const user = await accounts.createVerifiedSession(
@@ -690,12 +729,28 @@ export async function buildApp(options: {
         reply.setCookie(sessionName, token, cookieOptions);
         // Native mode is explicit; browser sessions remain HttpOnly.
         return {
-          user,
+          user: {
+            ...user,
+            serviceConsentRequired: (await serviceConsents.state(user.id))
+              .serviceConsentRequired,
+          },
           ...(request.headers["x-citygo-client"] === "native" ? { token } : {}),
         };
       },
     );
   }
+  app.get("/v1/legal/consent-policy", async () => serviceConsentPolicy);
+  app.get("/v1/account/consents", async (request) => {
+    const user = await authenticate(request, true);
+    return serviceConsents.state(user.id);
+  });
+  app.post("/v1/account/consents", async (request) => {
+    const user = await authenticate(request, true);
+    return serviceConsents.choose(
+      user.id,
+      serviceConsentChoiceSchema.parse(request.body),
+    );
+  });
   app.post(
     "/v1/auth/password",
     { config: { rateLimit: { max: 10, timeWindow: "15 minutes" } } },
@@ -722,7 +777,11 @@ export async function buildApp(options: {
       );
       reply.setCookie(sessionName, token, cookieOptions);
       return {
-        user: account,
+        user: {
+          ...account,
+          serviceConsentRequired: (await serviceConsents.state(account.id))
+            .serviceConsentRequired,
+        },
         ...(request.headers["x-citygo-client"] === "native" ? { token } : {}),
       };
     },
@@ -789,12 +848,15 @@ export async function buildApp(options: {
   app.get("/v1/dashboard", async (request) => {
     const user = await authenticate(request, true);
     const active = await currentAi();
-    return repo.dashboard(
+    const dashboard = await repo.dashboard(
       user,
       active.provider?.name ?? "unconfigured",
       active.policy,
       config.LLM_USER_DAILY_REQUEST_LIMIT,
     );
+    return user.serviceConsentRequired
+      ? { ...dashboard, profile: null, quests: [], thread: null, xp: 0 }
+      : dashboard;
   });
   app.post("/v1/ai/consent", async (request) => {
     const user = await authenticate(request);
@@ -1158,7 +1220,7 @@ export async function buildApp(options: {
     return credit.status(user.id);
   });
   app.post("/v1/admin/ai/credit/reconcile", async (request) => {
-    await authenticateAdmin(request);
+    await authenticateAdmin(request, true);
     const input = aiCreditReconcileSchema.parse(request.body);
     return reconcileCharge(input.userId, input.holdId);
   });

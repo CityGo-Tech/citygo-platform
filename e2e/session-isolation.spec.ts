@@ -1,3 +1,4 @@
+import { syntheticConsentPolicy } from "./service-consent-fixture";
 import { test, expect, type Page } from "@playwright/test";
 import type { Dashboard } from "@citygo/contracts";
 
@@ -52,7 +53,12 @@ async function install(page: Page, withProfile = true) {
   await page.route("**/api/v1/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path.endsWith("/auth/registration-policy")) {
-      await route.fulfill({ json: { emailVerification: "disabled" } });
+      await route.fulfill({
+        json: {
+          emailVerification: "disabled",
+          consentPolicy: syntheticConsentPolicy,
+        },
+      });
     } else if (path.endsWith("/dashboard")) {
       await route.fulfill({
         status: state.board ? 200 : 401,
@@ -73,6 +79,7 @@ async function install(page: Page, withProfile = true) {
 async function signInB(page: Page) {
   await page.getByLabel("Электронная почта").fill("B@example.test");
   await page.getByLabel("Пароль", { exact: true }).fill("synthetic-password-B");
+  await page.locator("input[name=personalDataConsent]").check();
   await page
     .getByRole("button", { name: "Создать аккаунт", exact: true })
     .click();
@@ -181,7 +188,9 @@ test("401 during chat clears the entire session without restoring rejected draft
   await page.goto("/#chat");
   await page.getByLabel("Сообщение помощнику").fill("Секретный черновик A");
   await page.getByRole("button", { name: "Отправить", exact: true }).click();
-  await expect(page.getByRole("status")).toContainText("Сессия завершилась");
+  await expect(page.locator(".notice[role=status]")).toContainText(
+    "Сессия завершилась",
+  );
   await signInB(page);
   await openChat(page);
   await expect(page.getByLabel("Сообщение помощнику")).toHaveValue("");

@@ -8,11 +8,13 @@ import {
   notifyBrowserSessionChange,
   subscribeBrowserSessionChange,
   type SessionTicket,
+  ApiError,
 } from "@citygo/api-client";
 import type {
   AgentKey,
   Dashboard,
   ConversationSummary,
+  ServiceConsentChoice,
 } from "@citygo/contracts";
 import { Button, Card, Field, Badge } from "@citygo/ui-web";
 import { Journey } from "../components/journey";
@@ -20,6 +22,7 @@ import { ConversationHome } from "../components/conversation-home";
 import { OwnerReceiptsPanel } from "../components/owner-receipts";
 import { MessageFavoritesPanel } from "../components/message-favorites";
 import { EmailRegistration } from "../components/email-registration";
+import { ServiceConsentsPanel } from "../components/service-consents";
 import { PasswordRecovery } from "../components/password-recovery";
 import { PhoneVerificationPanel } from "../components/phone-verification";
 import { AccountOverview, accountStyles } from "../components/account-overview";
@@ -66,6 +69,7 @@ export default function Home() {
   const [favoritesOpen, setFavoritesOpen] = useState(false);
   const [phoneOpen, setPhoneOpen] = useState(false);
   const [balanceOpen, setBalanceOpen] = useState(false);
+  const [consentsOpen, setConsentsOpen] = useState(false);
   const [conversationView, setConversationView] = useState(false);
   const [text, setText] = useState("");
   const [draft, setDraft] = useState("");
@@ -95,7 +99,7 @@ export default function Home() {
     [session],
   );
   const history = useConversationHistory({
-    board,
+    board: board?.user.serviceConsentRequired ? null : board,
     sessionSignal: session.capture().signal,
     onAccessDenied: requireLogin,
   });
@@ -126,6 +130,7 @@ export default function Home() {
     setFavoritesOpen(false);
     setPhoneOpen(false);
     setBalanceOpen(false);
+    setConsentsOpen(false);
     setConversationView(false);
     selectedConversation.current = null;
     visibleThread.current = null;
@@ -156,11 +161,31 @@ export default function Home() {
       ticket = session.capture();
       version = ++refreshVersion.current;
     }
+    if (next.user.serviceConsentRequired) {
+      abort.current?.abort();
+      selectedConversation.current = null;
+      conversationDrafts.current.clear();
+      visibleThread.current = null;
+      conversationEpoch.current++;
+      writeConversationSelection(next.user.id, null, conversationStorage());
+      setText("");
+      setDraft("");
+      setPending("");
+      setSending(false);
+      setConversations(null);
+      setConversationNextCursor(null);
+      setConversationView(false);
+      next = { ...next, thread: null };
+    }
     const preferred =
       selectedConversation.current?.owner === next.user.id
         ? selectedConversation.current.id
         : readConversationSelection(next.user.id, conversationStorage());
-    if (preferred && !next.user.mustChangePassword) {
+    if (
+      preferred &&
+      !next.user.mustChangePassword &&
+      !next.user.serviceConsentRequired
+    ) {
       try {
         const detail = await api.conversation(preferred);
         ticket.check();
@@ -201,7 +226,14 @@ export default function Home() {
     writeConversationSelection(owner, id, conversationStorage());
   }
   async function beginConversation(agentKey?: AgentKey) {
-    if (!board || busy || sending || conversationSwitch.current) return false;
+    if (
+      !board ||
+      board.user.serviceConsentRequired ||
+      busy ||
+      sending ||
+      conversationSwitch.current
+    )
+      return false;
     conversationSwitch.current = true;
     const epoch = ++conversationEpoch.current;
     const version = ++refreshVersion.current;
@@ -249,7 +281,14 @@ export default function Home() {
     }
   }
   async function openConversation(id: string) {
-    if (!board || busy || sending || conversationSwitch.current) return false;
+    if (
+      !board ||
+      board.user.serviceConsentRequired ||
+      busy ||
+      sending ||
+      conversationSwitch.current
+    )
+      return false;
     conversationSwitch.current = true;
     const epoch = ++conversationEpoch.current;
     const version = ++refreshVersion.current;
@@ -288,7 +327,7 @@ export default function Home() {
     }
   }
   function loadConversations(before?: string) {
-    if (!board || busy || sending) return;
+    if (!board || board.user.serviceConsentRequired || busy || sending) return;
     void act(async (ticket) => {
       const page = await api.conversations(before);
       ticket.check();
@@ -355,6 +394,12 @@ export default function Home() {
       ticket.check();
       return true;
     } catch (e) {
+      if (
+        ticket.active() &&
+        e instanceof ApiError &&
+        e.serverCode === "SERVICE_CONSENT_REQUIRED"
+      )
+        await refresh(ticket).catch(() => {});
       if (ticket.active())
         setError(
           e instanceof Error ? e.message : "Не удалось выполнить запрос",
@@ -364,10 +409,14 @@ export default function Home() {
       if (ticket.active()) setBusy(false);
     }
   }
-  function auth(event: FormEvent<HTMLFormElement>) {
+  function auth(
+    event: FormEvent<HTMLFormElement>,
+    consents?: ServiceConsentChoice,
+  ) {
     event.preventDefault();
     if (mode === "recover") return;
     if (busy || logoutUnconfirmed || authPending.current) return;
+    if (mode === "register" && !consents) return;
     const data = new FormData(event.currentTarget);
     const authMode = mode;
     const email = String(data.get("email"));
@@ -381,21 +430,29 @@ export default function Home() {
         if (authMode === "register") {
           const policy = await api.registrationPolicy();
           ticket.check();
+          if (policy.consentPolicy.version !== consents?.policyVersion)
+            throw new Error(
+              "Согласия обновились. Прочитайте новую версию и выберите согласия заново.",
+            );
           if (policy.emailVerification === "unavailable") {
             throw new Error(
               "Регистрация временно недоступна: отправка писем ещё не подключена. Если аккаунт уже есть, войдите.",
             );
           }
           if (policy.emailVerification === "required") {
-            const challenge = await api.beginEmailRegistration(email, password);
+            const challenge = await api.beginEmailRegistration(
+              email,
+              password,
+              consents!,
+            );
             ticket.check();
             setRegistration(
-              pendingEmailRegistration(email, challenge, Date.now()),
+              pendingEmailRegistration(email, challenge, Date.now(), consents!),
             );
             return;
           }
         }
-        await api.auth(authMode, email, password);
+        await api.auth(authMode, email, password, consents);
         ticket.check();
         await refresh(ticket);
       } finally {
@@ -424,7 +481,12 @@ export default function Home() {
         );
         ticket.check();
         setRegistration(
-          pendingEmailRegistration(current.email, challenge, Date.now()),
+          pendingEmailRegistration(
+            current.email,
+            challenge,
+            Date.now(),
+            current.consents,
+          ),
         );
         setNotice("Новый код отправлен. Предыдущий код больше не действует.");
       } finally {
@@ -516,6 +578,7 @@ export default function Home() {
     event.preventDefault();
     if (
       !board?.thread ||
+      board.user.serviceConsentRequired ||
       board.thread.closed ||
       !board.aiAccess?.granted ||
       history.detached ||
@@ -667,6 +730,7 @@ export default function Home() {
             <Badge>{board.xp} XP</Badge>
             {board.profile &&
               !board.user.mustChangePassword &&
+              !board.user.serviceConsentRequired &&
               !passwordOpen && (
                 <Button
                   variant="ghost"
@@ -682,34 +746,49 @@ export default function Home() {
                   Диалоги и помощники
                 </Button>
               )}
-            {!board.user.mustChangePassword && !passwordOpen && (
-              <Button
-                variant="ghost"
-                disabled={busy || sending}
-                onClick={() => {
-                  setReceiptsOpen(false);
-                  setPhoneOpen(false);
-                  setBalanceOpen(false);
-                  setFavoritesOpen(true);
-                }}
-              >
-                Избранное
-              </Button>
-            )}
-            {!board.user.mustChangePassword && !passwordOpen && (
-              <Button
-                variant="ghost"
-                disabled={busy || sending}
-                onClick={() => {
-                  setFavoritesOpen(false);
-                  setPhoneOpen(false);
-                  setBalanceOpen(false);
-                  setReceiptsOpen(true);
-                }}
-              >
-                Мои чеки
-              </Button>
-            )}
+            {!board.user.mustChangePassword &&
+              !board.user.serviceConsentRequired &&
+              !passwordOpen && (
+                <Button
+                  variant="ghost"
+                  disabled={busy || sending}
+                  onClick={() => {
+                    setReceiptsOpen(false);
+                    setPhoneOpen(false);
+                    setBalanceOpen(false);
+                    setFavoritesOpen(true);
+                  }}
+                >
+                  Избранное
+                </Button>
+              )}
+            {!board.user.mustChangePassword &&
+              !board.user.serviceConsentRequired &&
+              !passwordOpen && (
+                <Button
+                  variant="ghost"
+                  disabled={busy || sending}
+                  onClick={() => {
+                    setFavoritesOpen(false);
+                    setPhoneOpen(false);
+                    setBalanceOpen(false);
+                    setReceiptsOpen(true);
+                  }}
+                >
+                  Мои чеки
+                </Button>
+              )}
+            {!board.user.mustChangePassword &&
+              !board.user.serviceConsentRequired &&
+              !passwordOpen && (
+                <Button
+                  variant="ghost"
+                  disabled={busy || sending}
+                  onClick={() => setConsentsOpen(true)}
+                >
+                  Согласия
+                </Button>
+              )}
             <Button variant="ghost" onClick={() => setPasswordOpen(true)}>
               Пароль
             </Button>
@@ -780,6 +859,7 @@ export default function Home() {
             busy={busy}
             disabled={logoutUnconfirmed}
             formVersion={formVersion}
+            sessionSignal={authViewSignal}
             onRegister={auth}
             onConfirm={confirmRegistration}
             onResend={resendRegistration}
@@ -922,6 +1002,25 @@ export default function Home() {
               </Button>
             )}
           </Card>
+        ) : board.user.serviceConsentRequired || consentsOpen ? (
+          <ServiceConsentsPanel
+            key={board.user.id + ":consents:" + formVersion}
+            required={!!board.user.serviceConsentRequired}
+            sessionSignal={session.capture().signal}
+            onAccessDenied={requireLogin}
+            onSaved={async () => {
+              const ticket = session.capture();
+              await refresh(ticket);
+              ticket.check();
+              setConsentsOpen(false);
+              setNotice("Согласия сохранены.");
+            }}
+            onClose={
+              board.user.serviceConsentRequired
+                ? undefined
+                : () => setConsentsOpen(false)
+            }
+          />
         ) : (
           <>
             <AccountOverview

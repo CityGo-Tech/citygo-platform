@@ -8,6 +8,7 @@ import { pilotSmoke } from "./pilot-smoke.mjs";
 import { containerDrainSmoke } from "./container-drain-smoke.mjs";
 import { workerDrainSmoke } from "./worker-drain-smoke.mjs";
 import { assertClosedPaymentAdmission } from "./payment-admission-smoke.mjs";
+import { syntheticServiceConsentChoice } from "./smoke-service-consents.mjs";
 import {
   candidateDir,
   validateBases,
@@ -133,7 +134,7 @@ try {
   compose(["up", "-d", "--wait", "--wait-timeout", "90", "postgres"]);
   compose(["run", "--rm", "--no-deps", "migrator"]);
   const migrations = psql("select count(*) from citygo_migrations");
-  assert.equal(migrations, "29");
+  assert.equal(migrations, "30");
   compose(["run", "--rm", "--no-deps", "migrator"]);
   assert.equal(psql("select count(*) from citygo_migrations"), migrations);
   compose([
@@ -163,6 +164,13 @@ try {
     ),
     "f",
   );
+  assert.equal(
+    psql(
+      "select has_table_privilege('citygo_api','service_consent_events','UPDATE') or has_table_privilege('citygo_api','service_consent_events','DELETE') or has_table_privilege('citygo_api','service_consent_events','TRUNCATE') or has_table_privilege('citygo_worker','service_consent_events','SELECT')",
+    ),
+    "f",
+    "Consent evidence is append-only and unavailable to the worker",
+  );
   compose(["up", "-d", "--wait", "--wait-timeout", "120", "api", "web"]);
   const url = "http://" + compose(["port", "web", "3000"]).trim();
   const request = (path, options) =>
@@ -179,7 +187,25 @@ try {
   const credentials = {
     email: "container-smoke@example.test",
     password: "Synthetic-smoke-password-2026",
+    consents: await syntheticServiceConsentChoice(request),
   };
+  for (const consents of [
+    undefined,
+    { ...credentials.consents, personalData: false },
+  ]) {
+    const rejected = await request("/api/v1/auth/register", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-citygo-client": "native",
+      },
+      body: JSON.stringify({ ...credentials, consents }),
+    });
+    assert.equal(rejected.status, 400);
+    assert.equal(psql("select count(*) from users"), "0");
+    assert.equal(psql("select count(*) from sessions"), "0");
+    assert.equal(psql("select count(*) from service_consent_events"), "0");
+  }
   const registration = await request("/api/v1/auth/register", {
     method: "POST",
     headers: {
@@ -207,6 +233,20 @@ try {
   assert.equal((await credit.json()).availableMicros, 0);
   const syntheticUserId = (await board.json()).user.id;
   assert.equal(syntheticUserId, "1");
+  const consentState = await request("/api/v1/account/consents", {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  assert.equal(consentState.status, 200);
+  const choices = await consentState.json();
+  assert.equal(choices.personalDataGranted, true);
+  assert.equal(choices.marketingGranted, false);
+  assert.equal(choices.serviceConsentRequired, false);
+  assert.equal(
+    psql(
+      "select string_agg(purpose||':'||decision,',' order by purpose) from service_consent_events where user_id=1",
+    ),
+    "marketing:declined,personal-data:granted",
+  );
   const grantOptions = {
     method: "POST",
     headers: {

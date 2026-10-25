@@ -1,8 +1,10 @@
+import { syntheticServiceConsents } from "./test-service-consents.js";
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import { randomUUID } from "node:crypto";
 import {
   AccountAccess,
+  ServiceConsents,
   connectDatabase,
   migrate,
   type AccountInfo,
@@ -61,6 +63,7 @@ async function fixture(t: TestContext) {
   await migrate(db);
   const accounts = new AccountAccess(db);
   const bootstrap = await accounts.bootstrapAdmin(await hashPassword("admin"));
+  await new ServiceConsents(db).choose(bootstrap.id, syntheticServiceConsents);
   const provider = new SyntheticConversationProvider();
   const origin = "http://localhost:3000";
   const config = readConfig({
@@ -104,7 +107,7 @@ async function fixture(t: TestContext) {
       "POST",
       "/v1/auth/login",
       "",
-      { email: identifier, password },
+      { consents: syntheticServiceConsents, email: identifier, password },
       transport,
     );
     assert.equal(reply.statusCode, 200, reply.body);
@@ -119,6 +122,7 @@ async function fixture(t: TestContext) {
   ) => {
     const email = randomUUID() + "@example.test";
     const reply = await call("POST", "/v1/auth/register", "", {
+      consents: syntheticServiceConsents,
       email,
       password,
       ...extra,
@@ -126,7 +130,13 @@ async function fixture(t: TestContext) {
     assert.equal(reply.statusCode, 200, reply.body);
     const body = authResponseSchema.parse(reply.json());
     assert.ok(body.token);
-    return { email, password, token: body.token, user: body.user };
+    return {
+      consents: syntheticServiceConsents,
+      email,
+      password,
+      token: body.token,
+      user: body.user,
+    };
   };
   const activateBootstrap = async () => {
     const temporary = await login("admin", "admin");
@@ -283,6 +293,7 @@ test("wrong or too-short password change preserves account and sessions; valid s
   assert.equal(
     (
       await f.call("POST", "/v1/auth/login", "", {
+        consents: syntheticServiceConsents,
         email: "admin",
         password: "admin",
       })
@@ -336,6 +347,7 @@ test("registration accepts any six characters without giving submitted admin fla
   }
   for (const password of ["", "12345"]) {
     const reply = await f.call("POST", "/v1/auth/register", "", {
+      consents: syntheticServiceConsents,
       email: randomUUID() + "@example.test",
       password,
     });

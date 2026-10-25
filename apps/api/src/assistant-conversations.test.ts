@@ -1,12 +1,8 @@
+import { registerSyntheticConsentingUser } from "./test-service-consents.js";
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import { randomUUID } from "node:crypto";
-import {
-  connectDatabase,
-  migrate,
-  Repository,
-  type Database,
-} from "@citygo/db";
+import { connectDatabase, migrate, type Database } from "@citygo/db";
 import { readConfig } from "@citygo/config";
 import {
   agentKeys,
@@ -57,9 +53,16 @@ async function fixture(t: TestContext) {
   const app = await buildApp({ db, provider, config, testing: true });
   cleanup.app = app;
   const currentApp = app;
-  const repo = new Repository(db);
-  const owner = await repo.register("owner@example.test", "synthetic"),
-    other = await repo.register("other@example.test", "synthetic");
+  const owner = await registerSyntheticConsentingUser(
+      db,
+      "owner@example.test",
+      "synthetic",
+    ),
+    other = await registerSyntheticConsentingUser(
+      db,
+      "other@example.test",
+      "synthetic",
+    );
   await db.query("update users set role='super_admin' where id=$1", [other]);
   const tokens = [randomUUID(), randomUUID()];
   for (const [index, id] of [owner, other].entries())

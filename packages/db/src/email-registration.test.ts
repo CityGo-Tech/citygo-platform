@@ -1,3 +1,4 @@
+import { syntheticServiceConsents } from "./test-service-consents.js";
 import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
@@ -22,6 +23,7 @@ function input(
   ip = "synthetic-ip",
 ) {
   return {
+    consents: syntheticServiceConsents,
     id: randomUUID(),
     email,
     passwordHash: "synthetic-already-hashed-password",
@@ -377,6 +379,7 @@ test("pending email registration creates no user/session/credit; delivered confi
     username: null,
     role: "user",
     mustChangePassword: false,
+    serviceConsentRequired: false,
   });
   assert.equal(
     (await f.access.credentials(value.email))?.password_hash,

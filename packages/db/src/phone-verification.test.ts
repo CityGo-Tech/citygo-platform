@@ -1,3 +1,4 @@
+import { syntheticServiceConsents } from "./test-service-consents.js";
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import { createHash, randomUUID } from "node:crypto";
@@ -56,6 +57,7 @@ async function fixture(t: TestContext, policy = defaultPolicy, bind = true) {
     const sessionTokenHash = hash("synthetic-session-" + name);
     const email = new EmailRegistration(db),
       value = {
+        consents: syntheticServiceConsents,
         id: randomUUID(),
         email: name + "@example.test",
         passwordHash: "synthetic-password-hash",

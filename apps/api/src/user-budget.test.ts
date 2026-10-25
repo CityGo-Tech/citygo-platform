@@ -1,3 +1,4 @@
+import { syntheticServiceConsents } from "./test-service-consents.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -155,6 +156,7 @@ async function fixture({
     const chatUser = async (): Promise<ChatUser> => {
       const email = randomUUID() + "@example.test";
       const registered = await call(app, "POST", "/v1/auth/register", "", {
+        consents: syntheticServiceConsents,
         email,
         password,
       });
@@ -285,6 +287,7 @@ test("two sessions and replicas share one account's allowance, including concurr
   t.after(f.close);
   const replica = await f.replica();
   const login = await f.call(replica, "POST", "/v1/auth/login", "", {
+    consents: syntheticServiceConsents,
     email: f.admin.email,
     password,
   });

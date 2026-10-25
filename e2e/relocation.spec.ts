@@ -6,6 +6,7 @@ async function register(page: Page, password = "123456") {
   await page.goto("/");
   await page.getByLabel("Электронная почта", { exact: true }).fill(email);
   await page.getByLabel("Пароль", { exact: true }).fill(password);
+  await page.locator("input[name=personalDataConsent]").check();
   await page
     .getByRole("button", { name: "Создать аккаунт", exact: true })
     .click();

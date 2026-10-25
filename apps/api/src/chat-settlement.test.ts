@@ -1,3 +1,4 @@
+import { syntheticServiceConsents } from "./test-service-consents.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { randomUUID } from "node:crypto";
@@ -107,6 +108,7 @@ async function fixture(provider: StreamingProvider = new TestProvider()) {
 
 async function chatUser(f: Awaited<ReturnType<typeof fixture>>) {
   const auth = await f.call("POST", "/v1/auth/register", "", {
+    consents: syntheticServiceConsents,
     email: randomUUID() + "@example.test",
     password: "CityGo-test-password",
   });

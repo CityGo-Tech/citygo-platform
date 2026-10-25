@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { serviceConsentPolicy } from "./service-consents.js";
 import {
   emailRegistrationChallengeSchema,
   emailRegistrationConfirmSchema,
@@ -25,8 +26,11 @@ test("email registration policy is a strict explicit state, never a coerced flag
     "unavailable",
   ] as const)
     assert.deepEqual(
-      registrationPolicyResponseSchema.parse({ emailVerification }),
-      { emailVerification },
+      registrationPolicyResponseSchema.parse({
+        emailVerification,
+        consentPolicy: serviceConsentPolicy,
+      }),
+      { emailVerification, consentPolicy: serviceConsentPolicy },
     );
   for (const input of [
     {},

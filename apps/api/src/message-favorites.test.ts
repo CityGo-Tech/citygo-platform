@@ -1,7 +1,8 @@
+import { registerSyntheticConsentingUser } from "./test-service-consents.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { randomUUID } from "node:crypto";
-import { connectDatabase, migrate, Repository } from "@citygo/db";
+import { connectDatabase, migrate } from "@citygo/db";
 import {
   CONTRACT_VERSION_HEADER,
   favoriteMessagesPageSchema,
@@ -29,9 +30,16 @@ test("favorite HTTP endpoints use only the current owner, reject forgery and nev
     await app.close();
     await db.close();
   });
-  const repo = new Repository(db);
-  const owner = await repo.register("owner@example.test", "synthetic"),
-    other = await repo.register("other@example.test", "synthetic");
+  const owner = await registerSyntheticConsentingUser(
+      db,
+      "owner@example.test",
+      "synthetic",
+    ),
+    other = await registerSyntheticConsentingUser(
+      db,
+      "other@example.test",
+      "synthetic",
+    );
   const tokens = [randomUUID(), randomUUID()];
   for (const [i, id] of [owner, other].entries())
     await db.query(

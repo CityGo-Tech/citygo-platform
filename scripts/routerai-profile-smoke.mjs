@@ -1,6 +1,6 @@
 // Disposable PostgreSQL only. Dummy key, INTERNAL database network, no provider
 // egress, model requests, credits or budget approval. The x10 check registers
-// and deletes only its own synthetic account to prove payment/gift fail closed.
+// keeps its own synthetic consent evidence until disposable-volume cleanup.
 import assert from "node:assert/strict";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -187,7 +187,7 @@ async function mountedProfileSmoke({
         "node",
         "--input-type=module",
         "-e",
-        `import assert from 'node:assert/strict'; const policy=await fetch('http://127.0.0.1:4000/v1/auth/registration-policy'); assert.deepEqual(await policy.json(),{emailVerification:'required'}); const legacy=await fetch('http://127.0.0.1:4000/v1/auth/register',{method:'POST',headers:{'content-type':'application/json',origin:'https://pilot.example.test','x-citygo-contract-version':'1'},body:JSON.stringify({email:'synthetic-email-closed@example.test',password:'123456'})}); assert.equal(legacy.status,503); console.log('email-policy-required-no-send');`,
+        `import assert from 'node:assert/strict'; const response=await fetch('http://127.0.0.1:4000/v1/auth/registration-policy'); const policy=await response.json(); assert.equal(policy.emailVerification,'required'); assert.equal(policy.consentPolicy.personalData.required,true); assert.equal(policy.consentPolicy.marketing.required,false); const legacy=await fetch('http://127.0.0.1:4000/v1/auth/register',{method:'POST',headers:{'content-type':'application/json',origin:'https://pilot.example.test','x-citygo-contract-version':'1'},body:JSON.stringify({email:'synthetic-email-closed@example.test',password:'123456',consents:{policyVersion:policy.consentPolicy.version,personalData:true,marketing:false}})}); assert.equal(legacy.status,503); console.log('email-policy-required-no-send');`,
       ]);
       assert.equal(emailProof.trim(), "email-policy-required-no-send");
       for (const table of [
@@ -259,7 +259,8 @@ async function mountedProfileSmoke({
 }
 
 async function closedPaymentsProof({ id, docker, psql }) {
-  const email = "runtime-10x-fixture@example.test";
+  assert.match(id, /^[a-f0-9]{64}$/);
+  const email = `runtime-10x-${id.slice(0, 12)}-fixture@example.test`;
   assert.equal(
     psql(`select count(*) from user_credentials where email='${email}'`),
     "0",
@@ -269,9 +270,14 @@ async function closedPaymentsProof({ id, docker, psql }) {
   const setup = `
     import assert from 'node:assert/strict';
     const origin='https://pilot.example.test';
+    const policyResponse=await fetch('http://127.0.0.1:4000/v1/auth/registration-policy');
+    assert.equal(policyResponse.status,200);
+    const {consentPolicy}=await policyResponse.json();
+    assert.equal(consentPolicy.personalData.required,true);
+    assert.equal(consentPolicy.marketing.required,false);
     const auth=await fetch('http://127.0.0.1:4000/v1/auth/register',{
       method:'POST',headers:{'content-type':'application/json','x-citygo-client':'native',origin},
-      body:JSON.stringify({email:'${email}',password:'123456'})});
+      body:JSON.stringify({email:'${email}',password:'123456',consents:{policyVersion:consentPolicy.version,personalData:true,marketing:false}})});
     assert.equal(auth.status,200);
     const {token,user}=await auth.json();
     const headers={authorization:'Bearer '+token,'content-type':'application/json',origin};
@@ -312,11 +318,13 @@ async function closedPaymentsProof({ id, docker, psql }) {
     ])
       assert.equal(psql(`select count(*) from ${table}`), "0");
   } finally {
+    // Consent evidence stays append-only, including in this fixture. Its unique
+    // synthetic account is removed only with the disposable parent DB volume.
     assert.equal(
       psql(
-        `delete from users where id=${userId} and exists(select 1 from user_credentials c where c.user_id=users.id and c.email='${email}') returning id`,
+        `select count(*) from service_consent_events where user_id=${userId} and subject_email='${email}'`,
       ),
-      `${userId}\nDELETE 1`,
+      "2",
     );
   }
 }

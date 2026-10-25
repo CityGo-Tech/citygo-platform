@@ -1,10 +1,13 @@
-/** Pending proofs belong only to the current in-memory registration lifetime. */
+import type { ServiceConsentChoice } from "@citygo/contracts";
+
+/** Pending proofs and the original choices belong only to this memory lifetime. */
 export type PendingEmailRegistration = {
   email: string;
   challengeId: string;
   proof: string;
   expiresAt: string;
   resendAt: number;
+  consents: ServiceConsentChoice;
 };
 
 export function registrationClock(
@@ -27,6 +30,7 @@ export function pendingEmailRegistration(
     resendAfterSeconds: number;
   },
   now: number,
+  consents: ServiceConsentChoice,
 ): PendingEmailRegistration {
   return {
     email,
@@ -34,6 +38,7 @@ export function pendingEmailRegistration(
     proof: challenge.proof,
     expiresAt: challenge.expiresAt,
     resendAt: now + challenge.resendAfterSeconds * 1000,
+    consents: { ...consents },
   };
 }
 

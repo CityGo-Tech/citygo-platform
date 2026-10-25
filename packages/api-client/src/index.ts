@@ -11,8 +11,11 @@ import {
   apiErrorResponseSchema,
   authResponseSchema,
   nativeAuthResponseSchema,
-  registrationCredentialsSchema,
+  registrationWithConsentsSchema,
   registrationPolicyResponseSchema,
+  serviceConsentChoiceSchema,
+  serviceConsentPolicySchema,
+  serviceConsentStateSchema,
   emailRegistrationChallengeSchema,
   emailRegistrationResendSchema,
   emailRegistrationConfirmSchema,
@@ -93,6 +96,7 @@ import {
   type StreamEvent,
   type CreatePersonalPlanItem,
   type UpdatePersonalPlanItem,
+  type ServiceConsentChoice,
 } from "@citygo/contracts";
 import {
   ApiError,
@@ -396,13 +400,42 @@ export function createClient(
       ),
     registrationPolicy: () =>
       request("/v1/auth/registration-policy", registrationPolicyResponseSchema),
-    beginEmailRegistration: async (email: string, password: string) =>
+    legalConsentPolicy: () =>
+      request("/v1/legal/consent-policy", serviceConsentPolicySchema),
+    accountConsents: () =>
+      request("/v1/account/consents", serviceConsentStateSchema),
+    setAccountConsents: async (input: ServiceConsentChoice) => {
+      const choice = serviceConsentChoiceSchema.parse(input);
+      const result = await request(
+        "/v1/account/consents",
+        serviceConsentStateSchema,
+        choice,
+      );
+      if (
+        result.policy.version !== choice.policyVersion ||
+        !result.personalDataGranted ||
+        result.marketingGranted !== choice.marketing ||
+        result.serviceConsentRequired
+      )
+        throw new ApiError(
+          200,
+          "Ответ сервера не подтверждает выбранные согласия",
+          "invalid_response",
+        );
+      return result;
+    },
+    beginEmailRegistration: async (
+      email: string,
+      password: string,
+      consents: ServiceConsentChoice,
+    ) =>
       request(
         "/v1/auth/email/register",
         emailRegistrationChallengeSchema,
-        emailRegistrationInput(registrationCredentialsSchema, {
+        emailRegistrationInput(registrationWithConsentsSchema, {
           email,
           password,
+          consents,
         }),
       ),
     resendEmailRegistration: async (challengeId: string, proof: string) =>
@@ -486,11 +519,22 @@ export function createClient(
           code,
         }),
       ),
-    auth: (mode: "login" | "register", email: string, password: string) =>
+    auth: async (
+      mode: "login" | "register",
+      email: string,
+      password: string,
+      consents?: ServiceConsentChoice,
+    ) =>
       request(
         "/v1/auth/" + mode,
         options.native ? nativeAuthResponseSchema : authResponseSchema,
-        { email, password },
+        mode === "register"
+          ? emailRegistrationInput(registrationWithConsentsSchema, {
+              email,
+              password,
+              consents,
+            })
+          : { email, password },
       ),
     logout: () => request("/v1/auth/logout", okResponseSchema, {}),
     changePassword: (currentPassword: string, password: string) =>

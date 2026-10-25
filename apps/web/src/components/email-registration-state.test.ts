@@ -16,6 +16,7 @@ test("registration timer uses only server expiry and issued resend cooldown", ()
       resendAfterSeconds: 45,
     },
     Date.parse("2026-10-23T10:00:00Z"),
+    { policyVersion: "synthetic-v1", personalData: true, marketing: false },
   );
   assert.deepEqual(
     registrationClock(pending, Date.parse("2026-10-23T10:00:01.1Z")),
@@ -37,6 +38,42 @@ test("registration timer uses only server expiry and issued resend cooldown", ()
     registrationClock({ ...pending, expiresAt: "invalid" }, 0).expired,
     true,
   );
+});
+
+test("pending registration freezes the explicit choice for resend without storing credentials", () => {
+  const original = {
+    policyVersion: "synthetic-v1",
+    personalData: true as const,
+    marketing: false,
+  };
+  const pending = pendingEmailRegistration(
+    "test@example.test",
+    {
+      challengeId: "challenge",
+      proof: "proof",
+      expiresAt: "2099-01-01T00:00:00Z",
+      resendAfterSeconds: 60,
+    },
+    0,
+    original,
+  );
+  original.marketing = true;
+  const resent = pendingEmailRegistration(
+    pending.email,
+    {
+      challengeId: pending.challengeId,
+      proof: pending.proof,
+      expiresAt: "2099-01-01T00:00:00Z",
+      resendAfterSeconds: 60,
+    },
+    1000,
+    pending.consents,
+  );
+  assert.deepEqual(resent.consents, {
+    policyVersion: "synthetic-v1",
+    personalData: true,
+    marketing: false,
+  });
 });
 
 test("confirmation accepts exactly six digits and does not reinterpret input", () => {

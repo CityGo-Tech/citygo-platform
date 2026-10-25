@@ -1,7 +1,9 @@
 import { z } from "zod";
+import { serviceConsentPolicySchema } from "./service-consents.js";
 
 export const registrationPolicyResponseSchema = z.strictObject({
   emailVerification: z.enum(["disabled", "required", "unavailable"]),
+  consentPolicy: serviceConsentPolicySchema,
 });
 
 // A challenge is a short-lived capability, not a session. Keep its proof only

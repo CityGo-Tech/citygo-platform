@@ -6,6 +6,7 @@ import { DomainError } from "./errors.js";
 // registration, migrations, HTTP, or the accounting-preserving restart tool.
 // This inventory is deliberately not discovered into a deletion list.
 const tables = [
+  "service_consent_events",
   "personal_plan_items",
   "password_recovery_challenges",
   "account_email_verifications",
@@ -108,6 +109,7 @@ const protectedEmpty = [
   ...protectedDebt,
 ] as const;
 const preserved = [
+  "service_consent_events",
   "phone_verification_challenges",
   "phone_verification_control",
   "phone_verification_sends",
@@ -384,6 +386,7 @@ async function inspect(tx: Sql, options: Options) {
   if (options.maintenanceConfirmed !== true)
     blockers.push({ code: "MAINTENANCE_NOT_CONFIRMED", count: 1 });
   const verificationHistoryCount = [
+    "service_consent_events",
     "account_email_verifications",
     "email_registrations",
     "email_registration_rate_events",

@@ -1,3 +1,4 @@
+import { registerSyntheticConsentingUser } from "./test-service-consents.js";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test, { type TestContext } from "node:test";
@@ -7,7 +8,6 @@ import {
   DomainError,
   PaymentRefunds,
   PaymentTopupOrders,
-  Repository,
   connectDatabase,
   migrate,
   type Database,
@@ -27,8 +27,11 @@ function body(id: string, event = "payment.succeeded") {
 async function fixture(t: TestContext, mode: YooKassaMode = "live") {
   const db = await connectDatabase("pglite://:memory:");
   await migrate(db);
-  const repo = new Repository(db);
-  const userId = await repo.register("notification@example.test", "SYNTHETIC");
+  const userId = await registerSyntheticConsentingUser(
+    db,
+    "notification@example.test",
+    "SYNTHETIC",
+  );
   const orders = new PaymentTopupOrders(db);
   const order = await orders.create(
     userId,

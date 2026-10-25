@@ -1,3 +1,4 @@
+import { syntheticConsentPolicy } from "./service-consent-fixture";
 import { test, expect, type Page } from "@playwright/test";
 import type {
   AccountUser,
@@ -48,6 +49,18 @@ test("bootstrap password gate hides the conversation and privileged links until 
   // Every application API request is intercepted: no real accounts, database,
   // credentials or AI provider can be reached by this browser test.
   await page.route("**/api/v1/**", async (route) => {
+    if (
+      route.request().method() === "GET" &&
+      new URL(route.request().url()).origin === "http://localhost:3000" &&
+      new URL(route.request().url()).pathname ===
+        "/api/v1/auth/registration-policy"
+    )
+      return route.fulfill({
+        json: {
+          emailVerification: "disabled",
+          consentPolicy: syntheticConsentPolicy,
+        },
+      });
     const path = new URL(route.request().url()).pathname;
     if (path === "/api/v1/dashboard")
       return route.fulfill({ json: dashboard(state.user) });
@@ -130,6 +143,18 @@ async function adminFixture(page: Page, viewer: AccountUser) {
     deliver = resolve;
   });
   await page.route("**/api/v1/**", async (route) => {
+    if (
+      route.request().method() === "GET" &&
+      new URL(route.request().url()).origin === "http://localhost:3000" &&
+      new URL(route.request().url()).pathname ===
+        "/api/v1/auth/registration-policy"
+    )
+      return route.fulfill({
+        json: {
+          emailVerification: "disabled",
+          consentPolicy: syntheticConsentPolicy,
+        },
+      });
     const path = new URL(route.request().url()).pathname;
     if (path === "/api/v1/dashboard")
       return route.fulfill({ json: dashboard(state.viewer) });

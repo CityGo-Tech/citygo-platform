@@ -59,6 +59,8 @@ grant insert on users, user_credentials, sessions, relocation_profiles,
 -- runtime deletion of delivery quotas/verification evidence is granted.
 grant select, insert on email_registrations, email_registration_rate_events,
   account_email_verifications to citygo_api;
+-- Explicit versioned consent evidence is append-only; no Worker access.
+grant select, insert on service_consent_events to citygo_api;
 grant update (code_hash,delivery,attempts,expires_at,consumed_user_id,consumed_at)
   on email_registrations to citygo_api;
 -- Password recovery keeps immutable identity/lifetime and cumulative attempts.

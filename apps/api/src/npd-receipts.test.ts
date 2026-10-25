@@ -1,3 +1,4 @@
+import { registerSyntheticConsentingUser } from "./test-service-consents.js";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test, { type TestContext } from "node:test";
@@ -30,7 +31,8 @@ async function fixture(t: TestContext) {
   const repo = new Repository(db);
   const people = [];
   for (const role of ["super_admin", "admin", "user"] as const) {
-    const userId = await repo.register(
+    const userId = await registerSyntheticConsentingUser(
+      db,
       `${role}@example.test`,
       "synthetic-unused-hash",
     );

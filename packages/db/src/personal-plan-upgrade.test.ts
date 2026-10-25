@@ -1,13 +1,12 @@
+import {
+  seedLegacyVerifiedEmail,
+  applyFixtureMigration,
+} from "./test-service-consents.js";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { readFile, readdir } from "node:fs/promises";
 import test from "node:test";
-import {
-  connectDatabase,
-  EmailRegistration,
-  migrate,
-  PersonalPlan,
-} from "./index.js";
+import { connectDatabase, PersonalPlan } from "./index.js";
 import {
   captureRestartRows,
   migrateLegacyRestartFixture,
@@ -44,24 +43,10 @@ test("schema28 to29 preserves all61 old tables and19 sequences, adds only an emp
   }
   // Exercise preservation of the newer auth tables as well as the fixture's
   // historical paid lots, model attempts, chats, profile, quests and sessions.
-  const email = new EmailRegistration(db),
-    id = randomUUID();
-  await email.begin({
-    id,
-    email: "plan-upgrade-verified@example.test",
-    passwordHash: "synthetic-hash",
-    proofHash: hash("proof"),
-    codeHash: hash("code"),
-    recipientKey: hash("recipient"),
-    ipKey: hash("ip"),
-  });
-  await email.markSent(id, hash("code"));
-  const verified = await email.confirm({
-    id,
-    proofHash: hash("proof"),
-    codeHash: hash("code"),
-    sessionHash: hash("session"),
-  });
+  const verified = await seedLegacyVerifiedEmail(
+    db,
+    "plan-upgrade-verified@example.test",
+  );
   await db.query(
     `insert into password_recovery_challenges(id,proof_hash,code_hash,recipient_key,expires_at)
     values($1,$2,$3,$4,clock_timestamp()+interval '10 minutes')`,
@@ -81,7 +66,7 @@ test("schema28 to29 preserves all61 old tables and19 sequences, adds only an emp
   assert.equal(Object.keys(before).length, 61);
   assert.equal(before.citygo_migrations!.length, 28);
   assert.equal(sequences.length, 19);
-  await migrate(db);
+  await applyFixtureMigration(db, "0029_personal_plan.sql");
   const after = await captureRestartRows(db);
   for (const [name, rows] of Object.entries(before))
     assert.deepEqual(
@@ -130,7 +115,7 @@ test("schema28 to29 preserves all61 old tables and19 sequences, adds only an emp
     [{ sequencename: "personal_plan_items_id_seq", last_value: null }],
   );
   assert.deepEqual((await new PersonalPlan(db).list(verified.id)).items, []);
-  await migrate(db);
+  await applyFixtureMigration(db, "0029_personal_plan.sql");
   assert.deepEqual(await captureRestartRows(db), after);
   assert.deepEqual(
     (

@@ -95,6 +95,10 @@ export function registerPaymentTopups(
       headers: { authorization?: string };
       cookies: Record<string, string | undefined>;
     }) => Promise<{ id: string }>;
+    authenticateReconciliation?: (request: {
+      headers: { authorization?: string };
+      cookies: Record<string, string | undefined>;
+    }) => Promise<{ id: string }>;
   },
 ) {
   // Even an injected live test transport gets the same trusted DB admission
@@ -369,7 +373,9 @@ export function registerPaymentTopups(
     "/v1/payments/topups/:orderId/reconcile",
     { config: { rateLimit: { max: 10, timeWindow: 60_000 } } },
     async (request) => {
-      const user = await options.authenticate(request);
+      const user = await (
+        options.authenticateReconciliation ?? options.authenticate
+      )(request);
       const input = paramsSchema.parse(request.params);
       z.strictObject({}).parse(request.body);
       return reconcileOrder(user.id, input.orderId);

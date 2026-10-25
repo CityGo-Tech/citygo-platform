@@ -10,6 +10,26 @@ const challenge = {
   expiresAt: "2099-01-01T12:00:00.000Z",
   resendAfterSeconds: 60,
 };
+const consents = {
+  policyVersion: "synthetic-v1",
+  personalData: true as const,
+  marketing: false,
+};
+const consentPolicy = {
+  version: "synthetic-v1",
+  personalData: {
+    label: "Synthetic personal data",
+    text: "Synthetic required text",
+    url: "/legal/personal-data-consent",
+    required: true,
+  },
+  marketing: {
+    label: "Synthetic marketing",
+    text: "Synthetic optional text",
+    url: "/legal/marketing-consent",
+    required: false,
+  },
+};
 const user = { id: "1", email: "synthetic@example.test" };
 const errorCode = (code: string) => (error: unknown) =>
   error instanceof ApiError && error.code === code;
@@ -45,7 +65,7 @@ test("registration policy and email methods use the exact auth paths without sto
         });
         return Response.json(
           path.endsWith("/registration-policy")
-            ? { emailVerification: "required" }
+            ? { emailVerification: "required", consentPolicy }
             : path.endsWith("/confirm")
               ? result
               : path.endsWith("/resend")
@@ -56,9 +76,14 @@ test("registration policy and email methods use the exact auth paths without sto
     });
     assert.deepEqual(await client.registrationPolicy(), {
       emailVerification: "required",
+      consentPolicy,
     });
     assert.deepEqual(
-      await client.beginEmailRegistration("SYNTHETIC@EXAMPLE.TEST", "  а!b "),
+      await client.beginEmailRegistration(
+        "SYNTHETIC@EXAMPLE.TEST",
+        "  а!b ",
+        consents,
+      ),
       challenge,
     );
     assert.deepEqual(
@@ -85,7 +110,7 @@ test("registration policy and email methods use the exact auth paths without sto
         ...common,
         path: "http://synthetic/v1/auth/email/register",
         method: "POST",
-        body: { email: "synthetic@example.test", password: "  а!b " },
+        body: { email: "synthetic@example.test", password: "  а!b ", consents },
       },
       {
         ...common,
@@ -132,8 +157,8 @@ test("invalid local registration data is rejected before any transport or creden
     },
   });
   for (const run of [
-    () => client.beginEmailRegistration("invalid-email", "123456"),
-    () => client.beginEmailRegistration(user.email, "12345"),
+    () => client.beginEmailRegistration("invalid-email", "123456", consents),
+    () => client.beginEmailRegistration(user.email, "12345", consents),
     () => client.resendEmailRegistration("not-a-uuid", proof),
     () => client.resendEmailRegistration(challengeId, "secret-invalid-proof"),
     () =>
@@ -166,7 +191,7 @@ test("strict challenge and policy responses reject OTPs, secrets and incorrect f
       fetch: async () => Response.json(response),
     });
     for (const run of [
-      () => client.beginEmailRegistration(user.email, "123456"),
+      () => client.beginEmailRegistration(user.email, "123456", consents),
       () => client.resendEmailRegistration(challengeId, proof),
     ])
       await assert.rejects(run(), errorCode("invalid_response"));
@@ -193,7 +218,7 @@ test("email auth 401s never publish an unauthorized event for the current accoun
   });
   for (const run of [
     () => client.registrationPolicy(),
-    () => client.beginEmailRegistration(user.email, "123456"),
+    () => client.beginEmailRegistration(user.email, "123456", consents),
     () => client.resendEmailRegistration(challengeId, proof),
     () => client.confirmEmailRegistration(challengeId, proof, "123456"),
   ])
@@ -218,7 +243,7 @@ test("a pre-cancelled email registration never fetches or reads account credenti
   });
   for (const run of [
     () => client.registrationPolicy(),
-    () => client.beginEmailRegistration(user.email, "123456"),
+    () => client.beginEmailRegistration(user.email, "123456", consents),
     () => client.resendEmailRegistration(challengeId, proof),
     () => client.confirmEmailRegistration(challengeId, proof, "123456"),
   ])
@@ -292,7 +317,7 @@ test("default email begin and resend wait beyond the server's twenty-five-second
       });
       const result =
         method === "begin"
-          ? client.beginEmailRegistration(user.email, "123456")
+          ? client.beginEmailRegistration(user.email, "123456", consents)
           : client.resendEmailRegistration(challengeId, proof);
       t.mock.timers.tick(25_001);
       assert.equal(signal?.aborted, false);
@@ -321,7 +346,7 @@ test("default email begin and resend still time out at thirty seconds without re
       });
       const result =
         method === "begin"
-          ? client.beginEmailRegistration(user.email, "123456")
+          ? client.beginEmailRegistration(user.email, "123456", consents)
           : client.resendEmailRegistration(challengeId, proof);
       const rejected = assert.rejects(result, errorCode("timeout"));
       t.mock.timers.tick(29_999);

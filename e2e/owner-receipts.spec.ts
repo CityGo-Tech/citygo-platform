@@ -1,3 +1,4 @@
+import { syntheticConsentPolicy } from "./service-consent-fixture";
 import { test, expect, type Page } from "@playwright/test";
 import type { Dashboard, OwnerNpdReceiptTask } from "@citygo/contracts";
 
@@ -57,6 +58,18 @@ async function fixture(page: Page, userId = "1") {
     return route.fallback();
   });
   await page.route("**/api/v1/**", async (route) => {
+    if (
+      route.request().method() === "GET" &&
+      new URL(route.request().url()).origin === "http://localhost:3000" &&
+      new URL(route.request().url()).pathname ===
+        "/api/v1/auth/registration-policy"
+    )
+      return route.fulfill({
+        json: {
+          emailVerification: "disabled",
+          consentPolicy: syntheticConsentPolicy,
+        },
+      });
     const url = new URL(route.request().url());
     if (url.origin !== webOrigin) {
       state.unexpected.push(url.href);

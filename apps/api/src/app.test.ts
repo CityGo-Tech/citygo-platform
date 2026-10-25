@@ -1,3 +1,4 @@
+import { syntheticServiceConsents } from "./test-service-consents.js";
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import { randomUUID } from "node:crypto";
@@ -91,6 +92,7 @@ test("production RouterAI approval still requires user consent, monetary approva
     });
   const register = async () => {
     const reply = await call("POST", "/v1/auth/register", "", {
+      consents: syntheticServiceConsents,
       email: randomUUID() + "@example.test",
       password: "Synthetic-password-123",
     });
@@ -301,7 +303,11 @@ for (const cancelled of [false, true]) {
         [
           "POST",
           "/v1/auth/register",
-          { email: "blocked@example.test", password: "CityGo-test-password" },
+          {
+            consents: syntheticServiceConsents,
+            email: "blocked@example.test",
+            password: "CityGo-test-password",
+          },
         ],
         ["POST", "/v1/questionnaire", testProfile],
         [
@@ -668,6 +674,7 @@ async function fixture(
     async function register() {
       const email = randomUUID() + "@example.test";
       const result = await call("POST", "/v1/auth/register", "", {
+        consents: syntheticServiceConsents,
         email,
         password: "CityGo-test-password",
       });
@@ -769,6 +776,7 @@ test("v1 negotiation rejects unknown versions before writes and supports headerl
   const f = await fixture(false);
   t.after(f.close);
   const payload = {
+    consents: syntheticServiceConsents,
     email: "compatibility@example.test",
     password: "Synthetic-test-password",
   };
@@ -849,6 +857,7 @@ test("HTTP error envelopes cover auth, validation, parsing, not-found and confli
   assert.equal(unauth.json().code, "UNAUTHENTICATED");
   assert.notEqual(unauth.json().requestId, "untrusted-correlation");
   const invalid = await f.call("POST", "/v1/auth/register", "", {
+    consents: syntheticServiceConsents,
     email: "bad",
     password: "short",
   });
@@ -957,6 +966,7 @@ test("runtime response schemas accept the actual API journey and admin payloads"
   const f = await fixture(true, { ADMIN_USER_IDS: "1" });
   t.after(f.close);
   const auth = await f.call("POST", "/v1/auth/register", "", {
+    consents: syntheticServiceConsents,
     email: "schemas@example.test",
     password: "Synthetic-test-password",
   });
@@ -2924,6 +2934,7 @@ for (const migration of [
   "0020_ai_budget_provider_balance.sql",
   "0021_payment_notifications.sql",
   "0025_assistant_conversations.sql",
+  "0030_service_consents.sql",
 ]) {
   test(`readiness requires ${migration}`, async (t) => {
     const f = await fixture(false);
@@ -3018,6 +3029,7 @@ test("production sessions use secure host-only cookies for signup, login and log
     false,
   );
   const credentials = {
+    consents: syntheticServiceConsents,
     email: randomUUID() + "@example.test",
     password: "CityGo-test-password",
   };
@@ -3433,6 +3445,7 @@ async function verticalSlice(
     401,
   );
   const login = await f.call("POST", "/v1/auth/login", "", {
+    consents: syntheticServiceConsents,
     email: user.email,
     password: "CityGo-test-password",
   });
@@ -3671,6 +3684,7 @@ test("bad credentials, origin guard, validation and unavailable AI", async (t) =
   t.after(f.close);
   const user = await f.register();
   const bad = await f.call("POST", "/v1/auth/login", "", {
+    consents: syntheticServiceConsents,
     email: user.email,
     password: "wrong-password-value",
   });
