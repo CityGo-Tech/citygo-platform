@@ -159,6 +159,136 @@ test("wrong guesses commit, resend preserves the five-guess budget and expiry, d
   assert.equal(row.expiresAt, sent.expiresAt);
   assert.equal((await f.state.summary(f.ctx)).emailVerified, false);
 });
+test("expired account-email challenge or issuing session cannot be confirmed or renewed by resend", async (t) => {
+  const f = await fixture(t),
+    input = f.begin();
+  const started = await f.state.begin(input);
+  await f.state.markSent(input.id, input.codeHash);
+  await assert.rejects(
+    f.state.confirm({ ...confirm(input), codeHash: h("wrong-expiry-guess") }),
+    status(400),
+  );
+  await age(f.db);
+  const replacement = h("replacement-before-expiry");
+  const resent = await f.state.resend({
+    ...f.ctx,
+    id: input.id,
+    proofHash: input.proofHash,
+    codeHash: replacement,
+    ipKey: input.ipKey,
+  });
+  assert.equal(resent.expiresAt, started.expiresAt);
+  await f.state.markSent(input.id, replacement);
+  // Synthetic clock fixture only: the runtime has no such DDL privilege. The
+  // identity trigger is restored before exercising the expired state.
+  await f.db.exec(
+    "alter table account_email_confirmation_challenges disable trigger account_email_confirmation_identity",
+  );
+  try {
+    await f.db.query(
+      "update account_email_confirmation_challenges set created_at=clock_timestamp()-interval '20 minutes',expires_at=clock_timestamp()-interval '10 minutes' where id=$1",
+      [input.id],
+    );
+  } finally {
+    await f.db.exec(
+      "alter table account_email_confirmation_challenges enable trigger account_email_confirmation_identity",
+    );
+  }
+  const snapshot = () =>
+    f.db.query(
+      "select attempts,expires_at::text,code_hash,consumed_at,invalidated_at from account_email_confirmation_challenges where id=$1",
+      [input.id],
+    );
+  const before = (await snapshot()).rows;
+  assert.equal(before[0]!.attempts, 1);
+  const events = (
+    await f.db.query("select 1 from email_registration_rate_events")
+  ).rows.length;
+  await assert.rejects(
+    f.state.resend({
+      ...f.ctx,
+      id: input.id,
+      proofHash: input.proofHash,
+      codeHash: h("expired-replacement"),
+      ipKey: input.ipKey,
+    }),
+    status(400),
+  );
+  await assert.rejects(
+    f.state.confirm({ ...confirm(input), codeHash: replacement }),
+    status(400),
+  );
+  await assert.rejects(f.state.markSent(input.id, replacement), status(400));
+  await assert.rejects(
+    f.db.query(
+      "update account_email_confirmation_challenges set expires_at=expires_at+interval '1 hour' where id=$1",
+      [input.id],
+    ),
+    { code: "23514" },
+  );
+  assert.deepEqual((await snapshot()).rows, before);
+  assert.equal(
+    (await f.db.query("select 1 from email_registration_rate_events")).rows
+      .length,
+    events,
+  );
+  assert.equal(
+    (await f.db.query("select 1 from account_email_verifications")).rows.length,
+    0,
+  );
+  assert.equal((await f.state.summary(f.ctx)).emailVerified, false);
+
+  const s = await fixture(t),
+    value = s.begin();
+  await s.state.begin(value);
+  await s.state.markSent(value.id, value.codeHash);
+  await assert.rejects(
+    s.state.confirm({ ...confirm(value), codeHash: h("wrong-session-guess") }),
+    status(400),
+  );
+  await s.db.query(
+    "update sessions set expires_at=clock_timestamp()-interval '1 second' where token_hash=$1",
+    [value.sessionTokenHash],
+  );
+  const sessionBefore = (
+    await s.db.query(
+      "select attempts,expires_at::text,code_hash,consumed_at,invalidated_at from account_email_confirmation_challenges where id=$1",
+      [value.id],
+    )
+  ).rows;
+  await assert.rejects(
+    s.state.resend({
+      ...s.ctx,
+      id: value.id,
+      proofHash: value.proofHash,
+      codeHash: h("expired-session-replacement"),
+      ipKey: value.ipKey,
+    }),
+    status(401),
+  );
+  await assert.rejects(s.state.confirm(confirm(value)), status(401));
+  await assert.rejects(s.state.summary(s.ctx), status(401));
+  assert.deepEqual(
+    (
+      await s.db.query(
+        "select attempts,expires_at::text,code_hash,consumed_at,invalidated_at from account_email_confirmation_challenges where id=$1",
+        [value.id],
+      )
+    ).rows,
+    sessionBefore,
+  );
+  assert.equal(sessionBefore[0]!.attempts, 1);
+  assert.equal(
+    (await s.db.query("select 1 from email_registration_rate_events")).rows
+      .length,
+    2,
+  );
+  assert.equal(
+    (await s.db.query("select 1 from account_email_verifications")).rows.length,
+    0,
+  );
+});
+
 test("challenge cannot cross users or sessions, revoked sessions and rotated passwords are rechecked", async (t) => {
   const f = await fixture(t),
     input = f.begin();
