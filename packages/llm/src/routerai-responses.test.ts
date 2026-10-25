@@ -425,6 +425,186 @@ test("Responses sequence/part identity and finalized text cannot silently change
   );
 });
 
+test("Responses emits normal ordered multiple parts as exactly the completed output", async () => {
+  const parts = ["Первая ", "вторая часть 🏠"],
+    coordinates = { item_id: messageId, output_index: 1 };
+  const message = {
+    ...item(),
+    content: parts.map((answer) => ({
+      type: "output_text",
+      text: answer,
+      annotations: [],
+    })),
+  };
+  const events: unknown[] = full().slice(0, 6);
+  for (const [content_index, answer] of parts.entries()) {
+    events.push(
+      {
+        type: "response.content_part.added",
+        ...coordinates,
+        content_index,
+        part: { type: "output_text", text: "", annotations: [] },
+      },
+      {
+        type: "response.output_text.delta",
+        ...coordinates,
+        content_index,
+        delta: answer.slice(0, 3),
+      },
+      {
+        type: "response.output_text.delta",
+        ...coordinates,
+        content_index,
+        delta: answer.slice(3),
+      },
+      {
+        type: "response.output_text.done",
+        ...coordinates,
+        content_index,
+        text: answer,
+      },
+      {
+        type: "response.content_part.done",
+        ...coordinates,
+        content_index,
+        part: message.content[content_index],
+      },
+    );
+  }
+  const output = [
+    { id: "rs_synthetic", type: "reasoning", summary: [] },
+    message,
+  ];
+  events.push(
+    { type: "response.output_item.done", output_index: 1, item: message },
+    completed({ output }),
+  );
+  const decoded = await decode(events);
+  assert.equal(
+    decoded
+      .filter((event) => event.type === "delta")
+      .map((event) => event.text)
+      .join(""),
+    parts.join(""),
+  );
+  assert.deepEqual(decoded.at(-1), {
+    type: "complete",
+    model,
+    usage: { inputTokens: 23, outputTokens: 7 },
+  });
+});
+
+test("Responses rejects reordered or interleaved parts and inconsistent part/item completion without confirming another text", async () => {
+  const coordinates = { item_id: messageId, output_index: 1 };
+  const partDelta = (content_index: number, answer: string) => ({
+    type: "response.output_text.delta",
+    ...coordinates,
+    content_index,
+    delta: answer,
+  });
+  const partDone = (content_index: number, answer: string) => ({
+    type: "response.content_part.done",
+    ...coordinates,
+    content_index,
+    part: { type: "output_text", text: answer },
+  });
+  const message = {
+    ...item(),
+    content: ["FIRST", "SECOND"].map((answer) => ({
+      type: "output_text",
+      text: answer,
+    })),
+  };
+  const terminal = completed({
+    output: [{ id: "rs_synthetic", type: "reasoning", summary: [] }, message],
+  });
+  // Original regression: every indexed part matched, but the actual visible /
+  // persisted concatenation was SECONDFIRST while final output said FIRSTSECOND.
+  const observed: ModelStreamEvent[] = [];
+  await assert.rejects(async () => {
+    for await (const event of readResponse(
+      sse([created(), partDelta(1, "SECOND"), partDelta(0, "FIRST"), terminal])
+        .body!,
+      new AbortController().signal,
+      { expectedModel: model },
+    ))
+      observed.push(event);
+  });
+  assert.deepEqual(
+    observed,
+    [],
+    "Reject reordered first text before exposing it",
+  );
+
+  for (const events of [
+    [
+      created(),
+      partDelta(0, "FI"),
+      partDelta(1, "SECOND"),
+      partDelta(0, "RST"),
+      terminal,
+    ],
+    [
+      created(),
+      partDelta(0, "FIRST"),
+      {
+        type: "response.output_text.done",
+        ...coordinates,
+        content_index: 0,
+        text: "FIRST",
+      },
+      partDelta(1, "SECOND"),
+      terminal,
+    ],
+    [
+      created(),
+      partDelta(0, "FIRST"),
+      partDone(0, "FIRST"),
+      partDelta(1, "SECOND"),
+      partDelta(0, "late"),
+      terminal,
+    ],
+    [
+      created(),
+      partDelta(0, "FIRST"),
+      partDone(0, "FIRST"),
+      partDelta(1, "SECOND"),
+      {
+        type: "response.output_item.done",
+        output_index: 1,
+        item: item("FIRST"),
+      },
+      terminal,
+    ],
+    [created(), partDelta(0, "FIRST"), partDone(0, "wrong"), terminal],
+    [
+      created(),
+      {
+        type: "response.content_part.done",
+        ...coordinates,
+        content_index: 0,
+        part: { type: "output_text" },
+      },
+      partDelta(0, "FIRST"),
+      terminal,
+    ],
+    [
+      created(),
+      partDelta(0, "FIRST"),
+      partDone(0, "FIRST"),
+      {
+        type: "response.output_item.done",
+        output_index: 1,
+        item: item("FIRST"),
+      },
+      partDelta(1, "SECOND"),
+      terminal,
+    ],
+    [created(), partDelta(0, "FIRST"), partDone(0, "FIRST"), terminal],
+  ])
+    await assert.rejects(decode(events));
+});
+
 test("Responses preserves finite UTF8/output/byte bounds and cancels interrupted readers", async () => {
   const bytes = new TextEncoder().encode(wire(full()));
   const chunked = new ReadableStream<Uint8Array>({

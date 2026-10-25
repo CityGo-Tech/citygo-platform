@@ -74,7 +74,8 @@ export async function* readResponse(
     sequence = -1,
     terminal: ModelUsage | undefined;
   let done = false,
-    characters = 0;
+    characters = 0,
+    emittedText = "";
   const declaredItems = new Map<number, { id: string; type: string }>();
   let message:
     | {
@@ -131,7 +132,10 @@ export async function* readResponse(
         throw invalid();
       text += part.text;
     }
-    if (!text.trim() || text.length > maximum) throw invalid();
+    // The API persists the concatenation of emitted deltas. Checking each part
+    // alone would accept an interleaved/reversed stream with a different answer.
+    if (!text.trim() || text.length > maximum || text !== emittedText)
+      throw invalid();
   };
   for await (const data of readSseData(body, signal, limits)) {
     signal.throwIfAborted();
@@ -258,7 +262,8 @@ export async function* readResponse(
         if (
           part.type !== "output_text" ||
           part.text !== "" ||
-          bound.parts.has(contentIndex)
+          contentIndex !== bound.parts.size ||
+          (contentIndex > 0 && !bound.partDone.has(contentIndex - 1))
         )
           throw invalid();
         bound.parts.set(contentIndex, "");
@@ -266,7 +271,13 @@ export async function* readResponse(
         if (
           typeof event.delta !== "string" ||
           bound.textDone.has(contentIndex) ||
-          bound.partDone.has(contentIndex)
+          bound.partDone.has(contentIndex) ||
+          // Parts append in output order; a previous part cannot resume after
+          // another part has started. A compact first-part stream may omit added.
+          (bound.parts.has(contentIndex)
+            ? contentIndex !== bound.parts.size - 1
+            : contentIndex !== bound.parts.size ||
+              (contentIndex > 0 && !bound.partDone.has(contentIndex - 1)))
         )
           throw invalid();
         characters += event.delta.length;
@@ -275,6 +286,7 @@ export async function* readResponse(
           contentIndex,
           (bound.parts.get(contentIndex) ?? "") + event.delta,
         );
+        emittedText += event.delta;
         if (event.delta) yield { type: "delta", text: event.delta };
       } else if (event.type === "response.output_text.done") {
         if (
@@ -290,6 +302,8 @@ export async function* readResponse(
         if (
           bound.partDone.has(contentIndex) ||
           part.type !== "output_text" ||
+          typeof part.text !== "string" ||
+          !bound.parts.has(contentIndex) ||
           part.text !== bound.parts.get(contentIndex)
         )
           throw invalid();
