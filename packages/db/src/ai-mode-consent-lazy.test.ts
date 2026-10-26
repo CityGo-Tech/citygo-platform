@@ -9,8 +9,15 @@ import {
   ServiceConsents,
   buildServiceConsentPolicy,
 } from "./index.js";
-import { assertAiRequestModeAttempt } from "./ai-request-modes.js";
-import { assertAiConsentBasisAttempt } from "./ai-consent-compatibility.js";
+import {
+  assertAiRequestModeAttempt,
+  recordAiRequestMode,
+} from "./ai-request-modes.js";
+import {
+  assertAiConsentBasisAttempt,
+  legacyBalancedGrant,
+  recordAiConsentBasis,
+} from "./ai-consent-compatibility.js";
 const h = (v: unknown) =>
   createHash("sha256").update(JSON.stringify(v)).digest("hex");
 const fields = {
@@ -270,6 +277,78 @@ test("every current mode requires real grant evidence and immutable receipt even
     (await f.db.query("select count(*)::int n from ai_request_consent_bases"))
       .rows[0]?.n,
     1,
+  );
+});
+
+test("SQL attempts require a real immutable basis for modes; no-mode history and Worker status updates retain their path", async (t) => {
+  const f = await fixture(t),
+    requestId = randomUUID();
+  await f.db.query(
+    "insert into chat_requests(thread_id,request_id,status,ai_policy_id,ai_routing_revision) values($1,$2,'running',$3,2)",
+    [f.thread, requestId, bundle.id],
+  );
+  await recordAiRequestMode(f.db, {
+    userId: f.user.id,
+    threadId: f.thread,
+    requestId,
+    consentPolicyId: bundle.id,
+    routingRevision: 2,
+    snapshot: f.snapshot,
+  });
+  const insert = () =>
+    f.db.query(
+      "insert into ai_model_attempts(thread_id,request_id,attempt_number,user_id,provider,model,policy_id,routing_revision) values($1,$2,1,$3,'routerai',$4,$5,2)",
+      [f.thread, requestId, f.user.id, policy.model, policy.id],
+    );
+  await assert.rejects(insert(), /requires its immutable consent basis/);
+  assert.deepEqual(
+    (await f.db.query("select * from ai_model_attempts")).rows,
+    [],
+  );
+  const grant = await legacyBalancedGrant(
+    f.db,
+    f.user.id,
+    compatibility,
+    bundle.id,
+  );
+  assert.ok(grant);
+  await recordAiConsentBasis(f.db, {
+    userId: f.user.id,
+    threadId: f.thread,
+    requestId,
+    routingPolicyId: bundle.id,
+    grant,
+    legacy: true,
+  });
+  await insert();
+  // Revocation cannot rewrite the already admitted grant or stop status cleanup.
+  await f.repo.aiConsent(f.user.id, null);
+  await f.db.query(
+    "update chat_requests set status='interrupted' where thread_id=$1 and request_id=$2",
+    [f.thread, requestId],
+  );
+  assert.equal(
+    (
+      await f.db.query(
+        "select status from chat_requests where thread_id=$1 and request_id=$2",
+        [f.thread, requestId],
+      )
+    ).rows[0]?.status,
+    "interrupted",
+  );
+  const historical = randomUUID();
+  await f.db.query(
+    "insert into chat_requests(thread_id,request_id,status,ai_policy_id,ai_routing_revision) values($1,$2,'running',$3,2)",
+    [f.thread, historical, policy.id],
+  );
+  await f.db.query(
+    "insert into ai_model_attempts(thread_id,request_id,attempt_number,user_id,provider,model,policy_id,routing_revision) values($1,$2,1,$3,'routerai',$4,$5,2)",
+    [f.thread, historical, f.user.id, policy.model, policy.id],
+  );
+  assert.equal(
+    (await f.db.query("select count(*)::int n from ai_model_attempts")).rows[0]
+      ?.n,
+    2,
   );
 });
 test("unknown or changed mode never borrows legacy consent and failed choices leave no evidence", async (t) => {

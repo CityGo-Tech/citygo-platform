@@ -77,6 +77,8 @@ export function upgrade18RewindSql() {
         raise exception 'AI consent basis history cannot be rewound';
       end if;
     end $$;
+    drop trigger ai_attempt_consent_basis_guard on ai_model_attempts;
+    drop function citygo_guard_ai_attempt_consent_basis();
     drop table ai_request_consent_bases;
     drop function citygo_guard_ai_request_consent_basis();
     drop trigger ai_mode_attempt_guard on ai_model_attempts;

@@ -48,4 +48,27 @@ end;
 $$;
 create trigger ai_request_consent_basis_guard before insert or update or delete on ai_request_consent_bases
  for each row execute function citygo_guard_ai_request_consent_basis();
+
+-- A future direct INSERT must not bypass the real immutable grant receipt.
+-- Earlier requests without a mode retain their old path. This INSERT-only
+-- guard does not affect Worker interruption/status updates.
+create function citygo_guard_ai_attempt_consent_basis() returns trigger
+language plpgsql security invoker set search_path=pg_catalog,public,pg_temp as $$
+begin
+ if exists(select 1 from public.ai_request_modes m
+   where m.thread_id=new.thread_id and m.request_id=new.request_id)
+   and not exists(select 1 from public.ai_request_modes m
+     join public.ai_request_consent_bases b on b.thread_id=m.thread_id and b.request_id=m.request_id
+     where m.thread_id=new.thread_id and m.request_id=new.request_id
+       and b.user_id=new.user_id and b.user_id=m.user_id
+       and b.routing_policy_id=m.consent_policy_id
+       and ((b.basis='current' and b.grant_policy_id=m.consent_policy_id)
+         or (b.basis='legacy-balanced' and b.grant_policy_id=m.policy_id))) then
+   raise exception 'AI attempt requires its immutable consent basis' using errcode='23514';
+ end if;
+ return new;
+end;
+$$;
+create trigger ai_attempt_consent_basis_guard before insert on ai_model_attempts
+ for each row execute function citygo_guard_ai_attempt_consent_basis();
 commit;
