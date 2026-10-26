@@ -52,6 +52,85 @@ test("built policy preview is packaged and uses only public fields, without DB/p
   );
 });
 
+test("built private assistant-mode factory is independently importable and configures three synthetic adapters without I/O", () => {
+  const fixture = JSON.parse(
+    readFileSync(
+      new URL(
+        "../deploy/fixtures/routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-unlimited-assistant-modes-gigachat-flat3-profile.fixture.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  );
+  // A host path to the same public CA is required by this local built-artifact
+  // test. The production mounted profile separately fixes the /app/certs path.
+  fixture.GIGACHAT_CA_BUNDLE_FILE = fileURLToPath(
+    new URL("../deploy/certificates/russian-trusted-root.crt", import.meta.url),
+  );
+  const script = `
+    import assert from 'node:assert/strict';
+    import https from 'node:https';
+    import http from 'node:http';
+    import net from 'node:net';
+    let calls=0;
+    const noIo=()=>{calls++;assert.fail('Static factory import must not perform network or server I/O');};
+    globalThis.fetch=noIo;
+    https.request=noIo;http.request=noIo;
+    net.connect=noIo;net.createConnection=noIo;net.Server.prototype.listen=noIo;
+    const {readConfig}=await import('@citygo/config');
+    const {createAssistantModes}=await import('./dist/ai-modes.js');
+    assert.equal(typeof createAssistantModes,'function');
+    const config=readConfig({...${JSON.stringify(fixture)},NODE_ENV:'production',LLM_PROVIDER:'routerai',
+      WEB_ORIGIN:'https://citygo.example',TRUSTED_PROXY_CIDRS:'127.0.0.1/32',
+      AI_MODES_PRODUCTION_POLICY_ID:'0'.repeat(64)});
+    const pending=createAssistantModes(config);
+    assert.equal(pending.productionApproved,false);
+    assert.ok(pending.modeCatalog().options.every(({available})=>available===false));
+    const modes=createAssistantModes({...config,AI_MODES_PRODUCTION_POLICY_ID:pending.policy.id});
+    assert.equal(modes.productionApproved,true);
+    assert.deepEqual(modes.routes.map(({id,provider})=>[id,provider.name,provider.model]),[
+      ['maximum','routerai','openai/gpt-6.1-sol'],
+      ['balanced','routerai','deepseek/deepseek-v4-pro-0813'],
+      ['minimum','gigachat','GigaChat-3-Ultra']]);
+    assert.deepEqual(modes.modeCatalog().options.map(({id,available})=>[id,available]),[
+      ['maximum',true],['balanced',true],['minimum',true]]);
+    assert.deepEqual(modes.modeCatalog().options[2].price,{kind:'fixed',currency:'RUB',amountMicros:3000000});
+    assert.equal(modes.routes[2].fixedFee.scope,'GIGACHAT_API_PERS');
+    assert.equal(modes.routes[2].fixedFee.leaseMs,90000);
+    assert.equal(modes.ready({provider:'disabled',policyId:null,revision:1}),false);
+    assert.throws(()=>modes.resolve({provider:'disabled',policyId:null,revision:1},{}));
+    assert.equal(calls,0);
+    console.log('built-assistant-mode-factory-static-only');`;
+  const inherited = Object.fromEntries(
+    Object.entries(process.env).filter(([key]) =>
+      /^(PATH|PATHEXT|SYSTEMROOT|WINDIR|COMSPEC|SYSTEMDRIVE|TEMP|TMP|TMPDIR)$/i.test(
+        key,
+      ),
+    ),
+  );
+  const result = spawnSync(
+    process.execPath,
+    ["--input-type=module", "-e", script],
+    {
+      cwd: fileURLToPath(new URL("../apps/api/", import.meta.url)),
+      env: serviceEnv("test", { inherited, loadFiles: false }),
+      encoding: "utf8",
+      timeout: 10000,
+      windowsHide: true,
+    },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(
+    result.stdout.trim(),
+    "built-assistant-mode-factory-static-only",
+  );
+  assert.equal(result.stderr, "");
+  assert.doesNotMatch(
+    result.stdout + result.stderr,
+    /synthetic|postgresql|Server listening|ECONNREFUSED/,
+  );
+});
+
 function start(envOverrides) {
   const env = {
     ...serviceEnv("test"),

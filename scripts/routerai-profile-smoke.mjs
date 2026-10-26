@@ -45,6 +45,10 @@ export async function routerAiProfileSmoke({
       "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-unlimited-assistant-modes-v1",
       "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-unlimited-assistant-modes-profile.fixture.json",
     ],
+    [
+      "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-unlimited-assistant-modes-gigachat-flat3-v1",
+      "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-unlimited-assistant-modes-gigachat-flat3-profile.fixture.json",
+    ],
   ])
     await mountedProfileSmoke({
       project,
@@ -123,12 +127,31 @@ async function mountedProfileSmoke({
           "AI_ASSISTANT_MODES",
           "AI_MAXIMUM_REASONING_EFFORT",
           "AI_MODES_DATA_NOTICE",
+          ...(profile.AI_MINIMUM_FIXED_FEE === "enabled"
+            ? ["GIGACHAT_MODEL", "GIGACHAT_SCOPE"]
+            : []),
         ].map((key) => [key, profile[key]]),
       ),
     });
     assert.match(bundleId, /^[a-f0-9]{64}$/);
     assert.notEqual(bundleId, policy);
     profile.AI_MODES_PRODUCTION_POLICY_ID = bundleId;
+  }
+  const fixedGiga = profile.AI_MINIMUM_FIXED_FEE === "enabled";
+  const routingBefore = fixedGiga
+    ? psql(
+        "select provider||':'||coalesce(policy_id,'')||':'||revision from ai_routing where id=1",
+      )
+    : null;
+  if (fixedGiga) {
+    assert.match(profile.AI_MODES_PRODUCTION_POLICY_ID, /^[a-f0-9]{64}$/);
+    assert.equal(
+      psql(
+        `select count(*) from ai_routing where provider='routerai' and policy_id='${profile.AI_MODES_PRODUCTION_POLICY_ID}'`,
+      ),
+      "0",
+    );
+    assert.equal(psql("select enabled from ai_budget where id=1"), "f");
   }
   const secret = join(directory, `${marker}-api.json`);
   writeFileSync(secret, JSON.stringify(profile), { mode: 0o444, flag: "wx" });
@@ -201,6 +224,52 @@ async function mountedProfileSmoke({
       `import assert from 'node:assert/strict'; const ready=await fetch('http://127.0.0.1:4000/ready'); assert.equal(ready.status,200); assert.equal((await fetch('http://127.0.0.1:4000/v1/admin/ai')).status,401); console.log('profile-ready-auth-closed');`,
     ]);
     assert.equal(proof.trim(), "profile-ready-auth-closed");
+    if (fixedGiga) {
+      // Constructors and policy checks only: trap both transport APIs before
+      // constructing adapters, with the container still on the internal network.
+      const modesProof = docker([
+        "exec",
+        id,
+        "node",
+        "--input-type=module",
+        "-e",
+        `import assert from 'node:assert/strict';
+         import https from 'node:https';
+         import {readConfig} from '@citygo/config';
+         import {createAssistantModes} from './dist/ai-modes.js';
+         import {containerSpec} from './scripts/container-runtime.mjs';
+         globalThis.fetch=()=>assert.fail('No provider fetch in static startup proof');
+         https.request=()=>assert.fail('No provider HTTPS in static startup proof');
+         const config=readConfig(containerSpec('api').env);
+         assert.equal(config.NODE_ENV,'production');
+         assert.equal(config.LLM_REQUEST_TIMEOUT_MS,60000);
+         assert.equal(config.GIGACHAT_CA_BUNDLE_FILE,'/app/certs/russian-trusted-root.crt');
+         const modes=createAssistantModes(config);
+         assert.equal(modes.productionApproved,true);
+         assert.deepEqual(modes.modeCatalog().options.map(({id,available})=>({id,available})),[
+           {id:'maximum',available:true},{id:'balanced',available:true},{id:'minimum',available:true}]);
+         assert.deepEqual(modes.modeCatalog().options[2].price,{kind:'fixed',currency:'RUB',amountMicros:3000000});
+         assert.deepEqual(modes.routes.map(({provider})=>[provider.name,provider.model]),[
+           ['routerai','openai/gpt-6.1-sol'],['routerai','deepseek/deepseek-v4-pro-0813'],['gigachat','GigaChat-3-Ultra']]);
+         assert.equal(modes.routes[2].fixedFee.scope,'GIGACHAT_API_PERS');
+         assert.equal(modes.routes[2].fixedFee.leaseMs,90000);
+         assert.equal(modes.ready({provider:'disabled',policyId:null,revision:1}),false);
+         assert.throws(()=>modes.resolve({provider:'disabled',policyId:null,revision:1},{}));
+         const unapproved=createAssistantModes({...config,AI_MODES_PRODUCTION_POLICY_ID:'0'.repeat(64)});
+         assert.ok(unapproved.modeCatalog().options.every(({available})=>available===false));
+         console.log('three-mode-adapters-static-only-no-provider-io');`,
+      ]);
+      assert.equal(
+        modesProof.trim(),
+        "three-mode-adapters-static-only-no-provider-io",
+      );
+      assert.equal(
+        psql(
+          "select provider||':'||coalesce(policy_id,'')||':'||revision from ai_routing where id=1",
+        ),
+        routingBefore,
+      );
+    }
     if (marker.includes("-postbox-email")) {
       const emailProof = docker([
         "exec",
@@ -230,7 +299,12 @@ async function mountedProfileSmoke({
       marker.endsWith("-postbox-email-smsru-v1") ||
       marker.endsWith("-postbox-email-prostosms-v1") ||
       marker.endsWith("-postbox-email-prostosms-unlimited-v1") ||
-      marker.endsWith("-postbox-email-prostosms-unlimited-assistant-modes-v1")
+      marker.endsWith(
+        "-postbox-email-prostosms-unlimited-assistant-modes-v1",
+      ) ||
+      marker.endsWith(
+        "-postbox-email-prostosms-unlimited-assistant-modes-gigachat-flat3-v1",
+      )
     ) {
       const phoneProof = docker([
         "exec",

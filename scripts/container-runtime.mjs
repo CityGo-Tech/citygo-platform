@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { readFileSync, statSync } from "node:fs";
 import { serviceEnv, root } from "./env.mjs";
 import { launch } from "./process.mjs";
+import { assertGigaChatCa } from "./gigachat-ca.mjs";
 
 const modes = {
   api: { scope: "api", args: ["dist/server.js"] },
@@ -123,6 +124,17 @@ const citygo10xLiveCnFiscalOverdraftEmailProstoUnlimitedAssistantModesFixed = {
   AI_ASSISTANT_MODES: "enabled",
   AI_MAXIMUM_REASONING_EFFORT: "medium",
 };
+// Separate fixed-price GigaChat identity. v12 and older mounted profiles retain
+// their exact keysets and never acquire a third transport or product fee.
+const citygo10xLiveCnFiscalOverdraftEmailProstoUnlimitedAssistantModesGigaFixed =
+  {
+    ...citygo10xLiveCnFiscalOverdraftEmailProstoUnlimitedAssistantModesFixed,
+    AI_MINIMUM_FIXED_FEE: "enabled",
+    GIGACHAT_MODEL: "GigaChat-3-Ultra",
+    GIGACHAT_SCOPE: "GIGACHAT_API_PERS",
+    GIGACHAT_CA_BUNDLE_FILE: "/app/certs/russian-trusted-root.crt",
+    LLM_REQUEST_TIMEOUT_MS: "60000",
+  };
 const routerAiProfiles = {
   "routerai-credit-v1": routerAiFixed,
   "routerai-citygo-10x-v1": citygo10xFixed,
@@ -141,6 +153,8 @@ const routerAiProfiles = {
     citygo10xLiveCnFiscalOverdraftEmailProstoUnlimitedFixed,
   "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-unlimited-assistant-modes-v1":
     citygo10xLiveCnFiscalOverdraftEmailProstoUnlimitedAssistantModesFixed,
+  "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-unlimited-assistant-modes-gigachat-flat3-v1":
+    citygo10xLiveCnFiscalOverdraftEmailProstoUnlimitedAssistantModesGigaFixed,
 };
 const routerAiKeys = (fixed) => [
   "DATABASE_URL",
@@ -153,6 +167,7 @@ const routerAiKeys = (fixed) => [
   ...(fixed.AI_ASSISTANT_MODES === "enabled"
     ? ["AI_MODES_DATA_NOTICE", "AI_MODES_PRODUCTION_POLICY_ID"]
     : []),
+  ...(fixed.AI_MINIMUM_FIXED_FEE === "enabled" ? ["GIGACHAT_CREDENTIALS"] : []),
   ...(fixed.YOOKASSA_MODE === "live"
     ? ["YOOKASSA_SHOP_ID", "YOOKASSA_SECRET_KEY"]
     : []),
@@ -182,6 +197,30 @@ const routerAiKeys = (fixed) => [
     : []),
 ];
 
+function canonicalGigaCredentials(value) {
+  if (
+    typeof value !== "string" ||
+    !value ||
+    value.length > 4096 ||
+    !/^[A-Za-z0-9+/]+={0,2}$/.test(value)
+  )
+    return false;
+  const bytes = Buffer.from(value, "base64");
+  if (
+    bytes.toString("base64").replace(/=+$/, "") !== value.replace(/=+$/, "") ||
+    (value.includes("=") && bytes.toString("base64") !== value) ||
+    bytes.some((byte) => byte < 0x21 || byte > 0x7e)
+  )
+    return false;
+  const decoded = bytes.toString("ascii");
+  const separator = decoded.indexOf(":");
+  return (
+    separator > 0 &&
+    separator < decoded.length - 1 &&
+    /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(decoded.slice(0, separator))
+  );
+}
+
 function validateRouterAi(value, fixed) {
   const keys = routerAiKeys(fixed);
   if (
@@ -208,6 +247,8 @@ function validateRouterAi(value, fixed) {
     (fixed.AI_ASSISTANT_MODES === "enabled" &&
       (!/^[a-f0-9]{64}$/.test(value.AI_MODES_PRODUCTION_POLICY_ID) ||
         value.AI_MODES_DATA_NOTICE.length > 4000)) ||
+    (fixed.AI_MINIMUM_FIXED_FEE === "enabled" &&
+      !canonicalGigaCredentials(value.GIGACHAT_CREDENTIALS)) ||
     (fixed.YOOKASSA_MODE === "live" &&
       (!/^[1-9][0-9]{0,19}$/.test(value.YOOKASSA_SHOP_ID) ||
         !/^live_[A-Za-z0-9_=-]{8,8192}$/.test(value.YOOKASSA_SECRET_KEY))) ||
@@ -240,7 +281,9 @@ function validateRouterAi(value, fixed) {
         Object.entries(phoneSmsLimits).some(([key, maximum]) =>
           fixed === citygo10xLiveCnFiscalOverdraftEmailProstoUnlimitedFixed ||
           fixed ===
-            citygo10xLiveCnFiscalOverdraftEmailProstoUnlimitedAssistantModesFixed
+            citygo10xLiveCnFiscalOverdraftEmailProstoUnlimitedAssistantModesFixed ||
+          fixed ===
+            citygo10xLiveCnFiscalOverdraftEmailProstoUnlimitedAssistantModesGigaFixed
             ? value[key] !== "unlimited"
             : !/^[1-9][0-9]{0,6}$/.test(value[key]) ||
               Number(value[key]) > maximum,
@@ -262,7 +305,7 @@ export function containerSpec(
   if (
     inherited.CITYGO_MOUNTED_CONFIG !== undefined &&
     Object.keys(inherited).some((key) =>
-      /^(EMAIL_|POSTBOX_|PHONE_|SMS_|PROSTOSMS_|AI_ASSISTANT_MODES$|AI_MAXIMUM_REASONING_EFFORT$|AI_MODES_)/.test(
+      /^(EMAIL_|POSTBOX_|PHONE_|SMS_|PROSTOSMS_|AI_ASSISTANT_MODES$|AI_MINIMUM_FIXED_FEE$|AI_MAXIMUM_REASONING_EFFORT$|AI_MODES_)/.test(
         key,
       ),
     )
@@ -318,7 +361,18 @@ export function containerSpec(
         )
       )
         throw new Error();
-      if (profile) validateRouterAi(secrets, routerAiProfiles[profile]);
+      if (profile) {
+        validateRouterAi(secrets, routerAiProfiles[profile]);
+        if (routerAiProfiles[profile].AI_MINIMUM_FIXED_FEE === "enabled") {
+          const certificate = resolve(
+            directory,
+            "certs/russian-trusted-root.crt",
+          );
+          const stat = statSync(certificate);
+          if (!stat.isFile() || stat.size > 256 * 1024) throw new Error();
+          assertGigaChatCa(readFileSync(certificate));
+        }
+      }
       // Avoid an accidental second source silently selecting the wrong database/key.
       if (Object.keys(secrets).some((key) => inherited[key] !== undefined))
         throw new Error();

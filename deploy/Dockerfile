@@ -22,12 +22,13 @@ LABEL org.opencontainers.image.source="https://github.com/CityGo-Tech/citygo-pla
       org.opencontainers.image.revision=${SOURCE_SHA}
 ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1
 WORKDIR /app
-COPY --chown=node:node scripts/env.mjs scripts/process.mjs scripts/container-runtime.mjs scripts/container-health.mjs ./scripts/
+COPY --chown=node:node scripts/env.mjs scripts/process.mjs scripts/container-runtime.mjs scripts/container-health.mjs scripts/gigachat-ca.mjs ./scripts/
 USER node
 ENTRYPOINT ["node", "scripts/container-runtime.mjs"]
 
 FROM runtime AS api
 COPY --from=builder --chown=node:node /out/api/ ./
+COPY --chown=node:node deploy/certificates/russian-trusted-root.crt ./certs/russian-trusted-root.crt
 EXPOSE 4000
 HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=5 CMD ["node", "scripts/container-health.mjs", "api"]
 CMD ["api"]
