@@ -9,12 +9,15 @@ import {
   subscribeBrowserSessionChange,
   type SessionTicket,
   ApiError,
+  captureAiModeSelection,
+  isAiModeAvailable,
 } from "@citygo/api-client";
 import type {
   AgentKey,
   Dashboard,
   ConversationSummary,
   ServiceConsentChoice,
+  AiModeId,
 } from "@citygo/contracts";
 import { Button, Card, Field, Badge } from "@citygo/ui-web";
 import { Journey } from "../components/journey";
@@ -76,6 +79,7 @@ export default function Home() {
   const [sending, setSending] = useState(false);
   const [pending, setPending] = useState("");
   const [streamAgent, setStreamAgent] = useState<AgentKey | null>(null);
+  const [selectedAiMode, setSelectedAiMode] = useState<AiModeId>("balanced");
   const abort = useRef<AbortController | null>(null);
   const selectedConversation = useRef<{ owner: string; id: string } | null>(
     null,
@@ -113,6 +117,7 @@ export default function Home() {
     abort.current?.abort();
     abort.current = null;
     setBoard(null);
+    setSelectedAiMode("balanced");
     chatSubmitting.current = false;
     setText("");
     setDraft("");
@@ -583,7 +588,11 @@ export default function Home() {
       board.user.serviceConsentRequired ||
       board.thread.closed ||
       board.user.mustChangePassword ||
-      board.provider === "unconfigured" ||
+      !isAiModeAvailable(
+        board.aiAccess.modes,
+        selectedAiMode,
+        board.provider !== "unconfigured",
+      ) ||
       history.detached ||
       !text.trim() ||
       busy ||
@@ -621,6 +630,16 @@ export default function Home() {
       !snapshot.aiAccess.granted
     )
       return;
+    let mode: ReturnType<typeof captureAiModeSelection>;
+    try {
+      mode = captureAiModeSelection(snapshot.aiAccess.modes, selectedAiMode);
+    } catch (error) {
+      setError(
+        error instanceof Error ? error.message : "Режим сейчас недоступен.",
+      );
+      return;
+    }
+    const requestId = crypto.randomUUID();
     chatSubmitting.current = true;
     const threadId = snapshot.thread.id;
     setText("");
@@ -635,7 +654,7 @@ export default function Home() {
         await api.stream(
           threadId,
           message,
-          crypto.randomUUID(),
+          requestId,
           (event) => {
             if (
               !ticket.active() ||
@@ -652,6 +671,7 @@ export default function Home() {
           controller.signal,
           snapshot.aiAccess.policy?.id,
           snapshot.aiAccess.credit?.reservationMode,
+          mode,
         );
       } catch (e) {
         if (!ticket.active()) return;
@@ -1132,6 +1152,11 @@ export default function Home() {
                 draft={draft}
                 pending={pending}
                 streamAgent={streamAgent}
+                aiMode={selectedAiMode}
+                onAiMode={(value) => {
+                  if (!busy && !sending && !chatSubmitting.current)
+                    setSelectedAiMode(value);
+                }}
                 text={text}
                 onText={setText}
                 onChat={chat}

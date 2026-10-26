@@ -247,7 +247,8 @@ class Validation(unittest.TestCase):
                           s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROFILE,
                           s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_SMS_PROFILE,
                           s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_PROFILE,
-                          s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_UNLIMITED_PROFILE})
+                          s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_UNLIMITED_PROFILE,
+                          s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_UNLIMITED_ASSISTANT_MODES_PROFILE})
         for key in value:
             missing = dict(value); del missing[key]
             with self.subTest(missing=key), self.assertRaises(b.BackupError): validate(missing)
@@ -538,7 +539,7 @@ class Validation(unittest.TestCase):
         for key in ("!" * 16, "~" * 256):
             data = {**value, "PROSTOSMS_API_KEY": key, "PROSTOSMS_SENDER": "A1234567890", "EMAIL_SEND_DAILY_LIMIT": "unlimited", "EMAIL_SEND_TOTAL_LIMIT": "unlimited"}
             self.assertEqual(validate(data), encoded(data))
-        for old in set(s.PROFILE_VERSIONS) - {profile, s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_UNLIMITED_PROFILE}:
+        for old in set(s.PROFILE_VERSIONS) - s.PROSTOSMS_PROFILES:
             old_value = {"DATABASE_URL": value["DATABASE_URL"]} if old == s.PROFILE else routerai_fixture(old)
             self.assertEqual(validate(old_value, old), encoded(old_value))
             with self.subTest(old_marker=old), self.assertRaises(b.BackupError): validate(value, old)
@@ -597,7 +598,57 @@ class Validation(unittest.TestCase):
             with self.subTest(ambient=key), self.assertRaises(b.BackupError): s.runtime(bad, *args, profile)
 
 
+    def test_assistant_modes_v12_requires_exact_separate_bundle_and_keeps_money_and_keys(self):
+        profile = s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_UNLIMITED_ASSISTANT_MODES_PROFILE
+        prior = s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_UNLIMITED_PROFILE
+        value, legacy = routerai_fixture(profile), routerai_fixture(prior)
+        extras = {"AI_ASSISTANT_MODES", "AI_MAXIMUM_REASONING_EFFORT", *s.ASSISTANT_MODES_KEYS}
+        self.assertEqual({k: v for k, v in value.items() if k not in extras}, legacy)
+        self.assertEqual(set(value) - set(legacy), extras)
+        self.assertEqual(s.PROFILE_VERSIONS[profile], 12)
+        self.assertIn(profile, s.CLOSED_ONLY_PROFILES)
+        def validate(data, selected=profile):
+            with patch.object(t, "read_file", return_value=encoded(data)):
+                return s.api_secret("/unused", selected)
+        self.assertEqual(validate(value), encoded(value))
+        for key in value:
+            missing = dict(value); del missing[key]
+            with self.subTest(missing=key), self.assertRaises(b.BackupError): validate(missing)
+        for change in ({"AI_ASSISTANT_MODES": "disabled"}, {"AI_MAXIMUM_REASONING_EFFORT": "high"},
+                       {"AI_MODES_PRODUCTION_POLICY_ID": "b" * 63}, {"AI_MODES_PRODUCTION_POLICY_ID": "B" * 64},
+                       {"AI_MODES_DATA_NOTICE": ""}, {"AI_MODES_DATA_NOTICE": "notice\nextra"},
+                       {"AI_MODES_DATA_NOTICE": "x" * 4001}, {"AI_MODES_DATA_NOTICE": "😀" * 2001},
+                       {"GIGACHAT_CREDENTIALS": "synthetic-forbidden"}, {"OPENAI_API_KEY": "synthetic-forbidden"},
+                       {"AI_MODES_ENDPOINT": "https://invalid.test"}, {"AI_CREDIT_RESERVATION_MODE": "full"},
+                       {"PHONE_SMS_GLOBAL_DAILY_LIMIT": "1"}, {"YOOKASSA_FISCAL_PROFILE": "disabled"}):
+            with self.subTest(keys=list(change)), self.assertRaises(b.BackupError): validate({**value, **change})
+        for old in set(s.PROFILE_VERSIONS) - {profile}:
+            with self.subTest(old=old), self.assertRaises(b.BackupError): validate(value, old)
+        with self.assertRaises(b.BackupError): validate(legacy)
+        self.assertEqual(validate(legacy, prior), encoded(legacy))
+
+    def test_assistant_modes_v12_runtime_is_api_only_and_mount_bound(self):
+        profile = s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_UNLIMITED_ASSISTANT_MODES_PROFILE
+        marker = "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-unlimited-assistant-modes-v1"
+        self.assertEqual(s.profile_environment(profile), {"LLM_PROVIDER": "routerai", "CITYGO_AI_PROFILE": marker})
+        image = {"local_id": "sha256:" + "c" * 64, "config_id": "sha256:" + "c" * 64}
+        container = preparation_fixture.container("api");container["Image"] = image["local_id"];container["State"]["Dead"] = False
+        current = detail(container, "api", image, "/tmp/api.json", profile)
+        args = ("api", image, "citygo-fixture", ORIGIN, "/tmp/api.json", {"web_api": WEB_NETWORK, "database": "e" * 64})
+        s.runtime(current, *args, profile)
+        with self.assertRaises(b.BackupError): s.runtime(current, *args, s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_UNLIMITED_PROFILE)
+        for key in ("AI_ASSISTANT_MODES", "AI_MAXIMUM_REASONING_EFFORT", *s.ASSISTANT_MODES_KEYS):
+            bad = copy.deepcopy(current);bad["Config"]["Env"].append(key + "=synthetic-hidden")
+            with self.subTest(ambient=key), self.assertRaises(b.BackupError): s.runtime(bad, *args, profile)
+        spec = s.compose_spec("citygo-fixture", ORIGIN, {"api": image, "web": image}, "/tmp/api.json", profile)
+        self.assertFalse(any(k.startswith(("AI_MODES_", "AI_ASSISTANT_", "AI_MAXIMUM_", "GIGACHAT_")) for service in spec["services"].values() for k in service["environment"]))
+        self.assertNotIn("secrets", spec["services"]["web"])
+
+
 def routerai_fixture(profile=s.ROUTERAI_PROFILE):
+    if profile == s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_UNLIMITED_ASSISTANT_MODES_PROFILE:
+        return json.loads((Path(__file__).resolve().parent.parent / "fixtures" /
+                           "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-unlimited-assistant-modes-profile.fixture.json").read_bytes())
     if profile == s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_UNLIMITED_PROFILE:
         return json.loads((Path(__file__).resolve().parent.parent / "fixtures" /
                            "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-unlimited-profile.fixture.json").read_bytes())

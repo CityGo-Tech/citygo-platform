@@ -41,6 +41,10 @@ export async function routerAiProfileSmoke({
       "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-unlimited-v1",
       "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-unlimited-profile.fixture.json",
     ],
+    [
+      "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-unlimited-assistant-modes-v1",
+      "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-unlimited-assistant-modes-profile.fixture.json",
+    ],
   ])
     await mountedProfileSmoke({
       project,
@@ -84,31 +88,48 @@ async function mountedProfileSmoke({
       "ROUTERAI_DATA_NOTICE",
     ].map((k) => [k, profile[k]]),
   );
-  const policy = JSON.parse(
-    docker([
-      "run",
-      "--rm",
-      "--pull",
-      "never",
-      "--network",
-      "none",
-      "--read-only",
-      "--cap-drop",
-      "ALL",
-      "--security-opt",
-      "no-new-privileges:true",
-      "--entrypoint",
-      "node",
-      ...Object.entries(publicSettings).flatMap(([key, value]) => [
-        "-e",
-        `${key}=${value}`,
+  const previewPolicy = (settings) =>
+    JSON.parse(
+      docker([
+        "run",
+        "--rm",
+        "--pull",
+        "never",
+        "--network",
+        "none",
+        "--read-only",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges:true",
+        "--entrypoint",
+        "node",
+        ...Object.entries(settings).flatMap(([key, value]) => [
+          "-e",
+          `${key}=${value}`,
+        ]),
+        apiImage,
+        "dist/preview-policy.js",
       ]),
-      apiImage,
-      "dist/preview-policy.js",
-    ]),
-  ).id;
+    ).id;
+  const policy = previewPolicy(publicSettings);
   assert.match(policy, /^[a-f0-9]{64}$/);
   profile.ROUTERAI_PRODUCTION_POLICY_ID = policy;
+  if (profile.AI_ASSISTANT_MODES === "enabled") {
+    const bundleId = previewPolicy({
+      ...publicSettings,
+      ...Object.fromEntries(
+        [
+          "AI_ASSISTANT_MODES",
+          "AI_MAXIMUM_REASONING_EFFORT",
+          "AI_MODES_DATA_NOTICE",
+        ].map((key) => [key, profile[key]]),
+      ),
+    });
+    assert.match(bundleId, /^[a-f0-9]{64}$/);
+    assert.notEqual(bundleId, policy);
+    profile.AI_MODES_PRODUCTION_POLICY_ID = bundleId;
+  }
   const secret = join(directory, `${marker}-api.json`);
   writeFileSync(secret, JSON.stringify(profile), { mode: 0o444, flag: "wx" });
   const name = `${project}-${marker}`;
@@ -199,13 +220,17 @@ async function mountedProfileSmoke({
         "phone_welcome_claims",
         "phone_contact_bindings",
         "phone_contact_changes",
+        "ai_request_modes",
+        "gigachat_request_fees",
+        "gigachat_account_leases",
       ])
         assert.equal(psql(`select count(*) from ${table}`), "0");
     }
     if (
       marker.endsWith("-postbox-email-smsru-v1") ||
       marker.endsWith("-postbox-email-prostosms-v1") ||
-      marker.endsWith("-postbox-email-prostosms-unlimited-v1")
+      marker.endsWith("-postbox-email-prostosms-unlimited-v1") ||
+      marker.endsWith("-postbox-email-prostosms-unlimited-assistant-modes-v1")
     ) {
       const phoneProof = docker([
         "exec",

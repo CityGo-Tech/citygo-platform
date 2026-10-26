@@ -630,6 +630,20 @@ test("GigaChat settings are blank-safe and do not implicitly select a provider",
   assert.equal(config.LLM_PROVIDER, undefined);
 });
 
+test("Minimum fixed fee is a separate disabled-by-default opt-in", () => {
+  assert.equal(readConfig({}).AI_MINIMUM_FIXED_FEE, "disabled");
+  assert.equal(
+    readConfig({ AI_MINIMUM_FIXED_FEE: "enabled" }).AI_MINIMUM_FIXED_FEE,
+    "enabled",
+  );
+  assert.equal(
+    readConfig({ AI_MINIMUM_FIXED_FEE: "enabled" }).AI_ASSISTANT_MODES,
+    "disabled",
+  );
+  for (const value of ["true", "1", "free", "Enabled", ""])
+    assert.throws(() => readConfig({ AI_MINIMUM_FIXED_FEE: value }));
+});
+
 test("RouterAI settings are trimmed, blank-safe and never implicitly select it", () => {
   const config = readConfig({
     ROUTERAI_API_KEY: " test-key ",

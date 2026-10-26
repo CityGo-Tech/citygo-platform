@@ -1023,6 +1023,107 @@ test("v11 admits only explicit unlimited SMS while v10 and SMS.ru retain finite 
     );
 });
 
+test("v12 assistant modes require their own mounted notice and production bundle without new credentials", (t) => {
+  const directory = fixture(t);
+  const marker =
+    "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-unlimited-assistant-modes-v1";
+  const prior =
+    "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-unlimited-v1";
+  const read = (suffix) =>
+    JSON.parse(
+      readFileSync(
+        join(
+          root,
+          "deploy/fixtures",
+          `routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-unlimited${suffix}-profile.fixture.json`,
+        ),
+        "utf8",
+      ),
+    );
+  const value = read("-assistant-modes"),
+    legacy = read("");
+  const additions = [
+    "AI_ASSISTANT_MODES",
+    "AI_MAXIMUM_REASONING_EFFORT",
+    "AI_MODES_DATA_NOTICE",
+    "AI_MODES_PRODUCTION_POLICY_ID",
+  ];
+  assert.deepEqual(
+    Object.fromEntries(
+      Object.entries(value).filter(([key]) => !additions.includes(key)),
+    ),
+    legacy,
+  );
+  const spec = (data, profile = marker, mode = "api", ambient = {}) => {
+    writeFileSync(join(directory, "api.json"), JSON.stringify(data));
+    return containerSpec(
+      mode,
+      {
+        CITYGO_MOUNTED_CONFIG: "1",
+        CITYGO_AI_PROFILE: profile,
+        LLM_PROVIDER: "routerai",
+        ...ambient,
+      },
+      directory,
+      directory,
+    );
+  };
+  const configured = spec(value).env;
+  assert.equal(configured.AI_ASSISTANT_MODES, "enabled");
+  assert.equal(configured.AI_MAXIMUM_REASONING_EFFORT, "medium");
+  assert.equal(
+    configured.AI_MODES_PRODUCTION_POLICY_ID,
+    value.AI_MODES_PRODUCTION_POLICY_ID,
+  );
+  assert.equal(configured.AI_CREDIT_RESERVATION_MODE, "fixed5_overdraft");
+  assert.equal(configured.AI_CREDIT_MODE, "routerai_citygo_10x");
+  assert.equal(
+    configured.YOOKASSA_FISCAL_PROFILE,
+    "citygo_service_full_payment_v1",
+  );
+  assert.equal(configured.PHONE_VERIFICATION_MODE, "prosto_sms");
+  assert.equal(configured.PHONE_SMS_GLOBAL_TOTAL_LIMIT, "unlimited");
+  assert.equal(configured.GIGACHAT_CREDENTIALS, undefined);
+  for (const key of additions) {
+    const missing = { ...value };
+    delete missing[key];
+    assert.throws(() => spec(missing), /Invalid mounted/);
+    assert.throws(
+      () => spec(value, marker, "api", { [key]: value[key] }),
+      /Invalid mounted verification/,
+    );
+    assert.throws(
+      () => spec(legacy, prior, "api", { [key]: value[key] }),
+      /Invalid mounted verification/,
+    );
+  }
+  for (const change of [
+    { AI_ASSISTANT_MODES: "disabled" },
+    { AI_MAXIMUM_REASONING_EFFORT: "high" },
+    { AI_MODES_PRODUCTION_POLICY_ID: "b".repeat(63) },
+    { AI_MODES_PRODUCTION_POLICY_ID: "B".repeat(64) },
+    { AI_MODES_DATA_NOTICE: "" },
+    { AI_MODES_DATA_NOTICE: "line\nextra" },
+    { AI_MODES_DATA_NOTICE: "x".repeat(4001) },
+    { AI_MODES_DATA_NOTICE: "😀".repeat(2001) },
+    { GIGACHAT_CREDENTIALS: "synthetic-forbidden" },
+    { OPENAI_API_KEY: "synthetic-forbidden" },
+    { AI_MODES_ENDPOINT: "https://invalid.test" },
+    { PHONE_SMS_GLOBAL_DAILY_LIMIT: "1" },
+    { AI_CREDIT_MODE: "routerai_at_cost" },
+    { YOOKASSA_FISCAL_PROFILE: "disabled" },
+  ])
+    assert.throws(() => spec({ ...value, ...change }), /Invalid mounted/);
+  for (const mode of ["web", "worker", "migrate", "migrate-release"])
+    assert.throws(
+      () => spec(value, marker, mode),
+      /Invalid container AI profile/,
+    );
+  assert.throws(() => spec(value, prior), /Invalid mounted/);
+  assert.throws(() => spec(legacy), /Invalid mounted/);
+  assert.doesNotThrow(() => spec(legacy, prior));
+});
+
 test("all mounted profiles, including disabled, refuse ambient verification prefixes", (t) => {
   const directory = fixture(t);
   for (const mode of ["api", "worker", "migrate"])
@@ -1041,6 +1142,10 @@ test("all mounted profiles, including disabled, refuse ambient verification pref
       "PROSTOSMS_MODE",
       "PROSTOSMS_API_KEY",
       "PROSTOSMS_UNREVIEWED",
+      "AI_ASSISTANT_MODES",
+      "AI_MAXIMUM_REASONING_EFFORT",
+      "AI_MODES_DATA_NOTICE",
+      "AI_MODES_PRODUCTION_POLICY_ID",
     ])
       assert.throws(
         () =>

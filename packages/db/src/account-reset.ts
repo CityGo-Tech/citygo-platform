@@ -50,6 +50,9 @@ const retained = [
   "phone_welcome_claims",
   "phone_contact_bindings",
   "phone_contact_changes",
+  "ai_request_modes",
+  "gigachat_request_fees",
+  "gigachat_account_leases",
   "password_recovery_challenges",
   "account_email_confirmation_challenges",
   "account_email_verifications",
@@ -159,6 +162,9 @@ export class AccountReset {
         "phone_welcome_claims",
         "phone_contact_bindings",
         "phone_contact_changes",
+        "ai_request_modes",
+        "gigachat_request_fees",
+        "gigachat_account_leases",
         "password_recovery_challenges",
         "account_email_confirmation_challenges",
         "account_email_verifications",
@@ -207,6 +213,18 @@ export class AccountReset {
         blockers.push({
           code: "PHONE_CONTACT_HISTORY_REQUIRES_REVIEW",
           count: phoneContactHistoryCount,
+        });
+      if (counts.ai_request_modes)
+        blockers.push({
+          code: "AI_REQUEST_MODE_HISTORY_REQUIRES_REVIEW",
+          count: counts.ai_request_modes,
+        });
+      const gigachatHistoryCount =
+        counts.gigachat_request_fees! + counts.gigachat_account_leases!;
+      if (gigachatHistoryCount)
+        blockers.push({
+          code: "GIGACHAT_HISTORY_REQUIRES_REVIEW",
+          count: gigachatHistoryCount,
         });
       const admissionHistoryCount =
         counts.payment_admission_commands! +

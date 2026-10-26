@@ -1,5 +1,6 @@
 import { readConfig } from "@citygo/config";
 import { createAiPolicy } from "./ai-policy.js";
+import { createAssistantModes } from "./ai-modes.js";
 
 // Deliberately no provider constructor, DB, file writes or inherited credentials.
 // API-scoped launchers may load .env.api; print only the public consent snapshot.
@@ -9,23 +10,33 @@ try {
     ROUTERAI_UPSTREAM: process.env.ROUTERAI_UPSTREAM,
     ROUTERAI_COUNTRY: process.env.ROUTERAI_COUNTRY,
     ROUTERAI_DATA_NOTICE: process.env.ROUTERAI_DATA_NOTICE,
+    AI_ASSISTANT_MODES: process.env.AI_ASSISTANT_MODES,
+    AI_MODES_DATA_NOTICE: process.env.AI_MODES_DATA_NOTICE,
+    AI_MAXIMUM_REASONING_EFFORT: process.env.AI_MAXIMUM_REASONING_EFFORT,
+    GIGACHAT_MODEL: process.env.GIGACHAT_MODEL,
+    GIGACHAT_SCOPE: process.env.GIGACHAT_SCOPE,
   });
-  if (
-    !config.ROUTERAI_MODEL ||
-    !config.ROUTERAI_UPSTREAM ||
-    !config.ROUTERAI_DATA_NOTICE
-  )
-    throw new Error();
-  console.log(
-    JSON.stringify(
-      createAiPolicy(config, {
-        name: "routerai",
-        model: config.ROUTERAI_MODEL,
-      }),
-      null,
-      2,
-    ),
-  );
+  if (config.AI_ASSISTANT_MODES === "enabled") {
+    if (!config.AI_MODES_DATA_NOTICE) throw new Error();
+    console.log(JSON.stringify(createAssistantModes(config)!.policy, null, 2));
+  } else {
+    if (
+      !config.ROUTERAI_MODEL ||
+      !config.ROUTERAI_UPSTREAM ||
+      !config.ROUTERAI_DATA_NOTICE
+    )
+      throw new Error();
+    console.log(
+      JSON.stringify(
+        createAiPolicy(config, {
+          name: "routerai",
+          model: config.ROUTERAI_MODEL,
+        }),
+        null,
+        2,
+      ),
+    );
+  }
 } catch {
   console.error(
     "Set RouterAI model, upstream and public operator notice; invalid values are hidden",

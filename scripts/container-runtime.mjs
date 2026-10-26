@@ -116,6 +116,13 @@ const citygo10xLiveCnFiscalOverdraftEmailProstoFixed = {
 const citygo10xLiveCnFiscalOverdraftEmailProstoUnlimitedFixed = {
   ...citygo10xLiveCnFiscalOverdraftEmailProstoFixed,
 };
+// New hash-bound assistant-mode rollout, with the original money/SMS identity.
+// The two RouterAI routes need no new credential; GigaChat stays unavailable.
+const citygo10xLiveCnFiscalOverdraftEmailProstoUnlimitedAssistantModesFixed = {
+  ...citygo10xLiveCnFiscalOverdraftEmailProstoUnlimitedFixed,
+  AI_ASSISTANT_MODES: "enabled",
+  AI_MAXIMUM_REASONING_EFFORT: "medium",
+};
 const routerAiProfiles = {
   "routerai-credit-v1": routerAiFixed,
   "routerai-citygo-10x-v1": citygo10xFixed,
@@ -132,6 +139,8 @@ const routerAiProfiles = {
     citygo10xLiveCnFiscalOverdraftEmailProstoFixed,
   "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-unlimited-v1":
     citygo10xLiveCnFiscalOverdraftEmailProstoUnlimitedFixed,
+  "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-unlimited-assistant-modes-v1":
+    citygo10xLiveCnFiscalOverdraftEmailProstoUnlimitedAssistantModesFixed,
 };
 const routerAiKeys = (fixed) => [
   "DATABASE_URL",
@@ -141,6 +150,9 @@ const routerAiKeys = (fixed) => [
   "ROUTERAI_PRODUCTION_POLICY_ID",
   ...Object.keys(fixed),
   ...Object.keys(routerAiLimits),
+  ...(fixed.AI_ASSISTANT_MODES === "enabled"
+    ? ["AI_MODES_DATA_NOTICE", "AI_MODES_PRODUCTION_POLICY_ID"]
+    : []),
   ...(fixed.YOOKASSA_MODE === "live"
     ? ["YOOKASSA_SHOP_ID", "YOOKASSA_SECRET_KEY"]
     : []),
@@ -193,6 +205,9 @@ function validateRouterAi(value, fixed) {
     !/^[a-f0-9]{64}$/.test(value.ROUTERAI_PRODUCTION_POLICY_ID) ||
     value.ROUTERAI_DATA_NOTICE.length > 4000 ||
     value.ROUTERAI_API_KEY.length > 8192 ||
+    (fixed.AI_ASSISTANT_MODES === "enabled" &&
+      (!/^[a-f0-9]{64}$/.test(value.AI_MODES_PRODUCTION_POLICY_ID) ||
+        value.AI_MODES_DATA_NOTICE.length > 4000)) ||
     (fixed.YOOKASSA_MODE === "live" &&
       (!/^[1-9][0-9]{0,19}$/.test(value.YOOKASSA_SHOP_ID) ||
         !/^live_[A-Za-z0-9_=-]{8,8192}$/.test(value.YOOKASSA_SECRET_KEY))) ||
@@ -223,7 +238,9 @@ function validateRouterAi(value, fixed) {
         !/^[!-~]{16,256}$/.test(value.PROSTOSMS_API_KEY) ||
         !/^[A-Za-z0-9][A-Za-z0-9._-]{0,10}$/.test(value.PROSTOSMS_SENDER) ||
         Object.entries(phoneSmsLimits).some(([key, maximum]) =>
-          fixed === citygo10xLiveCnFiscalOverdraftEmailProstoUnlimitedFixed
+          fixed === citygo10xLiveCnFiscalOverdraftEmailProstoUnlimitedFixed ||
+          fixed ===
+            citygo10xLiveCnFiscalOverdraftEmailProstoUnlimitedAssistantModesFixed
             ? value[key] !== "unlimited"
             : !/^[1-9][0-9]{0,6}$/.test(value[key]) ||
               Number(value[key]) > maximum,
@@ -245,7 +262,9 @@ export function containerSpec(
   if (
     inherited.CITYGO_MOUNTED_CONFIG !== undefined &&
     Object.keys(inherited).some((key) =>
-      /^(EMAIL_|POSTBOX_|PHONE_|SMS_|PROSTOSMS_)/.test(key),
+      /^(EMAIL_|POSTBOX_|PHONE_|SMS_|PROSTOSMS_|AI_ASSISTANT_MODES$|AI_MAXIMUM_REASONING_EFFORT$|AI_MODES_)/.test(
+        key,
+      ),
     )
   )
     throw new Error(

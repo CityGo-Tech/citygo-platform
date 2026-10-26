@@ -10,6 +10,7 @@ export * from "./personal-plan.js";
 export * from "./conversation-history.js";
 export * from "./llm.js";
 export * from "./ai-access.js";
+export * from "./ai-modes.js";
 export * from "./ai-budget.js";
 export * from "./ai-credit.js";
 export * from "./citygo-tariff.js";

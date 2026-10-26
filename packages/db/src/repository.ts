@@ -43,6 +43,19 @@ import {
   reserveAiMoney,
 } from "./ai-budget.js";
 
+import {
+  parseAiRequestModeSnapshot,
+  recordAiRequestMode,
+  assertAiRequestModeAttempt,
+  type AiRequestModeSnapshot,
+  type AiRequestModeDescriptor,
+} from "./ai-request-modes.js";
+import {
+  GigaChatFixedFees,
+  parseGigaChatFixedFeeInput,
+  type GigaChatFixedFeeInput,
+} from "./gigachat-fixed-fees.js";
+
 export { DomainError } from "./errors.js";
 const fail = (
   status: number,
@@ -66,6 +79,7 @@ export class Repository {
     private creditTariff: CityGoTariffSnapshot = LEGACY_AT_COST_TARIFF,
     private topUpAvailable: boolean | (() => Promise<boolean>) = false,
     private creditReservationMode: AiCreditReservationMode = "full",
+    private includeGigaFixedFees = false,
   ) {}
   aiBudget(executions: AiExecution[]) {
     return aiBudget(this.db, executions);
@@ -91,9 +105,40 @@ export class Repository {
     globalDailyLimit: number;
     execution: AiExecution;
     upstream?: string;
+    consentPolicyId?: string;
+    mode?: AiRequestModeDescriptor;
+    fixedFee?: GigaChatFixedFeeInput;
   }) {
+    // A caller may update its selector after send. Copy the accepted attempt
+    // values before awaiting any transaction so that cannot retarget this call.
+    input = {
+      ...input,
+      execution: structuredClone(input.execution),
+      ...(input.mode === undefined ? {} : { mode: { ...input.mode } }),
+      ...(input.fixedFee === undefined
+        ? {}
+        : { fixedFee: parseGigaChatFixedFeeInput(input.fixedFee) }),
+    };
+    const consentPolicyId = input.consentPolicyId ?? input.policyId;
+    if (
+      input.fixedFee !== undefined &&
+      (!this.creditCharging ||
+        this.creditTariff.version !== "citygo-10x-v1" ||
+        this.creditReservationMode !== "fixed5_overdraft" ||
+        input.provider !== "gigachat" ||
+        input.model !== "GigaChat-3-Ultra" ||
+        input.attemptNumber !== 1 ||
+        input.upstream !== undefined ||
+        input.mode?.id !== "minimum")
+    )
+      fail(
+        503,
+        "Для этого режима условия оплаты не подключены.",
+        "AI_CREDIT_UNAVAILABLE",
+      );
     if (
       this.creditCharging &&
+      input.fixedFee === undefined &&
       (input.provider !== "routerai" ||
         input.attemptNumber !== 1 ||
         !input.upstream)
@@ -132,7 +177,7 @@ export class Repository {
         [
           input.threadId,
           input.requestId,
-          input.policyId,
+          consentPolicyId,
           input.routingRevision,
         ],
       );
@@ -143,6 +188,21 @@ export class Repository {
         input.execution.policy.model !== input.model
       )
         fail(409, "Денежный резерв не соответствует запросу.");
+      const frozenMode = await assertAiRequestModeAttempt(tx, {
+        userId: input.userId,
+        threadId: input.threadId,
+        requestId: input.requestId,
+        consentPolicyId,
+        policyId: input.policyId,
+        routingRevision: input.routingRevision,
+        provider: input.provider,
+        model: input.model,
+        execution: input.execution,
+        upstream: input.upstream,
+        mode: input.mode,
+      });
+      if (input.fixedFee !== undefined && !frozenMode)
+        fail(409, "Режим ответа не закреплён за запросом.");
       const previous = (
         await tx.query<{
           attempt_number: number;
@@ -213,13 +273,31 @@ export class Repository {
         "insert into ai_user_model_attempt_daily(user_id,usage_day,reserved_attempts) values ($1,$2,1) on conflict(user_id,usage_day) do update set reserved_attempts=ai_user_model_attempt_daily.reserved_attempts+1",
         [input.userId, day],
       );
-      const money = await reserveAiMoney(tx, input.execution, input.userId);
+      // A fixed product fee with free provider cost is never represented as a
+      // RouterAI price/rule. The global administrative stop still applies.
+      const money =
+        input.fixedFee === undefined
+          ? await reserveAiMoney(tx, input.execution, input.userId)
+          : null;
+      if (input.fixedFee !== undefined) {
+        const budget = (
+          await tx.query<{ enabled: boolean }>(
+            "select enabled from ai_budget where id=1 for share",
+          )
+        ).rows[0];
+        if (!budget?.enabled)
+          fail(
+            503,
+            "Обращения к ИИ временно отключены.",
+            "AI_BUDGET_UNAVAILABLE",
+          );
+      }
       // The explicit uncapped operator mode is only for the approved paid ×10
       // flow, never a way for an old/no-charge API process to consume RouterAI
       // without reserving user credit. Use the mode read under the budget lock;
       // refusal rolls back every quota and monetary counter in this transaction.
       if (
-        money.budgetMode === "routerai_balance" &&
+        money?.budgetMode === "routerai_balance" &&
         (!this.creditCharging || this.creditTariff.version !== "citygo-10x-v1")
       )
         fail(
@@ -227,14 +305,14 @@ export class Repository {
           "Для режима баланса RouterAI нужны списания CityGo по тарифу ×10.",
           "AI_CREDIT_UNAVAILABLE",
         );
-      if (this.creditCharging && money.currency !== "RUB")
+      if (this.creditCharging && money && money.currency !== "RUB")
         fail(
           503,
           "Для баланса AI нужен бюджет оператора в RUB.",
           "AI_CREDIT_UNAVAILABLE",
         );
       await tx.query(
-        "insert into ai_model_attempts(thread_id,request_id,attempt_number,user_id,provider,model,policy_id,routing_revision,money_currency,money_reserved_micros,money_budget_revision,money_rule_key,reserved_at) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)",
+        "insert into ai_model_attempts(thread_id,request_id,attempt_number,user_id,provider,model,policy_id,routing_revision,money_currency,money_reserved_micros,money_budget_revision,money_rule_key,reserved_at) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,coalesce($13::timestamptz,clock_timestamp()))",
         [
           input.threadId,
           input.requestId,
@@ -244,13 +322,23 @@ export class Repository {
           input.model,
           input.policyId,
           input.routingRevision,
-          money.currency,
-          money.amountMicros,
-          money.revision,
-          money.ruleKey,
-          money.reservedAt,
+          money?.currency ?? null,
+          money?.amountMicros ?? null,
+          money?.revision ?? null,
+          money?.ruleKey ?? null,
+          money?.reservedAt ?? null,
         ],
       );
+      if (input.fixedFee !== undefined && frozenMode)
+        return new GigaChatFixedFees(this.db).reserve(tx, {
+          userId: input.userId,
+          threadId: input.threadId,
+          requestId: input.requestId,
+          chatLease: input.lease,
+          catalogId: frozenMode.catalogId,
+          executionKey: input.execution.key,
+          pricing: input.fixedFee,
+        });
       return this.creditCharging
         ? new AiCreditCharges(
             this.db,
@@ -265,7 +353,7 @@ export class Repository {
               model: input.model,
               upstream: input.upstream!,
             },
-            money.amountMicros,
+            money!.amountMicros,
           )
         : null;
     });
@@ -520,6 +608,7 @@ export class Repository {
               : "not_connected",
             topUpAvailable,
             this.creditReservationMode,
+            this.includeGigaFixedFees,
           ).status(user.id, tx),
           budget: await aiUserBudget(tx, user.id),
           policy,
@@ -847,8 +936,15 @@ export class Repository {
       userDailyLimit: number;
       globalDailyLimit: number;
       leaseMs?: number;
+      modeSnapshot?: AiRequestModeSnapshot;
     },
   ) {
+    access = {
+      ...access,
+      ...(access.modeSnapshot === undefined
+        ? {}
+        : { modeSnapshot: parseAiRequestModeSnapshot(access.modeSnapshot) }),
+    };
     const leaseMs = access.leaseMs ?? 90000;
     if (!Number.isSafeInteger(leaseMs) || leaseMs < 90000 || leaseMs > 270000)
       fail(400, "Недопустимый срок блокировки чата.");
@@ -933,6 +1029,17 @@ export class Repository {
         "insert into chat_requests(thread_id,request_id,status,ai_policy_id,ai_routing_revision) values ($1,$2,'running',$3,$4)",
         [threadId, requestId, access.policyId, access.revision],
       );
+      const modeSnapshot =
+        access.modeSnapshot === undefined
+          ? undefined
+          : await recordAiRequestMode(tx, {
+              userId,
+              threadId,
+              requestId,
+              consentPolicyId: access.policyId,
+              routingRevision: access.revision,
+              snapshot: access.modeSnapshot,
+            });
       await tx.query(
         "insert into messages(thread_id,role,content,metadata) values ($1,'user',$2,$3)",
         [
@@ -953,6 +1060,7 @@ export class Repository {
         lease,
         profile,
         messages: await this.history(tx, threadId),
+        ...(modeSnapshot ? { modeSnapshot } : {}),
       };
     });
   }
@@ -982,6 +1090,107 @@ export class Repository {
           "update agent_threads set agent_key=$2,updated_at=now() where id=$1",
           [threadId, to],
         );
+    });
+  }
+  async finishGigaChat(input: {
+    userId: string;
+    threadId: string;
+    requestId: string;
+    lease: string;
+    agent: AgentKey;
+    content: string;
+    complete: boolean;
+    generation?: ModelGeneration;
+    holdId: string;
+  }) {
+    input = {
+      ...input,
+      requestId: input.requestId.toLowerCase(),
+      ...(input.generation
+        ? { generation: structuredClone(input.generation) }
+        : {}),
+    };
+    if (
+      input.complete &&
+      (!input.content.trim() ||
+        input.generation?.provider !== "gigachat" ||
+        input.generation.requestedModel !== "GigaChat-3-Ultra" ||
+        !/^GigaChat-3-Ultra(?::[A-Za-z0-9._-]{1,100})?$/.test(
+          input.generation.model ?? "",
+        ))
+    )
+      fail(400, "Завершённый ответ не подтверждён.");
+    const fees = new GigaChatFixedFees(this.db);
+    return this.db.transaction(async (tx) => {
+      // Unlike the legacy finish path, this transaction also resolves money.
+      // Lock the owner/account before the conversation, never thread -> user.
+      await fees.lockAccount(tx, input.userId);
+      const fee = await fees.get(input.userId, input.holdId, tx, true);
+      if (
+        fee.threadId !== input.threadId ||
+        fee.requestId !== input.requestId ||
+        fee.chatLease !== input.lease
+      )
+        fail(409, "Резерв не соответствует ответу.");
+      if (fee.state === "succeeded") {
+        const same = await tx.query(
+          `select id::text from messages where id=$1 and thread_id=$2 and content=$3
+ and metadata->>'agentKey'=$4 and metadata->'generation'=$5::jsonb`,
+          [
+            fee.responseMessageId,
+            input.threadId,
+            input.content,
+            input.agent,
+            JSON.stringify(input.generation ?? null),
+          ],
+        );
+        if (!input.complete || !same.rows.length)
+          fail(409, "Этот ответ уже завершён с другими данными.");
+        return fee.responseMessageId!;
+      }
+      if (fee.state === "failed" || fee.state === "expired")
+        fail(409, "Этот ответ уже завершён.");
+      const owner = await tx.query(
+        `select t.id from agent_threads t join chat_requests r on r.thread_id=t.id
+ where t.id=$1 and t.user_id=$2 and t.lease_token=$3 and r.request_id=$4 and r.status='running' for update of t`,
+        [input.threadId, input.userId, input.lease, input.requestId],
+      );
+      if (!owner.rows.length) fail(409, "Ответ устарел.");
+      const message = (
+        await tx.query<{ id: string }>(
+          "insert into messages(thread_id,role,content,metadata) values($1,'assistant',$2,$3) returning id::text",
+          [
+            input.threadId,
+            input.content,
+            JSON.stringify({
+              agentKey: input.agent,
+              requestId: input.requestId,
+              status: input.complete ? "complete" : "interrupted",
+              source: "model",
+              ...(input.generation ? { generation: input.generation } : {}),
+            }),
+          ],
+        )
+      ).rows[0]!;
+      await tx.query(
+        "update chat_requests set status=$3 where thread_id=$1 and request_id=$2",
+        [
+          input.threadId,
+          input.requestId,
+          input.complete ? "complete" : "interrupted",
+        ],
+      );
+      if (input.complete)
+        await fees.settleSuccess(tx, fee, {
+          messageId: message.id,
+          servedModel: input.generation!.model!,
+        });
+      else await fees.releaseFailure(tx, fee);
+      await tx.query(
+        "update agent_threads set busy_until=null,lease_token=null,updated_at=now() where id=$1 and lease_token=$2",
+        [input.threadId, input.lease],
+      );
+      return message.id;
     });
   }
   async finishChat(

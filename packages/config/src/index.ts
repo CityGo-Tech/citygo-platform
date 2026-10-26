@@ -130,6 +130,19 @@ export const serverConfigSchema = z.object({
   ),
   ROUTERAI_MAX_OUTPUT_TOKENS: optionalIntegerSetting(1, 32768),
   ROUTERAI_REQUEST_TIMEOUT_MS: optionalIntegerSetting(1000, 240000),
+  // A separate, explicit rollout. The legacy single-route profile stays intact.
+  AI_ASSISTANT_MODES: z.enum(["disabled", "enabled"]).default("disabled"),
+  AI_MINIMUM_FIXED_FEE: z.enum(["disabled", "enabled"]).default("disabled"),
+  AI_MODES_PRODUCTION_POLICY_ID: optionalSetting.pipe(
+    z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .optional(),
+  ),
+  AI_MODES_DATA_NOTICE: optionalSetting.pipe(z.string().max(4000).optional()),
+  AI_MAXIMUM_REASONING_EFFORT: z
+    .enum(["low", "medium", "high", "xhigh", "max"])
+    .default("medium"),
   GIGACHAT_CREDENTIALS: optionalSetting,
   GIGACHAT_MODEL: optionalSetting,
   GIGACHAT_SCOPE: optionalSetting,
@@ -406,6 +419,7 @@ export function effectiveLlmLimits(
     maxOutputCharacters:
       provider === "routerai" &&
       (model === "openai/gpt-6-astra" ||
+        model === "openai/gpt-6.1-sol" ||
         model === "deepseek/deepseek-v4-pro-0813")
         ? 128000
         : 24000,

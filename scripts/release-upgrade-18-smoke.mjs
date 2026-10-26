@@ -1,4 +1,4 @@
-// Synthetic-only 18→32 rehearsal for the disposable pilot harness, while its
+// Synthetic-only 18→34 rehearsal for the disposable pilot harness, while its
 // PostgreSQL container is the sole project member. Never a production rollback
 // or migration tool; a successful receipt cannot authorize public traffic.
 import assert from "node:assert/strict";
@@ -52,6 +52,30 @@ export function upgrade18RewindSql() {
   return `begin;
     drop table payment_admission_commands,payment_admission_reconciliation_events,payment_admission;
     drop function citygo_guard_payment_admission_history();
+    do $$ begin
+      if exists(select 1 from gigachat_request_fees)
+        or exists(select 1 from gigachat_account_leases) then
+        raise exception 'GigaChat fee or account lease history cannot be rewound';
+      end if;
+    end $$;
+    drop trigger gigachat_fee_posting_conservation on ai_credit_entries;
+    drop trigger gigachat_request_fee_conservation on gigachat_request_fees;
+    drop trigger gigachat_request_fee_guard on gigachat_request_fees;
+    drop trigger gigachat_account_lease_guard on gigachat_account_leases;
+    drop function citygo_check_gigachat_fee_conservation();
+    drop function citygo_guard_gigachat_request_fee();
+    drop function citygo_guard_gigachat_account_lease();
+    drop table gigachat_account_leases;
+    drop table gigachat_request_fees;
+    do $$ begin
+      if exists(select 1 from ai_request_modes) then
+        raise exception 'AI request mode history cannot be rewound';
+      end if;
+    end $$;
+    drop trigger ai_mode_attempt_guard on ai_model_attempts;
+    drop function citygo_guard_ai_mode_attempt();
+    drop table ai_request_modes;
+    drop function citygo_guard_ai_request_mode();
     do $$ begin
       if exists(select 1 from phone_contact_bindings)
         or exists(select 1 from phone_contact_changes) then
@@ -172,7 +196,7 @@ export function upgrade18RewindSql() {
     alter table payment_topup_orders add constraint payment_topup_orders_test_check check(test);
     ${legacyFunction}
     delete from citygo_migrations where name in (
-      '0019_yookassa_live_orders.sql','0020_ai_budget_provider_balance.sql','0021_payment_notifications.sql','0022_payment_admission.sql','0023_payment_receipt_snapshots.sql','0024_ai_credit_overdraft.sql','0025_assistant_conversations.sql','0026_email_registration.sql','0027_phone_verification.sql','0028_password_recovery.sql','0029_personal_plan.sql','0030_service_consents.sql','0031_account_email_confirmation.sql','0032_phone_contact_bindings.sql');
+      '0019_yookassa_live_orders.sql','0020_ai_budget_provider_balance.sql','0021_payment_notifications.sql','0022_payment_admission.sql','0023_payment_receipt_snapshots.sql','0024_ai_credit_overdraft.sql','0025_assistant_conversations.sql','0026_email_registration.sql','0027_phone_verification.sql','0028_password_recovery.sql','0029_personal_plan.sql','0030_service_consents.sql','0031_account_email_confirmation.sql','0032_phone_contact_bindings.sql','0033_ai_request_modes.sql','0034_gigachat_request_fees.sql');
     commit`;
 }
 
@@ -362,6 +386,8 @@ export async function releaseUpgrade18Smoke({
       "0030_service_consents.sql",
       "0031_account_email_confirmation.sql",
       "0032_phone_contact_bindings.sql",
+      "0033_ai_request_modes.sql",
+      "0034_gigachat_request_fees.sql",
     ],
   );
   const expectedJournal = migrations.map(({ name }) => ({
@@ -550,6 +576,6 @@ export async function releaseUpgrade18Smoke({
   );
   assert.deepEqual(journal(), expectedJournal);
   console.log(
-    "Exact synthetic 18→32 rehearsal passed: fourteen migrations + ACLs, late-ACL transactional rollback, preserved legacy conversation/fixed budget/counters/test order/source hold and receipt-free v1 identity; empty pending-email/contact schema and unbound phone policy, least-privilege runtime, closed checkout, no production authorization or provider calls",
+    "Exact synthetic 18→34 rehearsal passed: sixteen migrations + ACLs, late-ACL transactional rollback, preserved legacy conversation/fixed budget/counters/test order/source hold and receipt-free v1 identity; empty pending-email/contact schema and unbound phone policy, least-privilege runtime, closed checkout, no production authorization or provider calls",
   );
 }

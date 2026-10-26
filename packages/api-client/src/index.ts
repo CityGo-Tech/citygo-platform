@@ -4,6 +4,7 @@ import {
   adminUsersResponseSchema,
   aiBudgetSettingsSchema,
   aiCreditResponseSchema,
+  aiModeSelectionSchema,
   createTopupSchema,
   topupOrderSchema,
   aiControlResponseSchema,
@@ -86,6 +87,7 @@ import {
   type ApiErrorResponse,
   type AccountRole,
   type AiConsentInput,
+  type AiModeSelection,
   type AiRoutingInput,
   type AiBudgetInput,
   type AiCreditGrant,
@@ -118,6 +120,12 @@ import {
   type Operation,
 } from "./transport.js";
 import { readEvents } from "./sse.js";
+export {
+  captureAiModeSelection,
+  formatAiModeOptionLabel,
+  isAiModeAvailable,
+  aiModeUnavailableMessage,
+} from "./ai-modes.js";
 export {
   ApiError,
   clientDefaults,
@@ -954,7 +962,12 @@ export function createClient(
       signal?: AbortSignal,
       policyId?: string,
       creditReservationMode?: "full" | "fixed5_overdraft",
+      mode?: AiModeSelection,
     ) {
+      // Capture the exact displayed capability before yielding to fetch. No
+      // selection, fallback or retry may change an already submitted request.
+      const selectedMode =
+        mode === undefined ? undefined : aiModeSelectionSchema.parse(mode);
       const path = "/v1/threads/" + encodeURIComponent(threadId) + "/messages";
       const op = operation(
         limits.streamTimeoutMs,
@@ -966,7 +979,7 @@ export function createClient(
         response = await fetchResponse(
           path,
           op,
-          { text, requestId, policyId, creditReservationMode },
+          { text, requestId, policyId, creditReservationMode, ...selectedMode },
           true,
         );
         await checkStatus(response, path, op);

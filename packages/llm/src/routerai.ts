@@ -5,6 +5,7 @@ import type {
   ModelRetryGuard,
 } from "./provider.js";
 import { readChatCompletion } from "./chat-completion.js";
+import { readResponse } from "./responses.js";
 import {
   creditGenerationIdSchema,
   routerAiChargeSchema,
@@ -13,6 +14,7 @@ import {
 } from "@citygo/contracts";
 
 type RouterAIOptions = {
+  protocol?: "responses";
   upstream: string;
   country?: string;
   timeoutMs?: number;
@@ -33,11 +35,15 @@ export class RouterAIInsufficientFundsError extends Error {
 
 export class RouterAIProvider implements StreamingProvider {
   readonly name = "routerai" as const;
+  private readonly protocol: "responses" | undefined;
   constructor(
     private readonly apiKey: string,
     readonly model: string,
     private readonly options: RouterAIOptions,
   ) {
+    if (options.protocol !== undefined && options.protocol !== "responses")
+      throw new Error("Unsupported RouterAI protocol");
+    this.protocol = options.protocol;
     if (!apiKey.trim()) throw new Error("RouterAI requires ROUTERAI_API_KEY");
     // Do not allow model-embedded routing overrides (@ syntax) or URL inputs.
     if (!/^[a-zA-Z0-9_-]+\/[a-zA-Z0-9_.:-]+$/.test(model) || model.length > 200)
@@ -69,6 +75,10 @@ export class RouterAIProvider implements StreamingProvider {
     ]);
     try {
       deadline.throwIfAborted();
+      const responses = this.protocol === "responses";
+      const recipient = responses
+        ? "https://routerai.ru/api/v1/responses"
+        : "https://routerai.ru/api/v1/chat/completions";
       let generationId: string | undefined;
       const recordGeneration = async (value: unknown) => {
         const id = creditGenerationIdSchema.parse(value);
@@ -80,48 +90,76 @@ export class RouterAIProvider implements StreamingProvider {
         }
       };
       // One attempt, one fixed HTTPS recipient, no redirects or ambient base URL.
-      const response = await (this.options.fetch ?? fetch)(
-        "https://routerai.ru/api/v1/chat/completions",
-        {
-          method: "POST",
-          redirect: "error",
-          signal: deadline,
-          headers: {
-            Authorization: `Bearer ${this.apiKey}`,
-            "Content-Type": "application/json",
-            Accept: "text/event-stream",
-          },
-          body: JSON.stringify({
-            model: this.model,
-            messages: [{ role: "system", content: instructions }, ...messages],
-            stream: true,
-            stream_options: { include_usage: true },
-            ...(guard?.billing ? { session_id: guard.billing.reference } : {}),
-            // Astra uses the native Chat Completions total-output cap, including
-            // reasoning. Keep the historical payload for other configured models.
-            ...(this.model === "openai/gpt-6-astra"
-              ? { max_completion_tokens: this.options.maxOutputTokens ?? 1400 }
-              : { max_tokens: this.options.maxOutputTokens ?? 1400 }),
-            ...(this.options.reasoningEffort
-              ? this.model === "openai/gpt-6-astra"
-                ? { reasoning_effort: this.options.reasoningEffort }
-                : { reasoning: { effort: this.options.reasoningEffort } }
-              : {}),
-            provider: {
-              only: [this.options.upstream],
-              allow_fallbacks: false,
-              ...(this.options.country
-                ? { country: this.options.country }
-                : {}),
-            },
-          }),
+      const response = await (this.options.fetch ?? fetch)(recipient, {
+        method: "POST",
+        redirect: "error",
+        signal: deadline,
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+          "Content-Type": "application/json",
+          Accept: "text/event-stream",
         },
-      );
-      if (
-        response.redirected ||
-        (response.url &&
-          response.url !== "https://routerai.ru/api/v1/chat/completions")
-      ) {
+        body: JSON.stringify(
+          responses
+            ? {
+                model: this.model,
+                instructions,
+                input: messages.map((message) => ({
+                  role: message.role,
+                  content: message.content,
+                })),
+                store: false,
+                stream: true,
+                max_output_tokens: this.options.maxOutputTokens ?? 1400,
+                ...(this.options.reasoningEffort
+                  ? { reasoning: { effort: this.options.reasoningEffort } }
+                  : {}),
+                ...(guard?.billing
+                  ? { session_id: guard.billing.reference }
+                  : {}),
+                provider: {
+                  only: [this.options.upstream],
+                  allow_fallbacks: false,
+                  ...(this.options.country
+                    ? { country: this.options.country }
+                    : {}),
+                },
+              }
+            : {
+                model: this.model,
+                messages: [
+                  { role: "system", content: instructions },
+                  ...messages,
+                ],
+                stream: true,
+                stream_options: { include_usage: true },
+                ...(guard?.billing
+                  ? { session_id: guard.billing.reference }
+                  : {}),
+                // Astra uses the native Chat Completions total-output cap, including
+                // reasoning. Keep the historical payload for other configured models.
+                ...(this.model === "openai/gpt-6-astra"
+                  ? {
+                      max_completion_tokens:
+                        this.options.maxOutputTokens ?? 1400,
+                    }
+                  : { max_tokens: this.options.maxOutputTokens ?? 1400 }),
+                ...(this.options.reasoningEffort
+                  ? this.model === "openai/gpt-6-astra"
+                    ? { reasoning_effort: this.options.reasoningEffort }
+                    : { reasoning: { effort: this.options.reasoningEffort } }
+                  : {}),
+                provider: {
+                  only: [this.options.upstream],
+                  allow_fallbacks: false,
+                  ...(this.options.country
+                    ? { country: this.options.country }
+                    : {}),
+                },
+              },
+        ),
+      });
+      if (response.redirected || (response.url && response.url !== recipient)) {
         await response.body?.cancel().catch(() => {});
         throw new Error("Invalid RouterAI response recipient");
       }
@@ -131,7 +169,7 @@ export class RouterAIProvider implements StreamingProvider {
       }
       // Save identity before consuming the stream so a disconnect is auditable.
       const headerId = response.headers.get("x-generation-id");
-      if (guard?.billing && headerId) {
+      if (headerId && (guard?.billing || responses)) {
         try {
           await recordGeneration(headerId);
         } catch (error) {
@@ -150,6 +188,18 @@ export class RouterAIProvider implements StreamingProvider {
       ) {
         await response.body?.cancel();
         throw new Error("Invalid RouterAI HTTP response");
+      }
+      if (responses) {
+        yield* readResponse(response.body, deadline, {
+          expectedModel: this.model,
+          ...(this.model === "openai/gpt-6.1-sol"
+            ? { expectedWireModel: "gpt-6.1-sol" }
+            : {}),
+          maxOutputCharacters: 128000,
+          maxStreamBytes: 16 * 1024 * 1024,
+          onGeneration: recordGeneration,
+        });
+        return;
       }
       yield* readChatCompletion(
         response.body,
@@ -258,7 +308,8 @@ export class RouterAIProvider implements StreamingProvider {
         data.session_id !== reference ||
         data.model !== this.model ||
         data.provider !== this.options.upstream ||
-        data.api !== "chat/completions" ||
+        data.api !==
+          (this.protocol === "responses" ? "responses" : "chat/completions") ||
         data.source !== "api" ||
         data.has_web_search !== false
       )
