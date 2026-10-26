@@ -2,6 +2,7 @@
   "name": "@citygo/mobile",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "main": "index.ts",
   "scripts": {
     "dev": "node ../../scripts/with-env.mjs mobile pnpm exec expo start",

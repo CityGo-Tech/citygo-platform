@@ -123,6 +123,11 @@ import {
 } from "./transport.js";
 import { readEvents } from "./sse.js";
 export {
+  createAiModeConsentResource,
+  type AiModeConsentChoice,
+  type AiModeConsentView,
+} from "./ai-mode-consent.js";
+export {
   captureAiModeSelection,
   formatAiModeOptionLabel,
   isAiModeAvailable,
