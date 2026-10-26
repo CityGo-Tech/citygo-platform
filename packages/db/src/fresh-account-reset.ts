@@ -6,6 +6,7 @@ import { DomainError } from "./errors.js";
 // registration, migrations, HTTP, or the accounting-preserving restart tool.
 // This inventory is deliberately not discovered into a deletion list.
 const tables = [
+  "personal_memory_items",
   "service_consent_events",
   "personal_plan_items",
   "password_recovery_challenges",
@@ -101,6 +102,8 @@ const protectedAdmission = [
   "payment_admission_reconciliation_events",
 ] as const;
 const protectedEmpty = [
+  // Confirmed private facts and replay tombstones need separate erasure review.
+  "personal_memory_items",
   // User-chosen steps and their tombstones need a separate erasure review.
   "personal_plan_items",
   ...protectedNpd,
@@ -395,6 +398,11 @@ async function inspect(tx: Sql, options: Options) {
     blockers.push({
       code: "EMAIL_REGISTRATION_HISTORY_REQUIRES_REVIEW",
       count: verificationHistoryCount,
+    });
+  if (snapshot.counts.personal_memory_items)
+    blockers.push({
+      code: "PERSONAL_MEMORY_HISTORY_REQUIRES_REVIEW",
+      count: snapshot.counts.personal_memory_items,
     });
   if (snapshot.counts.personal_plan_items)
     blockers.push({

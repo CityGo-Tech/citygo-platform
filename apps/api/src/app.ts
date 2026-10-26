@@ -46,6 +46,7 @@ import {
   AccountAccess,
   ServiceConsents,
   MessageFavorites,
+  PersonalMemory,
   ensureConversation,
   DomainError,
   AiCreditLedger,
@@ -78,6 +79,7 @@ import { ApiDrain, registerDrain } from "./shutdown.js";
 import { buildConversationContext } from "./conversation-context.js";
 import { registerSyntheticHousingApi } from "./housing.js";
 import { registerPersonalPlanApi } from "./personal-plan.js";
+import { registerPersonalMemoryApi } from "./personal-memory.js";
 import {
   preparePayments,
   registerPaymentTopups,
@@ -467,6 +469,14 @@ export async function buildApp(options: {
         "select name from citygo_migrations where name in ('0006_ai_budget.sql','0007_ai_user_daily_budget.sql','0008_ai_credit.sql','0009_ai_credit_charges.sql','0010_quest_plan_expand.sql','0011_quest_plan_validate.sql','0013_account_access.sql','0014_citygo_credit.sql','0015_yookassa_orders.sql','0016_npd_receipts.sql','0017_credit_source_lots.sql','0018_payment_refunds.sql','0019_yookassa_live_orders.sql','0020_ai_budget_provider_balance.sql','0021_payment_notifications.sql','0022_payment_admission.sql','0023_payment_receipt_snapshots.sql','0024_ai_credit_overdraft.sql','0025_assistant_conversations.sql','0030_service_consents.sql')",
       );
       if (result.rows.length !== 20) throw new Error("Pending migration");
+      const memoryMigration = await options.db.query(
+        "select name from citygo_migrations where name='0031_personal_memory.sql'",
+      );
+      if (memoryMigration.rows.length !== 1)
+        throw new Error("Pending personal memory migration");
+      await options.db.query(
+        "select user_id,label,value,revision,deleted_at from personal_memory_items limit 0",
+      );
       await options.db.query(
         "select user_id,policy_version,policy_hash,purpose,decision from service_consent_events limit 0",
       );
@@ -836,6 +846,7 @@ export async function buildApp(options: {
     return favorites.set(user.id, id, input.saved);
   });
   registerPersonalPlanApi(app, { db: options.db, authenticate });
+  registerPersonalMemoryApi(app, { db: options.db, authenticate });
   app.post("/v1/auth/logout", async (request, reply) => {
     const token =
       bearer(request.headers.authorization) ?? request.cookies[sessionName];
@@ -1058,9 +1069,13 @@ export async function buildApp(options: {
         } else {
           let modelContext: ReturnType<typeof buildConversationContext>;
           try {
+            // One read-only snapshot for this request. Saving or correcting a
+            // memory never calls AI; edits during a reply affect later requests.
+            // Only explicit owner-confirmed, non-deleted items are included.
+            const memory = await new PersonalMemory(options.db).list(user.id);
             modelContext = buildConversationContext({
               instructions: instructions(routing.to),
-              profile: profileContext(reservation.profile),
+              profile: profileContext(reservation.profile, memory.items),
               history: reservation.messages,
               currentQuestion: input.text,
               maxInputBytes: config.LLM_MAX_INPUT_BYTES,

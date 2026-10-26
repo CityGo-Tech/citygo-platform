@@ -3033,6 +3033,7 @@ for (const migration of [
   "0021_payment_notifications.sql",
   "0025_assistant_conversations.sql",
   "0030_service_consents.sql",
+  "0031_personal_memory.sql",
 ]) {
   test(`readiness requires ${migration}`, async (t) => {
     const f = await fixture(false);

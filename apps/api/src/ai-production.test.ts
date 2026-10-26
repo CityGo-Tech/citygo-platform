@@ -39,7 +39,7 @@ test("production RouterAI requires exact independently supplied approval, withou
   assert.equal(productionProviderAllowed(config, identity), true);
   assert.equal(createProvider(config)?.name, "routerai");
   assert.deepEqual(createAiPolicy(config, identity), policy);
-  assert.equal(policy.version, "ai-recipient-v2");
+  assert.equal(policy.version, "ai-recipient-v3-confirmed-memory");
   assert.match(policy.data, /Synthetic notice/);
   assert.doesNotMatch(
     JSON.stringify(policy),
