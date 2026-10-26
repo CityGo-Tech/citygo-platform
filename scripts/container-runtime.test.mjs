@@ -1084,6 +1084,7 @@ test("v12 assistant modes require their own mounted notice and production bundle
   assert.equal(configured.PHONE_VERIFICATION_MODE, "prosto_sms");
   assert.equal(configured.PHONE_SMS_GLOBAL_TOTAL_LIMIT, "unlimited");
   assert.equal(configured.GIGACHAT_CREDENTIALS, undefined);
+  assert.equal(configured.AI_MINIMUM_FIXED_FEE, undefined);
   for (const key of additions) {
     const missing = { ...value };
     delete missing[key];
@@ -1107,6 +1108,7 @@ test("v12 assistant modes require their own mounted notice and production bundle
     { AI_MODES_DATA_NOTICE: "x".repeat(4001) },
     { AI_MODES_DATA_NOTICE: "😀".repeat(2001) },
     { GIGACHAT_CREDENTIALS: "synthetic-forbidden" },
+    { AI_MINIMUM_FIXED_FEE: "enabled" },
     { OPENAI_API_KEY: "synthetic-forbidden" },
     { AI_MODES_ENDPOINT: "https://invalid.test" },
     { PHONE_SMS_GLOBAL_DAILY_LIMIT: "1" },
@@ -1122,6 +1124,218 @@ test("v12 assistant modes require their own mounted notice and production bundle
   assert.throws(() => spec(value, prior), /Invalid mounted/);
   assert.throws(() => spec(legacy), /Invalid mounted/);
   assert.doesNotThrow(() => spec(legacy, prior));
+});
+
+test("v13 fixes the Ultra/PERS flat3 transport and preserves every prior mounted profile", (t) => {
+  const directory = fixture(t);
+  const marker =
+    "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-unlimited-assistant-modes-gigachat-flat3-v1";
+  const prior =
+    "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-unlimited-assistant-modes-v1";
+  const read = (name) =>
+    JSON.parse(readFileSync(join(root, "deploy/fixtures", name), "utf8"));
+  const priorFile =
+    "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-unlimited-assistant-modes-profile.fixture.json";
+  const value = read(
+    "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-unlimited-assistant-modes-gigachat-flat3-profile.fixture.json",
+  );
+  const legacy = read(priorFile);
+  const newKeys = [
+    "AI_MINIMUM_FIXED_FEE",
+    "GIGACHAT_MODEL",
+    "GIGACHAT_SCOPE",
+    "GIGACHAT_CA_BUNDLE_FILE",
+    "LLM_REQUEST_TIMEOUT_MS",
+    "GIGACHAT_CREDENTIALS",
+  ];
+  assert.deepEqual(
+    {
+      ...Object.fromEntries(
+        Object.entries(value).filter(([key]) => !newKeys.includes(key)),
+      ),
+      AI_MODES_DATA_NOTICE: legacy.AI_MODES_DATA_NOTICE,
+    },
+    legacy,
+  );
+  const certDirectory = join(directory, "certs");
+  mkdirSync(certDirectory);
+  const certFile = join(certDirectory, "russian-trusted-root.crt");
+  const certificate = readFileSync(
+    join(root, "deploy/certificates/russian-trusted-root.crt"),
+  );
+  writeFileSync(certFile, certificate);
+  const spec = (data, profile = marker, mode = "api", ambient = {}) => {
+    writeFileSync(join(directory, "api.json"), JSON.stringify(data));
+    return containerSpec(
+      mode,
+      {
+        CITYGO_MOUNTED_CONFIG: "1",
+        CITYGO_AI_PROFILE: profile,
+        LLM_PROVIDER: "routerai",
+        ...ambient,
+      },
+      directory,
+      directory,
+    );
+  };
+  const env = spec(value).env;
+  for (const [key, setting] of Object.entries(value))
+    assert.equal(env[key], setting);
+  assert.equal(env.NODE_ENV, "production");
+  assert.equal(env.AI_MINIMUM_FIXED_FEE, "enabled");
+  assert.equal(env.AI_CREDIT_MODE, "routerai_citygo_10x");
+  assert.equal(env.AI_CREDIT_RESERVATION_MODE, "fixed5_overdraft");
+  assert.equal(env.YOOKASSA_MODE, "live");
+  assert.equal(env.YOOKASSA_FISCAL_PROFILE, "citygo_service_full_payment_v1");
+  assert.equal(env.EMAIL_REGISTRATION_MODE, "required");
+  assert.equal(env.PHONE_VERIFICATION_MODE, "prosto_sms");
+  assert.equal(env.PHONE_SMS_GLOBAL_DAILY_LIMIT, "unlimited");
+  assert.equal(env.PHONE_SMS_GLOBAL_TOTAL_LIMIT, "unlimited");
+  assert.equal(env.LLM_REQUEST_TIMEOUT_MS, "60000");
+  assert.equal(env.GIGACHAT_MODEL, "GigaChat-3-Ultra");
+  assert.equal(env.GIGACHAT_SCOPE, "GIGACHAT_API_PERS");
+  assert.equal(
+    env.GIGACHAT_CA_BUNDLE_FILE,
+    "/app/certs/russian-trusted-root.crt",
+  );
+  for (const key of Object.keys(value)) {
+    const missing = { ...value };
+    delete missing[key];
+    assert.throws(() => spec(missing), /Invalid mounted/);
+  }
+  for (const change of [
+    { AI_MINIMUM_FIXED_FEE: "disabled" },
+    { AI_MINIMUM_FIXED_FEE: "true" },
+    { GIGACHAT_MODEL: "GigaChat-3-Pro" },
+    { GIGACHAT_SCOPE: "GIGACHAT_API_B2B" },
+    { GIGACHAT_CA_BUNDLE_FILE: "/tmp/unreviewed.pem" },
+    { GIGACHAT_CA_BUNDLE_FILE: "https://unreviewed.test/ca.crt" },
+    { LLM_REQUEST_TIMEOUT_MS: "60001" },
+    { LLM_REQUEST_TIMEOUT_MS: "59999" },
+    { LLM_REQUEST_TIMEOUT_MS: "unlimited" },
+    { LLM_MAX_OUTPUT_TOKENS: "500" },
+    { GIGACHAT_BASE_URL: "https://unreviewed.test" },
+    { GIGACHAT_AUTH_URL: "https://unreviewed.test/oauth" },
+    { NODE_TLS_REJECT_UNAUTHORIZED: "0" },
+    { NODE_EXTRA_CA_CERTS: "/tmp/unreviewed.pem" },
+    { HTTP_PROXY: "http://unreviewed.test" },
+    { HTTPS_PROXY: "http://unreviewed.test" },
+    { AI_MAXIMUM_REASONING_EFFORT: "high" },
+    { AI_MODES_PRODUCTION_POLICY_ID: "B".repeat(64) },
+    { AI_MODES_DATA_NOTICE: "" },
+    { AI_CREDIT_MODE: "disabled" },
+    { AI_CREDIT_RESERVATION_MODE: "full" },
+    { YOOKASSA_FISCAL_PROFILE: "disabled" },
+    { PHONE_SMS_GLOBAL_TOTAL_LIMIT: "1" },
+    { OPENAI_API_KEY: "synthetic-forbidden" },
+  ])
+    assert.throws(() => spec({ ...value, ...change }), /Invalid mounted/);
+  const encode = (data) => Buffer.from(data).toString("base64");
+  for (const credentials of [
+    "",
+    "synthetic-not-base64",
+    "Basic " + value.GIGACHAT_CREDENTIALS,
+    value.GIGACHAT_CREDENTIALS + "=",
+    "YTpzZWNyZXR=",
+    encode("missing-colon"),
+    encode(":secret"),
+    encode("client:"),
+    encode("client with space:secret"),
+    encode("клиент:secret"),
+    encode("client:секрет"),
+    encode("client:secret\n"),
+    encode("client:secret\0"),
+    encode("client:secret\u007f"),
+    encode("client:secret with space"),
+    encode("x".repeat(201) + ":secret"),
+    "A".repeat(4097),
+    0,
+    true,
+    null,
+    [],
+    {},
+  ])
+    assert.throws(
+      () => spec({ ...value, GIGACHAT_CREDENTIALS: credentials }),
+      (error) => {
+        assert.match(error.message, /Invalid mounted/);
+        assert.doesNotMatch(error.message, /synthetic|client|secret|base64/i);
+        return true;
+      },
+    );
+  for (const decoded of [
+    "a:s",
+    "client:secret:with:colon",
+    "x".repeat(200) + ":~",
+  ])
+    assert.equal(
+      spec({ ...value, GIGACHAT_CREDENTIALS: encode(decoded) }).env
+        .GIGACHAT_CREDENTIALS,
+      encode(decoded),
+    );
+  const unpadded = value.GIGACHAT_CREDENTIALS.replace(/=+$/, "");
+  assert.equal(
+    spec({ ...value, GIGACHAT_CREDENTIALS: unpadded }).env.GIGACHAT_CREDENTIALS,
+    unpadded,
+  );
+  for (const mode of ["web", "worker", "migrate", "migrate-release"])
+    assert.throws(
+      () => spec(value, marker, mode),
+      /Invalid container AI profile/,
+    );
+  for (const [oldMarker, file] of [
+    ["routerai-credit-v1", "routerai-profile.fixture.json"],
+    ["routerai-citygo-10x-v1", "routerai-citygo-10x-profile.fixture.json"],
+    ...liveMountedProfiles.map(([oldMarker, file]) => [oldMarker, file]),
+    [prior, priorFile],
+  ]) {
+    const old = read(file);
+    assert.doesNotThrow(() => spec(old, oldMarker));
+    assert.throws(() => spec(value, oldMarker), /Invalid mounted/);
+    assert.throws(() => spec(old), /Invalid mounted/);
+    for (const key of newKeys)
+      assert.throws(
+        () => spec({ ...old, [key]: value[key] }, oldMarker),
+        /Invalid mounted/,
+      );
+    assert.throws(
+      () => spec(old, oldMarker, "api", { AI_MINIMUM_FIXED_FEE: "enabled" }),
+      /Invalid mounted verification/,
+    );
+  }
+  for (const key of newKeys)
+    assert.throws(
+      () => spec(value, marker, "api", { [key]: value[key] }),
+      /Invalid (?:mounted|container AI)/,
+    );
+  for (const scope of ["web", "build", "mobile", "worker", "migrator"]) {
+    const isolated = serviceEnv(scope, {
+      directory,
+      inherited: env,
+      loadFiles: false,
+    });
+    for (const key of newKeys) assert.equal(isolated[key], undefined);
+  }
+  const isolated = spec(value, marker, "api", {
+    NODE_TLS_REJECT_UNAUTHORIZED: "0",
+    NODE_EXTRA_CA_CERTS: "/tmp/unreviewed.pem",
+    HTTP_PROXY: "http://unreviewed.test",
+    HTTPS_PROXY: "http://unreviewed.test",
+  }).env;
+  for (const key of [
+    "NODE_TLS_REJECT_UNAUTHORIZED",
+    "NODE_EXTRA_CA_CERTS",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+  ])
+    assert.equal(isolated[key], undefined);
+  rmSync(certFile);
+  assert.throws(() => spec(value), /Invalid mounted/);
+  assert.doesNotThrow(() => spec(legacy, prior));
+  writeFileSync(certFile, "unreviewed certificate bytes");
+  assert.throws(() => spec(value), /Invalid mounted/);
+  writeFileSync(certFile, certificate);
+  assert.doesNotThrow(() => spec(value));
 });
 
 test("all mounted profiles, including disabled, refuse ambient verification prefixes", (t) => {
@@ -1143,6 +1357,7 @@ test("all mounted profiles, including disabled, refuse ambient verification pref
       "PROSTOSMS_API_KEY",
       "PROSTOSMS_UNREVIEWED",
       "AI_ASSISTANT_MODES",
+      "AI_MINIMUM_FIXED_FEE",
       "AI_MAXIMUM_REASONING_EFFORT",
       "AI_MODES_DATA_NOTICE",
       "AI_MODES_PRODUCTION_POLICY_ID",
@@ -1314,7 +1529,12 @@ test("real container launcher runs ready code without pnpm and never passes AI s
   mkdirSync(join(directory, "node_modules/@citygo/db/dist"), {
     recursive: true,
   });
-  for (const file of ["env.mjs", "process.mjs", "container-runtime.mjs"])
+  for (const file of [
+    "env.mjs",
+    "process.mjs",
+    "gigachat-ca.mjs",
+    "container-runtime.mjs",
+  ])
     copyFileSync(join(root, "scripts", file), join(directory, "scripts", file));
   writeFileSync(
     join(directory, "node_modules/@citygo/db/dist/cli.js"),

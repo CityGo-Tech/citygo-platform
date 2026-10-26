@@ -425,4 +425,48 @@ class CityGo10xPostboxProstoUnlimitedCutover(RouterAiCutover):
         self.assertTrue(self.host.closed);self.assertFalse((self.state / w.ADMISSION).exists())
 
 
+@unittest.skipUnless(sys.platform.startswith("linux"), "Linux protected GigaChat flat-price modes cutover")
+class CityGo10xAssistantModesGigaChatFlat3Cutover(RouterAiCutover):
+    # Run the complete inherited success/failure/revocation/atomic-cutover matrix
+    # for this independently scoped profile, not just a schema-only validation.
+    profile = s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_UNLIMITED_ASSISTANT_MODES_GIGACHAT_FLAT3_PROFILE
+    marker = "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-unlimited-assistant-modes-gigachat-flat3-v1"
+
+    def test_v13_three_modes_stay_closed_and_only_api_has_one_private_mount(self):
+        result = self.finish()
+        spec = json.loads(self.plan["files"]["compose.json"])
+        value = json.loads(self.api.read_bytes())
+        self.assertEqual(s.approval(self.start_approval.path.read_bytes(), time.time())["version"], 13)
+        self.assertEqual(value["AI_ASSISTANT_MODES"], "enabled")
+        self.assertEqual(value["AI_MINIMUM_FIXED_FEE"], "enabled")
+        self.assertEqual(value["GIGACHAT_MODEL"], "GigaChat-3-Ultra")
+        self.assertEqual(value["GIGACHAT_SCOPE"], "GIGACHAT_API_PERS")
+        self.assertEqual(value["GIGACHAT_CA_BUNDLE_FILE"], "/app/certs/russian-trusted-root.crt")
+        self.assertEqual(value["LLM_REQUEST_TIMEOUT_MS"], "60000")
+        self.assertEqual(value["AI_CREDIT_RESERVATION_MODE"], "fixed5_overdraft")
+        self.assertEqual(value["AI_CREDIT_MODE"], "routerai_citygo_10x")
+        self.assertEqual(value["YOOKASSA_MODE"], "live")
+        self.assertEqual(value["YOOKASSA_FISCAL_PROFILE"], "citygo_service_full_payment_v1")
+        self.assertEqual(value["EMAIL_REGISTRATION_MODE"], "required")
+        self.assertEqual(value["PHONE_VERIFICATION_MODE"], "prosto_sms")
+        self.assertEqual(value["PROSTOSMS_MODE"], "live")
+        self.assertEqual({k: value[k] for k in s.PHONE_SMS_LIMITS}, dict.fromkeys(s.PHONE_SMS_LIMITS, "unlimited"))
+        self.assertEqual(spec["services"]["api"]["secrets"], [{"source": "api_config", "target": "api.json"}])
+        self.assertEqual(spec["secrets"]["api_config"], {"file": str(self.api)})
+        self.assertEqual(set(spec["services"]), {"api", "web", "worker", "backup"})
+        for role, service in spec["services"].items():
+            self.assertFalse(any(key.startswith(("GIGACHAT_", "AI_MINIMUM_", "EMAIL_", "POSTBOX_", "PHONE_", "SMS_", "PROSTOSMS_"))
+                                 for key in service.get("environment", {})))
+            if role != "api":
+                self.assertFalse(any(mount.get("source") == "api_config" if isinstance(mount, dict)
+                                     else mount == "api_config" for mount in service.get("secrets", [])))
+        for key in s.EMAIL_PRIVATE_KEYS | s.PROSTOSMS_PRIVATE_KEYS | {"GIGACHAT_CREDENTIALS", "ROUTERAI_API_KEY"}:
+            self.assertNotIn(value[key], self.plan["files"]["compose.json"].decode())
+            self.assertNotIn(value[key], json.dumps(result))
+        self.assertTrue(self.host.closed)
+        self.assertFalse((self.state / w.ADMISSION).exists())
+        for key in ("traffic_authorized", "worker_authorized", "restart_authorized"):
+            self.assertIs(result["finish"][key], False)
+
+
 if __name__ == "__main__": unittest.main()

@@ -1,4 +1,5 @@
 """Synthetic startup approvals and containers; Linux locks are real."""
+import base64
 import copy
 from contextlib import contextmanager
 import json
@@ -248,7 +249,8 @@ class Validation(unittest.TestCase):
                           s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_SMS_PROFILE,
                           s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_PROFILE,
                           s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_UNLIMITED_PROFILE,
-                          s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_UNLIMITED_ASSISTANT_MODES_PROFILE})
+                          s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_UNLIMITED_ASSISTANT_MODES_PROFILE,
+                          s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_UNLIMITED_ASSISTANT_MODES_GIGACHAT_FLAT3_PROFILE})
         for key in value:
             missing = dict(value); del missing[key]
             with self.subTest(missing=key), self.assertRaises(b.BackupError): validate(missing)
@@ -645,7 +647,101 @@ class Validation(unittest.TestCase):
         self.assertNotIn("secrets", spec["services"]["web"])
 
 
+    def test_gigachat_flat3_v13_has_separate_exact_closed_scope_and_retains_every_prior_transport(self):
+        profile = s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_UNLIMITED_ASSISTANT_MODES_GIGACHAT_FLAT3_PROFILE
+        prior = s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_UNLIMITED_ASSISTANT_MODES_PROFILE
+        value, legacy = routerai_fixture(profile), routerai_fixture(prior)
+        additions = {"AI_MINIMUM_FIXED_FEE": "enabled", "GIGACHAT_MODEL": "GigaChat-3-Ultra",
+                     "GIGACHAT_SCOPE": "GIGACHAT_API_PERS", "GIGACHAT_CA_BUNDLE_FILE": "/app/certs/russian-trusted-root.crt",
+                     "LLM_REQUEST_TIMEOUT_MS": "60000"}
+        # A new recipient/pricing bundle has its own notice and approval hash;
+        # every existing finance, email, phone and RouterAI setting stays exact.
+        self.assertEqual({k: v for k, v in value.items() if k not in {*additions, "GIGACHAT_CREDENTIALS", *s.ASSISTANT_MODES_KEYS}},
+                         {k: v for k, v in legacy.items() if k not in s.ASSISTANT_MODES_KEYS})
+        self.assertEqual(set(value) - set(legacy), {*additions, "GIGACHAT_CREDENTIALS"})
+        self.assertEqual({k: value[k] for k in additions}, additions)
+        self.assertEqual(s.PROFILE_VERSIONS[profile], 13)
+        self.assertIn(profile, s.CLOSED_ONLY_PROFILES)
+        self.assertIn(profile, s.PROSTOSMS_UNLIMITED_PROFILES)
+        def validate(data, chosen=profile):
+            with patch.object(t, "read_file", return_value=encoded(data)):
+                return s.api_secret("/unused", chosen)
+        self.assertEqual(validate(value), encoded(value))
+        for key in value:
+            missing = dict(value); del missing[key]
+            with self.subTest(missing=key), self.assertRaises(b.BackupError): validate(missing)
+        for change in ({"AI_MINIMUM_FIXED_FEE": "disabled"}, {"AI_MINIMUM_FIXED_FEE": "3"},
+                       {"GIGACHAT_MODEL": "GigaChat-3-Max"}, {"GIGACHAT_MODEL": "GigaChat-3-Ultra:latest"},
+                       {"GIGACHAT_SCOPE": "GIGACHAT_API_B2B"}, {"GIGACHAT_SCOPE": "GIGACHAT_API_CORP"},
+                       {"GIGACHAT_CA_BUNDLE_FILE": "/tmp/arbitrary.pem"}, {"GIGACHAT_CA_BUNDLE_FILE": "/app/certs/../untrusted.pem"},
+                       {"LLM_REQUEST_TIMEOUT_MS": "60001"}, {"LLM_REQUEST_TIMEOUT_MS": "240000"},
+                       {"GIGACHAT_BASE_URL": "https://untrusted.test"}, {"GIGACHAT_AUTH_URL": "https://untrusted.test"},
+                       {"GIGACHAT_REJECT_UNAUTHORIZED": "false"}, {"NODE_TLS_REJECT_UNAUTHORIZED": "0"},
+                       {"NODE_EXTRA_CA_CERTS": "/tmp/arbitrary.pem"}, {"SSL_CERT_FILE": "/tmp/arbitrary.pem"},
+                       {"GIGACHAT_PRICE": "0"}, {"AI_MINIMUM_PRICE": "1"}, {"AI_MINIMUM_FEE_MICROS": "1"},
+                       {"OPENAI_API_KEY": "synthetic-forbidden"}, {"AI_CREDIT_RESERVATION_MODE": "full"},
+                       {"AI_CREDIT_MODE": "routerai_at_cost"}, {"YOOKASSA_MODE": "test"},
+                       {"YOOKASSA_FISCAL_PROFILE": "disabled"}, {"PHONE_SMS_GLOBAL_DAILY_LIMIT": "100"},
+                       {"PROSTOSMS_MODE": "disabled"}, {"EMAIL_REGISTRATION_MODE": "disabled"}):
+            with self.subTest(keys=list(change)), self.assertRaises(b.BackupError): validate({**value, **change})
+        for old in set(s.PROFILE_VERSIONS) - {profile}:
+            with self.subTest(old=old), self.assertRaises(b.BackupError): validate(value, old)
+            previous = ({"DATABASE_URL": legacy["DATABASE_URL"]} if old == s.PROFILE else routerai_fixture(old))
+            with self.subTest(extra_legacy_key=old), self.assertRaises(b.BackupError):
+                validate({**previous, "GIGACHAT_CREDENTIALS": value["GIGACHAT_CREDENTIALS"]}, old)
+        self.assertEqual(validate(legacy, prior), encoded(legacy))
+        with self.assertRaises(b.BackupError): validate(legacy)
+
+    def test_gigachat_flat3_credentials_are_canonical_basic_and_share_application_account_contract(self):
+        profile = s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_UNLIMITED_ASSISTANT_MODES_GIGACHAT_FLAT3_PROFILE
+        value = routerai_fixture(profile)
+        def wire(raw): return base64.b64encode(raw).decode("ascii")
+        def validate(credentials):
+            with patch.object(t, "read_file", return_value=encoded({**value, "GIGACHAT_CREDENTIALS": credentials})):
+                return s.api_secret("/unused", profile)
+        valid = [wire(b"client:synthetic-secret"), wire(b"client:synthetic-secret").rstrip("="),
+                 wire(b"a:b"), wire(b"A_0.-:secret:with:colons"), wire(b"a" * 200 + b":synthetic")]
+        for credentials in valid:
+            with self.subTest(valid_shape=len(credentials)): self.assertTrue(validate(credentials))
+        invalid = ["", "synthetic-not-base64", "A", "====", "YQ==ZZ", "YTp=", "YTpz=", "a" * 4097,
+                   wire(b"client"), wire(b":secret"), wire(b"client:"), wire(b"client with spaces:secret"),
+                   wire(b".client:secret"), wire(b"a" * 201 + b":secret"), wire(b"client:secret\n"),
+                   wire(b"client:secret\0"), wire(b"client:secret\x7f"), wire(b"client:secret\xff"),
+                   1, True, None, {}, []]
+        for credentials in invalid:
+            with self.subTest(invalid_type=type(credentials).__name__), self.assertRaises(b.BackupError): validate(credentials)
+
+    def test_gigachat_flat3_v13_runtime_keeps_one_private_api_mount_and_no_tls_or_price_environment(self):
+        profile = s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_UNLIMITED_ASSISTANT_MODES_GIGACHAT_FLAT3_PROFILE
+        prior = s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_UNLIMITED_ASSISTANT_MODES_PROFILE
+        marker = "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-unlimited-assistant-modes-gigachat-flat3-v1"
+        self.assertEqual(s.profile_environment(profile), {"LLM_PROVIDER": "routerai", "CITYGO_AI_PROFILE": marker})
+        image = {"local_id": "sha256:" + "c" * 64, "config_id": "sha256:" + "c" * 64}
+        container = preparation_fixture.container("api"); container["Image"] = image["local_id"]; container["State"]["Dead"] = False
+        current = detail(container, "api", image, "/tmp/api.json", profile)
+        args = ("api", image, "citygo-fixture", ORIGIN, "/tmp/api.json", {"web_api": WEB_NETWORK, "database": "e" * 64})
+        s.runtime(current, *args, profile)
+        with self.assertRaises(b.BackupError): s.runtime(current, *args, prior)
+        for key in ("AI_MINIMUM_FIXED_FEE", "GIGACHAT_CREDENTIALS", "GIGACHAT_MODEL", "GIGACHAT_SCOPE",
+                    "GIGACHAT_CA_BUNDLE_FILE", "GIGACHAT_BASE_URL", "NODE_EXTRA_CA_CERTS", "NODE_TLS_REJECT_UNAUTHORIZED",
+                    "AI_MINIMUM_PRICE", "LLM_REQUEST_TIMEOUT_MS"):
+            bad = copy.deepcopy(current); bad["Config"]["Env"].append(key + "=synthetic-hidden")
+            with self.subTest(ambient=key), self.assertRaises(b.BackupError): s.runtime(bad, *args, profile)
+        bad = copy.deepcopy(current)
+        bad["Mounts"].append({"Type": "bind", "Source": "/tmp/other.pem", "Destination": "/app/certs/russian-trusted-root.crt", "RW": False})
+        with self.assertRaises(b.BackupError): s.runtime(bad, *args, profile)
+        spec = s.compose_spec("citygo-fixture", ORIGIN, {"api": image, "web": image}, "/tmp/api.json", profile)
+        self.assertEqual(spec["services"]["api"]["secrets"], [{"source": "api_config", "target": "api.json"}])
+        self.assertEqual(spec["secrets"], {"api_config": {"file": "/tmp/api.json"}})
+        self.assertNotIn("secrets", spec["services"]["web"])
+        self.assertFalse(any(k.startswith(("GIGACHAT_", "AI_MINIMUM_", "NODE_TLS_", "NODE_EXTRA_CA_"))
+                             for service in spec["services"].values() for k in service["environment"]))
+
+
 def routerai_fixture(profile=s.ROUTERAI_PROFILE):
+    if profile == s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_UNLIMITED_ASSISTANT_MODES_GIGACHAT_FLAT3_PROFILE:
+        return json.loads((Path(__file__).resolve().parent.parent / "fixtures" /
+                           "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-unlimited-assistant-modes-gigachat-flat3-profile.fixture.json").read_bytes())
     if profile == s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_UNLIMITED_ASSISTANT_MODES_PROFILE:
         return json.loads((Path(__file__).resolve().parent.parent / "fixtures" /
                            "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-unlimited-assistant-modes-profile.fixture.json").read_bytes())
