@@ -2526,10 +2526,9 @@ test("configuration drift fails closed until admin explicitly accepts the new mo
   await f.activate(admin.token, replica, "openai");
   await acceptSyntheticServiceConsents(replica, admin.token);
   await f.approveBudget(admin.token, replica);
-  assert.equal(
-    (await f.call("POST", path, admin.token, payload)).statusCode,
-    503,
-  );
+  const oldReplica = await f.call("POST", path, admin.token, payload);
+  assert.equal(oldReplica.statusCode, 403, oldReplica.body);
+  assert.equal(oldReplica.json().code, "SERVICE_CONSENT_REQUIRED");
   const policyId = await f.consent(admin.token, replica);
   assert.match(
     (
@@ -3879,7 +3878,14 @@ test("interrupted replies are persisted but do not qualify for XP", async (t) =>
   });
   assert.match(response.body, /"type":"error"/);
   const saved = (
-    await f.call("GET", "/v1/dashboard", user.token)
+    await broken.inject({
+      method: "GET",
+      url: "/v1/dashboard",
+      headers: {
+        origin: "http://localhost:3000",
+        cookie: "citygo=" + user.token,
+      },
+    })
   ).json<Dashboard>();
   assert.equal(saved.thread!.messages.at(-1)!.status, "interrupted");
   assert.deepEqual(saved.thread!.messages.at(-1)!.generation, {
@@ -3888,8 +3894,14 @@ test("interrupted replies are persisted but do not qualify for XP", async (t) =>
   });
   assert.equal(
     (
-      await f.call("POST", "/v1/quests/" + id + "/complete", user.token, {
-        confirmed: true,
+      await broken.inject({
+        method: "POST",
+        url: "/v1/quests/" + id + "/complete",
+        headers: {
+          origin: "http://localhost:3000",
+          cookie: "citygo=" + user.token,
+        },
+        payload: { confirmed: true },
       })
     ).statusCode,
     409,
