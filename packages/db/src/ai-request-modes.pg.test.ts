@@ -7,6 +7,7 @@ import {
   AiCreditLedger,
   DomainError,
   Repository,
+  ServiceConsents,
   connectDatabase,
   migrate,
   type AiRequestModeSnapshot,
@@ -85,17 +86,28 @@ async function fixture(t: TestContext) {
   await migrate(db);
   const repoFor = (sql: Database) =>
     new Repository(sql, true, CITYGO_10X_TARIFF, false, "fixed5_overdraft");
-  const repo = repoFor(db),
-    user = await repo.register(randomUUID() + "@example.test", "synthetic");
+  const repo = repoFor(db);
+  await repo.initializeAiRouting(common);
+  const consents = new ServiceConsents(db, () => common);
+  const user = (
+    await consents.register(
+      randomUUID() + "@example.test",
+      "synthetic",
+      h(randomUUID()),
+      {
+        policyVersion: (await consents.policy()).version,
+        personalData: true,
+        marketing: false,
+      },
+    )
+  ).id;
   const thread = (
     await db.query<{ id: string }>(
       "insert into agent_threads(user_id,agent_key,conversation_agent_key) values($1,'support','support') returning id::text",
       [user],
     )
   ).rows[0]!.id;
-  await repo.initializeAiRouting(common);
   const routing = await repo.aiRouting();
-  await repo.aiConsent(user, { policy: common, revision: routing.revision });
   const profiles = [profile(), profile("maximum")];
   await repo.changeAiBudget(
     user,
@@ -459,15 +471,39 @@ test(
       (await api.query("select 1 from ai_request_modes")).rows.length,
       1,
     );
+    assert.deepEqual(
+      (
+        await api.query(
+          "select basis,routing_policy_id,grant_policy_id from ai_request_consent_bases",
+        )
+      ).rows,
+      [
+        {
+          basis: "current",
+          routing_policy_id: common.id,
+          grant_policy_id: common.id,
+        },
+      ],
+      "normal API admission appends and reads exactly one real consent receipt",
+    );
     for (const sql of [
       "update ai_request_modes set mode='maximum'",
       "delete from ai_request_modes",
+      "update ai_request_consent_bases set basis='legacy-balanced'",
+      "delete from ai_request_consent_bases",
     ])
       await assert.rejects(api.query(sql), /permission denied/);
     await assert.rejects(
       f.db.transaction(async (tx) => {
         await tx.exec("set local role citygo_worker");
         await tx.query("select 1 from ai_request_modes");
+      }),
+      /permission denied/,
+    );
+    await assert.rejects(
+      f.db.transaction(async (tx) => {
+        await tx.exec("set local role citygo_worker");
+        await tx.query("select 1 from ai_request_consent_bases");
       }),
       /permission denied/,
     );

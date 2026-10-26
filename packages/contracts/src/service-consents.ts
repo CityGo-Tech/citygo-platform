@@ -1,5 +1,8 @@
 import { z } from "zod";
-import { registrationCredentialsSchema } from "./platform.js";
+import {
+  accountUserSchema,
+  registrationCredentialsSchema,
+} from "./platform.js";
 import { aiProviderIdSchema } from "./llm.js";
 
 export const serviceAiProcessingSchema = z.strictObject({
@@ -69,6 +72,14 @@ export const serviceConsentChoiceSchema = z.strictObject({
   marketing: z.boolean(),
 });
 export type ServiceConsentChoice = z.infer<typeof serviceConsentChoiceSchema>;
+// A separate explicit choice for new AI recipients must not rewrite marketing.
+export const aiModesConsentChoiceSchema = z.strictObject({
+  expectedUserId: accountUserSchema.shape.id,
+  policyVersion: z.string().min(1).max(80),
+  policyId: z.string().regex(/^[a-f0-9]{64}$/),
+  personalData: z.literal(true),
+});
+export type AiModesConsentChoice = z.infer<typeof aiModesConsentChoiceSchema>;
 export const registrationWithConsentsSchema =
   registrationCredentialsSchema.extend({
     consents: serviceConsentChoiceSchema,
@@ -78,5 +89,7 @@ export const serviceConsentStateSchema = z.strictObject({
   personalDataGranted: z.boolean(),
   marketingGranted: z.boolean(),
   serviceConsentRequired: z.boolean(),
+  // Additive: older servers do not advertise multiple modes.
+  currentAiConsentRequired: z.boolean().optional(),
 });
 export type ServiceConsentState = z.infer<typeof serviceConsentStateSchema>;

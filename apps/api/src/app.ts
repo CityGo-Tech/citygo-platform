@@ -10,6 +10,7 @@ import {
   questStartSchema,
   registrationWithConsentsSchema,
   serviceConsentChoiceSchema,
+  aiModesConsentChoiceSchema,
   loginSchema,
   changePasswordSchema,
   changeRoleSchema,
@@ -227,6 +228,10 @@ export async function buildApp(options: {
     (config.YOOKASSA_MODE !== "live" ||
       config.YOOKASSA_FISCAL_PROFILE === "citygo_service_full_payment_v1") &&
     (paymentAdmission ? (await paymentAdmission.statusUser()).available : true);
+  const providers: ProviderMap = { ...options.providers };
+  if (options.provider) providers[options.provider.name] = options.provider;
+  const modes = createAssistantModes(config, options.modeProviders);
+  const control = createAiControl(config, providers, modes);
   const repo = new Repository(
     options.db,
     creditCharging,
@@ -234,11 +239,16 @@ export async function buildApp(options: {
     topUpAvailable,
     config.AI_CREDIT_RESERVATION_MODE,
     config.AI_MINIMUM_FIXED_FEE === "enabled",
+    modes?.legacyBalancedCompatibility,
   );
   const accounts = new AccountAccess(options.db);
   const registrationAiPolicy = (routing: AiRouting) =>
     control.resolve(routing).policy;
-  const serviceConsents = new ServiceConsents(options.db, registrationAiPolicy);
+  const serviceConsents = new ServiceConsents(
+    options.db,
+    registrationAiPolicy,
+    modes?.legacyBalancedCompatibility,
+  );
   const credit = new AiCreditLedger(
     options.db,
     chargingStatus,
@@ -255,8 +265,6 @@ export async function buildApp(options: {
     config.AI_MINIMUM_FIXED_FEE === "enabled"
       ? new GigaChatFixedFees(options.db)
       : undefined;
-  const providers: ProviderMap = { ...options.providers };
-  if (options.provider) providers[options.provider.name] = options.provider;
   // Quarantine survives process restarts and changing YOOKASSA_MODE back to
   // disabled. A per-admission DB guard also protects already running replicas.
   if (
@@ -297,12 +305,15 @@ export async function buildApp(options: {
     await charges.settle(userId, holdId, receipt);
     return credit.status(userId);
   }
-  const modes = createAssistantModes(config, options.modeProviders);
-  const control = createAiControl(config, providers, modes);
   const executions = modes
-    ? modes.routes
-        .filter((route) => route.provider)
-        .map((route) => route.execution)
+    ? [
+        ...modes.routes
+          .filter((route) => route.provider)
+          .map((route) => route.execution),
+        ...(modes.legacyBalancedCompatibility
+          ? [modes.legacyBalancedCompatibility.execution]
+          : []),
+      ]
     : control.options.flatMap((option) =>
         option.policy ? [createAiExecution(config, option.policy)] : [],
       );
@@ -396,6 +407,7 @@ export async function buildApp(options: {
     return {
       ...account,
       serviceConsentRequired: consent.serviceConsentRequired,
+      currentAiConsentRequired: consent.currentAiConsentRequired,
     };
   }
   async function authenticateAdmin(
@@ -818,6 +830,17 @@ export async function buildApp(options: {
       serviceConsentChoiceSchema.parse(request.body),
     );
   });
+  app.post("/v1/account/ai-modes-consent", async (request) => {
+    const user = await authenticate(request, false, true);
+    const input = aiModesConsentChoiceSchema.parse(request.body);
+    if (input.expectedUserId !== user.id)
+      throw new DomainError(
+        409,
+        "Аккаунт изменился. Обновите страницу и подтвердите выбор заново.",
+        "ACCOUNT_CHANGED",
+      );
+    return serviceConsents.acceptAiModes(user.id, input);
+  });
   app.post(
     "/v1/auth/password",
     { config: { rateLimit: { max: 10, timeWindow: "15 minutes" } } },
@@ -924,19 +947,22 @@ export async function buildApp(options: {
     );
     const modeCapabilities = await (async () => {
       if (!modes) return {};
-      const catalog = modes.modeCatalog();
+      const catalog = modes.modeCatalog(user);
       const budget = await repo.aiBudget(executions);
       catalog.options = catalog.options.map((option) => {
-        const route = modes.routes.find((route) => route.id === option.id)!;
+        const route = modes.catalogRoute(option.id, user);
         const approved =
-          Boolean(route.fixedFee) ||
-          budget.settings.rules.some(
-            (rule) =>
-              rule.key === route.execution.key &&
-              rule.policy.id === route.policy.id &&
-              rule.policy.model === route.model &&
-              rule.maxInputBytes === route.execution.maxInputBytes &&
-              rule.maxOutputTokens === route.execution.maxOutputTokens,
+          Boolean(route?.fixedFee) ||
+          Boolean(
+            route &&
+            budget.settings.rules.some(
+              (rule) =>
+                rule.key === route.execution.key &&
+                rule.policy.id === route.policy.id &&
+                rule.policy.model === route.model &&
+                rule.maxInputBytes === route.execution.maxInputBytes &&
+                rule.maxOutputTokens === route.execution.maxOutputTokens,
+            ),
           );
         return {
           ...option,
@@ -951,7 +977,17 @@ export async function buildApp(options: {
     })();
     const result = {
       ...dashboard,
-      aiAccess: { ...dashboard.aiAccess, ...modeCapabilities },
+      aiAccess: {
+        ...dashboard.aiAccess,
+        ...modeCapabilities,
+        granted:
+          dashboard.aiAccess.granted ||
+          Boolean(
+            modes?.legacyBalancedCompatibility &&
+            user.currentAiConsentRequired &&
+            !user.serviceConsentRequired,
+          ),
+      },
     };
     return user.serviceConsentRequired
       ? { ...result, profile: null, quests: [], thread: null, xp: 0 }
@@ -1038,7 +1074,7 @@ export async function buildApp(options: {
           "Режимы ответа изменились. Обновите страницу.",
           "AI_MODE_CHANGED",
         );
-      const selectedMode = modes?.resolve(current, input);
+      const selectedMode = modes?.resolve(current, input, user);
       const fixedFee = selectedMode?.fixedFee;
       const provider = selectedMode?.provider ?? active.provider;
       const executionPolicy = selectedMode?.policy ?? aiPolicy;
@@ -1106,7 +1142,7 @@ export async function buildApp(options: {
             ? {
                 modeSnapshot: {
                   mode: selectedMode.id,
-                  catalogId: modes.catalogId,
+                  catalogId: selectedMode.catalogId,
                   policy: executionPolicy,
                   execution,
                   ...(upstream ? { upstream } : {}),
@@ -1171,7 +1207,10 @@ export async function buildApp(options: {
             ...(selectedMode && modes
               ? {
                   consentPolicyId: aiPolicy.id,
-                  mode: { id: selectedMode.id, catalogId: modes.catalogId },
+                  mode: {
+                    id: selectedMode.id,
+                    catalogId: selectedMode.catalogId,
+                  },
                 }
               : {}),
             routingRevision: current.revision,

@@ -8,6 +8,7 @@ import {
   DomainError,
   GigaChatFixedFees,
   Repository,
+  ServiceConsents,
   connectDatabase,
   migrate,
   type Database,
@@ -92,12 +93,20 @@ async function fixture(t: TestContext) {
     ),
     fees = new GigaChatFixedFees(db);
   const users: string[] = [];
+  const consents = new ServiceConsents(db, () => common);
   for (let i = 0; i < 2; i++) {
-    const user = await repo.register(
-      randomUUID() + "@example.test",
-      "synthetic",
-    );
-    await repo.aiConsent(user, { policy: common, revision: 1 });
+    const user = (
+      await consents.register(
+        randomUUID() + "@example.test",
+        "synthetic",
+        h(randomUUID()),
+        {
+          policyVersion: (await consents.policy()).version,
+          personalData: true,
+          marketing: false,
+        },
+      )
+    ).id;
     await ledger.grantWelcome(user, user);
     users.push(user);
   }

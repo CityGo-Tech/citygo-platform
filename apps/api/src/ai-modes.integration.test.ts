@@ -2,7 +2,13 @@ import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import { randomUUID } from "node:crypto";
 import { readConfig } from "@citygo/config";
-import { AiCreditLedger, connectDatabase, migrate } from "@citygo/db";
+import {
+  AiCreditLedger,
+  connectDatabase,
+  migrate,
+  Repository,
+  ServiceConsents,
+} from "@citygo/db";
 import {
   dashboardResponseSchema,
   type AiCredit,
@@ -16,10 +22,11 @@ import type {
 import { buildApp } from "./app.js";
 import { createAssistantModes, type ModeProviders } from "./ai-modes.js";
 import { syntheticConsentsFor } from "./test-service-consents.js";
+import { hashPassword, tokenHash } from "./auth.js";
 
 async function fixture(
   t: TestContext,
-  options: { minimum?: "free" | "fixed" } = {},
+  options: { minimum?: "free" | "fixed"; legacy?: boolean } = {},
 ) {
   const minimum = options.minimum !== undefined;
   const freeMinimum = options.minimum === "free";
@@ -167,18 +174,53 @@ async function fixture(
     ROUTERAI_MODEL: "deepseek/deepseek-v4-pro-0813",
     ROUTERAI_UPSTREAM: "deepseek",
     ROUTERAI_COUNTRY: "cn",
+    ...(options.legacy
+      ? {
+          ROUTERAI_DATA_NOTICE: "Synthetic original recipient notice.",
+          LLM_MAX_INPUT_BYTES: "8192",
+          ROUTERAI_MAX_OUTPUT_TOKENS: "4096",
+        }
+      : {}),
   });
   const modes = createAssistantModes(config, modeProviders)!;
+  let legacyToken: string | undefined;
+  if (options.legacy) {
+    const compatibility = modes.legacyBalancedCompatibility!;
+    assert.ok(compatibility);
+    await new Repository(db).initializeAiRouting(compatibility.policy);
+    const originalConsents = new ServiceConsents(
+      db,
+      () => compatibility.policy,
+    );
+    const policy = await originalConsents.policy();
+    legacyToken = randomUUID();
+    await originalConsents.register(
+      randomUUID() + "@example.test",
+      await hashPassword("123456"),
+      tokenHash(legacyToken),
+      { policyVersion: policy.version, personalData: true, marketing: true },
+    );
+    // A synthetic operator activates the new bundle; it grants no user consent.
+    await db.query(
+      "update ai_routing set policy_id=$1,revision=revision+1 where id=1",
+      [modes.policy.id],
+    );
+  }
   await db.query(
     "update ai_budget set enabled=true,mode='routerai_balance',currency='RUB',daily_limit_micros=null,total_limit_micros=null,rules=$1 where id=1",
     [
       JSON.stringify(
-        modes.routes
-          .filter((route) => route.provider && !route.fixedFee)
-          .map((route) => ({
-            ...route.execution,
-            attemptCeilingMicros: 6000000,
-          })),
+        [
+          ...modes.routes
+            .filter((route) => route.provider && !route.fixedFee)
+            .map((route) => route.execution),
+          ...(options.legacy
+            ? [modes.legacyBalancedCompatibility!.execution]
+            : []),
+        ].map((execution) => ({
+          ...execution,
+          attemptCeilingMicros: 6000000,
+        })),
       ),
     ],
   );
@@ -200,13 +242,16 @@ async function fixture(
       headers: { origin: "http://localhost:3000", cookie: "citygo=" + token },
       ...(payload ? { payload } : {}),
     });
-  const registration = await call("POST", "/v1/auth/register", "", {
-    email: randomUUID() + "@example.test",
-    password: "123456",
-    consents: await syntheticConsentsFor(app),
-  });
-  assert.equal(registration.statusCode, 200, registration.body);
-  const token = registration.cookies[0]!.value;
+  let token = legacyToken;
+  if (!token) {
+    const registration = await call("POST", "/v1/auth/register", "", {
+      email: randomUUID() + "@example.test",
+      password: "123456",
+      consents: await syntheticConsentsFor(app),
+    });
+    assert.equal(registration.statusCode, 200, registration.body);
+    token = registration.cookies[0]!.value;
+  }
   const board = dashboardResponseSchema.parse(
     (await call("GET", "/v1/dashboard", token)).json(),
   );
@@ -267,6 +312,200 @@ async function fixture(
     releaseMinimum,
   };
 }
+
+test("HTTP retained consent keeps original Balanced usable without rewriting grants and blocks new recipients before any reservation", async (t) => {
+  const f = await fixture(t, { legacy: true, minimum: "fixed" });
+  const consentBefore = (
+    await f.db.query("select * from service_consent_events order by id")
+  ).rows;
+  const aiBefore = (await f.db.query("select * from ai_consents")).rows;
+  assert.equal(f.board.user.serviceConsentRequired, false);
+  assert.equal(f.board.aiAccess.granted, true);
+  assert.notEqual(f.board.aiAccess.modes!.catalogId, f.modes.catalogId);
+  assert.deepEqual(
+    f.board.aiAccess.modes!.options.map(
+      ({ id, available, consentRequired }) => [
+        id,
+        available,
+        Boolean(consentRequired),
+      ],
+    ),
+    [
+      ["maximum", true, true],
+      ["balanced", true, false],
+      ["minimum", true, true],
+    ],
+  );
+  const before = await f.balance();
+  for (const mode of ["maximum", "minimum"] as const) {
+    const blocked = await f.send(
+      mode,
+      "Новый получатель ещё не выбран",
+      randomUUID(),
+      { aiModeCatalogId: f.board.aiAccess.modes!.catalogId },
+    );
+    assert.equal(blocked.statusCode, 403, blocked.body);
+    assert.equal(blocked.json().code, "AI_MODES_CONSENT_REQUIRED");
+  }
+  assert.equal(f.calls.length, 0);
+  assert.equal(
+    (await f.db.query("select 1 from chat_requests")).rows.length,
+    0,
+  );
+  assert.equal(
+    (await f.db.query("select 1 from ai_request_consent_bases")).rows.length,
+    0,
+  );
+  assert.deepEqual(await f.balance(), before);
+  const answer = await f.send(
+    "balanced",
+    "Последний вопрос старому получателю",
+    randomUUID(),
+    { aiModeCatalogId: f.board.aiAccess.modes!.catalogId },
+  );
+  assert.match(answer.body, /"type":"done"/);
+  assert.equal(f.calls[0]!.held, "5000000");
+  assert.equal((await f.balance()).spentMicros, 1_000_000);
+  const frozen = (
+    await f.db.query<{
+      policy_id: string;
+      execution_key: string;
+      consent_policy_id: string;
+    }>("select policy_id,execution_key,consent_policy_id from ai_request_modes")
+  ).rows[0]!;
+  assert.equal(
+    frozen.policy_id,
+    f.modes.legacyBalancedCompatibility!.policy.id,
+  );
+  assert.equal(
+    frozen.execution_key,
+    f.modes.legacyBalancedCompatibility!.execution.key,
+  );
+  assert.equal(frozen.consent_policy_id, f.modes.policy.id);
+  assert.deepEqual(
+    (await f.db.query("select * from service_consent_events order by id")).rows,
+    consentBefore,
+  );
+  assert.deepEqual(
+    (await f.db.query("select * from ai_consents")).rows,
+    aiBefore,
+  );
+  assert.equal(
+    (await f.db.query("select 1 from ai_request_consent_bases")).rows.length,
+    1,
+  );
+});
+
+test("HTTP first-mode consent is explicit, account-bound, preserves marketing and invalidates a stale legacy tab", async (t) => {
+  const f = await fixture(t, { legacy: true, minimum: "fixed" });
+  const before = (
+    await f.db.query("select * from service_consent_events order by id")
+  ).rows;
+  const state = (await f.call("GET", "/v1/account/consents", f.token)).json();
+  assert.equal(state.currentAiConsentRequired, true);
+  const input = {
+    policyVersion: state.policy.version,
+    policyId: f.modes.policy.id,
+    personalData: true,
+    expectedUserId: f.board.user.id,
+  };
+  assert.equal(
+    (await f.call("POST", "/v1/account/ai-modes-consent", "", input))
+      .statusCode,
+    401,
+  );
+  for (const [patch, code] of [
+    [{ personalData: false }, 400],
+    [{ policyId: "0".repeat(64) }, 409],
+    [{ policyVersion: "stale" }, 409],
+    [{ expectedUserId: f.board.user.id === "1" ? "2" : "1" }, 409],
+    [{ marketing: false }, 400],
+  ] as const) {
+    const rejected = await f.call(
+      "POST",
+      "/v1/account/ai-modes-consent",
+      f.token,
+      { ...input, ...patch },
+    );
+    assert.equal(rejected.statusCode, code, rejected.body);
+  }
+  assert.deepEqual(
+    (await f.db.query("select * from service_consent_events order by id")).rows,
+    before,
+  );
+  const accepted = await f.call(
+    "POST",
+    "/v1/account/ai-modes-consent",
+    f.token,
+    input,
+  );
+  assert.equal(accepted.statusCode, 200, accepted.body);
+  assert.equal(accepted.json().currentAiConsentRequired, false);
+  assert.equal(accepted.json().serviceConsentRequired, false);
+  assert.equal(accepted.json().marketingGranted, true);
+  const marketing = (
+    await f.db.query(
+      "select * from service_consent_events where purpose='marketing' order by id",
+    )
+  ).rows;
+  assert.deepEqual(
+    marketing,
+    before.filter((event) => event.purpose === "marketing"),
+  );
+  const repeat = await f.call(
+    "POST",
+    "/v1/account/ai-modes-consent",
+    f.token,
+    input,
+  );
+  assert.equal(repeat.statusCode, 200, repeat.body);
+  const stale = await f.send(
+    "balanced",
+    "Старый выбор нельзя переосмысливать",
+    randomUUID(),
+    { aiModeCatalogId: f.board.aiAccess.modes!.catalogId },
+  );
+  assert.equal(stale.statusCode, 409, stale.body);
+  assert.equal(stale.json().code, "AI_MODE_CHANGED");
+  assert.equal(f.calls.length, 0);
+  const refreshed = dashboardResponseSchema.parse(
+    (await f.call("GET", "/v1/dashboard", f.token)).json(),
+  );
+  assert.equal(refreshed.aiAccess.modes!.catalogId, f.modes.catalogId);
+  assert.ok(
+    refreshed.aiAccess.modes!.options.every(
+      (option) => !option.consentRequired,
+    ),
+  );
+  assert.match(
+    (await f.send("maximum", "Новый вопрос после явного согласия")).body,
+    /"type":"done"/,
+  );
+  assert.equal((await f.balance()).spentMicros, 2_000_000);
+});
+
+test("HTTP legacy catalog checks the actual old execution budget, not the new Balanced rule", async (t) => {
+  const f = await fixture(t, { legacy: true });
+  const currentRules = f.modes.routes
+    .filter((route) => route.provider && !route.fixedFee)
+    .map((route) => ({ ...route.execution, attemptCeilingMicros: 6000000 }));
+  await f.db.query("update ai_budget set rules=$1 where id=1", [
+    JSON.stringify(currentRules),
+  ]);
+  const board = dashboardResponseSchema.parse(
+    (await f.call("GET", "/v1/dashboard", f.token)).json(),
+  );
+  assert.equal(
+    board.aiAccess.modes!.options.find((option) => option.id === "balanced")!
+      .available,
+    false,
+  );
+  assert.equal(
+    board.aiAccess.modes!.options.find((option) => option.id === "maximum")!
+      .available,
+    true,
+  );
+});
 
 test("HTTP mode switching preserves one conversation and last question, holds five CityGo and settles each exact provider charge times ten", async (t) => {
   const f = await fixture(t);

@@ -15,6 +15,7 @@ import {
   registrationWithConsentsSchema,
   registrationPolicyResponseSchema,
   serviceConsentChoiceSchema,
+  aiModesConsentChoiceSchema,
   serviceConsentPolicySchema,
   serviceConsentStateSchema,
   emailRegistrationChallengeSchema,
@@ -105,6 +106,7 @@ import {
   type CreatePersonalPlanItem,
   type UpdatePersonalPlanItem,
   type ServiceConsentChoice,
+  type AiModesConsentChoice,
   type AccountEmailVerificationResend,
   type AccountEmailVerificationConfirm,
 } from "@citygo/contracts";
@@ -420,6 +422,27 @@ export function createClient(
       request("/v1/legal/consent-policy", serviceConsentPolicySchema),
     accountConsents: () =>
       request("/v1/account/consents", serviceConsentStateSchema),
+    confirmAiModesConsent: async (input: AiModesConsentChoice) => {
+      const choice = aiModesConsentChoiceSchema.parse(input);
+      const result = await request(
+        "/v1/account/ai-modes-consent",
+        serviceConsentStateSchema,
+        choice,
+      );
+      if (
+        result.policy.version !== choice.policyVersion ||
+        result.policy.aiProcessing?.id !== choice.policyId ||
+        !result.personalDataGranted ||
+        result.serviceConsentRequired ||
+        result.currentAiConsentRequired !== false
+      )
+        throw new ApiError(
+          200,
+          "Ответ сервера не подтверждает выбранные условия новых режимов",
+          "invalid_response",
+        );
+      return result;
+    },
     getAccountProfile: () =>
       request("/v1/account/profile", accountProfileSchema),
     requestAccountEmailVerification: async () =>

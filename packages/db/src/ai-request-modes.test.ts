@@ -8,6 +8,7 @@ import {
   AiCreditLedger,
   DomainError,
   Repository,
+  ServiceConsents,
   connectDatabase,
   migrate,
   type AiRequestModeSnapshot,
@@ -50,22 +51,33 @@ async function fixture(t: TestContext) {
   t.after(() => db.close());
   await migrate(db);
   const repo = new Repository(
-      db,
-      true,
-      CITYGO_10X_TARIFF,
-      false,
-      "fixed5_overdraft",
-    ),
-    user = await repo.register("modes@example.test", "synthetic-hash");
+    db,
+    true,
+    CITYGO_10X_TARIFF,
+    false,
+    "fixed5_overdraft",
+  );
+  await repo.initializeAiRouting(common);
+  const consents = new ServiceConsents(db, () => common);
+  const user = (
+    await consents.register(
+      "modes@example.test",
+      "synthetic-hash",
+      h("mode-fixture-session"),
+      {
+        policyVersion: (await consents.policy()).version,
+        personalData: true,
+        marketing: false,
+      },
+    )
+  ).id;
   const thread = (
     await db.query<{ id: string }>(
       "insert into agent_threads(user_id,agent_key,conversation_agent_key) values($1,'support','support') returning id::text",
       [user],
     )
   ).rows[0]!.id;
-  await repo.initializeAiRouting(common);
   const routing = await repo.aiRouting();
-  await repo.aiConsent(user, { policy: common, revision: routing.revision });
   const profiles = [snapshot("balanced"), snapshot("maximum")];
   await repo.changeAiBudget(
     user,
@@ -147,6 +159,22 @@ test("a mode is frozen before counters/money; changing selectors cannot retarget
   selected.policy.model = "mutated caller";
   selected.execution.maxOutputTokens = 1;
   assert.deepEqual(request.modeSnapshot, original);
+  assert.deepEqual(
+    (
+      await f.db.query(
+        "select basis,routing_policy_id,grant_policy_id from ai_request_consent_bases where thread_id=$1 and request_id=$2",
+        [f.thread, f.requestId],
+      )
+    ).rows,
+    [
+      {
+        basis: "current",
+        routing_policy_id: common.id,
+        grant_policy_id: common.id,
+      },
+    ],
+    "every current mode retains a real grant receipt without a legacy descriptor",
+  );
   const hold = await f.repo.reserveAiAttempt(
     f.attempt(original, request.lease),
   );
@@ -360,15 +388,35 @@ test("API can append/read the frozen mode but cannot rewrite/delete it; Worker h
     (await f.db.query("select 1 from ai_request_modes")).rows.length,
     1,
   );
+  assert.deepEqual(
+    (
+      await f.db.query(
+        "select basis,routing_policy_id,grant_policy_id from ai_request_consent_bases",
+      )
+    ).rows,
+    [
+      {
+        basis: "current",
+        routing_policy_id: common.id,
+        grant_policy_id: common.id,
+      },
+    ],
+  );
   assert(await f.repo.reserveAiAttempt(f.attempt(snapshot(), r.lease)));
   for (const sql of [
     "update ai_request_modes set mode='maximum'",
     "delete from ai_request_modes",
+    "update ai_request_consent_bases set basis='legacy-balanced'",
+    "delete from ai_request_consent_bases",
   ])
     await assert.rejects(f.db.exec(sql), /permission denied/);
   await f.db.exec("reset role;set role citygo_worker");
   await assert.rejects(
     f.db.query("select 1 from ai_request_modes"),
+    /permission denied/,
+  );
+  await assert.rejects(
+    f.db.query("select 1 from ai_request_consent_bases"),
     /permission denied/,
   );
   await f.db.query("update chat_requests set status='interrupted'");

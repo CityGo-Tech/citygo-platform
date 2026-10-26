@@ -440,7 +440,12 @@ test("SQL rejects incomplete snapshots; API can append but cannot rewrite/delete
     "delete from service_consent_events",
     "truncate service_consent_events",
   ])
-    await assert.rejects(db.exec(command), /append-only/);
+    await assert.rejects(
+      db.exec(command),
+      command.startsWith("truncate ")
+        ? /append-only|foreign key constraint/
+        : /append-only/,
+    );
 });
 
 test("schema29 to30 changes no existing choice/user/accounting/history and adds no consent grant", async (t) => {

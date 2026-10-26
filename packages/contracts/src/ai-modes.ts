@@ -30,6 +30,7 @@ export const aiModesSchema = z
           id: aiModeIdSchema,
           label: z.string().min(1).max(30),
           available: z.boolean(),
+          consentRequired: z.boolean().optional(),
           price: aiModeFixedPriceSchema.optional(),
         }),
       )

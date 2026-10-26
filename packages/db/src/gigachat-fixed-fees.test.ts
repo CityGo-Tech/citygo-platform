@@ -15,6 +15,7 @@ import {
   GigaChatFixedFees,
   FreshAccountReset,
   Repository,
+  ServiceConsents,
   connectDatabase,
   migrate,
   reservePaidRefund,
@@ -70,8 +71,16 @@ async function fixture(t: TestContext, paid = false) {
   );
   await repo.initializeAiRouting(common);
   const routing = await repo.aiRouting();
-  const user = await repo.register(randomUUID() + "@example.test", "synthetic");
-  await repo.aiConsent(user, { policy: common, revision: routing.revision });
+  const consents = new ServiceConsents(db, () => common);
+  const register = async (email = randomUUID() + "@example.test") =>
+    (
+      await consents.register(email, "synthetic", h(randomUUID()), {
+        policyVersion: (await consents.policy()).version,
+        personalData: true,
+        marketing: false,
+      })
+    ).id;
+  const user = await register();
   const ledger = new AiCreditLedger(
     db,
     "routerai_citygo_10x",
@@ -192,7 +201,7 @@ async function fixture(t: TestContext, paid = false) {
  'operatorBudget',(select jsonb_agg(to_jsonb(t)) from ai_budget t),
  'operatorDaily',(select jsonb_agg(to_jsonb(t) order by usage_day) from ai_budget_daily t)) as snapshot`)
     ).rows;
-  return { db, repo, ledger, fees, user, begin, finish, money };
+  return { db, repo, ledger, fees, user, begin, finish, money, register };
 }
 test("Giga fixed fee holds five, charges product three only with persisted success and never fabricates RouterAI cost", async (t) => {
   const f = await fixture(t),
@@ -200,6 +209,22 @@ test("Giga fixed fee holds five, charges product three only with persisted succe
     operatorBefore = (await f.db.query("select * from ai_budget")).rows;
   const hold = await f.repo.reserveAiAttempt(r.attempt);
   assert(hold);
+  assert.deepEqual(
+    (
+      await f.db.query(
+        "select basis,routing_policy_id,grant_policy_id from ai_request_consent_bases where thread_id=$1 and request_id=$2",
+        [r.thread, r.requestId],
+      )
+    ).rows,
+    [
+      {
+        basis: "current",
+        routing_policy_id: common.id,
+        grant_policy_id: common.id,
+      },
+    ],
+    "a paid Minimum request has its own real bundle-consent receipt",
+  );
   assert.equal((await f.ledger.status(f.user)).heldMicros, 5000000);
   assert.deepEqual(
     (
@@ -261,8 +286,7 @@ test("errors are free; unknown transport keeps PERS capacity and contention roll
   assert.equal(balance.spentMicros, 0);
   assert.equal(balance.heldMicros, 0);
   assert.equal((await f.fees.get(f.user, hold)).state, "failed");
-  const second = await f.repo.register("second@example.test", "synthetic");
-  await f.repo.aiConsent(second, { policy: common, revision: 1 });
+  const second = await f.register("second@example.test");
   await f.ledger.grantWelcome(second, second);
   const other = await f.begin(second),
     before = await f.money();

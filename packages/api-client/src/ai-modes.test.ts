@@ -59,6 +59,17 @@ test("mode availability uses the selected advertised option while legacy retains
   assert.equal(isAiModeAvailable(undefined, "maximum", false), false);
 });
 
+test("an advertised mode requiring consent is selectable for confirmation but cannot be submitted", () => {
+  const catalog = modes();
+  catalog.options[0]!.consentRequired = true;
+  assert.equal(catalog.options[0]!.available, true);
+  assert.equal(isAiModeAvailable(catalog, "maximum", true), false);
+  assert.throws(() => captureAiModeSelection(catalog, "maximum"), {
+    message: aiModeUnavailableMessage,
+  });
+  assert.equal(isAiModeAvailable(catalog, "balanced", true), true);
+});
+
 test("stream sends one frozen mode selection with fixed5 and no mutation or automatic error replay", async () => {
   let calls = 0;
   const bodies: unknown[] = [];

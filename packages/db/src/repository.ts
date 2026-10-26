@@ -55,6 +55,16 @@ import {
   parseGigaChatFixedFeeInput,
   type GigaChatFixedFeeInput,
 } from "./gigachat-fixed-fees.js";
+import {
+  parseLegacyBalancedConsentCompatibility,
+  legacyBalancedGrant,
+  currentConsentGrant,
+  unchangedLegacyBalancedSnapshot,
+  recordAiConsentBasis,
+  assertAiConsentBasisAttempt,
+  type LegacyBalancedConsentCompatibility,
+  type ConsentGrantEvidence,
+} from "./ai-consent-compatibility.js";
 
 export { DomainError } from "./errors.js";
 const fail = (
@@ -80,7 +90,11 @@ export class Repository {
     private topUpAvailable: boolean | (() => Promise<boolean>) = false,
     private creditReservationMode: AiCreditReservationMode = "full",
     private includeGigaFixedFees = false,
-  ) {}
+    private legacyBalanced?: LegacyBalancedConsentCompatibility,
+  ) {
+    this.legacyBalanced =
+      parseLegacyBalancedConsentCompatibility(legacyBalanced);
+  }
   aiBudget(executions: AiExecution[]) {
     return aiBudget(this.db, executions);
   }
@@ -203,6 +217,18 @@ export class Repository {
       });
       if (input.fixedFee !== undefined && !frozenMode)
         fail(409, "Режим ответа не закреплён за запросом.");
+      if (frozenMode)
+        await assertAiConsentBasisAttempt(
+          tx,
+          {
+            userId: input.userId,
+            threadId: input.threadId,
+            requestId: input.requestId,
+            routingPolicyId: consentPolicyId,
+            snapshot: frozenMode,
+          },
+          this.legacyBalanced,
+        );
       const previous = (
         await tx.query<{
           attempt_number: number;
@@ -972,7 +998,45 @@ export class Repository {
         ).rows.length
       )
         fail(409, "Этот запрос уже был принят");
-      if (!(await this.hasAiConsent(tx, userId, access.policyId)))
+      let consentBasis: ConsentGrantEvidence | undefined;
+      let legacyBasis = false;
+      if (access.modeSnapshot) {
+        consentBasis = await currentConsentGrant(tx, userId, access.policyId);
+        if (
+          consentBasis &&
+          unchangedLegacyBalancedSnapshot(
+            this.legacyBalanced,
+            access.policyId,
+            access.modeSnapshot,
+          )
+        )
+          fail(
+            409,
+            "Режим ответа изменился. Повторите отправку.",
+            "AI_MODE_CHANGED",
+          );
+        if (
+          !consentBasis &&
+          unchangedLegacyBalancedSnapshot(
+            this.legacyBalanced,
+            access.policyId,
+            access.modeSnapshot,
+          )
+        ) {
+          consentBasis = await legacyBalancedGrant(
+            tx,
+            userId,
+            this.legacyBalanced,
+            access.policyId,
+          );
+          legacyBasis = Boolean(consentBasis);
+        }
+      }
+      if (
+        !(access.modeSnapshot
+          ? consentBasis
+          : await this.hasAiConsent(tx, userId, access.policyId))
+      )
         fail(
           403,
           "Подтвердите передачу данных выбранному AI-получателю",
@@ -1040,6 +1104,15 @@ export class Repository {
               routingRevision: access.revision,
               snapshot: access.modeSnapshot,
             });
+      if (modeSnapshot && consentBasis)
+        await recordAiConsentBasis(tx, {
+          userId,
+          threadId,
+          requestId,
+          routingPolicyId: access.policyId,
+          grant: consentBasis,
+          legacy: legacyBasis,
+        });
       await tx.query(
         "insert into messages(thread_id,role,content,metadata) values ($1,'user',$2,$3)",
         [
