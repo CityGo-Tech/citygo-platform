@@ -231,7 +231,8 @@ test("tests never parse any runtime file, including invalid scoped settings", (t
 test("only the selected public/routing variables survive, never public-prefix wildcards", (t) => {
   const directory = fixture(t, {
     ".env.web": "API_INTERNAL_URL=http://127.0.0.1:4200\nPORT=3200",
-    ".env.mobile": "EXPO_PUBLIC_API_URL=https://api.example.test",
+    ".env.mobile":
+      "EXPO_PUBLIC_API_URL=https://api.example.test\nEXPO_PUBLIC_WEB_URL=https://web.example.test",
   });
   assert.deepEqual(serviceEnv("build", { directory, inherited: canaries }), {
     API_INTERNAL_URL: "http://127.0.0.1:4200",
@@ -239,8 +240,28 @@ test("only the selected public/routing variables survive, never public-prefix wi
   assert.equal(serviceEnv("web", { directory, inherited: {} }).PORT, "3200");
   assert.deepEqual(serviceEnv("mobile", { directory, inherited: canaries }), {
     EXPO_PUBLIC_API_URL: "https://api.example.test",
+    EXPO_PUBLIC_WEB_URL: "https://web.example.test",
     EXPO_NO_DOTENV: "1",
   });
+});
+
+test("the public mobile Web origin is scoped to mobile and never enables arbitrary Expo variables", (t) => {
+  const directory = fixture(t);
+  const inherited = {
+    EXPO_PUBLIC_WEB_URL: "https://web.example.test",
+    EXPO_PUBLIC_API_URL: "https://api.example.test",
+    EXPO_PUBLIC_FUTURE_SECRET: "do-not-publish",
+  };
+  assert.deepEqual(serviceEnv("mobile", { directory, inherited }), {
+    EXPO_PUBLIC_API_URL: inherited.EXPO_PUBLIC_API_URL,
+    EXPO_PUBLIC_WEB_URL: inherited.EXPO_PUBLIC_WEB_URL,
+    EXPO_NO_DOTENV: "1",
+  });
+  for (const scope of ["api", "web", "build", "worker", "migrator", "test"])
+    assert.equal(
+      serviceEnv(scope, { directory, inherited }).EXPO_PUBLIC_WEB_URL,
+      undefined,
+    );
 });
 
 test("scoped-file typos and secrets fail without revealing names or values", (t) => {

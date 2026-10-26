@@ -41,6 +41,7 @@ import { MobilePasswordRecovery } from "./src/password-recovery";
 import { MobileAiModeSelector } from "./src/ai-mode-selector";
 import { MobileAiModeConsentModal } from "./src/ai-mode-consent-modal";
 import { createMobileAiModeConsent } from "./src/ai-mode-consent";
+import { mobileWebDestination, defaultMobileWebUrl } from "./src/web-links";
 import { MobileServiceConsents } from "./src/service-consents";
 import {
   changeServiceConsent,
@@ -71,7 +72,7 @@ const tokenStore = createSessionStorage({
   set: (token) => SecureStore.setItemAsync("citygo.session", token),
   remove: () => SecureStore.deleteItemAsync("citygo.session"),
 });
-const webAppUrl = "https://app.xn--c1ajazlh.xn--p1ai";
+const webAppUrl = process.env.EXPO_PUBLIC_WEB_URL ?? defaultMobileWebUrl;
 export default function App() {
   const session = useRef<string | null>(null);
   const [lifetime] = useState(createSessionGuard);
@@ -535,12 +536,10 @@ export default function App() {
   function openModeConsentLegal() {
     if (modeConsentView.phase !== "ready" && modeConsentView.phase !== "saving")
       return;
-    const ticket = lifetime.capture();
-    const url = new URL(modeConsentView.consent.policy.personalData.url, base);
-    if (!["https:", "http:"].includes(url.protocol)) return;
-    void Linking.openURL(url.href).catch(() => {
-      if (ticket.active()) setError("Не удалось открыть условия.");
-    });
+    openWebDestination(
+      modeConsentView.consent.policy.personalData.url,
+      "Не удалось открыть условия.",
+    );
   }
   const consentScope = board?.user.serviceConsentRequired
     ? { context: board.user.id, signal: recoverySession.signal }
@@ -616,11 +615,21 @@ export default function App() {
     setConsentReload((version) => version + 1);
   }
   function openWebApp() {
+    openWebDestination(
+      "",
+      "Не удалось открыть веб-версию CityGo. Повторите попытку.",
+    );
+  }
+  function openWebDestination(path: string, message: string) {
     const ticket = lifetime.capture();
-    void Linking.openURL(webAppUrl).catch(() => {
-      if (ticket.active())
-        setError("Не удалось открыть веб-версию CityGo. Повторите попытку.");
-    });
+    try {
+      const url = mobileWebDestination(webAppUrl, path);
+      void Linking.openURL(url).catch(() => {
+        if (ticket.active()) setError(message);
+      });
+    } catch {
+      if (ticket.active()) setError(message);
+    }
   }
   const consentFields = activeConsentForm ? (
     <MobileServiceConsents
