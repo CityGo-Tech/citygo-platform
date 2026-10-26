@@ -22,6 +22,11 @@
 модель, терминальное `response.completed`, текст и usage; reasoning не выводится.
 HTTP 200, частичный текст и обрыв потока не подтверждают завершение.
 
+Первый настоящий контрольный запрос GPT через существующий ключ получил HTTP 200,
+но не подтвердил завершённый ответ, generation ID и стоимость. Повторной генерации
+не было. До выяснения причины в журнале RouterAI и успешной проверки ответа и
+квитанции режим «Максимум» нельзя считать готовым к публичному включению.
+
 Источники: [GPT](https://routerai.ru/models/openai/gpt-6.1-sol),
 [DeepSeek](https://routerai.ru/models/deepseek/deepseek-v4-pro-0813),
 [маршрутизация](https://routerai.ru/docs/guides/overview/provider-selection).

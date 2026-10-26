@@ -302,7 +302,7 @@ test("unavailable modes and a failed request never fall back, retry or carry sel
   await expect(selector(page)).toHaveValue("balanced");
   await expect(
     selector(page).getByRole("option", { name: /^Минимум/ }),
-  ).toBeDisabled();
+  ).toHaveJSProperty("disabled", true);
   await selector(page).selectOption("maximum");
   await composer(page).fill("СОХРАНИТЬ_ПРИ_ОШИБКЕ");
   await page.getByRole("button", { name: "Отправить", exact: true }).click();
