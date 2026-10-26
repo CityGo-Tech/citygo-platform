@@ -19,6 +19,12 @@ import {
   emailRegistrationChallengeSchema,
   emailRegistrationResendSchema,
   emailRegistrationConfirmSchema,
+  accountProfileSchema,
+  accountEmailVerificationChallengeSchema,
+  accountEmailVerificationStartSchema,
+  accountEmailVerificationResendSchema,
+  accountEmailVerificationConfirmSchema,
+  accountEmailVerificationReceiptSchema,
   passwordRecoveryPolicySchema,
   passwordRecoveryRequestSchema,
   passwordRecoveryChallengeSchema,
@@ -97,6 +103,8 @@ import {
   type CreatePersonalPlanItem,
   type UpdatePersonalPlanItem,
   type ServiceConsentChoice,
+  type AccountEmailVerificationResend,
+  type AccountEmailVerificationConfirm,
 } from "@citygo/contracts";
 import {
   ApiError,
@@ -404,6 +412,45 @@ export function createClient(
       request("/v1/legal/consent-policy", serviceConsentPolicySchema),
     accountConsents: () =>
       request("/v1/account/consents", serviceConsentStateSchema),
+    getAccountProfile: () =>
+      request("/v1/account/profile", accountProfileSchema),
+    requestAccountEmailVerification: async () =>
+      request(
+        "/v1/account/email/verification",
+        accountEmailVerificationChallengeSchema,
+        accountEmailVerificationStartSchema.parse({}),
+      ),
+    resendAccountEmailVerification: async (
+      input: AccountEmailVerificationResend,
+    ) => {
+      const parsed = emailRegistrationInput(
+        accountEmailVerificationResendSchema,
+        input,
+      );
+      const result = await request(
+        "/v1/account/email/verification/resend",
+        accountEmailVerificationChallengeSchema,
+        parsed,
+      );
+      if (
+        result.challengeId !== parsed.challengeId ||
+        result.proof !== parsed.proof
+      )
+        throw new ApiError(
+          200,
+          "Ответ сервера не соответствует подтверждаемой почте",
+          "invalid_response",
+        );
+      return result;
+    },
+    confirmAccountEmailVerification: async (
+      input: AccountEmailVerificationConfirm,
+    ) =>
+      request(
+        "/v1/account/email/verification/confirm",
+        accountEmailVerificationReceiptSchema,
+        emailRegistrationInput(accountEmailVerificationConfirmSchema, input),
+      ),
     setAccountConsents: async (input: ServiceConsentChoice) => {
       const choice = serviceConsentChoiceSchema.parse(input);
       const result = await request(

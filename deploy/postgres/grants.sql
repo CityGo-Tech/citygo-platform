@@ -68,6 +68,10 @@ grant update (code_hash,delivery,attempts,expires_at,consumed_user_id,consumed_a
 grant select, insert on password_recovery_challenges to citygo_api;
 grant update (code_hash,delivery,attempts,consumed_at,invalidated_at)
   on password_recovery_challenges to citygo_api;
+-- Existing-account email proof is retained separately from registration.
+grant select, insert on account_email_confirmation_challenges to citygo_api;
+grant update (code_hash,delivery,attempts,consumed_at,invalidated_at)
+  on account_email_confirmation_challenges to citygo_api;
 -- Private user-chosen steps have immutable owner/source/create identity.
 -- Runtime may edit content/state or tombstone, never delete or rewrite identity.
 grant select, insert on personal_plan_items to citygo_api;

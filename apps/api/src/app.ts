@@ -121,6 +121,7 @@ import {
   registerPhoneVerification,
   type PhoneVerificationDelivery,
 } from "./phone-verification.js";
+import { registerAccountProfile } from "./account-profile.js";
 
 export async function buildApp(options: {
   db: Database;
@@ -464,14 +465,20 @@ export async function buildApp(options: {
   app.get("/ready", async () => {
     try {
       const result = await options.db.query(
-        "select name from citygo_migrations where name in ('0006_ai_budget.sql','0007_ai_user_daily_budget.sql','0008_ai_credit.sql','0009_ai_credit_charges.sql','0010_quest_plan_expand.sql','0011_quest_plan_validate.sql','0013_account_access.sql','0014_citygo_credit.sql','0015_yookassa_orders.sql','0016_npd_receipts.sql','0017_credit_source_lots.sql','0018_payment_refunds.sql','0019_yookassa_live_orders.sql','0020_ai_budget_provider_balance.sql','0021_payment_notifications.sql','0022_payment_admission.sql','0023_payment_receipt_snapshots.sql','0024_ai_credit_overdraft.sql','0025_assistant_conversations.sql','0030_service_consents.sql')",
+        "select name from citygo_migrations where name in ('0006_ai_budget.sql','0007_ai_user_daily_budget.sql','0008_ai_credit.sql','0009_ai_credit_charges.sql','0010_quest_plan_expand.sql','0011_quest_plan_validate.sql','0013_account_access.sql','0014_citygo_credit.sql','0015_yookassa_orders.sql','0016_npd_receipts.sql','0017_credit_source_lots.sql','0018_payment_refunds.sql','0019_yookassa_live_orders.sql','0020_ai_budget_provider_balance.sql','0021_payment_notifications.sql','0022_payment_admission.sql','0023_payment_receipt_snapshots.sql','0024_ai_credit_overdraft.sql','0025_assistant_conversations.sql','0030_service_consents.sql','0031_account_email_confirmation.sql')",
       );
-      if (result.rows.length !== 20) throw new Error("Pending migration");
+      if (result.rows.length !== 21) throw new Error("Pending migration");
       await options.db.query(
         "select user_id,policy_version,policy_hash,purpose,decision from service_consent_events limit 0",
       );
       await options.db.query(
         "select consent_choice,consent_policy,consent_policy_hash,consent_recorded_at from email_registrations limit 0",
+      );
+      await options.db.query(
+        "select confirmation_id from account_email_verifications limit 0",
+      );
+      await options.db.query(
+        "select id,delivery,attempts from account_email_confirmation_challenges limit 0",
       );
       if (config.EMAIL_REGISTRATION_MODE === "required") {
         const verification = await options.db.query(
@@ -666,6 +673,20 @@ export async function buildApp(options: {
     db: options.db,
     config,
     delivery:
+      options.phoneVerificationDelivery ?? configuredPhoneDelivery(config),
+    context: async (request) => {
+      const user = await authenticate(request);
+      const token =
+        bearer(request.headers.authorization) ?? request.cookies[sessionName];
+      return { userId: user.id, sessionTokenHash: tokenHash(token!) };
+    },
+  });
+  registerAccountProfile(app, {
+    db: options.db,
+    config,
+    emailDelivery:
+      options.emailRegistrationDelivery ?? configuredEmailDelivery(config),
+    phoneDelivery:
       options.phoneVerificationDelivery ?? configuredPhoneDelivery(config),
     context: async (request) => {
       const user = await authenticate(request);

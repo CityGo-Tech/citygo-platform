@@ -49,6 +49,7 @@ const retained = [
   "phone_verification_sends",
   "phone_welcome_claims",
   "password_recovery_challenges",
+  "account_email_confirmation_challenges",
   "account_email_verifications",
   "email_registrations",
   "email_registration_rate_events",
@@ -155,6 +156,7 @@ export class AccountReset {
         "phone_verification_sends",
         "phone_welcome_claims",
         "password_recovery_challenges",
+        "account_email_confirmation_challenges",
         "account_email_verifications",
         "email_registrations",
         "email_registration_rate_events",
@@ -189,6 +191,11 @@ export class AccountReset {
         blockers.push({
           code: "PAYMENT_ADMISSION_STATE_UNAVAILABLE",
           count: 1,
+        });
+      if (counts.account_email_confirmation_challenges)
+        blockers.push({
+          code: "ACCOUNT_EMAIL_CONFIRMATION_HISTORY_REQUIRES_REVIEW",
+          count: counts.account_email_confirmation_challenges,
         });
       const admissionHistoryCount =
         counts.payment_admission_commands! +

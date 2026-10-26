@@ -115,6 +115,17 @@ async function fixture(
       }
       return route.fulfill({ json: board });
     }
+    if (path === "/api/v1/account/profile" && request.method() === "GET")
+      return route.fulfill({
+        json: {
+          userId: state.userId,
+          email: `checkout-${state.userId}@example.test`,
+          emailVerified: true,
+          phoneVerified: false,
+          giftStatus: "unavailable",
+          emailConfirmation: "unavailable",
+        },
+      });
     if (path === "/api/v1/payments/topups" && request.method() === "POST") {
       state.creates.push(request.postDataJSON());
       await options.createGate;

@@ -52,13 +52,13 @@ test("the upgrade rehearsal rejects a production project before Docker or databa
   );
 });
 
-test("literal 12-era fixture rewinds current 30, rolls back late ACL failure and reapplies without losing data", async (t) => {
+test("literal 12-era fixture rewinds current 31, rolls back late ACL failure and reapplies without losing data", async (t) => {
   const db = new PGlite();
   t.after(() => db.close());
   await db.waitReady;
-  assert.equal(migrations.length, 30);
+  assert.equal(migrations.length, 31);
   assert.equal(migrations[11].name, "0012_housing_answer_history.sql");
-  assert.equal(migrations.at(-1).name, "0030_service_consents.sql");
+  assert.equal(migrations.at(-1).name, "0031_account_email_confirmation.sql");
   await db.exec(
     "create role citygo_api; create role citygo_worker; create role citygo_backup; create table citygo_migrations(name text primary key,checksum text not null)",
   );
@@ -92,6 +92,36 @@ test("literal 12-era fixture rewinds current 30, rolls back late ACL failure and
     "Execute the helper's exact static rewind, not a second copy",
   );
   assert.equal(rewind[1].includes("${"), false);
+  const confirmationUser = (
+    await db.query(
+      "insert into users(auth_subject) values('upgrade12-confirmation-canary') returning id",
+    )
+  ).rows[0].id;
+  await db.query(
+    `insert into account_email_confirmation_challenges
+     (id,user_id,email,credential_digest,session_token_hash,proof_hash,code_hash,recipient_key,expires_at)
+     values('00000000-0000-4000-8000-000000120031',$1,'upgrade12@example.test',$2,$2,$2,$2,$2,clock_timestamp()+interval '10 minutes')`,
+    [confirmationUser, "cd".repeat(32)],
+  );
+  await assert.rejects(
+    db.exec(rewind[1]),
+    /Account email confirmation history cannot be rewound/,
+  );
+  await db.exec("rollback");
+  assert.deepEqual(
+    (
+      await db.query(`select
+      (select count(*)::int from account_email_confirmation_challenges) as confirmation,
+      (select count(*)::int from citygo_migrations) as migrations,
+      to_regclass('payment_admission') is not null as admission,
+      exists(select 1 from pg_proc where proname='citygo_guard_account_email_verification_proof') as guard`)
+    ).rows,
+    [{ confirmation: 1, migrations: 31, admission: true, guard: true }],
+  );
+  // Only this in-memory fixture's canary is removed; populated real history
+  // remains a hard stop for every disposable rewind and reset helper.
+  await db.query("delete from account_email_confirmation_challenges");
+  await db.query("delete from users where id=$1", [confirmationUser]);
   const recoveryId = "00000000-0000-4000-8000-000000120028";
   await db.query(
     "insert into password_recovery_challenges(id,proof_hash,code_hash,recipient_key,expires_at) values($1,$2,$2,$2,clock_timestamp()+interval '10 minutes')",
@@ -110,7 +140,7 @@ test("literal 12-era fixture rewinds current 30, rolls back late ACL failure and
       to_regclass('payment_admission') is not null as admission,
       exists(select 1 from pg_proc where proname='citygo_guard_password_recovery') as guard`)
     ).rows,
-    [{ recovery: 1, migrations: 30, admission: true, guard: true }],
+    [{ recovery: 1, migrations: 31, admission: true, guard: true }],
     "Rejected rewind retains recovery history and rolls back earlier DDL",
   );
   // Remove only this synthetic in-memory test row before the existing empty

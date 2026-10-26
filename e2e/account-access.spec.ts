@@ -64,6 +64,17 @@ test("bootstrap password gate hides the conversation and privileged links until 
     const path = new URL(route.request().url()).pathname;
     if (path === "/api/v1/dashboard")
       return route.fulfill({ json: dashboard(state.user) });
+    if (path === "/api/v1/account/profile")
+      return route.fulfill({
+        json: {
+          userId: state.user.id,
+          email: null,
+          emailVerified: false,
+          phoneVerified: false,
+          giftStatus: "unavailable",
+          emailConfirmation: "unavailable",
+        },
+      });
     if (
       path === "/api/v1/auth/password" &&
       route.request().method() === "POST"
