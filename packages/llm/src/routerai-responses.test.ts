@@ -94,6 +94,16 @@ const full = () => [
   { type: "response.output_item.done", output_index: 1, item: item() },
   completed(),
 ];
+const nativeModel = "gpt-6.1-sol";
+const withWireModel = (events: unknown[], wireModel: unknown) =>
+  events.map((event) =>
+    event && typeof event === "object" && "response" in event
+      ? {
+          ...event,
+          response: { ...(event.response as object), model: wireModel },
+        }
+      : event,
+  );
 const wire = (events: unknown[]) =>
   events
     .map(
@@ -209,6 +219,189 @@ test("Responses uses its exact endpoint, stateless full input, pinned routing an
   assert.deepEqual(ordered, [generation, "delta", "complete"]);
   assert.equal(calls, 1);
   assert.equal(retries, 0);
+});
+
+test("RouterAI Sol accepts its one observed native wire identifier while the request and completion keep the exact canonical model", async () => {
+  let calls = 0;
+  const observed: string[] = [];
+  const p = provider(async (url, init) => {
+    calls++;
+    assert.equal(url, "https://routerai.ru/api/v1/responses");
+    assert.equal(init?.method, "POST");
+    const request = JSON.parse(String(init?.body));
+    assert.equal(request.model, model);
+    assert.deepEqual(request.provider, {
+      only: ["openai"],
+      allow_fallbacks: false,
+      country: "us",
+    });
+    return sse(withWireModel(full(), nativeModel), {
+      "x-generation-id": generation,
+    });
+  });
+  const events: ModelStreamEvent[] = [];
+  for await (const event of p.stream("i", [], new AbortController().signal, {
+    beforeRetry: async () => assert.fail("An alias must not trigger retry"),
+    billing: {
+      reference,
+      onGeneration: async (id) => {
+        observed.push(id);
+      },
+    },
+  })) {
+    observed.push(event.type);
+    events.push(event);
+  }
+  assert.equal(calls, 1);
+  assert.deepEqual(observed, [generation, "delta", "complete"]);
+  assert.deepEqual(events, [
+    { type: "delta", text },
+    { type: "complete", model, usage: { inputTokens: 23, outputTokens: 7 } },
+  ]);
+  await assert.rejects(decode(withWireModel(full(), nativeModel)));
+  assert.deepEqual(
+    await decode(withWireModel(full(), nativeModel), {
+      expectedWireModel: nativeModel,
+    }),
+    await decode(full()),
+  );
+});
+
+test("Responses native identity is exact, model-specific and immutable; missing placeholders and guessed aliases still fail closed", async () => {
+  for (const wireModel of [
+    "other/model",
+    "gpt-6.1-sol-2026-09-29",
+    "gpt-6.1-sol-pro",
+    " gpt-6.1-sol",
+    "gpt-6.1-sol ",
+    "GPT-6.1-SOL",
+    "",
+    undefined,
+    null,
+    1,
+  ]) {
+    const visible: ModelStreamEvent[] = [];
+    await assert.rejects(async () => {
+      for await (const event of provider(async () =>
+        sse(withWireModel(full(), wireModel)),
+      ).stream("i", [], new AbortController().signal))
+        visible.push(event);
+    });
+    assert.deepEqual(visible, []);
+  }
+  for (const expectedWireModel of [
+    "",
+    "other/model",
+    model,
+    [nativeModel],
+    null,
+  ])
+    await assert.rejects(decode(full(), { expectedWireModel }));
+  await assert.rejects(
+    decode(withWireModel(full(), nativeModel), {
+      expectedModel: "other/model",
+      expectedWireModel: nativeModel,
+    }),
+  );
+  await assert.rejects(
+    run(
+      new RouterAIProvider("synthetic", "other/model", {
+        protocol: "responses",
+        upstream: "openai",
+        fetch: async () => sse(withWireModel(full(), nativeModel)),
+      }),
+    ),
+  );
+  for (const [firstModel, laterModel] of [
+    [model, nativeModel],
+    [nativeModel, model],
+  ]) {
+    const events = withWireModel(full(), firstModel);
+    events[1] = {
+      type: "response.in_progress",
+      response: response({ model: laterModel }),
+    };
+    await assert.rejects(decode(events, { expectedWireModel: nativeModel }));
+    const afterText = withWireModel(full(), firstModel);
+    afterText[afterText.length - 1] = completed({ model: laterModel });
+    await assert.rejects(decode(afterText, { expectedWireModel: nativeModel }));
+  }
+});
+
+test("native Sol keeps exact final output, usage, billing identity, EOF, refusal, tools, sequence and finite stream guards", async () => {
+  const nativeCreated = () => ({
+    type: "response.created",
+    response: response({ model: nativeModel }),
+  });
+  const nativeCompleted = (patch: object = {}) =>
+    completed({ model: nativeModel, ...patch });
+  const decodeNative = (events: unknown[], patch: object = {}) =>
+    decode(events, { expectedWireModel: nativeModel, ...patch });
+  for (const patch of [
+    { id: "other-generation" },
+    { model: null },
+    { model: undefined },
+    { model: "other/model" },
+    { status: "incomplete" },
+    { error: { code: "synthetic" } },
+    { incomplete_details: { reason: "max_output_tokens" } },
+    { usage: null },
+    { usage: { input_tokens: 1, output_tokens: -1 } },
+    { usage: { input_tokens: 1, output_tokens: 2, total_tokens: 99 } },
+    {
+      output: [
+        { id: "rs_synthetic", type: "reasoning", summary: [] },
+        item("changed answer"),
+      ],
+    },
+    { output: [{ id: "tool", type: "function_call" }, item()] },
+  ])
+    await assert.rejects(
+      decodeNative([nativeCreated(), delta(), nativeCompleted(patch)]),
+    );
+  for (const events of [
+    [nativeCreated()],
+    [nativeCreated(), delta()],
+    [nativeCreated(), delta(), "[DONE]"],
+    [...withWireModel(full(), nativeModel), nativeCompleted()],
+    [
+      nativeCreated(),
+      { type: "response.refusal.delta", delta: "hidden" },
+      nativeCompleted(),
+    ],
+    [
+      nativeCreated(),
+      {
+        type: "response.output_item.added",
+        output_index: 0,
+        item: { id: "tool", type: "function_call" },
+      },
+      nativeCompleted(),
+    ],
+    [nativeCreated(), { ...delta(), content_index: 1 }, nativeCompleted()],
+    withWireModel(full(), nativeModel).map((event, i) => ({
+      ...(event as object),
+      sequence_number: i === 7 ? 1 : i,
+    })),
+  ])
+    await assert.rejects(decodeNative(events));
+  for (const patch of [{ maxOutputCharacters: 1 }, { maxStreamBytes: 1 }])
+    await assert.rejects(
+      decodeNative(withWireModel(full(), nativeModel), patch),
+    );
+  const visible: ModelStreamEvent[] = [];
+  await assert.rejects(async () => {
+    for await (const event of provider(async () =>
+      sse(withWireModel(full(), nativeModel), {
+        "x-generation-id": "other-generation",
+      }),
+    ).stream("i", [], new AbortController().signal, {
+      beforeRetry: async () => assert.fail("no retry"),
+      billing: { reference, onGeneration: async () => {} },
+    }))
+      visible.push(event);
+  });
+  assert.deepEqual(visible, []);
 });
 
 test("Responses optional DONE is accepted only after actual completion; EOF or text.done never manufacture completion", async () => {
@@ -679,7 +872,10 @@ test("Responses charge lookup accepts only its exact API plus unchanged receipt/
   for (const patch of [
     { api: "chat/completions" },
     { model: "other/model" },
+    { model: nativeModel },
     { provider: "azure" },
+    { provider: "OpenAI" },
+    { provider: null },
     { session_id: "other" },
     { source: "chat" },
     { has_web_search: true },

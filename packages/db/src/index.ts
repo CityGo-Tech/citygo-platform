@@ -31,6 +31,13 @@ export {
 } from "./email-registration.js";
 export { AiCreditLedger } from "./ai-credit.js";
 export {
+  GigaChatFixedFees,
+  parseGigaChatFixedFeeInput,
+  type GigaChatFixedFeeInput,
+  type GigaChatFixedFee,
+  type GigaChatFixedFeeState,
+} from "./gigachat-fixed-fees.js";
+export {
   parseAiRequestModeSnapshot,
   recordAiRequestMode,
   assertAiRequestModeAttempt,

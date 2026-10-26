@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createHash } from "node:crypto";
 import { readConfig } from "@citygo/config";
 import { aiModesSchema, serviceAiProcessingSchema } from "@citygo/contracts";
 import { createAssistantModes } from "./ai-modes.js";
@@ -14,6 +15,15 @@ const settings = {
     "Synthetic mode recipients, not an approved production notice.",
   AI_CREDIT_MODE: "routerai_citygo_10x",
   AI_CREDIT_RESERVATION_MODE: "fixed5_overdraft",
+};
+const fixedSettings = {
+  ...settings,
+  AI_MINIMUM_FIXED_FEE: "enabled",
+  GIGACHAT_MODEL: "GigaChat-3-Ultra",
+  GIGACHAT_SCOPE: "GIGACHAT_API_PERS",
+  GIGACHAT_CREDENTIALS: Buffer.from(
+    "synthetic-client:synthetic-secret",
+  ).toString("base64"),
 };
 test("server catalog contains only the three product labels and uses two independent exact RouterAI profiles", (t) => {
   const fetch = t.mock.method(globalThis, "fetch", async () => {
@@ -136,4 +146,171 @@ test("the legacy profile is unchanged and a catalog changes with execution limit
     readConfig({ ...settings, GIGACHAT_SCOPE: "GIGACHAT_API_B2B" }),
   )!;
   assert.notEqual(original.policy.id, other.policy.id);
+});
+
+test("fixed Minimum publishes only its product price and freezes the billing rule separately from account identity", (t) => {
+  const fetch = t.mock.method(globalThis, "fetch", async () => {
+    throw Error("Network forbidden");
+  });
+  const modes = createAssistantModes(readConfig(fixedSettings))!;
+  const route = modes.resolve(
+    { provider: "routerai", policyId: modes.policy.id, revision: 1 },
+    { aiMode: "minimum", aiModeCatalogId: modes.catalogId },
+  );
+  assert.equal(route.provider.name, "gigachat");
+  assert.equal(route.model, "GigaChat-3-Ultra");
+  assert.deepEqual(modes.modeCatalog().options[2], {
+    id: "minimum",
+    label: "Минимум",
+    available: true,
+    price: { kind: "fixed", currency: "RUB", amountMicros: 3_000_000 },
+  });
+  const pricingId = createHash("sha256")
+    .update(
+      JSON.stringify({
+        version: "citygo-gigachat-flat3-success-v1",
+        feeMicros: 3_000_000,
+        holdMicros: 5_000_000,
+        operatorCostMicros: 0,
+        model: "GigaChat-3-Ultra",
+        scope: "GIGACHAT_API_PERS",
+      }),
+    )
+    .digest("hex");
+  assert.deepEqual(route.fixedFee, {
+    pricingId,
+    accountRef: createHash("sha256")
+      .update("GIGACHAT_API_PERS\0synthetic-client")
+      .digest("hex"),
+    scope: "GIGACHAT_API_PERS",
+    leaseMs: 90_000,
+  });
+  const publicData = JSON.stringify({
+    policy: modes.policy,
+    catalog: modes.modeCatalog(),
+    execution: route.execution,
+  });
+  assert.ok(!publicData.includes(route.fixedFee!.accountRef));
+  assert.ok(!publicData.includes(fixedSettings.GIGACHAT_CREDENTIALS));
+  const rotated = createAssistantModes(
+    readConfig({
+      ...fixedSettings,
+      GIGACHAT_CREDENTIALS: Buffer.from(
+        "synthetic-client:rotated-secret",
+      ).toString("base64"),
+    }),
+  )!;
+  assert.equal(rotated.policy.id, modes.policy.id);
+  assert.equal(rotated.catalogId, modes.catalogId);
+  assert.equal(rotated.routes[2]!.execution.key, route.execution.key);
+  assert.equal(rotated.routes[2]!.fixedFee!.pricingId, pricingId);
+  assert.equal(
+    rotated.routes[2]!.fixedFee!.accountRef,
+    route.fixedFee!.accountRef,
+  );
+  const anotherAccount = createAssistantModes(
+    readConfig({
+      ...fixedSettings,
+      GIGACHAT_CREDENTIALS: Buffer.from(
+        "other-client:synthetic-secret",
+      ).toString("base64"),
+    }),
+  )!;
+  assert.notEqual(
+    anotherAccount.routes[2]!.fixedFee!.accountRef,
+    route.fixedFee!.accountRef,
+  );
+  assert.equal(anotherAccount.policy.id, modes.policy.id);
+  assert.equal(anotherAccount.catalogId, modes.catalogId);
+  assert.doesNotMatch(publicData, /synthetic-client|synthetic-secret/);
+  assert.equal(fetch.mock.callCount(), 0);
+});
+
+test("fixed Minimum requires every explicit billing and account gate; legacy free mode gains no price", () => {
+  for (const fields of [
+    { AI_MINIMUM_FIXED_FEE: "disabled" },
+    { AI_CREDIT_MODE: "disabled", AI_CREDIT_RESERVATION_MODE: "full" },
+    { AI_CREDIT_MODE: "routerai_at_cost", AI_CREDIT_RESERVATION_MODE: "full" },
+    { AI_CREDIT_RESERVATION_MODE: "full" },
+    { GIGACHAT_MODEL: "GigaChat-2" },
+    { GIGACHAT_MODEL: "" },
+    { GIGACHAT_SCOPE: "GIGACHAT_API_B2B" },
+    { GIGACHAT_SCOPE: "" },
+    { GIGACHAT_CREDENTIALS: "" },
+    { GIGACHAT_CREDENTIALS: "not a base64 key" },
+    {
+      GIGACHAT_CREDENTIALS: Buffer.from("no-client-delimiter").toString(
+        "base64",
+      ),
+    },
+    { GIGACHAT_CREDENTIALS: Buffer.from(":empty-client").toString("base64") },
+    { GIGACHAT_CREDENTIALS: Buffer.from("client:").toString("base64") },
+    {
+      GIGACHAT_CREDENTIALS: Buffer.from("bad client:secret").toString("base64"),
+    },
+    { GIGACHAT_CREDENTIALS: Buffer.from("клиент:secret").toString("base64") },
+    { LLM_PROVIDER: "disabled" },
+  ]) {
+    const modes = createAssistantModes(
+      readConfig({ ...fixedSettings, ...fields }),
+    )!;
+    assert.equal(modes.routes[2]!.provider, undefined);
+    assert.equal(modes.routes[2]!.fixedFee, undefined);
+    assert.equal(modes.modeCatalog().options[2]!.price, undefined);
+  }
+  const free = createAssistantModes(
+    readConfig({
+      ...fixedSettings,
+      AI_MINIMUM_FIXED_FEE: "disabled",
+      AI_CREDIT_MODE: "disabled",
+      AI_CREDIT_RESERVATION_MODE: "full",
+    }),
+  )!;
+  assert.equal(free.modeCatalog().options[2]!.available, true);
+  assert.equal(free.modeCatalog().options[2]!.price, undefined);
+  assert.equal(free.routes[2]!.fixedFee, undefined);
+  const flagOff = createAssistantModes(
+    readConfig({ ...fixedSettings, AI_MINIMUM_FIXED_FEE: "disabled" }),
+  )!;
+  const fixed = createAssistantModes(readConfig(fixedSettings))!;
+  assert.equal(free.policy.id, fixed.policy.id);
+  assert.notEqual(
+    flagOff.routes[2]!.execution.key,
+    fixed.routes[2]!.execution.key,
+  );
+  assert.notEqual(flagOff.catalogId, fixed.catalogId);
+  assert.deepEqual(flagOff.routes[0]!.execution, fixed.routes[0]!.execution);
+  assert.deepEqual(flagOff.routes[1]!.execution, fixed.routes[1]!.execution);
+});
+
+test("production fixed Minimum still requires the exact approved recipient bundle", () => {
+  const config = readConfig({
+    ...fixedSettings,
+    NODE_ENV: "production",
+    DATABASE_URL: "postgresql://localhost/not-used",
+    WEB_ORIGIN: "https://citygo.example",
+    TRUSTED_PROXY_CIDRS: "127.0.0.1/32",
+  });
+  const pending = createAssistantModes(config)!;
+  assert.equal(pending.routes[2]!.fixedFee, undefined);
+  assert.equal(pending.modeCatalog().options[2]!.available, false);
+  const approved = createAssistantModes({
+    ...config,
+    AI_MODES_PRODUCTION_POLICY_ID: pending.policy.id,
+  })!;
+  assert.equal(approved.modeCatalog().options[2]!.available, true);
+  assert.ok(approved.routes[2]!.fixedFee);
+  for (const change of [
+    { AI_MODES_PRODUCTION_POLICY_ID: "b".repeat(64) },
+    { AI_MODES_DATA_NOTICE: "changed recipients" },
+    { AI_MINIMUM_FIXED_FEE: "disabled" as const },
+  ]) {
+    const blocked = createAssistantModes({
+      ...config,
+      AI_MODES_PRODUCTION_POLICY_ID: pending.policy.id,
+      ...change,
+    })!;
+    assert.equal(blocked.routes[2]!.provider, undefined);
+    assert.equal(blocked.routes[2]!.fixedFee, undefined);
+  }
 });

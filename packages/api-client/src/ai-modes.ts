@@ -8,6 +8,12 @@ import {
 export const aiModeUnavailableMessage =
   "Режим сейчас недоступен. Обновите данные и выберите снова.";
 
+export function formatAiModeOptionLabel(
+  option: AiModes["options"][number],
+): string {
+  return option.price ? `${option.label} · 3 ₽ за запрос` : option.label;
+}
+
 export function isAiModeAvailable(
   modes: AiModes | undefined,
   selected: AiModeId,

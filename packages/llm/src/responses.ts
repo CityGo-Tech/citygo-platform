@@ -53,6 +53,8 @@ export async function* readResponse(
   signal: AbortSignal,
   limits: {
     expectedModel: string;
+    // One observed RouterAI wire identity for this exact canonical model only.
+    expectedWireModel?: string;
     onGeneration?: (id: unknown) => Promise<void>;
     maxOutputCharacters?: number;
     maxStreamBytes?: number;
@@ -66,7 +68,10 @@ export async function* readResponse(
     typeof limits.expectedModel !== "string" ||
     !limits.expectedModel.trim() ||
     limits.expectedModel !== limits.expectedModel.trim() ||
-    limits.expectedModel.length > 200
+    limits.expectedModel.length > 200 ||
+    (limits.expectedWireModel !== undefined &&
+      (limits.expectedModel !== "openai/gpt-6.1-sol" ||
+        limits.expectedWireModel !== "gpt-6.1-sol"))
   )
     throw invalid();
   let responseId: string | undefined,
@@ -173,7 +178,9 @@ export async function* readResponse(
       if (responseId !== undefined && responseId !== nextId) throw invalid();
       responseId = nextId;
       if (
-        response.model !== limits.expectedModel ||
+        (response.model !== limits.expectedModel &&
+          (limits.expectedWireModel === undefined ||
+            response.model !== limits.expectedWireModel)) ||
         (model !== undefined && model !== response.model)
       )
         throw invalid();
@@ -316,5 +323,7 @@ export async function* readResponse(
   signal.throwIfAborted();
   if (!terminal || !model)
     throw new Error("Responses stream ended without completed response");
-  yield { type: "complete", model, usage: terminal };
+  // Preserve the exact observed wire value throughout the stream, then expose
+  // its server-owned canonical identity. No prefix stripping or alias guessing.
+  yield { type: "complete", model: limits.expectedModel, usage: terminal };
 }

@@ -120,3 +120,34 @@ test("partial prepayment needs a new money approval while full mode and recipien
   assert.equal(updated.maxInputBytes, original.maxInputBytes);
   assert.equal(updated.maxOutputTokens, original.maxOutputTokens);
 });
+
+test("a fixed Minimum billing profile is part of the frozen execution approval", () => {
+  const config = readConfig({});
+  const policy = createAiPolicy(config, {
+    name: "gigachat",
+    model: "GigaChat-3-Ultra",
+  })!;
+  const mode = { protocol: "gigachat" as const, requestTimeoutMs: 60_000 };
+  const before = createAiExecution(config, policy, mode);
+  const fixed = createAiExecution(config, policy, {
+    ...mode,
+    billingProfile: { pricingId: "a".repeat(64) },
+  });
+  assert.notEqual(fixed.key, before.key);
+  assert.notEqual(
+    fixed.key,
+    createAiExecution(config, policy, {
+      ...mode,
+      billingProfile: { pricingId: "b".repeat(64) },
+    }).key,
+  );
+  assert.deepEqual(fixed.policy, before.policy);
+  assert.deepEqual(
+    fixed,
+    createAiExecution(
+      { ...config, GIGACHAT_CREDENTIALS: "rotated-private-key" },
+      policy,
+      { ...mode, billingProfile: { pricingId: "a".repeat(64) } },
+    ),
+  );
+});

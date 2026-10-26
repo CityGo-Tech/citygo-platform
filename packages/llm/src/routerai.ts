@@ -192,6 +192,9 @@ export class RouterAIProvider implements StreamingProvider {
       if (responses) {
         yield* readResponse(response.body, deadline, {
           expectedModel: this.model,
+          ...(this.model === "openai/gpt-6.1-sol"
+            ? { expectedWireModel: "gpt-6.1-sol" }
+            : {}),
           maxOutputCharacters: 128000,
           maxStreamBytes: 16 * 1024 * 1024,
           onGeneration: recordGeneration,

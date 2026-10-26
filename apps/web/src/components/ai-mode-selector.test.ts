@@ -33,9 +33,40 @@ test("legacy server has no selector; the new selector shows only public names an
   assert.match(html, /Максимум/);
   assert.match(html, /Баланс/);
   assert.match(html, /Минимум/);
+  assert.doesNotMatch(html, /за запрос/);
   assert.doesNotMatch(
     html,
     /RouterAI|OpenAI|DeepSeek|GigaChat|резерв|×10|catalogId|[a-f0-9]{64}/i,
   );
   assert.match(render(modes, true), /<select[^>]*disabled=""/);
+});
+
+test("fixed Minimum price is visible without changing its ID or availability", () => {
+  const catalog: AiModes = {
+    ...modes,
+    options: modes.options.map((option) =>
+      option.id === "minimum"
+        ? {
+            ...option,
+            price: {
+              kind: "fixed",
+              currency: "RUB",
+              amountMicros: 3_000_000,
+            },
+          }
+        : option,
+    ),
+  };
+  const html = render(catalog);
+  assert.match(
+    html,
+    /value="minimum" disabled="">Минимум · 3 ₽ за запрос — временно недоступен<\/option>/,
+  );
+  assert.match(html, /value="maximum">Максимум<\/option>/);
+  assert.match(html, /value="balanced" selected="">Баланс<\/option>/);
+  assert.doesNotMatch(
+    html,
+    /amountMicros|fixed|RUB|RouterAI|GigaChat|резерв|×10/i,
+  );
+  assert.match(render(catalog, true), /<select[^>]*disabled=""/);
 });

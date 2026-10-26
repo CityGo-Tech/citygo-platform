@@ -2,6 +2,7 @@
 import * as React from "react";
 import { SelectField } from "@citygo/ui-web";
 import { aiModeIdSchema, type AiModeId, type AiModes } from "@citygo/contracts";
+import { formatAiModeOptionLabel } from "@citygo/api-client";
 
 export function AiModeSelector({
   modes,
@@ -34,7 +35,7 @@ export function AiModeSelector({
     >
       {modes.options.map((option) => (
         <option key={option.id} value={option.id} disabled={!option.available}>
-          {option.label}
+          {formatAiModeOptionLabel(option)}
           {!option.available ? " — временно недоступен" : ""}
         </option>
       ))}

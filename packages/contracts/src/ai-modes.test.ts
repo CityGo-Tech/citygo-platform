@@ -46,6 +46,33 @@ test("public mode capability has exactly three opaque choices and a balanced def
     assert.equal(aiModesSchema.safeParse(value).success, false);
 });
 
+test("only Minimum may advertise the exact fixed CityGo price", () => {
+  const price = { kind: "fixed", currency: "RUB", amountMicros: 3_000_000 };
+  const withPrice = (id: string, value: unknown) => ({
+    ...modes,
+    options: modes.options.map((option) =>
+      option.id === id ? { ...option, price: value } : option,
+    ),
+  });
+  assert.deepEqual(
+    aiModesSchema.parse(withPrice("minimum", price)),
+    withPrice("minimum", price),
+  );
+  assert.equal(aiModesSchema.safeParse(modes).success, true);
+  for (const [id, value] of [
+    ["maximum", price],
+    ["balanced", price],
+    ["minimum", { ...price, amountMicros: 3 }],
+    ["minimum", { ...price, amountMicros: 5_000_000 }],
+    ["minimum", { ...price, currency: "USD" }],
+    ["minimum", { ...price, kind: "actual" }],
+    ["minimum", { ...price, providerCost: 0 }],
+    ["minimum", { ...price, reserve: 5_000_000 }],
+    ["minimum", null],
+  ] as const)
+    assert.equal(aiModesSchema.safeParse(withPrice(id, value)).success, false);
+});
+
 test("chat mode is paired with its exact catalog while legacy requests remain valid", () => {
   const legacy = {
     text: "Последний вопрос",

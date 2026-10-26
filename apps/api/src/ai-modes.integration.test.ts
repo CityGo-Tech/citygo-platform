@@ -17,10 +17,26 @@ import { buildApp } from "./app.js";
 import { createAssistantModes, type ModeProviders } from "./ai-modes.js";
 import { syntheticConsentsFor } from "./test-service-consents.js";
 
-async function fixture(t: TestContext, minimum = false) {
+async function fixture(
+  t: TestContext,
+  options: { minimum?: "free" | "fixed" } = {},
+) {
+  const minimum = options.minimum !== undefined;
+  const freeMinimum = options.minimum === "free";
+  const fixedMinimum = options.minimum === "fixed";
   const db = await connectDatabase("pglite://:memory:");
   const cleanup: { app?: Awaited<ReturnType<typeof buildApp>> } = {};
+  let markMinimumStarted!: () => void;
+  let releaseMinimum!: () => void;
+  const minimumStarted = new Promise<void>((resolve) => {
+    markMinimumStarted = resolve;
+  });
+  const minimumGate = new Promise<void>((resolve) => {
+    releaseMinimum = resolve;
+  });
+  const control = { blockMinimum: false };
   t.after(async () => {
+    releaseMinimum();
     await cleanup.app?.close();
     await db.close();
   });
@@ -37,12 +53,35 @@ async function fixture(t: TestContext, minimum = false) {
       model: "GigaChat-3-Ultra",
       async *stream(_instructions, messages, _signal, guard) {
         assert.equal(guard?.billing, undefined);
+        let held = "0";
+        if (fixedMinimum) {
+          const fees = (
+            await db.query<{
+              state: string;
+              held: string;
+              snapshot: Record<string, unknown>;
+            }>(
+              `select f.state,f.snapshot,e.amount_micros::text as held
+ from gigachat_request_fees f join ai_credit_entries e on e.operation_id=f.hold_id and e.kind='hold'
+ where f.state='dispatched'`,
+            )
+          ).rows;
+          assert.equal(fees.length, 1);
+          assert.equal(fees[0]!.held, "5000000");
+          assert.equal(fees[0]!.snapshot.feeCitygoMicros, 3000000);
+          assert.equal(fees[0]!.snapshot.operatorCostRubMicros, 0);
+          held = fees[0]!.held;
+        }
         calls.push({
           mode: "minimum",
           messages: structuredClone(messages),
-          held: "0",
+          held,
         });
+        markMinimumStarted();
+        if (control.blockMinimum) await minimumGate;
         yield { type: "delta", text: "Синтетический ответ minimum" };
+        if (failures.has("minimum"))
+          throw Error("Synthetic Minimum stream interrupted");
         yield {
           type: "complete",
           model: "GigaChat-3-Ultra",
@@ -109,12 +148,20 @@ async function fixture(t: TestContext, minimum = false) {
     LLM_PROVIDER: "routerai",
     AI_ASSISTANT_MODES: "enabled",
     AI_MODES_DATA_NOTICE: "Synthetic recipients only.",
-    AI_CREDIT_MODE: minimum ? "disabled" : "routerai_citygo_10x",
-    AI_CREDIT_RESERVATION_MODE: minimum ? "full" : "fixed5_overdraft",
+    AI_CREDIT_MODE: freeMinimum ? "disabled" : "routerai_citygo_10x",
+    AI_CREDIT_RESERVATION_MODE: freeMinimum ? "full" : "fixed5_overdraft",
     ...(minimum
       ? {
           GIGACHAT_MODEL: "GigaChat-3-Ultra",
           GIGACHAT_SCOPE: "GIGACHAT_API_PERS",
+          ...(fixedMinimum
+            ? {
+                AI_MINIMUM_FIXED_FEE: "enabled",
+                GIGACHAT_CREDENTIALS: Buffer.from(
+                  "synthetic-http-account:synthetic-http-secret",
+                ).toString("base64"),
+              }
+            : {}),
         }
       : {}),
     ROUTERAI_MODEL: "deepseek/deepseek-v4-pro-0813",
@@ -127,7 +174,7 @@ async function fixture(t: TestContext, minimum = false) {
     [
       JSON.stringify(
         modes.routes
-          .filter((route) => route.provider)
+          .filter((route) => route.provider && !route.fixedFee)
           .map((route) => ({
             ...route.execution,
             attemptCeilingMicros: 6000000,
@@ -135,7 +182,7 @@ async function fixture(t: TestContext, minimum = false) {
       ),
     ],
   );
-  if (minimum)
+  if (freeMinimum)
     await db.query(
       "update ai_budget set mode='fixed',daily_limit_micros=100000000,total_limit_micros=100000000 where id=1",
     );
@@ -169,7 +216,7 @@ async function fixture(t: TestContext, minimum = false) {
     false,
     "fixed5_overdraft",
   );
-  if (!minimum)
+  if (!freeMinimum)
     await ledger.topUpConfirmed(board.user.id, randomUUID(), {
       providerPaymentId: "synthetic-mode-payment-" + randomUUID(),
       merchantId: "synthetic-shop",
@@ -215,6 +262,9 @@ async function fixture(t: TestContext, minimum = false) {
     reads,
     failures,
     balance,
+    control,
+    minimumStarted,
+    releaseMinimum,
   };
 }
 
@@ -306,7 +356,7 @@ test("HTTP mode switching preserves one conversation and last question, holds fi
 });
 
 test("an isolated unpaid Minimum route stays direct and does not inherit the RouterAI upstream or create a money hold", async (t) => {
-  const f = await fixture(t, true);
+  const f = await fixture(t, { minimum: "free" });
   assert.equal(
     f.board.aiAccess.modes!.options.find((mode) => mode.id === "minimum")!
       .available,
@@ -427,3 +477,243 @@ test("an unresolved Maximum charge is reconciled by its original profile and blo
   assert.equal(repeated.statusCode, 200);
   assert.equal(f.reads.length, 2);
 });
+
+test("HTTP fixed Minimum keeps all three modes in one history and charges three only after success while RouterAI stays times ten", async (t) => {
+  const f = await fixture(t, { minimum: "fixed" });
+  assert.deepEqual(f.board.aiAccess.modes!.options[2], {
+    id: "minimum",
+    label: "Минимум",
+    available: true,
+    price: { kind: "fixed", currency: "RUB", amountMicros: 3_000_000 },
+  });
+  assert.match(
+    (await f.send("balanced", "Первый вопрос о переезде")).body,
+    /"type":"done"/,
+  );
+  const beforeMinimumOperator = (
+    await f.db.query("select * from ai_budget_daily")
+  ).rows;
+  assert.match(
+    (await f.send("minimum", "Второй вопрос: с чего начать?")).body,
+    /"type":"done"/,
+  );
+  assert.deepEqual(
+    (await f.db.query("select * from ai_budget_daily")).rows,
+    beforeMinimumOperator,
+    "the product fee must not fabricate operator expense",
+  );
+  assert.match(
+    (await f.send("maximum", "Последний вопрос: что сделать сегодня?")).body,
+    /"type":"done"/,
+  );
+  assert.deepEqual(
+    f.calls.map((call) => [call.mode, call.held]),
+    [
+      ["balanced", "5000000"],
+      ["minimum", "5000000"],
+      ["maximum", "5000000"],
+    ],
+  );
+  assert.deepEqual(f.calls[2]!.messages.slice(1), [
+    { role: "user", content: "Первый вопрос о переезде" },
+    { role: "assistant", content: "Синтетический ответ balanced" },
+    { role: "user", content: "Второй вопрос: с чего начать?" },
+    { role: "assistant", content: "Синтетический ответ minimum" },
+    { role: "user", content: "Последний вопрос: что сделать сегодня?" },
+  ]);
+  assert.deepEqual(f.reads, ["balanced", "maximum"]);
+  const balance = await f.balance();
+  assert.equal(balance.spentMicros, 6_000_000);
+  assert.equal(balance.availableMicros, 94_000_000);
+  assert.equal(balance.heldMicros, 0);
+  const fee = (
+    await f.db.query<{
+      state: string;
+      response_message_id: string;
+      snapshot: Record<string, unknown>;
+    }>("select state,response_message_id,snapshot from gigachat_request_fees")
+  ).rows;
+  assert.equal(fee.length, 1);
+  assert.equal(fee[0]!.state, "succeeded");
+  assert.ok(fee[0]!.response_message_id);
+  assert.equal(fee[0]!.snapshot.feeCitygoMicros, 3_000_000);
+  assert.equal(fee[0]!.snapshot.operatorCostRubMicros, 0);
+  assert.deepEqual(
+    (
+      await f.db.query(
+        "select money_currency,money_reserved_micros,money_rule_key from ai_model_attempts where provider='gigachat'",
+      )
+    ).rows,
+    [
+      {
+        money_currency: null,
+        money_reserved_micros: null,
+        money_rule_key: null,
+      },
+    ],
+  );
+  assert.equal(
+    (await f.db.query("select 1 from ai_credit_charges")).rows.length,
+    2,
+  );
+  const reloaded = await f.call(
+    "GET",
+    `/v1/conversations/${f.threadId}`,
+    f.token,
+  );
+  assert.equal(reloaded.statusCode, 200, reloaded.body);
+  assert.deepEqual(
+    reloaded
+      .json<{ thread: { messages: { content: string }[] } }>()
+      .thread.messages.map((message) => message.content),
+    [
+      "Первый вопрос о переезде",
+      "Синтетический ответ balanced",
+      "Второй вопрос: с чего начать?",
+      "Синтетический ответ minimum",
+      "Последний вопрос: что сделать сегодня?",
+      "Синтетический ответ maximum",
+    ],
+  );
+});
+
+test("HTTP interrupted fixed Minimum returns the five-ruble hold and rejects duplicate dispatch without a fabricated charge", async (t) => {
+  const f = await fixture(t, { minimum: "fixed" });
+  f.failures.add("minimum");
+  const id = randomUUID();
+  const failed = await f.send("minimum", "Один прерванный ответ", id);
+  assert.match(failed.body, /"code":"STREAM_INTERRUPTED"/);
+  assert.doesNotMatch(failed.body, /"type":"done"/);
+  const balance = await f.balance();
+  assert.equal(balance.heldMicros, 0);
+  assert.equal(balance.spentMicros, 0);
+  assert.equal(balance.availableMicros, 100_000_000);
+  assert.deepEqual(
+    (await f.db.query("select state from gigachat_request_fees")).rows,
+    [{ state: "failed" }],
+  );
+  assert.equal(f.calls.length, 1);
+  assert.equal(
+    (await f.send("minimum", "Один прерванный ответ", id)).statusCode,
+    409,
+  );
+  assert.equal(f.calls.length, 1);
+  assert.equal(f.reads.length, 0);
+  assert.equal(
+    (await f.db.query("select 1 from ai_model_attempts")).rows.length,
+    1,
+  );
+  assert.equal(
+    (await f.db.query("select 1 from gigachat_request_fees")).rows.length,
+    1,
+  );
+  assert.equal(
+    (await f.db.query("select 1 from ai_credit_charges")).rows.length,
+    0,
+  );
+});
+
+test("HTTP fixed Minimum obeys the global administrative stop before provider transport and money hold", async (t) => {
+  const f = await fixture(t, { minimum: "fixed" });
+  await f.db.query("update ai_budget set enabled=false where id=1");
+  const board = dashboardResponseSchema.parse(
+    (await f.call("GET", "/v1/dashboard", f.token)).json(),
+  );
+  assert.equal(board.aiAccess.modes!.options[2]!.available, false);
+  const stopped = await f.send("minimum", "Не отправлять провайдеру");
+  assert.match(stopped.body, /"code":"AI_BUDGET_UNAVAILABLE"/);
+  assert.equal(f.calls.length, 0);
+  assert.equal(f.reads.length, 0);
+  assert.equal((await f.balance()).availableMicros, 100_000_000);
+  for (const table of [
+    "ai_model_attempts",
+    "gigachat_request_fees",
+    "ai_credit_charges",
+  ])
+    assert.equal((await f.db.query(`select 1 from ${table}`)).rows.length, 0);
+  assert.equal(
+    (await f.db.query("select 1 from ai_credit_entries where kind='hold'")).rows
+      .length,
+    0,
+  );
+});
+
+test(
+  "HTTP fixed Minimum account capacity refuses a concurrent different user without charging and releases the slot after completion",
+  { timeout: 20_000 },
+  async (t) => {
+    const f = await fixture(t, { minimum: "fixed" });
+    const second = await f.call("POST", "/v1/auth/register", "", {
+      email: randomUUID() + "@example.test",
+      password: "123456",
+      consents: await syntheticConsentsFor(f.app),
+    });
+    assert.equal(second.statusCode, 200, second.body);
+    const token = second.cookies[0]!.value;
+    const board = dashboardResponseSchema.parse(
+      (await f.call("GET", "/v1/dashboard", token)).json(),
+    );
+    const ledger = new AiCreditLedger(
+      f.db,
+      "routerai_citygo_10x",
+      false,
+      "fixed5_overdraft",
+    );
+    await ledger.topUpConfirmed(board.user.id, randomUUID(), {
+      providerPaymentId: "synthetic-concurrent-payment-" + randomUUID(),
+      merchantId: "synthetic-shop",
+      paidKopeks: 10000,
+      currency: "RUB",
+      test: false,
+      verifiedAt: new Date().toISOString(),
+      verification: "server_get_succeeded",
+    });
+    const conversation = await f.call(
+      "POST",
+      "/v1/conversations/start",
+      token,
+      { agentKey: "support" },
+    );
+    assert.equal(conversation.statusCode, 200, conversation.body);
+    const thread = conversation.json<{ id: string }>().id;
+    const sendSecond = () =>
+      f.call("POST", `/v1/threads/${thread}/messages`, token, {
+        text: "Второй владелец ждёт свободный режим",
+        requestId: randomUUID(),
+        aiMode: "minimum",
+        aiModeCatalogId: f.modes.catalogId,
+        policyId: f.modes.policy.id,
+        creditReservationMode: "fixed5_overdraft",
+      });
+    f.control.blockMinimum = true;
+    const pending = f.send("minimum", "Первый владелец занял режим");
+    await f.minimumStarted;
+    try {
+      const active = await f.balance();
+      assert.equal(active.heldMicros, 5_000_000);
+      assert.equal(active.availableMicros, 95_000_000);
+      assert.equal(active.pending!.length, 1);
+      assert.equal(active.pending![0]!.amountMicros, 5_000_000);
+      assert.equal(active.pending![0]!.responseComplete, false);
+      const busy = await sendSecond();
+      assert.match(busy.body, /"code":"AI_MODE_UNAVAILABLE"/);
+      assert.equal(f.calls.length, 1);
+      const balance = await ledger.status(board.user.id);
+      assert.equal(balance.heldMicros, 0);
+      assert.equal(balance.spentMicros, 0);
+      assert.equal(balance.availableMicros, 100_000_000);
+      assert.equal(
+        (await f.db.query("select 1 from gigachat_request_fees")).rows.length,
+        1,
+      );
+    } finally {
+      f.releaseMinimum();
+    }
+    assert.match((await pending).body, /"type":"done"/);
+    f.control.blockMinimum = false;
+    assert.match((await sendSecond()).body, /"type":"done"/);
+    assert.equal(f.calls.length, 2);
+    assert.equal((await ledger.status(board.user.id)).spentMicros, 3_000_000);
+    assert.equal(f.reads.length, 0);
+  },
+);

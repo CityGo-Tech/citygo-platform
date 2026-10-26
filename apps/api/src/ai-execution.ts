@@ -9,6 +9,7 @@ export function createAiExecution(
     protocol: "responses" | "chat/completions" | "gigachat";
     requestTimeoutMs: number;
     reasoningEffort?: string;
+    billingProfile?: { pricingId: string };
   },
 ): AiExecution {
   const limits = {

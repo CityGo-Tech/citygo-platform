@@ -132,6 +132,7 @@ export const serverConfigSchema = z.object({
   ROUTERAI_REQUEST_TIMEOUT_MS: optionalIntegerSetting(1000, 240000),
   // A separate, explicit rollout. The legacy single-route profile stays intact.
   AI_ASSISTANT_MODES: z.enum(["disabled", "enabled"]).default("disabled"),
+  AI_MINIMUM_FIXED_FEE: z.enum(["disabled", "enabled"]).default("disabled"),
   AI_MODES_PRODUCTION_POLICY_ID: optionalSetting.pipe(
     z
       .string()

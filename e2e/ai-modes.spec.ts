@@ -21,7 +21,11 @@ const composer = (page: Page) =>
 /** Only synthetic HTTP/SSE responses; every provider destination is blocked. */
 async function fixture(
   context: BrowserContext,
-  options: { legacy?: boolean; minimumAvailable?: boolean } = {},
+  options: {
+    legacy?: boolean;
+    minimumAvailable?: boolean;
+    minimumPrice?: boolean;
+  } = {},
 ) {
   const messages: Message[] = [
     {
@@ -101,6 +105,15 @@ async function fixture(
                   id: "minimum" as const,
                   label: "Минимум",
                   available: options.minimumAvailable ?? true,
+                  ...(options.minimumPrice
+                    ? {
+                        price: {
+                          kind: "fixed" as const,
+                          currency: "RUB" as const,
+                          amountMicros: 3_000_000,
+                        },
+                      }
+                    : {}),
                 },
               ],
             },
@@ -235,11 +248,20 @@ test("mode switches affect only the next explicit question and remain frozen thr
   page,
   context,
 }, info) => {
-  const state = await fixture(context);
+  const state = await fixture(context, { minimumPrice: true });
   state.holdStream = true;
   state.holdRefresh = true;
   await page.goto("/");
   await expect(selector(page)).toHaveValue("balanced");
+  await expect(selector(page).locator('option[value="minimum"]')).toHaveText(
+    "Минимум · 3 ₽ за запрос",
+  );
+  await expect(selector(page).locator('option[value="maximum"]')).toHaveText(
+    "Максимум",
+  );
+  await expect(selector(page).locator('option[value="balanced"]')).toHaveText(
+    "Баланс",
+  );
   await selector(page).selectOption("maximum");
   expect(state.sends).toEqual([]);
   await composer(page).fill("ПЕРВЫЙ_КОНТРОЛЬНЫЙ_ВОПРОС");
@@ -303,6 +325,9 @@ test("unavailable modes and a failed request never fall back, retry or carry sel
   await expect(
     selector(page).getByRole("option", { name: /^Минимум/ }),
   ).toHaveJSProperty("disabled", true);
+  await expect(
+    selector(page).locator('option[value="minimum"]'),
+  ).not.toContainText("за запрос");
   await selector(page).selectOption("maximum");
   await composer(page).fill("СОХРАНИТЬ_ПРИ_ОШИБКЕ");
   await page.getByRole("button", { name: "Отправить", exact: true }).click();

@@ -61,6 +61,8 @@ const tables = [
   "phone_contact_bindings",
   "phone_contact_changes",
   "ai_request_modes",
+  "gigachat_request_fees",
+  "gigachat_account_leases",
   "questionnaire_answers",
   "quests",
   "r1_housing_brief_revisions",
@@ -121,6 +123,8 @@ const preserved = [
   "phone_contact_bindings",
   "phone_contact_changes",
   "ai_request_modes",
+  "gigachat_request_fees",
+  "gigachat_account_leases",
   // No retention/anti-abuse deletion is authorized by the old TEST reset.
   "password_recovery_challenges",
   "account_email_confirmation_challenges",
@@ -432,6 +436,14 @@ async function inspect(tx: Sql, options: Options) {
       code: "AI_REQUEST_MODE_HISTORY_REQUIRES_REVIEW",
       count: snapshot.counts.ai_request_modes,
     });
+  const gigachatHistoryCount =
+    snapshot.counts.gigachat_request_fees! +
+    snapshot.counts.gigachat_account_leases!;
+  if (gigachatHistoryCount)
+    blockers.push({
+      code: "GIGACHAT_HISTORY_REQUIRES_REVIEW",
+      count: gigachatHistoryCount,
+    });
   const phoneHistoryCount = [
     "phone_verification_challenges",
     "phone_verification_sends",
@@ -571,9 +583,18 @@ export class FreshAccountReset {
       // reject ANY accepted mode evidence; no new parent deletion is added.
       if (
         snapshot.counts.ai_request_modes !== 0 ||
-        (await tx.query("select 1 from ai_request_modes limit 1")).rows.length
+        (await tx.query("select 1 from ai_request_modes limit 1")).rows
+          .length ||
+        snapshot.counts.gigachat_request_fees !== 0 ||
+        snapshot.counts.gigachat_account_leases !== 0 ||
+        (await tx.query("select 1 from gigachat_request_fees limit 1")).rows
+          .length ||
+        (await tx.query("select 1 from gigachat_account_leases limit 1")).rows
+          .length
       )
-        refuse("История режимов ИИ требует отдельного сохранения и ревью");
+        refuse(
+          "История режимов и фиксированных списаний ИИ требует отдельного сохранения и ревью",
+        );
       // Truncate only reviewed child tables. Even EMPTY admission history has a
       // users FK and immutable TRUNCATE guard; it must never join this command.
       // Retained phone evidence also references credit entries. Even when empty
@@ -590,6 +611,8 @@ export class FreshAccountReset {
           ),
           ...protectedEmpty,
           "ai_request_modes",
+          "gigachat_request_fees",
+          "gigachat_account_leases",
         ]
           .map((name) => `public.${name}`)
           .join(",")}`,

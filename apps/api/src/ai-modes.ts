@@ -25,6 +25,43 @@ export const assistantModeModels = {
   balanced: "deepseek/deepseek-v4-pro-0813",
 } as const;
 export type ModeProviders = Partial<Record<AiModeId, StreamingProvider>>;
+export type ModeFixedFee = {
+  pricingId: string;
+  accountRef: string;
+  scope: "GIGACHAT_API_PERS";
+  leaseMs: number;
+};
+
+// Capacity belongs to the API account, not a rotatable authorization secret.
+// Fail closed instead of inventing a fallback account identity.
+function minimumAccountReference(credentials: string | undefined) {
+  if (
+    !credentials ||
+    credentials.length > 4096 ||
+    !/^[A-Za-z0-9+/]+={0,2}$/.test(credentials)
+  )
+    return undefined;
+  const bytes = Buffer.from(credentials, "base64");
+  if (
+    bytes.toString("base64").replace(/=+$/, "") !==
+      credentials.replace(/=+$/, "") ||
+    (credentials.includes("=") && bytes.toString("base64") !== credentials) ||
+    bytes.some((byte) => byte < 0x21 || byte > 0x7e)
+  )
+    return undefined;
+  const decoded = bytes.toString("ascii");
+  const separator = decoded.indexOf(":");
+  const clientId = decoded.slice(0, separator);
+  if (
+    separator < 1 ||
+    separator === decoded.length - 1 ||
+    !/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(clientId)
+  )
+    return undefined;
+  return createHash("sha256")
+    .update("GIGACHAT_API_PERS\0" + clientId)
+    .digest("hex");
+}
 
 // No browser-provided model, URL, upstream or credentials reach a constructor.
 // A mode is a server-owned profile, not a change to the global routing row.
@@ -33,6 +70,27 @@ export function createAssistantModes(
   injected: ModeProviders = {},
 ) {
   if (config.AI_ASSISTANT_MODES !== "enabled") return null;
+  const minimumAccountRef =
+    config.AI_MINIMUM_FIXED_FEE === "enabled"
+      ? minimumAccountReference(config.GIGACHAT_CREDENTIALS)
+      : undefined;
+  const minimumFixedConfigured =
+    config.AI_MINIMUM_FIXED_FEE === "enabled" &&
+    config.AI_CREDIT_MODE === "routerai_citygo_10x" &&
+    config.AI_CREDIT_RESERVATION_MODE === "fixed5_overdraft" &&
+    config.GIGACHAT_MODEL === "GigaChat-3-Ultra" &&
+    config.GIGACHAT_SCOPE === "GIGACHAT_API_PERS" &&
+    Boolean(minimumAccountRef);
+  const minimumPricingId = minimumFixedConfigured
+    ? hash({
+        version: "citygo-gigachat-flat3-success-v1",
+        feeMicros: 3_000_000,
+        holdMicros: 5_000_000,
+        operatorCostMicros: 0,
+        model: "GigaChat-3-Ultra",
+        scope: "GIGACHAT_API_PERS",
+      })
+    : undefined;
   const specifications = aiModeIds.map((id) => {
     const providerName = id === "minimum" ? "gigachat" : "routerai";
     const model =
@@ -92,6 +150,9 @@ export function createAssistantModes(
             config.LLM_REQUEST_TIMEOUT_MS),
       ...(id !== "minimum" && routeConfig.ROUTERAI_REASONING_EFFORT
         ? { reasoningEffort: routeConfig.ROUTERAI_REASONING_EFFORT }
+        : {}),
+      ...(id === "minimum" && minimumPricingId
+        ? { billingProfile: { pricingId: minimumPricingId } }
         : {}),
     });
     return {
@@ -179,8 +240,10 @@ export function createAssistantModes(
         if (
           !provider &&
           specification.id === "minimum" &&
-          config.NODE_ENV !== "production" &&
-          config.AI_CREDIT_MODE === "disabled" &&
+          (minimumFixedConfigured ||
+            (config.AI_MINIMUM_FIXED_FEE === "disabled" &&
+              config.NODE_ENV !== "production" &&
+              config.AI_CREDIT_MODE === "disabled")) &&
           config.GIGACHAT_CREDENTIALS &&
           config.GIGACHAT_MODEL &&
           config.GIGACHAT_SCOPE
@@ -196,28 +259,55 @@ export function createAssistantModes(
             },
           );
         }
-        // Tokens alone are not a confirmed rouble charge. Never enable a paid
-        // direct route until this account's billing evidence is implemented.
+        // The explicit fixed tariff does not infer operator cost from tokens.
+        // Every other charged route still needs a verified RouterAI receipt.
         if (
           config.AI_CREDIT_MODE !== "disabled" &&
-          (provider?.name !== "routerai" || !provider.readCharge)
+          (provider?.name !== "routerai" || !provider.readCharge) &&
+          !(specification.id === "minimum" && minimumFixedConfigured)
         )
           provider = undefined;
-        if (config.NODE_ENV === "production" && specification.id === "minimum")
+        if (
+          specification.id === "minimum" &&
+          ((config.NODE_ENV === "production" && !minimumFixedConfigured) ||
+            (config.AI_MINIMUM_FIXED_FEE === "enabled" &&
+              !minimumFixedConfigured))
+        )
           provider = undefined;
       } catch {
         provider = undefined;
       }
     }
-    return { ...specification, provider };
+    const fixedFee: ModeFixedFee | undefined =
+      specification.id === "minimum" &&
+      provider &&
+      minimumFixedConfigured &&
+      minimumPricingId
+        ? {
+            pricingId: minimumPricingId,
+            accountRef: minimumAccountRef!,
+            scope: "GIGACHAT_API_PERS",
+            leaseMs: Math.max(90_000, config.LLM_REQUEST_TIMEOUT_MS + 30_000),
+          }
+        : undefined;
+    return { ...specification, provider, fixedFee };
   });
   const modeCatalog = (): AiModes => ({
     catalogId,
     defaultMode: "balanced",
-    options: routes.map(({ id, provider }) => ({
+    options: routes.map(({ id, provider, fixedFee }) => ({
       id,
       label: aiModeLabels[id],
       available: Boolean(provider),
+      ...(fixedFee
+        ? {
+            price: {
+              kind: "fixed" as const,
+              currency: "RUB" as const,
+              amountMicros: 3_000_000 as const,
+            },
+          }
+        : {}),
     })),
   });
   const ready = (current: AiRouting) =>

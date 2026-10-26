@@ -6,6 +6,7 @@ import {
   captureAiModeSelection,
   aiModeUnavailableMessage,
   isAiModeAvailable,
+  formatAiModeOptionLabel,
 } from "./index.js";
 const modes = (): AiModes => ({
   catalogId: "a".repeat(64),
@@ -15,6 +16,19 @@ const modes = (): AiModes => ({
     label: aiModeLabels[id],
     available: true,
   })),
+});
+
+test("public fixed-price text is optional and remains outside the captured request", () => {
+  const catalog = modes();
+  const minimum = catalog.options.find((option) => option.id === "minimum")!;
+  assert.equal(formatAiModeOptionLabel(minimum), "Минимум");
+  minimum.price = { kind: "fixed", currency: "RUB", amountMicros: 3_000_000 };
+  assert.equal(formatAiModeOptionLabel(minimum), "Минимум · 3 ₽ за запрос");
+  assert.equal(formatAiModeOptionLabel(catalog.options[0]!), "Максимум");
+  assert.deepEqual(captureAiModeSelection(catalog, "minimum"), {
+    aiMode: "minimum",
+    aiModeCatalogId: "a".repeat(64),
+  });
 });
 
 test("submission captures an independent mode capability and never chooses a fallback", () => {
@@ -58,7 +72,13 @@ test("stream sends one frozen mode selection with fixed5 and no mutation or auto
       );
     },
   });
-  const selection = captureAiModeSelection(modes(), "minimum")!;
+  const catalog = modes();
+  catalog.options.find((option) => option.id === "minimum")!.price = {
+    kind: "fixed",
+    currency: "RUB",
+    amountMicros: 3_000_000,
+  };
+  const selection = captureAiModeSelection(catalog, "minimum")!;
   const pending = client.stream(
     "1",
     "Последний вопрос",

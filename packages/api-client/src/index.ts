@@ -122,6 +122,7 @@ import {
 import { readEvents } from "./sse.js";
 export {
   captureAiModeSelection,
+  formatAiModeOptionLabel,
   isAiModeAvailable,
   aiModeUnavailableMessage,
 } from "./ai-modes.js";

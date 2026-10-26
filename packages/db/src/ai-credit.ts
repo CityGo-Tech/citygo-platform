@@ -54,6 +54,7 @@ export class AiCreditLedger {
     private chargingStatus: AiCredit["chargingStatus"] = "not_connected",
     private topUpAvailable: boolean | (() => Promise<boolean>) = false,
     private reservationMode: AiCreditReservationMode = "full",
+    private includeGigaFixedFees = false,
   ) {}
 
   private async lock(tx: Sql, userId: string, actorId?: string) {
@@ -115,10 +116,18 @@ export class AiCreditLedger {
         'amountMicros',e.amount_micros,'createdAt',to_char(e.created_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')) order by e.id desc)
         from (select id,kind,amount_micros,created_at from ai_credit_entries where user_id=$1 order by id desc limit 20) e),'[]'::jsonb) as history,
       coalesce((select jsonb_agg(jsonb_build_object('holdId',p.hold_id,'amountMicros',p.amount_micros,'responseComplete',p.response_complete))
-        from (select c.hold_id,e.amount_micros,c.response_complete from ai_credit_charges c
+        from (select c.hold_id,e.amount_micros,c.response_complete,c.created_at from ai_credit_charges c
           join ai_credit_entries e on e.operation_id=c.hold_id where c.user_id=$1
           and not exists(select 1 from ai_credit_entries r where r.hold_id=c.hold_id)
-          order by c.created_at desc limit 20) p),'[]'::jsonb) as pending,
+          ${
+            this.includeGigaFixedFees
+              ? `union all select f.hold_id,e.amount_micros,false as response_complete,f.created_at
+          from gigachat_request_fees f join ai_credit_entries e on e.operation_id=f.hold_id
+          where f.user_id=$1 and f.state in ('reserved','dispatched')
+          and not exists(select 1 from ai_credit_entries r where r.hold_id=f.hold_id)`
+              : ""
+          }
+          order by created_at desc limit 20) p),'[]'::jsonb) as pending,
       (select coalesce(sum(d.principal_micros-coalesce(r.paid,0)),0)::text
         from credit_charge_debts d left join
           (select debt_hold_id,sum(amount_micros) as paid from credit_debt_repayments where user_id=$1 group by debt_hold_id) r

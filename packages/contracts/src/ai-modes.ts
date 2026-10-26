@@ -15,6 +15,11 @@ export const aiModeSelectionSchema = z.strictObject({
   aiModeCatalogId: aiModeCatalogIdSchema,
 });
 export type AiModeSelection = z.infer<typeof aiModeSelectionSchema>;
+export const aiModeFixedPriceSchema = z.strictObject({
+  kind: z.literal("fixed"),
+  currency: z.literal("RUB"),
+  amountMicros: z.literal(3_000_000),
+});
 export const aiModesSchema = z
   .strictObject({
     catalogId: aiModeCatalogIdSchema,
@@ -25,6 +30,7 @@ export const aiModesSchema = z
           id: aiModeIdSchema,
           label: z.string().min(1).max(30),
           available: z.boolean(),
+          price: aiModeFixedPriceSchema.optional(),
         }),
       )
       .length(3),
@@ -32,7 +38,11 @@ export const aiModesSchema = z
   .refine(
     (value) =>
       new Set(value.options.map((option) => option.id)).size === 3 &&
-      value.options.every((option) => option.label === aiModeLabels[option.id]),
+      value.options.every(
+        (option) =>
+          option.label === aiModeLabels[option.id] &&
+          (option.price === undefined || option.id === "minimum"),
+      ),
     "Expected the three public CityGo modes",
   );
 export type AiModes = z.infer<typeof aiModesSchema>;

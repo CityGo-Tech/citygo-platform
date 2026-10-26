@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Pressable, Text, View, StyleSheet } from "react-native";
 import { aiModeLabels, type AiModeId, type AiModes } from "@citygo/contracts";
+import { formatAiModeOptionLabel } from "@citygo/api-client";
 import { tokens } from "@citygo/design-tokens";
 
 export function MobileAiModeSelector({
@@ -19,19 +20,23 @@ export function MobileAiModeSelector({
     if (disabled) setOpen(false);
   }, [disabled]);
   if (!modes) return null;
+  const selectedOption = modes.options.find((option) => option.id === selected);
+  const selectedLabel = selectedOption
+    ? formatAiModeOptionLabel(selectedOption)
+    : aiModeLabels[selected];
   return (
     <View style={styles.group}>
       <Text nativeID="ai-mode-label">Режим ответа</Text>
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={`Режим ответа: ${aiModeLabels[selected]}`}
+        accessibilityLabel={`Режим ответа: ${selectedLabel}`}
         accessibilityState={{ disabled, expanded: open }}
         disabled={disabled}
         style={[styles.control, disabled && styles.disabled]}
         onPress={() => setOpen((value) => !value)}
       >
         <Text>
-          {aiModeLabels[selected]} {open ? "▴" : "▾"}
+          {selectedLabel} {open ? "▴" : "▾"}
         </Text>
       </Pressable>
       {open && (
@@ -40,7 +45,7 @@ export function MobileAiModeSelector({
             <Pressable
               key={option.id}
               accessibilityRole="radio"
-              accessibilityLabel={option.label}
+              accessibilityLabel={formatAiModeOptionLabel(option)}
               accessibilityState={{
                 checked: selected === option.id,
                 disabled: disabled || !option.available,
@@ -53,7 +58,7 @@ export function MobileAiModeSelector({
               }}
             >
               <Text>
-                {option.label}
+                {formatAiModeOptionLabel(option)}
                 {!option.available ? " — временно недоступен" : ""}
               </Text>
             </Pressable>

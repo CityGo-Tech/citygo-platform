@@ -50,6 +50,7 @@ import {
   DomainError,
   AiCreditLedger,
   AiCreditCharges,
+  GigaChatFixedFees,
   PaymentRefunds,
   PaymentAdmission,
   assertRealAiDatabaseSafety,
@@ -232,6 +233,7 @@ export async function buildApp(options: {
     tariff,
     topUpAvailable,
     config.AI_CREDIT_RESERVATION_MODE,
+    config.AI_MINIMUM_FIXED_FEE === "enabled",
   );
   const accounts = new AccountAccess(options.db);
   const registrationAiPolicy = (routing: AiRouting) =>
@@ -242,12 +244,17 @@ export async function buildApp(options: {
     chargingStatus,
     topUpAvailable,
     config.AI_CREDIT_RESERVATION_MODE,
+    config.AI_MINIMUM_FIXED_FEE === "enabled",
   );
   const charges = new AiCreditCharges(
     options.db,
     tariff,
     config.AI_CREDIT_RESERVATION_MODE,
   );
+  const gigaFees =
+    config.AI_MINIMUM_FIXED_FEE === "enabled"
+      ? new GigaChatFixedFees(options.db)
+      : undefined;
   const providers: ProviderMap = { ...options.providers };
   if (options.provider) providers[options.provider.name] = options.provider;
   // Quarantine survives process restarts and changing YOOKASSA_MODE back to
@@ -490,9 +497,9 @@ export async function buildApp(options: {
   app.get("/ready", async () => {
     try {
       const result = await options.db.query(
-        "select name from citygo_migrations where name in ('0006_ai_budget.sql','0007_ai_user_daily_budget.sql','0008_ai_credit.sql','0009_ai_credit_charges.sql','0010_quest_plan_expand.sql','0011_quest_plan_validate.sql','0013_account_access.sql','0014_citygo_credit.sql','0015_yookassa_orders.sql','0016_npd_receipts.sql','0017_credit_source_lots.sql','0018_payment_refunds.sql','0019_yookassa_live_orders.sql','0020_ai_budget_provider_balance.sql','0021_payment_notifications.sql','0022_payment_admission.sql','0023_payment_receipt_snapshots.sql','0024_ai_credit_overdraft.sql','0025_assistant_conversations.sql','0030_service_consents.sql','0031_account_email_confirmation.sql','0032_phone_contact_bindings.sql','0033_ai_request_modes.sql')",
+        "select name from citygo_migrations where name in ('0006_ai_budget.sql','0007_ai_user_daily_budget.sql','0008_ai_credit.sql','0009_ai_credit_charges.sql','0010_quest_plan_expand.sql','0011_quest_plan_validate.sql','0013_account_access.sql','0014_citygo_credit.sql','0015_yookassa_orders.sql','0016_npd_receipts.sql','0017_credit_source_lots.sql','0018_payment_refunds.sql','0019_yookassa_live_orders.sql','0020_ai_budget_provider_balance.sql','0021_payment_notifications.sql','0022_payment_admission.sql','0023_payment_receipt_snapshots.sql','0024_ai_credit_overdraft.sql','0025_assistant_conversations.sql','0030_service_consents.sql','0031_account_email_confirmation.sql','0032_phone_contact_bindings.sql','0033_ai_request_modes.sql','0034_gigachat_request_fees.sql')",
       );
-      if (result.rows.length !== 23) throw new Error("Pending migration");
+      if (result.rows.length !== 24) throw new Error("Pending migration");
       await options.db.query(
         "select thread_id,request_id,mode,catalog_id from ai_request_modes limit 0",
       );
@@ -907,6 +914,7 @@ export async function buildApp(options: {
   });
   app.get("/v1/dashboard", async (request) => {
     const user = await authenticate(request, true);
+    if (gigaFees) await gigaFees.recoverExpired({ limit: 20 });
     const active = await currentAi();
     const dashboard = await repo.dashboard(
       user,
@@ -920,14 +928,16 @@ export async function buildApp(options: {
       const budget = await repo.aiBudget(executions);
       catalog.options = catalog.options.map((option) => {
         const route = modes.routes.find((route) => route.id === option.id)!;
-        const approved = budget.settings.rules.some(
-          (rule) =>
-            rule.key === route.execution.key &&
-            rule.policy.id === route.policy.id &&
-            rule.policy.model === route.model &&
-            rule.maxInputBytes === route.execution.maxInputBytes &&
-            rule.maxOutputTokens === route.execution.maxOutputTokens,
-        );
+        const approved =
+          Boolean(route.fixedFee) ||
+          budget.settings.rules.some(
+            (rule) =>
+              rule.key === route.execution.key &&
+              rule.policy.id === route.policy.id &&
+              rule.policy.model === route.model &&
+              rule.maxInputBytes === route.execution.maxInputBytes &&
+              rule.maxOutputTokens === route.execution.maxOutputTokens,
+          );
         return {
           ...option,
           available:
@@ -1029,6 +1039,7 @@ export async function buildApp(options: {
           "AI_MODE_CHANGED",
         );
       const selectedMode = modes?.resolve(current, input);
+      const fixedFee = selectedMode?.fixedFee;
       const provider = selectedMode?.provider ?? active.provider;
       const executionPolicy = selectedMode?.policy ?? aiPolicy;
       const executionConfig = selectedMode?.config ?? config;
@@ -1049,6 +1060,7 @@ export async function buildApp(options: {
         );
       if (
         creditCharging &&
+        !fixedFee &&
         (provider.name !== "routerai" || !provider.readCharge || !upstream)
       )
         throw new DomainError(
@@ -1056,6 +1068,15 @@ export async function buildApp(options: {
           "Для этого провайдера списание с баланса не подключено.",
           "AI_CREDIT_UNAVAILABLE",
         );
+      if (fixedFee) {
+        if (!gigaFees)
+          throw new DomainError(
+            503,
+            "Режим ответа сейчас недоступен.",
+            "AI_UNAVAILABLE",
+          );
+        await gigaFees.recoverExpired({ limit: 20 });
+      }
       if (!executionPolicy)
         throw new DomainError(
           503,
@@ -1158,6 +1179,7 @@ export async function buildApp(options: {
             globalDailyLimit: config.LLM_GLOBAL_DAILY_ATTEMPT_LIMIT,
             execution,
             upstream,
+            ...(fixedFee ? { fixedFee } : {}),
           });
         } catch (error) {
           if (error instanceof DomainError) attemptError = error;
@@ -1204,14 +1226,18 @@ export async function buildApp(options: {
           const { instructions: modelInstructions, messages: modelMessages } =
             modelContext;
           // Bound context and reserve both attempt + money before adapter/OAuth.
-          // No automatic refund: even a failed request may have been billed.
+          // RouterAI cost requires reconciliation; the fixed fee is settled
+          // atomically with a completed, persisted GigaChat answer.
           await reserveAttempt();
           generation = {
             provider: provider.name,
             requestedModel: provider.model,
           };
           let completed = false;
-          if (creditHoldId) await charges.dispatch(user.id, creditHoldId);
+          if (creditHoldId) {
+            if (fixedFee) await gigaFees!.dispatch(user.id, creditHoldId);
+            else await charges.dispatch(user.id, creditHoldId);
+          }
           signal.throwIfAborted();
           adapterEntered = true;
           for await (const event of provider.stream(
@@ -1220,7 +1246,7 @@ export async function buildApp(options: {
             signal,
             {
               beforeRetry: reserveAttempt,
-              ...(creditHoldId
+              ...(creditHoldId && !fixedFee
                 ? {
                     billing: {
                       reference: creditHoldId,
@@ -1254,19 +1280,32 @@ export async function buildApp(options: {
           if (!completed) throw new Error("Provider stream interrupted");
           if (!content.trim()) throw new Error("Empty response");
         }
-        const messageId = await repo.finishChat(
-          threadId,
-          input.requestId,
-          reservation.lease,
-          routing.to,
-          content,
-          true,
-          !routing.human,
-          generation,
-          creditHoldId ?? undefined,
-        );
+        const messageId =
+          fixedFee && creditHoldId
+            ? await repo.finishGigaChat({
+                userId: user.id,
+                threadId,
+                requestId: input.requestId,
+                lease: reservation.lease,
+                agent: routing.to,
+                content,
+                complete: true,
+                generation,
+                holdId: creditHoldId,
+              })
+            : await repo.finishChat(
+                threadId,
+                input.requestId,
+                reservation.lease,
+                routing.to,
+                content,
+                true,
+                !routing.human,
+                generation,
+                creditHoldId ?? undefined,
+              );
         saved = true;
-        if (creditHoldId) {
+        if (creditHoldId && !fixedFee) {
           // Read-only cost lookup, not a second model attempt. A lost/invalid
           // receipt leaves a durable hold for reconciliation, never a guessed fee.
           await reconcileCharge(user.id, creditHoldId).catch(() => {});
@@ -1279,7 +1318,7 @@ export async function buildApp(options: {
             "AI временно недоступен: баланс внешнего сервиса исчерпан или недостаточен для запроса. Администратору нужно пополнить его. Повтор автоматически не выполняется; существующий резерв требует сверки.",
             "AI_CREDIT_UNAVAILABLE",
           );
-        if (creditHoldId && !adapterEntered)
+        if (creditHoldId && !adapterEntered && !fixedFee)
           await charges
             .releaseBeforeTransport(user.id, creditHoldId)
             .catch(() => {});
@@ -1295,24 +1334,38 @@ export async function buildApp(options: {
           : content;
         let persistenceFailed = false;
         if (!saved)
-          await repo
-            .finishChat(
-              threadId,
-              input.requestId,
-              reservation.lease,
-              routing.to,
-              persistedContent,
-              false,
-              creditRefusedBeforeDispatch ? false : !routing.human,
-              generation,
-              undefined,
-              creditRefusedBeforeDispatch ? "AI_CREDIT_EXHAUSTED" : undefined,
-            )
-            .catch(() => {
-              persistenceFailed = true;
-              drain.markSettlementFailed();
-              request.log.error("Failed to persist interrupted response");
-            });
+          await (
+            fixedFee && creditHoldId
+              ? repo.finishGigaChat({
+                  userId: user.id,
+                  threadId,
+                  requestId: input.requestId,
+                  lease: reservation.lease,
+                  agent: routing.to,
+                  content: persistedContent,
+                  complete: false,
+                  generation,
+                  holdId: creditHoldId,
+                })
+              : repo.finishChat(
+                  threadId,
+                  input.requestId,
+                  reservation.lease,
+                  routing.to,
+                  persistedContent,
+                  false,
+                  creditRefusedBeforeDispatch ? false : !routing.human,
+                  generation,
+                  undefined,
+                  creditRefusedBeforeDispatch
+                    ? "AI_CREDIT_EXHAUSTED"
+                    : undefined,
+                )
+          ).catch(() => {
+            persistenceFailed = true;
+            drain.markSettlementFailed();
+            request.log.error("Failed to persist interrupted response");
+          });
         send({
           type: "error",
           ...errorMetadata(
@@ -1322,10 +1375,14 @@ export async function buildApp(options: {
           ),
           message: persistenceFailed
             ? "Ответ прерван. Не удалось подтвердить сохранение истории. Обновите историю и обратитесь к администратору перед повторной отправкой."
-            : (attemptError?.message ??
-              (creditHoldId
-                ? "Ответ прерван. История сохранена. Стоимость уточняется; резерв удерживается до сверки. Не повторяйте запрос вслепую."
-                : "Ответ прерван. История сохранена; попробуйте отправить сообщение снова.")),
+            : fixedFee && creditHoldId
+              ? saved
+                ? "Ответ сохранён. Обновите историю."
+                : "Ответ прерван. За него ничего не списано. История сохранена."
+              : (attemptError?.message ??
+                (creditHoldId
+                  ? "Ответ прерван. История сохранена. Стоимость уточняется; резерв удерживается до сверки. Не повторяйте запрос вслепую."
+                  : "Ответ прерван. История сохранена; попробуйте отправить сообщение снова.")),
         });
       } finally {
         clearInterval(heartbeat);

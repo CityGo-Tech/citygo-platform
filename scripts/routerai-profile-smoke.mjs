@@ -221,6 +221,8 @@ async function mountedProfileSmoke({
         "phone_contact_bindings",
         "phone_contact_changes",
         "ai_request_modes",
+        "gigachat_request_fees",
+        "gigachat_account_leases",
       ])
         assert.equal(psql(`select count(*) from ${table}`), "0");
     }

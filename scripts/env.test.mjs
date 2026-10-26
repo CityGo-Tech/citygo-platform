@@ -26,6 +26,7 @@ const canaries = {
   AI_CREDIT_MODE: "routerai_at_cost",
   AI_CREDIT_RESERVATION_MODE: "fixed5_overdraft",
   AI_ASSISTANT_MODES: "enabled",
+  AI_MINIMUM_FIXED_FEE: "enabled",
   AI_MAXIMUM_REASONING_EFFORT: "medium",
   AI_MODES_DATA_NOTICE: "Synthetic assistant modes public notice",
   AI_MODES_PRODUCTION_POLICY_ID: "b".repeat(64),
@@ -99,6 +100,7 @@ test("API gets only known API settings; worker/migrator get no LLM or API settin
   assert.equal(api.AI_CREDIT_MODE, canaries.AI_CREDIT_MODE);
   for (const key of [
     "AI_ASSISTANT_MODES",
+    "AI_MINIMUM_FIXED_FEE",
     "AI_MAXIMUM_REASONING_EFFORT",
     "AI_MODES_DATA_NOTICE",
     "AI_MODES_PRODUCTION_POLICY_ID",
