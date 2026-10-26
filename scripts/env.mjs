@@ -111,6 +111,7 @@ const webKeys = [
 const mobileKeys = [
   "NODE_ENV",
   "EXPO_PUBLIC_API_URL",
+  "EXPO_PUBLIC_WEB_URL",
   "EXPO_OFFLINE",
   "REACT_NATIVE_PACKAGER_HOSTNAME",
   "ANDROID_HOME",

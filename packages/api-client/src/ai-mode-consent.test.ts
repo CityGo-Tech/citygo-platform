@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ApiError, createSessionGuard } from "@citygo/api-client";
+import { ApiError } from "./transport.js";
+import { createSessionGuard } from "./session.js";
 import {
   serviceConsentPolicy,
   type AiModeId,
@@ -10,7 +11,7 @@ import {
   createAiModeConsentResource,
   type AiModeConsentChoice,
   type AiModeConsentView,
-} from "./ai-mode-consent-state.js";
+} from "./ai-mode-consent.js";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -259,4 +260,34 @@ test("failed loading and changed policy do not auto-retry or select", async () =
   assert.equal(changed.views.at(-1)?.phase, "error");
   assert.deepEqual(changed.selected, []);
   changed.resource.dispose();
+});
+
+test("selection and session cancellation work without native AbortSignal.any support", async () => {
+  const descriptor = Object.getOwnPropertyDescriptor(AbortSignal, "any")!;
+  Object.defineProperty(AbortSignal, "any", {
+    value: undefined,
+    configurable: true,
+  });
+  try {
+    const pending = deferred<ServiceConsentState>();
+    let requestSignal: AbortSignal | undefined;
+    const f = setup({
+      save: async (_choice, signal) => {
+        requestSignal = signal;
+        return pending.promise;
+      },
+    });
+    await f.resource.open("minimum");
+    const work = f.resource.confirm(true);
+    await Promise.resolve();
+    f.session.reset("202");
+    assert.equal(requestSignal?.aborted, true);
+    pending.resolve(state(false));
+    await work;
+    assert.deepEqual(f.selected, []);
+    assert.equal(f.views.at(-1)?.phase, "closed");
+    f.resource.dispose();
+  } finally {
+    Object.defineProperty(AbortSignal, "any", descriptor);
+  }
 });

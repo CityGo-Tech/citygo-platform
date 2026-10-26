@@ -22,6 +22,7 @@ import {
   ApiError,
   captureAiModeSelection,
   isAiModeAvailable,
+  type AiModeConsentView,
   type SessionTicket,
 } from "@citygo/api-client";
 import {
@@ -38,6 +39,9 @@ import { Button, Card, Field } from "@citygo/ui-native";
 import { questChecklist } from "@citygo/content";
 import { MobilePasswordRecovery } from "./src/password-recovery";
 import { MobileAiModeSelector } from "./src/ai-mode-selector";
+import { MobileAiModeConsentModal } from "./src/ai-mode-consent-modal";
+import { createMobileAiModeConsent } from "./src/ai-mode-consent";
+import { mobileWebDestination, defaultMobileWebUrl } from "./src/web-links";
 import { MobileServiceConsents } from "./src/service-consents";
 import {
   changeServiceConsent,
@@ -68,7 +72,7 @@ const tokenStore = createSessionStorage({
   set: (token) => SecureStore.setItemAsync("citygo.session", token),
   remove: () => SecureStore.deleteItemAsync("citygo.session"),
 });
-const webAppUrl = "https://app.xn--c1ajazlh.xn--p1ai";
+const webAppUrl = process.env.EXPO_PUBLIC_WEB_URL ?? defaultMobileWebUrl;
 export default function App() {
   const session = useRef<string | null>(null);
   const [lifetime] = useState(createSessionGuard);
@@ -76,7 +80,14 @@ export default function App() {
   const refreshVersion = useRef(0);
   const [pending, setPending] = useState<PendingOperation | null>(null);
   const [operations] = useState(() => createOperations(setPending));
-  const busy = pending !== null;
+  const [modeConsentView, setModeConsentView] = useState<AiModeConsentView>({
+    phase: "closed",
+  });
+  const modeConsentOpen = useRef(false);
+  const modeConsent = useRef<ReturnType<
+    typeof createMobileAiModeConsent
+  > | null>(null);
+  const busy = pending !== null || modeConsentView.phase !== "closed";
   const [completion, setCompletion] = useState<CompletionReceipt | null>(null);
   const [storageBlocked, setStorageBlocked] = useState(false);
   const base = process.env.EXPO_PUBLIC_API_URL ?? "http://localhost:4000";
@@ -136,6 +147,7 @@ export default function App() {
     });
   }
   function clearUserState(owner?: string) {
+    modeConsent.current?.cancel();
     lifetime.reset(owner);
     abort.current?.abort();
     abort.current = null;
@@ -412,6 +424,9 @@ export default function App() {
     kind: OperationKind,
     work: (ticket: SessionTicket, operation: OperationTicket) => Promise<void>,
   ) {
+    // The selection owns a synchronous gate too: React may not have rendered
+    // disabled controls yet when a second press arrives.
+    if (modeConsentOpen.current) return;
     const operation = operations.begin(kind);
     if (!operation) return;
     const ticket = lifetime.capture();
@@ -458,6 +473,74 @@ export default function App() {
     }
   }
   const recoverySession = lifetime.capture();
+  const modeConsentCallbacks = useRef({ refresh });
+  modeConsentCallbacks.current = { refresh };
+  useEffect(() => {
+    const owner = board?.user.id;
+    const token = session.current;
+    if (
+      !owner ||
+      !token ||
+      storageBlocked ||
+      showPasswordChange ||
+      board?.user.mustChangePassword ||
+      board?.user.serviceConsentRequired
+    )
+      return;
+    const ticket = lifetime.capture();
+    const current = createMobileAiModeConsent({
+      base,
+      token,
+      userId: owner,
+      ticket,
+      fetch: expoFetch,
+      refresh: (scope) => modeConsentCallbacks.current.refresh(scope),
+      select: setSelectedAiMode,
+      onAccessDenied: () => void endSession(false),
+      publish: (view) => {
+        modeConsentOpen.current = view.phase !== "closed";
+        setModeConsentView(view);
+      },
+    });
+    modeConsent.current = current;
+    return () => {
+      if (modeConsent.current === current) modeConsent.current = null;
+      current.dispose();
+    };
+  }, [
+    base,
+    board?.user.id,
+    board?.user.mustChangePassword,
+    board?.user.serviceConsentRequired,
+    showPasswordChange,
+    storageBlocked,
+    recoverySession.signal,
+  ]);
+  function selectAiMode(value: AiModeId) {
+    if (
+      operations.current() ||
+      modeConsentOpen.current ||
+      storageBlocked ||
+      !board ||
+      board.user.mustChangePassword ||
+      board.user.serviceConsentRequired
+    )
+      return;
+    const option = board.aiAccess.modes?.options.find(
+      (entry) => entry.id === value,
+    );
+    if (!option?.available) return;
+    if (option.consentRequired) void modeConsent.current?.open(value);
+    else setSelectedAiMode(value);
+  }
+  function openModeConsentLegal() {
+    if (modeConsentView.phase !== "ready" && modeConsentView.phase !== "saving")
+      return;
+    openWebDestination(
+      modeConsentView.consent.policy.personalData.url,
+      "Не удалось открыть условия.",
+    );
+  }
   const consentScope = board?.user.serviceConsentRequired
     ? { context: board.user.id, signal: recoverySession.signal }
     : !board && mode === "register"
@@ -532,11 +615,21 @@ export default function App() {
     setConsentReload((version) => version + 1);
   }
   function openWebApp() {
+    openWebDestination(
+      "",
+      "Не удалось открыть веб-версию CityGo. Повторите попытку.",
+    );
+  }
+  function openWebDestination(path: string, message: string) {
     const ticket = lifetime.capture();
-    void Linking.openURL(webAppUrl).catch(() => {
-      if (ticket.active())
-        setError("Не удалось открыть веб-версию CityGo. Повторите попытку.");
-    });
+    try {
+      const url = mobileWebDestination(webAppUrl, path);
+      void Linking.openURL(url).catch(() => {
+        if (ticket.active()) setError(message);
+      });
+    } catch {
+      if (ticket.active()) setError(message);
+    }
   }
   const consentFields = activeConsentForm ? (
     <MobileServiceConsents
@@ -567,6 +660,16 @@ export default function App() {
           behavior={Platform.OS === "ios" ? "padding" : undefined}
         >
           <StatusBar barStyle="dark-content" />
+          <MobileAiModeConsentModal
+            view={modeConsentView}
+            onConfirm={(checked) => void modeConsent.current?.confirm(checked)}
+            onCancel={() => modeConsent.current?.cancel()}
+            onRetry={() => {
+              if (modeConsentView.phase !== "closed")
+                void modeConsent.current?.open(modeConsentView.mode);
+            }}
+            onLegal={openModeConsentLegal}
+          />
           <ScrollView
             ref={contentScroll}
             onScroll={(event) => {
@@ -1034,9 +1137,7 @@ export default function App() {
                     modes={board.aiAccess.modes}
                     selected={selectedAiMode}
                     disabled={busy}
-                    onSelect={(value) => {
-                      if (!operations.current()) setSelectedAiMode(value);
-                    }}
+                    onSelect={selectAiMode}
                   />
                   <Button
                     title="Отправить"
