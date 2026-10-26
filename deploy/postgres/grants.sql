@@ -78,6 +78,8 @@ grant select, insert on personal_plan_items to citygo_api;
 -- Each admitted request retains one server-selected public mode profile.
 -- API can append/read it; neither API nor Worker may rewrite or delete it.
 grant select,insert on ai_request_modes to citygo_api;
+-- Actual consent evidence is distinct from routing and remains append-only.
+grant select,insert on ai_request_consent_bases to citygo_api;
 -- GigaChat flat-price identity and completed accounting are immutable.
 -- Runtime may append/read fees and update only outcome or queue lease fields.
 grant select, insert on gigachat_request_fees, gigachat_account_leases to citygo_api;

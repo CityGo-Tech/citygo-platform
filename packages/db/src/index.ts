@@ -5,6 +5,10 @@ export { MessageFavorites } from "./message-favorites.js";
 export { PersonalPlan } from "./personal-plan.js";
 export { ServiceConsents } from "./service-consents.js";
 export {
+  parseLegacyBalancedConsentCompatibility,
+  type LegacyBalancedConsentCompatibility,
+} from "./ai-consent-compatibility.js";
+export {
   AccountProfile,
   type AccountProfileContext,
 } from "./account-profile.js";

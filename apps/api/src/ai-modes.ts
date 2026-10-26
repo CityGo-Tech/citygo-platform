@@ -16,6 +16,7 @@ import {
 } from "@citygo/llm";
 import { createAiPolicy } from "./ai-policy.js";
 import { createAiExecution } from "./ai-execution.js";
+import { productionProviderAllowed } from "./ai-production.js";
 
 type Config = ReturnType<typeof readConfig>;
 const hash = (value: unknown) =>
@@ -25,6 +26,7 @@ export const assistantModeModels = {
   balanced: "deepseek/deepseek-v4-pro-0813",
 } as const;
 export type ModeProviders = Partial<Record<AiModeId, StreamingProvider>>;
+type ModeConsentState = { currentAiConsentRequired?: boolean };
 export type ModeFixedFee = {
   pricingId: string;
   accountRef: string;
@@ -292,14 +294,76 @@ export function createAssistantModes(
         : undefined;
     return { ...specification, provider, fixedFee };
   });
-  const modeCatalog = (): AiModes => ({
-    catalogId,
+  // Recreate the bootstrap policy and execution without the mode notice or
+  // protocol fields. A retained grant covers only this exact original route.
+  const originalBalanced =
+    config.LLM_PROVIDER === "routerai" &&
+    config.ROUTERAI_MODEL === assistantModeModels.balanced &&
+    config.ROUTERAI_UPSTREAM === "deepseek" &&
+    config.ROUTERAI_COUNTRY === "cn" &&
+    productionProviderAllowed(config, {
+      name: "routerai",
+      model: config.ROUTERAI_MODEL,
+    })
+      ? createAiPolicy(config, {
+          name: "routerai",
+          model: config.ROUTERAI_MODEL,
+        })
+      : null;
+  const balancedProvider = routes.find(
+    (route) => route.id === "balanced",
+  )?.provider;
+  const originalExecution = originalBalanced
+    ? createAiExecution(config, originalBalanced)
+    : undefined;
+  const legacyBalanced =
+    originalBalanced?.version === "ai-recipient-v2" &&
+    originalExecution?.maxInputBytes === 8192 &&
+    originalExecution.maxOutputTokens === 4096 &&
+    config.AI_CREDIT_RESERVATION_MODE === "fixed5_overdraft" &&
+    balancedProvider
+      ? {
+          id: "balanced" as const,
+          providerName: "routerai" as const,
+          model: assistantModeModels.balanced,
+          upstream: config.ROUTERAI_UPSTREAM,
+          country: config.ROUTERAI_COUNTRY,
+          config,
+          policy: originalBalanced,
+          execution: originalExecution,
+          provider: balancedProvider,
+          fixedFee: undefined,
+        }
+      : null;
+  const legacyBalancedCompatibility = legacyBalanced
+    ? {
+        routingPolicyId: policy.id,
+        policy: legacyBalanced.policy,
+        execution: legacyBalanced.execution,
+      }
+    : undefined;
+  const legacyCatalogId = legacyBalanced
+    ? hash({
+        version: "ai-mode-legacy-balanced-catalog-v1",
+        catalogId,
+        compatibility: legacyBalancedCompatibility,
+      })
+    : catalogId;
+  const catalogRoute = (id: AiModeId, state: ModeConsentState = {}) =>
+    id === "balanced" && state.currentAiConsentRequired
+      ? legacyBalanced
+      : (routes.find((route) => route.id === id) ?? null);
+  const modeCatalog = (state: ModeConsentState = {}): AiModes => ({
+    catalogId: state.currentAiConsentRequired ? legacyCatalogId : catalogId,
     defaultMode: "balanced",
-    options: routes.map(({ id, provider, fixedFee }) => ({
+    options: routes.map(({ id }) => ({
       id,
       label: aiModeLabels[id],
-      available: Boolean(provider),
-      ...(fixedFee
+      available: Boolean(catalogRoute(id, state)?.provider),
+      ...(state.currentAiConsentRequired && id !== "balanced"
+        ? { consentRequired: true as const }
+        : {}),
+      ...(catalogRoute(id, state)?.fixedFee
         ? {
             price: {
               kind: "fixed" as const,
@@ -318,11 +382,14 @@ export function createAssistantModes(
     routes,
     productionApproved,
     environmentEnabled,
+    legacyBalancedCompatibility,
+    catalogRoute,
     modeCatalog,
     ready,
     resolve(
       current: AiRouting,
       selection: { aiMode?: AiModeId; aiModeCatalogId?: string },
+      state: ModeConsentState = {},
     ) {
       if (!ready(current) || !environmentEnabled || !productionApproved)
         throw new DomainError(
@@ -332,7 +399,7 @@ export function createAssistantModes(
         );
       if (
         selection.aiModeCatalogId !== undefined &&
-        selection.aiModeCatalogId !== catalogId
+        selection.aiModeCatalogId !== modeCatalog(state).catalogId
       )
         throw new DomainError(
           409,
@@ -340,14 +407,24 @@ export function createAssistantModes(
           "AI_MODE_CHANGED",
         );
       const mode = selection.aiMode ?? "balanced";
-      const route = routes.find(({ id }) => id === mode);
+      if (state.currentAiConsentRequired && mode !== "balanced")
+        throw new DomainError(
+          403,
+          "Подтвердите условия обработки сообщений для нового режима.",
+          "AI_MODES_CONSENT_REQUIRED",
+        );
+      const route = catalogRoute(mode, state);
       if (!route?.provider)
         throw new DomainError(
           503,
           "Этот режим ответа пока недоступен. Выберите другой режим.",
           "AI_MODE_UNAVAILABLE",
         );
-      return { ...route, provider: route.provider };
+      return {
+        ...route,
+        provider: route.provider,
+        catalogId: modeCatalog(state).catalogId,
+      };
     },
   };
 }

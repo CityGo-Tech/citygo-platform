@@ -8,6 +8,7 @@ import {
   ClosedAccountRestart,
   FreshAccountReset,
   Repository,
+  ServiceConsents,
   connectDatabase,
   migrate,
   type AiRequestModeSnapshot,
@@ -28,7 +29,7 @@ test("reset and literal disposable rewinds retain a real accepted mode snapshot 
     (select count(*)::int from pg_sequences where schemaname='public') as sequences,
     (select count(*)::int from citygo_migrations) as migrations`)
     ).rows,
-    [{ tables: 69, sequences: 21, migrations: 34 }],
+    [{ tables: 70, sequences: 21, migrations: 35 }],
   );
   const repo = new Repository(db),
     user = await repo.register("retained-mode@example.test", "synthetic-hash");
@@ -49,7 +50,12 @@ test("reset and literal disposable rewinds retain a real accepted mode snapshot 
   };
   await repo.initializeAiRouting(consent);
   const routing = await repo.aiRouting();
-  await repo.aiConsent(user, { policy: consent, revision: routing.revision });
+  const consents = new ServiceConsents(db, () => consent);
+  await consents.choose(user, {
+    policyVersion: (await consents.policy()).version,
+    personalData: true,
+    marketing: false,
+  });
   const selected: AiPolicy = {
     ...consent,
     id: hash("synthetic-selected-policy"),

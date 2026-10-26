@@ -51,6 +51,7 @@ const retained = [
   "phone_contact_bindings",
   "phone_contact_changes",
   "ai_request_modes",
+  "ai_request_consent_bases",
   "gigachat_request_fees",
   "gigachat_account_leases",
   "password_recovery_challenges",
@@ -163,6 +164,7 @@ export class AccountReset {
         "phone_contact_bindings",
         "phone_contact_changes",
         "ai_request_modes",
+        "ai_request_consent_bases",
         "gigachat_request_fees",
         "gigachat_account_leases",
         "password_recovery_challenges",
@@ -213,6 +215,11 @@ export class AccountReset {
         blockers.push({
           code: "PHONE_CONTACT_HISTORY_REQUIRES_REVIEW",
           count: phoneContactHistoryCount,
+        });
+      if (counts.ai_request_consent_bases)
+        blockers.push({
+          code: "AI_CONSENT_BASIS_HISTORY_REQUIRES_REVIEW",
+          count: counts.ai_request_consent_bases,
         });
       if (counts.ai_request_modes)
         blockers.push({

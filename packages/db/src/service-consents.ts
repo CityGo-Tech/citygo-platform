@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import {
   serviceConsentChoiceSchema,
   serviceConsentPolicy,
+  serviceConsentPolicySchema,
+  aiModesConsentChoiceSchema,
   type ServiceConsentChoice,
   type ServiceConsentPolicy,
   type ServiceConsentState,
@@ -14,6 +16,11 @@ import {
   type ServiceAiPolicyResolver,
   type ServiceConsentContext,
 } from "./service-consent-context.js";
+import {
+  legacyBalancedGrant,
+  consentGrantEvidence,
+  type LegacyBalancedConsentCompatibility,
+} from "./ai-consent-compatibility.js";
 export { consentPolicyHash } from "./service-consent-context.js";
 
 export function validateServiceConsent(
@@ -39,34 +46,72 @@ async function state(
   tx: Sql,
   userId: string,
   context: ServiceConsentContext,
-): Promise<ServiceConsentState> {
+): Promise<ServiceConsentState & { currentAiConsentRequired: boolean }> {
   const { policy } = context;
   const latest = (
-    await tx.query<{ purpose: string; decision: string }>(
-      `select distinct on (purpose) purpose,decision from service_consent_events
-     where user_id=$1 and policy_version=$2 and policy_hash=$3 order by purpose,id desc`,
-      [userId, policy.version, consentPolicyHash(policy)],
+    await tx.query<{
+      decision: string;
+      policy_version: string;
+      policy_hash: string;
+      policy_snapshot: ServiceConsentPolicy;
+    }>(
+      `select decision,policy_version,policy_hash,policy_snapshot from service_consent_events
+     where user_id=$1 and purpose='personal-data' order by id desc limit 1`,
+      [userId],
     )
-  ).rows;
-  const personalDataGranted = latest.some(
-    (row) => row.purpose === "personal-data" && row.decision === "granted",
+  ).rows[0];
+  const currentEvidence = context.aiPolicy
+    ? await consentGrantEvidence(tx, userId, context.aiPolicy)
+    : undefined;
+  const currentPersonalDataGranted = Boolean(
+    latest?.decision === "granted" &&
+    latest.policy_version === policy.version &&
+    latest.policy_hash === consentPolicyHash(policy) &&
+    consentPolicyHash(latest.policy_snapshot) === latest.policy_hash,
   );
-  const marketingGranted = latest.some(
-    (row) => row.purpose === "marketing" && row.decision === "granted",
+  // Read the newest actual decision; never search past a withdrawal. The AI
+  // choice cannot implicitly opt in/out of the unchanged marketing document.
+  const marketing = (
+    await tx.query<{
+      decision: string;
+      policy_snapshot: unknown;
+      policy_hash: string;
+    }>(
+      "select decision,policy_snapshot,policy_hash from service_consent_events where user_id=$1 and purpose='marketing' order by id desc limit 1",
+      [userId],
+    )
+  ).rows[0];
+  const marketingSnapshot = serviceConsentPolicySchema.safeParse(
+    marketing?.policy_snapshot,
   );
-  const aiGranted =
-    !context.aiPolicy ||
-    !!(
-      await tx.query(
-        "select 1 from ai_consents where user_id=$1 and policy_id=$2 and granted=true",
-        [userId, context.aiPolicy.id],
-      )
-    ).rows.length;
+  const marketingGranted = Boolean(
+    marketing?.decision === "granted" &&
+    marketingSnapshot.success &&
+    consentPolicyHash(marketingSnapshot.data) === marketing.policy_hash &&
+    consentPolicyHash({
+      ...policy,
+      marketing: marketingSnapshot.data.marketing,
+    }) === consentPolicyHash(policy),
+  );
+  const aiGranted = !context.aiPolicy || Boolean(currentEvidence);
+  const currentGranted = currentPersonalDataGranted && aiGranted;
+  // This is read-only access to the EXACT old Balanced scope, not acceptance
+  // of current/new processing. Max/Min still require a real explicit choice.
+  const legacy =
+    !currentGranted && context.aiPolicy
+      ? await legacyBalancedGrant(
+          tx,
+          userId,
+          context.legacyBalanced,
+          context.aiPolicy.id,
+        )
+      : undefined;
   return {
     policy,
-    personalDataGranted,
+    personalDataGranted: currentPersonalDataGranted || Boolean(legacy),
     marketingGranted,
-    serviceConsentRequired: !personalDataGranted || !aiGranted,
+    serviceConsentRequired: !currentGranted && !legacy,
+    currentAiConsentRequired: Boolean(context.aiPolicy && !currentGranted),
   };
 }
 
@@ -95,7 +140,7 @@ export async function recordServiceConsent(
     )
   ).rows[0];
   const decisions: [string, string][] = [];
-  if (previous.serviceConsentRequired)
+  if (previous.serviceConsentRequired || previous.currentAiConsentRequired)
     decisions.push(["personal-data", "granted"]);
   if (!priorMarketing || previous.marketingGranted !== choice.marketing)
     decisions.push([
@@ -143,22 +188,37 @@ export class ServiceConsents {
   constructor(
     private db: Database,
     private resolveAiPolicy?: ServiceAiPolicyResolver,
+    private legacyBalanced?: LegacyBalancedConsentCompatibility,
   ) {}
   async policy() {
     return this.db.transaction(
       async (tx) =>
-        (await readServiceConsentContext(tx, this.resolveAiPolicy)).policy,
+        (
+          await readServiceConsentContext(
+            tx,
+            this.resolveAiPolicy,
+            this.legacyBalanced,
+          )
+        ).policy,
     );
   }
   async state(userId: string) {
     return this.db.transaction(async (tx) => {
-      const context = await readServiceConsentContext(tx, this.resolveAiPolicy);
+      const context = await readServiceConsentContext(
+        tx,
+        this.resolveAiPolicy,
+        this.legacyBalanced,
+      );
       return state(tx, userId, context);
     });
   }
   async choose(userId: string, raw: unknown) {
     return this.db.transaction(async (tx) => {
-      const context = await readServiceConsentContext(tx, this.resolveAiPolicy);
+      const context = await readServiceConsentContext(
+        tx,
+        this.resolveAiPolicy,
+        this.legacyBalanced,
+      );
       const choice = validateServiceConsent(raw, context.policy);
       const user = (
         await tx.query<{ email: string }>(
@@ -178,6 +238,63 @@ export class ServiceConsents {
         },
         context,
       );
+    });
+  }
+  async acceptAiModes(userId: string, raw: unknown) {
+    const input = aiModesConsentChoiceSchema.parse(raw);
+    return this.db.transaction(async (tx) => {
+      if (input.expectedUserId !== userId)
+        throw new DomainError(
+          409,
+          "Аккаунт изменился. Обновите страницу.",
+          "ACCOUNT_CHANGED",
+        );
+      const context = await readServiceConsentContext(
+        tx,
+        this.resolveAiPolicy,
+        this.legacyBalanced,
+      );
+      if (
+        !context.aiPolicy ||
+        context.aiPolicy.version !== "ai-assistant-modes-v1" ||
+        context.aiPolicy.id !== input.policyId ||
+        context.policy.version !== input.policyVersion
+      )
+        throw new DomainError(
+          409,
+          "Условия режимов изменились. Обновите страницу.",
+          "SERVICE_CONSENT_POLICY_CHANGED",
+        );
+      const user = (
+        await tx.query<{ email: string }>(
+          "select c.email from users u join user_credentials c on c.user_id=u.id where u.id=$1 and u.status='active' for update of u",
+          [userId],
+        )
+      ).rows[0];
+      if (!user) throw new DomainError(401, "Войдите в аккаунт");
+      const before = await state(tx, userId, context);
+      if (!before.currentAiConsentRequired) return before;
+      // Only an actual user confirmation reaches here. No marketing event.
+      await tx.query(
+        `insert into service_consent_events(user_id,subject_email,policy_version,policy_snapshot,policy_hash,purpose,decision,source)
+        values($1,$2,$3,$4::jsonb,$5,'personal-data','granted','existing-account')`,
+        [
+          userId,
+          user.email,
+          context.policy.version,
+          JSON.stringify(context.policy),
+          consentPolicyHash(context.policy),
+        ],
+      );
+      await tx.query(
+        "insert into ai_consents(user_id,policy_id,granted) values($1,$2,true) on conflict(user_id) do update set policy_id=$2,granted=true,updated_at=now()",
+        [userId, context.aiPolicy.id],
+      );
+      await tx.query(
+        "insert into consent_events(user_id,consent_key,action,policy_version,details) values($1,'ai-recipient','granted',$2,$3::jsonb)",
+        [userId, context.aiPolicy.id, JSON.stringify(context.aiPolicy)],
+      );
+      return state(tx, userId, context);
     });
   }
   // Legacy email/password signup still requires the same explicit choices.

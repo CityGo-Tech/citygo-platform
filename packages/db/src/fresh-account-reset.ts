@@ -61,6 +61,7 @@ const tables = [
   "phone_contact_bindings",
   "phone_contact_changes",
   "ai_request_modes",
+  "ai_request_consent_bases",
   "gigachat_request_fees",
   "gigachat_account_leases",
   "questionnaire_answers",
@@ -123,6 +124,7 @@ const preserved = [
   "phone_contact_bindings",
   "phone_contact_changes",
   "ai_request_modes",
+  "ai_request_consent_bases",
   "gigachat_request_fees",
   "gigachat_account_leases",
   // No retention/anti-abuse deletion is authorized by the old TEST reset.
@@ -431,6 +433,11 @@ async function inspect(tx: Sql, options: Options) {
       code: "PHONE_CONTACT_HISTORY_REQUIRES_REVIEW",
       count: phoneContactHistoryCount,
     });
+  if (snapshot.counts.ai_request_consent_bases)
+    blockers.push({
+      code: "AI_CONSENT_BASIS_HISTORY_REQUIRES_REVIEW",
+      count: snapshot.counts.ai_request_consent_bases,
+    });
   if (snapshot.counts.ai_request_modes)
     blockers.push({
       code: "AI_REQUEST_MODE_HISTORY_REQUIRES_REVIEW",
@@ -582,6 +589,9 @@ export class FreshAccountReset {
       // provably empty. The locked snapshot and this immediate recheck both
       // reject ANY accepted mode evidence; no new parent deletion is added.
       if (
+        snapshot.counts.ai_request_consent_bases !== 0 ||
+        (await tx.query("select 1 from ai_request_consent_bases limit 1")).rows
+          .length ||
         snapshot.counts.ai_request_modes !== 0 ||
         (await tx.query("select 1 from ai_request_modes limit 1")).rows
           .length ||
@@ -611,6 +621,7 @@ export class FreshAccountReset {
           ),
           ...protectedEmpty,
           "ai_request_modes",
+          "ai_request_consent_bases",
           "gigachat_request_fees",
           "gigachat_account_leases",
         ]

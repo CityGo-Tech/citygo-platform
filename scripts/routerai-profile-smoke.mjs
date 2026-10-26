@@ -290,6 +290,7 @@ async function mountedProfileSmoke({
         "phone_contact_bindings",
         "phone_contact_changes",
         "ai_request_modes",
+        "ai_request_consent_bases",
         "gigachat_request_fees",
         "gigachat_account_leases",
       ])

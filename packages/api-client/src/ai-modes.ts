@@ -22,7 +22,8 @@ export function isAiModeAvailable(
   return modes === undefined
     ? legacyAvailable
     : modes.options.some(
-        (option) => option.id === selected && option.available,
+        (option) =>
+          option.id === selected && option.available && !option.consentRequired,
       );
 }
 
@@ -36,7 +37,8 @@ export function captureAiModeSelection(
   if (
     !parsed.success ||
     !parsed.data.options.some(
-      (option) => option.id === selected && option.available,
+      (option) =>
+        option.id === selected && option.available && !option.consentRequired,
     )
   )
     throw new Error(aiModeUnavailableMessage);

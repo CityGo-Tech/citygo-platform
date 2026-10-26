@@ -27,7 +27,97 @@ const state = {
   personalDataGranted: true,
   marketingGranted: false,
   serviceConsentRequired: false,
+  currentAiConsentRequired: false,
 };
+
+const aiPolicy = {
+  ...policy,
+  aiProcessing: {
+    id: "a".repeat(64),
+    version: "synthetic-modes-v1",
+    provider: "routerai",
+    model: "citygo/synthetic-modes",
+    recipient: "Synthetic recipients",
+    routing: "Synthetic route",
+    data: "Synthetic context",
+  },
+};
+const modeChoice = {
+  expectedUserId: "1",
+  policyVersion: aiPolicy.version,
+  policyId: aiPolicy.aiProcessing.id,
+  personalData: true as const,
+};
+
+test("new mode confirmation sends only the explicit frozen AI choice and preserves marketing", async () => {
+  for (const marketingGranted of [false, true]) {
+    const requests: unknown[] = [];
+    const accepted = { ...state, policy: aiPolicy, marketingGranted };
+    const client = createClient("http://synthetic", {
+      fetch: async (url, init) => {
+        requests.push({
+          url: String(url),
+          body: JSON.parse(String(init?.body)),
+        });
+        return Response.json(accepted);
+      },
+    });
+    assert.deepEqual(await client.confirmAiModesConsent(modeChoice), accepted);
+    assert.deepEqual(requests, [
+      {
+        url: "http://synthetic/v1/account/ai-modes-consent",
+        body: modeChoice,
+      },
+    ]);
+  }
+});
+
+test("new mode confirmation rejects guessed choices before transport and mismatched evidence without retry", async () => {
+  let calls = 0;
+  const client = createClient("http://synthetic", {
+    fetch: async () => {
+      calls++;
+      return Response.json({});
+    },
+  });
+  for (const invalid of [
+    { ...modeChoice, personalData: false },
+    { ...modeChoice, policyId: "not-a-policy" },
+    { ...modeChoice, marketing: true },
+  ]) {
+    await assert.rejects(
+      client.confirmAiModesConsent(invalid as typeof modeChoice),
+    );
+  }
+  assert.equal(calls, 0);
+  for (const response of [
+    { ...state, policy: aiPolicy, currentAiConsentRequired: undefined },
+    { ...state, policy: aiPolicy, currentAiConsentRequired: true },
+    { ...state, policy: aiPolicy, serviceConsentRequired: true },
+    { ...state, policy: aiPolicy, personalDataGranted: false },
+    { ...state, policy: { ...aiPolicy, version: "changed" } },
+    {
+      ...state,
+      policy: {
+        ...aiPolicy,
+        aiProcessing: { ...aiPolicy.aiProcessing, id: "b".repeat(64) },
+      },
+    },
+  ]) {
+    let sent = 0;
+    await assert.rejects(
+      createClient("http://synthetic", {
+        fetch: async () => {
+          sent++;
+          return Response.json(response);
+        },
+      }).confirmAiModesConsent(modeChoice),
+      (error: unknown) =>
+        error instanceof ApiError && error.code === "invalid_response",
+    );
+    assert.equal(sent, 1);
+  }
+});
 
 test("public policy and authenticated consent endpoints preserve explicit marketing refusal", async () => {
   const requests: { path: string; method: string; body: unknown }[] = [];

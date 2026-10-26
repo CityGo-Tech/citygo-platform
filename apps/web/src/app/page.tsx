@@ -26,6 +26,7 @@ import { OwnerReceiptsPanel } from "../components/owner-receipts";
 import { MessageFavoritesPanel } from "../components/message-favorites";
 import { EmailRegistration } from "../components/email-registration";
 import { ServiceConsentsPanel } from "../components/service-consents";
+import { AiModeConsentDialog } from "../components/ai-mode-consent";
 import { PasswordRecovery } from "../components/password-recovery";
 import { PhoneVerificationPanel } from "../components/phone-verification";
 import { AccountOverview, accountStyles } from "../components/account-overview";
@@ -80,6 +81,13 @@ export default function Home() {
   const [pending, setPending] = useState("");
   const [streamAgent, setStreamAgent] = useState<AgentKey | null>(null);
   const [selectedAiMode, setSelectedAiMode] = useState<AiModeId>("balanced");
+  const aiModeChoiceSequence = useRef(0);
+  const [aiModeConsent, setAiModeConsent] = useState<{
+    mode: AiModeId;
+    owner: string;
+    sequence: number;
+    ticket: SessionTicket;
+  } | null>(null);
   const abort = useRef<AbortController | null>(null);
   const selectedConversation = useRef<{ owner: string; id: string } | null>(
     null,
@@ -118,6 +126,7 @@ export default function Home() {
     abort.current = null;
     setBoard(null);
     setSelectedAiMode("balanced");
+    cancelAiModeChoice();
     chatSubmitting.current = false;
     setText("");
     setDraft("");
@@ -223,8 +232,50 @@ export default function Home() {
     if (version !== refreshVersion.current) return false;
     visibleThread.current = next.thread?.id ?? null;
     setBoard(next);
-    return true;
+    return next;
   }
+  function cancelAiModeChoice() {
+    aiModeChoiceSequence.current++;
+    setAiModeConsent(null);
+  }
+  function chooseAiMode(value: AiModeId) {
+    if (
+      !board ||
+      board.user.serviceConsentRequired ||
+      board.user.mustChangePassword ||
+      busy ||
+      sending ||
+      chatSubmitting.current
+    )
+      return;
+    const option = board.aiAccess.modes?.options.find(
+      (candidate) => candidate.id === value,
+    );
+    if (!option?.available) return;
+    cancelAiModeChoice();
+    if (!option.consentRequired) {
+      setSelectedAiMode(value);
+      return;
+    }
+    setAiModeConsent({
+      mode: value,
+      owner: board.user.id,
+      sequence: aiModeChoiceSequence.current,
+      ticket: session.capture(),
+    });
+  }
+  useEffect(() => {
+    if (
+      board?.user.mustChangePassword ||
+      board?.user.serviceConsentRequired ||
+      passwordOpen
+    )
+      cancelAiModeChoice();
+  }, [
+    board?.user.mustChangePassword,
+    board?.user.serviceConsentRequired,
+    passwordOpen,
+  ]);
   function rememberConversation(owner: string, id: string) {
     selectedConversation.current = { owner, id };
     setConversationView(true);
@@ -235,6 +286,7 @@ export default function Home() {
       !board ||
       board.user.serviceConsentRequired ||
       busy ||
+      aiModeConsent !== null ||
       sending ||
       conversationSwitch.current
     )
@@ -596,6 +648,7 @@ export default function Home() {
       history.detached ||
       !text.trim() ||
       busy ||
+      aiModeConsent !== null ||
       sending ||
       conversationSwitch.current ||
       chatSubmitting.current
@@ -611,6 +664,14 @@ export default function Home() {
           "Обновлены условия доступа. Отправьте сообщение снова после подтверждения условий.",
         );
       });
+      return;
+    }
+    if (
+      board.aiAccess.modes?.options.some(
+        (option) => option.id === selectedAiMode && option.consentRequired,
+      )
+    ) {
+      chooseAiMode(selectedAiMode);
       return;
     }
     await sendChat(board, text, conversationEpoch.current, session.capture());
@@ -1147,16 +1208,13 @@ export default function Home() {
                   history.returnToLatest();
                   void refresh(session.capture()).catch(() => {});
                 }}
-                busy={busy}
+                busy={busy || aiModeConsent !== null}
                 sending={sending}
                 draft={draft}
                 pending={pending}
                 streamAgent={streamAgent}
                 aiMode={selectedAiMode}
-                onAiMode={(value) => {
-                  if (!busy && !sending && !chatSubmitting.current)
-                    setSelectedAiMode(value);
-                }}
+                onAiMode={chooseAiMode}
                 text={text}
                 onText={setText}
                 onChat={chat}
@@ -1210,6 +1268,79 @@ export default function Home() {
                 }
               />
             </div>
+            {aiModeConsent && (
+              <AiModeConsentDialog
+                key={aiModeConsent.owner + ":" + aiModeConsent.sequence}
+                userId={aiModeConsent.owner}
+                mode={aiModeConsent.mode}
+                sessionSignal={aiModeConsent.ticket.signal}
+                onAccessDenied={requireLogin}
+                onClose={cancelAiModeChoice}
+                verifyOwner={async (signal) => {
+                  const choice = aiModeConsent;
+                  choice.ticket.check();
+                  if (choice.sequence !== aiModeChoiceSequence.current)
+                    return false;
+                  const fresh = await createClient("/api", {
+                    signal: () =>
+                      AbortSignal.any([signal, choice.ticket.signal]),
+                  }).dashboard();
+                  choice.ticket.check();
+                  if (
+                    signal.aborted ||
+                    choice.sequence !== aiModeChoiceSequence.current
+                  )
+                    return false;
+                  if (fresh.user.id !== choice.owner) {
+                    notifyBrowserSessionChange();
+                    clearUserState(fresh.user.id);
+                    void refresh(session.capture()).catch(() => {});
+                    return false;
+                  }
+                  if (
+                    fresh.user.mustChangePassword ||
+                    fresh.user.serviceConsentRequired
+                  ) {
+                    await refresh(choice.ticket);
+                    if (choice.sequence === aiModeChoiceSequence.current)
+                      cancelAiModeChoice();
+                    return false;
+                  }
+                  return true;
+                }}
+                onBaseConsentRequired={async () => {
+                  const choice = aiModeConsent;
+                  choice.ticket.check();
+                  if (choice.sequence !== aiModeChoiceSequence.current) return;
+                  await refresh(choice.ticket);
+                  choice.ticket.check();
+                  if (choice.sequence === aiModeChoiceSequence.current)
+                    cancelAiModeChoice();
+                }}
+                onConfirmed={async (selected) => {
+                  const choice = aiModeConsent;
+                  choice.ticket.check();
+                  if (choice.sequence !== aiModeChoiceSequence.current) return;
+                  const next = await refresh(choice.ticket);
+                  choice.ticket.check();
+                  if (choice.sequence !== aiModeChoiceSequence.current) return;
+                  if (
+                    !next ||
+                    next.user.id !== choice.owner ||
+                    next.user.serviceConsentRequired ||
+                    !next.aiAccess.modes?.options.some(
+                      (option) =>
+                        option.id === selected &&
+                        option.available &&
+                        !option.consentRequired,
+                    )
+                  )
+                    throw new Error("Mode choice needs fresh confirmation");
+                  setSelectedAiMode(selected);
+                  cancelAiModeChoice();
+                }}
+              />
+            )}
           </>
         )}
       </main>

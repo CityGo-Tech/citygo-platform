@@ -4,6 +4,8 @@ import { createHash } from "node:crypto";
 import { readConfig } from "@citygo/config";
 import { aiModesSchema, serviceAiProcessingSchema } from "@citygo/contracts";
 import { createAssistantModes } from "./ai-modes.js";
+import { createAiPolicy } from "./ai-policy.js";
+import { createAiExecution } from "./ai-execution.js";
 
 const settings = {
   NODE_ENV: "test",
@@ -25,6 +27,140 @@ const fixedSettings = {
     "synthetic-client:synthetic-secret",
   ).toString("base64"),
 };
+test("retained consent selects only the exact bootstrap Balanced route and requires one real opt-in for other modes", (t) => {
+  const fetch = t.mock.method(globalThis, "fetch", async () => {
+    throw Error("Network forbidden");
+  });
+  const config = readConfig({
+    ...fixedSettings,
+    ROUTERAI_MODEL: "deepseek/deepseek-v4-pro-0813",
+    ROUTERAI_UPSTREAM: "deepseek",
+    ROUTERAI_COUNTRY: "cn",
+    LLM_MAX_INPUT_BYTES: "8192",
+    ROUTERAI_MAX_OUTPUT_TOKENS: "4096",
+    ROUTERAI_DATA_NOTICE: "Synthetic original recipient notice.",
+  });
+  const modes = createAssistantModes(config)!;
+  const oldPolicy = createAiPolicy(config, {
+    name: "routerai",
+    model: "deepseek/deepseek-v4-pro-0813",
+  })!;
+  const oldExecution = createAiExecution(config, oldPolicy);
+  assert.deepEqual(modes.legacyBalancedCompatibility, {
+    routingPolicyId: modes.policy.id,
+    policy: oldPolicy,
+    execution: oldExecution,
+  });
+  const legacy = { currentAiConsentRequired: true };
+  const oldCatalog = modes.modeCatalog(legacy);
+  assert.notEqual(oldCatalog.catalogId, modes.catalogId);
+  assert.deepEqual(
+    oldCatalog.options.map(({ id, available, consentRequired }) => ({
+      id,
+      available,
+      ...(consentRequired ? { consentRequired } : {}),
+    })),
+    [
+      { id: "maximum", available: true, consentRequired: true },
+      { id: "balanced", available: true },
+      { id: "minimum", available: true, consentRequired: true },
+    ],
+  );
+  const routing = {
+    provider: "routerai" as const,
+    policyId: modes.policy.id,
+    revision: 2,
+  };
+  const chosen = modes.resolve(
+    routing,
+    { aiMode: "balanced", aiModeCatalogId: oldCatalog.catalogId },
+    legacy,
+  );
+  assert.deepEqual(chosen.policy, oldPolicy);
+  assert.deepEqual(chosen.execution, oldExecution);
+  assert.equal(chosen.catalogId, oldCatalog.catalogId);
+  assert.notEqual(
+    chosen.execution.key,
+    modes.resolve(routing, {}).execution.key,
+  );
+  for (const aiMode of ["maximum", "minimum"] as const)
+    assert.throws(
+      () =>
+        modes.resolve(
+          routing,
+          { aiMode, aiModeCatalogId: oldCatalog.catalogId },
+          legacy,
+        ),
+      { code: "AI_MODES_CONSENT_REQUIRED", statusCode: 403 },
+    );
+  // Neither a stale old tab nor an unconfirmed tab may reinterpret its choice.
+  assert.throws(
+    () =>
+      modes.resolve(routing, {
+        aiMode: "balanced",
+        aiModeCatalogId: oldCatalog.catalogId,
+      }),
+    { code: "AI_MODE_CHANGED" },
+  );
+  assert.throws(
+    () =>
+      modes.resolve(
+        routing,
+        { aiMode: "balanced", aiModeCatalogId: modes.catalogId },
+        legacy,
+      ),
+    { code: "AI_MODE_CHANGED" },
+  );
+  assert.equal(fetch.mock.callCount(), 0);
+});
+
+test("legacy compatibility cannot be inferred from a changed bootstrap route or the new production bundle approval", () => {
+  const original = {
+    ...settings,
+    ROUTERAI_MODEL: "deepseek/deepseek-v4-pro-0813",
+    ROUTERAI_UPSTREAM: "deepseek",
+    ROUTERAI_COUNTRY: "cn",
+    ROUTERAI_DATA_NOTICE: "Synthetic original recipient notice.",
+    LLM_MAX_INPUT_BYTES: "8192",
+    ROUTERAI_MAX_OUTPUT_TOKENS: "4096",
+  };
+  for (const fields of [
+    { ROUTERAI_MODEL: "other-model" },
+    { ROUTERAI_UPSTREAM: "other-upstream" },
+    { ROUTERAI_COUNTRY: "us" },
+    {
+      LLM_PROVIDER: "openai",
+      AI_CREDIT_MODE: "disabled",
+      AI_CREDIT_RESERVATION_MODE: "full",
+    },
+    { ROUTERAI_DATA_NOTICE: "" },
+    { LLM_MAX_INPUT_BYTES: "16384" },
+    { ROUTERAI_MAX_OUTPUT_TOKENS: "8000" },
+    { AI_CREDIT_RESERVATION_MODE: "full" },
+  ]) {
+    const modes = createAssistantModes(readConfig({ ...original, ...fields }))!;
+    assert.equal(modes.legacyBalancedCompatibility, undefined);
+    assert.equal(
+      modes.modeCatalog({ currentAiConsentRequired: true }).options[1]!
+        .available,
+      false,
+    );
+  }
+  const production = readConfig({
+    ...original,
+    NODE_ENV: "production",
+    DATABASE_URL: "postgresql://localhost/not-used",
+    WEB_ORIGIN: "https://citygo.example",
+    TRUSTED_PROXY_CIDRS: "127.0.0.1/32",
+  });
+  const draft = createAssistantModes(production)!;
+  const currentApprovedOnly = createAssistantModes({
+    ...production,
+    AI_MODES_PRODUCTION_POLICY_ID: draft.policy.id,
+  })!;
+  assert.equal(currentApprovedOnly.productionApproved, true);
+  assert.equal(currentApprovedOnly.legacyBalancedCompatibility, undefined);
+});
 test("server catalog contains only the three product labels and uses two independent exact RouterAI profiles", (t) => {
   const fetch = t.mock.method(globalThis, "fetch", async () => {
     throw Error("Network forbidden");

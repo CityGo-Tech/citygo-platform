@@ -4,6 +4,7 @@ import {
   serviceConsentPolicy,
   serviceConsentPolicySchema,
   serviceConsentChoiceSchema,
+  aiModesConsentChoiceSchema,
 } from "./service-consents.js";
 
 const aiProcessing = {
@@ -15,6 +16,23 @@ const aiProcessing = {
   routing: "Synthetic routing notice",
   data: "Synthetic context notice",
 };
+test("new mode choice binds the account and policy without accepting marketing fields", () => {
+  const choice = {
+    expectedUserId: "17",
+    policyVersion: "synthetic-modes-v1",
+    policyId: "a".repeat(64),
+    personalData: true,
+  };
+  assert.deepEqual(aiModesConsentChoiceSchema.parse(choice), choice);
+  for (const invalid of [
+    { ...choice, expectedUserId: "" },
+    { ...choice, expectedUserId: "other account" },
+    { ...choice, policyId: "old" },
+    { ...choice, personalData: false },
+    { ...choice, marketing: true },
+  ])
+    assert.equal(aiModesConsentChoiceSchema.safeParse(invalid).success, false);
+});
 test("v2 explicitly includes only the disclosed AI recipient and preserves separate optional marketing and SMS choice", () => {
   assert.equal(serviceConsentPolicy.version, "2026-10-25-v2");
   assert.match(serviceConsentPolicy.personalData.text, /внешнему ИИ-сервису/);
