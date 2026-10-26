@@ -465,9 +465,9 @@ export async function buildApp(options: {
   app.get("/ready", async () => {
     try {
       const result = await options.db.query(
-        "select name from citygo_migrations where name in ('0006_ai_budget.sql','0007_ai_user_daily_budget.sql','0008_ai_credit.sql','0009_ai_credit_charges.sql','0010_quest_plan_expand.sql','0011_quest_plan_validate.sql','0013_account_access.sql','0014_citygo_credit.sql','0015_yookassa_orders.sql','0016_npd_receipts.sql','0017_credit_source_lots.sql','0018_payment_refunds.sql','0019_yookassa_live_orders.sql','0020_ai_budget_provider_balance.sql','0021_payment_notifications.sql','0022_payment_admission.sql','0023_payment_receipt_snapshots.sql','0024_ai_credit_overdraft.sql','0025_assistant_conversations.sql','0030_service_consents.sql','0031_account_email_confirmation.sql')",
+        "select name from citygo_migrations where name in ('0006_ai_budget.sql','0007_ai_user_daily_budget.sql','0008_ai_credit.sql','0009_ai_credit_charges.sql','0010_quest_plan_expand.sql','0011_quest_plan_validate.sql','0013_account_access.sql','0014_citygo_credit.sql','0015_yookassa_orders.sql','0016_npd_receipts.sql','0017_credit_source_lots.sql','0018_payment_refunds.sql','0019_yookassa_live_orders.sql','0020_ai_budget_provider_balance.sql','0021_payment_notifications.sql','0022_payment_admission.sql','0023_payment_receipt_snapshots.sql','0024_ai_credit_overdraft.sql','0025_assistant_conversations.sql','0030_service_consents.sql','0031_account_email_confirmation.sql','0032_phone_contact_bindings.sql')",
       );
-      if (result.rows.length !== 21) throw new Error("Pending migration");
+      if (result.rows.length !== 22) throw new Error("Pending migration");
       await options.db.query(
         "select user_id,policy_version,policy_hash,purpose,decision from service_consent_events limit 0",
       );
@@ -480,6 +480,14 @@ export async function buildApp(options: {
       await options.db.query(
         "select id,delivery,attempts from account_email_confirmation_challenges limit 0",
       );
+      await options.db.query(
+        "select id,user_id,unlinked_at from phone_contact_bindings limit 0",
+      );
+      const phoneChanges = await options.db.query<{ ready: boolean }>(
+        "select to_regclass('public.phone_contact_changes') is not null as ready",
+      );
+      if (phoneChanges.rows[0]?.ready !== true)
+        throw new Error("Pending phone contact migration");
       if (config.EMAIL_REGISTRATION_MODE === "required") {
         const verification = await options.db.query(
           "select name from citygo_migrations where name='0026_email_registration.sql'",

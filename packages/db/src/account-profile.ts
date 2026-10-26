@@ -6,6 +6,7 @@ import {
   type EmailSendLimits,
 } from "./email-registration.js";
 import { DomainError } from "./errors.js";
+import { activePhoneContact } from "./phone-contacts.js";
 
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
 const contextSchema = z.strictObject({
@@ -151,14 +152,8 @@ export class AccountProfile {
     return this.db.transaction(async (tx) => {
       const user = await authorize(tx, ctx);
       const row = (
-        await tx.query<{ phoneVerified: boolean; giftClaimed: boolean }>(
-          `select exists(select 1 from phone_welcome_claims w
-          join phone_verification_challenges c on c.id=w.challenge_id and c.user_id=w.user_id and c.phone_key=w.phone_key
-          join ai_credit_entries e on e.operation_id=w.operation_id and e.user_id=w.user_id and e.kind='bonus' and e.amount_micros=w.granted_micros
-          join phone_verification_control p on p.id=1 and p.bound_at is not null and p.policy_fingerprint=c.policy_fingerprint
-          where w.user_id=$1 and c.consumed_at is not null and c.consumed_operation_id=w.operation_id
-            and c.delivery='accepted' and c.superseded_at is null) as "phoneVerified",
-         (exists(select 1 from phone_welcome_claims where user_id=$1)
+        await tx.query<{ giftClaimed: boolean }>(
+          `select (exists(select 1 from phone_welcome_claims where user_id=$1)
           or exists(select 1 from ai_credit_entries where user_id=$1 and kind='bonus')) as "giftClaimed"`,
           [ctx.userId],
         )
@@ -169,6 +164,7 @@ export class AccountProfile {
         email,
         emailVerified: email !== null && user.emailVerified,
         ...row,
+        phoneVerified: Boolean(await activePhoneContact(tx, ctx.userId)),
       };
     });
   }

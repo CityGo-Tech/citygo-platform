@@ -110,7 +110,12 @@ test("phone policy is a strict explicit availability state with exactly the appr
           phoneVerification === "required" ? "eligible" : "unavailable",
       },
     );
-  for (const giftStatus of ["email_required", "eligible", "granted"] as const)
+  for (const giftStatus of [
+    "email_required",
+    "eligible",
+    "granted",
+    "phone_bound",
+  ] as const)
     assert.equal(
       phoneVerificationPolicySchema.parse({
         phoneVerification: "required",
@@ -162,6 +167,35 @@ test("phone policy is a strict explicit availability state with exactly the appr
       }).success,
       false,
     );
+});
+
+test("phone-bound status is a strict required-policy fact, not another gift receipt", () => {
+  const bound = {
+    phoneVerification: "required",
+    deliveryProvider: "prosto_sms",
+    giftAmountMicros: 500_000_000,
+    giftStatus: "phone_bound",
+  };
+  assert.deepEqual(phoneVerificationPolicySchema.parse(bound), bound);
+  for (const phoneVerification of ["disabled", "unavailable"])
+    assert.equal(
+      phoneVerificationPolicySchema.safeParse({ ...bound, phoneVerification })
+        .success,
+      false,
+    );
+  assert.equal(
+    phoneVerificationPolicySchema.safeParse({
+      ...bound,
+      grantedMicros: 500_000_000,
+    }).success,
+    false,
+  );
+  assert.equal(phoneVerificationReceiptSchema.safeParse(bound).success, false);
+  assert.equal(
+    phoneVerificationReceiptSchema.safeParse({ ...receipt, grantedMicros: 0 })
+      .success,
+    false,
+  );
 });
 
 test("policy requires an explicit server delivery provider, never infers it from availability", () => {

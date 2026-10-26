@@ -58,6 +58,8 @@ const tables = [
   "phone_verification_control",
   "phone_verification_sends",
   "phone_welcome_claims",
+  "phone_contact_bindings",
+  "phone_contact_changes",
   "questionnaire_answers",
   "quests",
   "r1_housing_brief_revisions",
@@ -115,6 +117,8 @@ const preserved = [
   "phone_verification_control",
   "phone_verification_sends",
   "phone_welcome_claims",
+  "phone_contact_bindings",
+  "phone_contact_changes",
   // No retention/anti-abuse deletion is authorized by the old TEST reset.
   "password_recovery_challenges",
   "account_email_confirmation_challenges",
@@ -412,6 +416,14 @@ async function inspect(tx: Sql, options: Options) {
     blockers.push({
       code: "ACCOUNT_EMAIL_CONFIRMATION_HISTORY_REQUIRES_REVIEW",
       count: snapshot.counts.account_email_confirmation_challenges,
+    });
+  const phoneContactHistoryCount =
+    snapshot.counts.phone_contact_bindings! +
+    snapshot.counts.phone_contact_changes!;
+  if (phoneContactHistoryCount)
+    blockers.push({
+      code: "PHONE_CONTACT_HISTORY_REQUIRES_REVIEW",
+      count: phoneContactHistoryCount,
     });
   const phoneHistoryCount = [
     "phone_verification_challenges",

@@ -20,7 +20,7 @@ async function install(page: Page) {
   const state = {
     mode: "required" as "disabled" | "unavailable" | "required",
     status: "eligible" as
-      "unavailable" | "email_required" | "eligible" | "granted",
+      "unavailable" | "email_required" | "eligible" | "granted" | "phone_bound",
     provider: "prosto_sms",
     policies: 0,
     dashboards: 0,
@@ -204,6 +204,79 @@ test("opening gift checks availability only; disabled mode never sends SMS or in
   ).toHaveCount(0);
   expect(state.starts).toEqual([]);
   expect(state.confirms).toEqual([]);
+  expect(state.unexpected).toEqual([]);
+});
+
+test("an actively bound phone with a used number gift is a read-only status without SMS or a bonus refresh", async ({
+  page,
+}, info) => {
+  const state = await install(page);
+  state.status = "phone_bound";
+  await page.goto("/");
+  await open(page);
+  await expect(panel(page).getByRole("status")).toHaveText(
+    "Телефон привязан. Подарок по этому номеру уже использован.",
+  );
+  await expect(
+    panel(page).getByLabel("Российский мобильный номер", { exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    panel(page).getByLabel("Код из SMS", { exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    panel(page).getByRole("button", {
+      name: "Получить код по SMS",
+      exact: true,
+    }),
+  ).toHaveCount(0);
+  await expect(panel(page)).not.toContainText("500");
+  await expect(panel(page)).not.toContainText("Начислено");
+  await expect(panel(page)).not.toContainText(phone);
+  const dashboards = state.dashboards,
+    policies = state.policies;
+  await panel(page)
+    .getByRole("button", { name: "Обновить статус", exact: true })
+    .click();
+  await expect.poll(() => state.policies).toBe(policies + 1);
+  await expect(panel(page).getByRole("status")).toContainText(
+    "Телефон привязан",
+  );
+  expect(state.dashboards).toBe(dashboards);
+  expect(state.starts).toEqual([]);
+  expect(state.resends).toEqual([]);
+  expect(state.confirms).toEqual([]);
+  expect(state.unexpected).toEqual([]);
+  await panel(page).screenshot({
+    path: info.outputPath("phone-contact-bound.png"),
+  });
+});
+
+test("refresh after an operator contact change removes the old code form without reissuing SMS or claiming a gift", async ({
+  page,
+}) => {
+  const state = await install(page);
+  await page.goto("/");
+  await open(page);
+  await begin(page);
+  await expect(
+    panel(page).getByLabel("Код из SMS", { exact: true }),
+  ).toBeVisible();
+  state.status = "phone_bound";
+  const dashboards = state.dashboards;
+  await panel(page)
+    .getByRole("button", { name: "Обновить статус подарка", exact: true })
+    .click();
+  await expect(panel(page).getByRole("status")).toContainText(
+    "Телефон привязан",
+  );
+  await expect(
+    panel(page).getByLabel("Код из SMS", { exact: true }),
+  ).toHaveCount(0);
+  await expect(panel(page)).not.toContainText("Начислено");
+  expect(state.starts).toHaveLength(1);
+  expect(state.resends).toEqual([]);
+  expect(state.confirms).toEqual([]);
+  expect(state.dashboards).toBe(dashboards);
   expect(state.unexpected).toEqual([]);
 });
 

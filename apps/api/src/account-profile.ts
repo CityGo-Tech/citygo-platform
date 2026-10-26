@@ -118,7 +118,9 @@ export function registerAccountProfile(
       phoneVerified: profile.phoneVerified,
       giftStatus: profile.giftClaimed
         ? ("claimed" as const)
-        : profile.emailVerified && (await phoneReady())
+        : !profile.phoneVerified &&
+            profile.emailVerified &&
+            (await phoneReady())
           ? ("available" as const)
           : ("unavailable" as const),
       emailConfirmation:

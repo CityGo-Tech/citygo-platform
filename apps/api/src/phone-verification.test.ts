@@ -1,11 +1,13 @@
 import { syntheticServiceConsents } from "./test-service-consents.js";
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
+import { randomUUID } from "node:crypto";
 import {
   configurePhoneVerification,
   connectDatabase,
   migrate,
   Repository,
+  PhoneContacts,
   ServiceConsents,
 } from "@citygo/db";
 import { readConfig } from "@citygo/config";
@@ -14,6 +16,7 @@ import {
   phoneVerificationChallengeSchema,
   phoneVerificationPolicySchema,
   phoneVerificationReceiptSchema,
+  accountProfileSchema,
 } from "@citygo/contracts";
 import { buildApp } from "./app.js";
 import { hashPassword, tokenHash } from "./auth.js";
@@ -154,7 +157,18 @@ async function fixture(
     entries: (await db.query("select 1 from ai_credit_entries")).rows.length,
     claims: (await db.query("select 1 from phone_welcome_claims")).rows.length,
   });
-  return { app, db, config, sent, post, auth, token, user, money };
+  return {
+    app,
+    db,
+    config,
+    sent,
+    post,
+    auth,
+    token,
+    user,
+    money,
+    lastEmailCode: () => emailCode,
+  };
 }
 
 test("HTTP email + phone OTP creates exactly one gift; replay is the same receipt, not another 500", async (t) => {
@@ -220,6 +234,283 @@ test("HTTP email + phone OTP creates exactly one gift; replay is the same receip
   );
   assert.equal(f.sent.length, 1);
 });
+
+test("HTTP distinct verified accounts cannot claim one normalized 8/+7 mobile twice, including an already accepted second challenge", async (t) => {
+  for (const secondPending of [false, true]) {
+    const f = await fixture(t, { prostoSms: true, unlimitedGlobal: true });
+    const registration = await f.app.inject({
+      method: "POST",
+      url: "/v1/auth/email/register",
+      headers,
+      payload: {
+        consents: syntheticServiceConsents,
+        email: "second-phone-owner@example.test",
+        password: "abcdef",
+      },
+    });
+    assert.equal(registration.statusCode, 200);
+    const emailProof = phoneVerificationChallengeSchema.parse(
+      registration.json(),
+    );
+    const verified = await f.app.inject({
+      method: "POST",
+      url: "/v1/auth/email/confirm",
+      headers,
+      payload: {
+        challengeId: emailProof.challengeId,
+        proof: emailProof.proof,
+        code: f.lastEmailCode(),
+      },
+    });
+    assert.equal(verified.statusCode, 200);
+    const other = verified.json<{ token: string; user: { id: string } }>();
+    assert.notEqual(other.user.id, f.user.id);
+    const otherAuth = { ...f.auth, authorization: "Bearer " + other.token };
+    const first = await f.post("start", { phone: "8 (999) 000-00-01" });
+    assert.equal(first.statusCode, 200);
+    const firstProof = phoneVerificationChallengeSchema.parse(first.json());
+    let otherProof:
+      ReturnType<typeof phoneVerificationChallengeSchema.parse> | undefined;
+    if (secondPending) {
+      // Move only synthetic send timestamps past the shared number cooldown.
+      // Both SMS admissions precede the first successful ownership proof.
+      await f.db.query(
+        "update phone_verification_sends set created_at=created_at-interval '61 seconds'",
+      );
+      const pending = await f.post("start", { phone }, otherAuth);
+      assert.equal(pending.statusCode, 200);
+      otherProof = phoneVerificationChallengeSchema.parse(pending.json());
+      assert.equal(f.sent.length, 2);
+      assert.deepEqual(await f.money(), { entries: 0, claims: 0 });
+    }
+    const request = {
+      challengeId: firstProof.challengeId,
+      proof: firstProof.proof,
+      phone,
+      code: f.sent[0]!.code,
+    };
+    const granted = await f.post("confirm", request);
+    assert.equal(granted.statusCode, 200);
+    const receipt = phoneVerificationReceiptSchema.parse(granted.json());
+    assert.equal(receipt.alreadyGranted, false);
+    assert.equal(receipt.grantedMicros, 500_000_000);
+    assert.deepEqual(
+      f.sent.map((value) => value.phone),
+      Array(secondPending ? 2 : 1).fill("79990000001"),
+    );
+    const snapshot = async () =>
+      (
+        await f.db.query(`select jsonb_build_object(
+      'accounts',(select coalesce(jsonb_agg(to_jsonb(t) order by user_id),'[]'::jsonb) from ai_credit_accounts t),
+      'entries',(select coalesce(jsonb_agg(to_jsonb(t) order by id),'[]'::jsonb) from ai_credit_entries t),
+      'lots',(select coalesce(jsonb_agg(to_jsonb(t) order by id),'[]'::jsonb) from credit_source_lots t),
+      'claims',(select coalesce(jsonb_agg(to_jsonb(t) order by user_id),'[]'::jsonb) from phone_welcome_claims t),
+      'challenges',(select coalesce(jsonb_agg(to_jsonb(t) order by id),'[]'::jsonb) from phone_verification_challenges t),
+      'sends',(select coalesce(jsonb_agg(to_jsonb(t) order by id),'[]'::jsonb) from phone_verification_sends t),
+      'debts',(select coalesce(jsonb_agg(to_jsonb(t) order by hold_id),'[]'::jsonb) from credit_charge_debts t),
+      'repayments',(select coalesce(jsonb_agg(to_jsonb(t) order by id),'[]'::jsonb) from credit_debt_repayments t)
+    ) as value`)
+      ).rows[0]!.value;
+    const before = await snapshot(),
+      sentBefore = f.sent.length;
+    assert.equal(
+      (await f.post("start", { phone: "+7 (999) 000-00-01" }, otherAuth))
+        .statusCode,
+      409,
+    );
+    assert.equal(f.sent.length, sentBefore);
+    assert.deepEqual(
+      await snapshot(),
+      before,
+      "Claimed normalized mobile rejects before another challenge, quota admission or money write",
+    );
+    if (otherProof) {
+      assert.equal(
+        (
+          await f.post(
+            "confirm",
+            {
+              challengeId: otherProof.challengeId,
+              proof: otherProof.proof,
+              phone: "89990000001",
+              code: f.sent[1]!.code,
+            },
+            otherAuth,
+          )
+        ).statusCode,
+        409,
+      );
+      assert.equal(f.sent.length, sentBefore);
+      assert.deepEqual(
+        await snapshot(),
+        before,
+        "A second accepted code cannot consume its challenge or create a second bonus/lot",
+      );
+    }
+    assert.deepEqual((await f.post("confirm", request)).json(), {
+      ...receipt,
+      alreadyGranted: true,
+    });
+    assert.deepEqual(await snapshot(), before);
+    assert.deepEqual(await f.money(), { entries: 1, claims: 1 });
+    assert.deepEqual(
+      (
+        await f.db.query(
+          "select user_id::text,granted_micros::text from ai_credit_accounts",
+        )
+      ).rows,
+      [{ user_id: f.user.id, granted_micros: "500000000" }],
+    );
+    assert.equal(
+      (
+        await f.db.query(
+          "select count(distinct phone_key)::int as n from phone_verification_challenges",
+        )
+      ).rows[0]!.n,
+      1,
+    );
+    assert.equal(
+      (await f.db.query("select 1 from credit_source_lots")).rows.length,
+      1,
+    );
+  }
+});
+
+for (const transfer of [false, true])
+  test(`HTTP contact ${transfer ? "transfer" : "unlink"} preserves the gift, rejects the old OTP and cannot grant another account a second 500`, async (t) => {
+    const f = await fixture(t, { prostoSms: true });
+    const start = await f.post("start", { phone });
+    assert.equal(start.statusCode, 200);
+    const challenge = phoneVerificationChallengeSchema.parse(start.json());
+    const confirmation = {
+      challengeId: challenge.challengeId,
+      proof: challenge.proof,
+      phone,
+      code: f.sent[0]!.code,
+    };
+    assert.equal((await f.post("confirm", confirmation)).statusCode, 200);
+    const registration = await f.app.inject({
+      method: "POST",
+      url: "/v1/auth/email/register",
+      headers,
+      payload: {
+        consents: syntheticServiceConsents,
+        email: "contact-receiver@example.test",
+        password: "abcdef",
+      },
+    });
+    assert.equal(registration.statusCode, 200);
+    const pending = phoneVerificationChallengeSchema.parse(registration.json());
+    const registered = await f.app.inject({
+      method: "POST",
+      url: "/v1/auth/email/confirm",
+      headers,
+      payload: {
+        challengeId: pending.challengeId,
+        proof: pending.proof,
+        code: f.lastEmailCode(),
+      },
+    });
+    assert.equal(registered.statusCode, 200);
+    const receiver = registered.json<{ token: string; user: { id: string } }>();
+    const receiverAuth = {
+      ...headers,
+      authorization: "Bearer " + receiver.token,
+    };
+    const source = (
+      await f.db.query<{
+        id: string;
+        phone_key: string;
+        policy_fingerprint: string;
+      }>(
+        "select id::text,phone_key,policy_fingerprint from phone_contact_bindings where user_id=$1 and unlinked_at is null",
+        [f.user.id],
+      )
+    ).rows[0]!;
+    const retained = async () => {
+      const snapshot: Record<string, unknown> = {};
+      for (const table of [
+        "ai_credit_accounts",
+        "ai_credit_entries",
+        "credit_source_lots",
+        "credit_hold_allocations",
+        "credit_charge_debts",
+        "credit_debt_repayments",
+        "ai_credit_topups",
+        "payment_topup_orders",
+        "payment_refunds",
+        "npd_receipt_tasks",
+        "phone_welcome_claims",
+        "phone_verification_challenges",
+        "phone_verification_sends",
+        "phone_verification_control",
+      ])
+        snapshot[table] = (
+          await f.db.query(
+            `select coalesce(jsonb_agg(to_jsonb(t) order by to_jsonb(t)::text),'[]'::jsonb) as value from ${table} t`,
+          )
+        ).rows[0]!.value;
+      return snapshot;
+    };
+    const before = await retained();
+    const command = {
+      operationId: randomUUID(),
+      fromUserId: f.user.id,
+      toUserId: transfer ? receiver.user.id : null,
+      expectedSourceBindingId: source.id,
+      expectedPhoneKey: source.phone_key,
+      expectedPolicyFingerprint: source.policy_fingerprint,
+      authoritySha256: "c".repeat(64),
+      reason: "owner-request" as const,
+    };
+    const contacts = new PhoneContacts(f.db);
+    const changed = await contacts.changeByOperator(command);
+    assert.equal(changed.replayed, false);
+    assert.deepEqual(await contacts.changeByOperator(command), {
+      ...changed,
+      replayed: true,
+    });
+    assert.deepEqual(await retained(), before);
+    const getProfile = async (ownHeaders: typeof f.auth) => {
+      const response = await f.app.inject({
+        url: "/v1/account/profile",
+        headers: ownHeaders,
+      });
+      assert.equal(response.statusCode, 200);
+      return accountProfileSchema.parse(response.json());
+    };
+    const senderProfile = await getProfile(f.auth);
+    assert.equal(senderProfile.phoneVerified, false);
+    assert.equal(senderProfile.giftStatus, "claimed");
+    const receiverProfile = await getProfile(receiverAuth);
+    assert.equal(receiverProfile.phoneVerified, transfer);
+    assert.equal(
+      receiverProfile.giftStatus,
+      transfer ? "unavailable" : "available",
+    );
+    const policy = await f.app.inject({
+      url: "/v1/phone-verification/policy",
+      headers: receiverAuth,
+    });
+    assert.equal(policy.statusCode, 200);
+    assert.equal(
+      phoneVerificationPolicySchema.parse(policy.json()).giftStatus,
+      transfer ? "phone_bound" : "eligible",
+    );
+    assert.equal((await f.post("confirm", confirmation)).statusCode, 409);
+    assert.equal(
+      (await f.post("start", { phone: "8 (999) 000-00-01" }, receiverAuth))
+        .statusCode,
+      409,
+    );
+    assert.equal(f.sent.length, 1);
+    assert.deepEqual(await retained(), before);
+    assert.deepEqual(await f.money(), { entries: 1, claims: 1 });
+    assert.equal(
+      (await f.db.query("select 1 from phone_contact_changes")).rows.length,
+      1,
+    );
+  });
 
 test("ProstoSMS synthetic receipt confirms one phone and grants once, without SMS.ru fallback", async (t) => {
   const f = await fixture(t, { prostoSms: true });
@@ -648,7 +939,7 @@ test("a legacy unverified email account cannot send an SMS or receive a gift", a
 test("disabled policy never reads phone tables and unbound policy never reads gift history", async (t) => {
   const disabled = await fixture(t, { disabled: true });
   await disabled.db.exec(
-    "drop table phone_welcome_claims,phone_verification_sends,phone_verification_challenges,phone_verification_control",
+    "drop table phone_contact_changes,phone_contact_bindings,phone_welcome_claims,phone_verification_sends,phone_verification_challenges,phone_verification_control",
   );
   assert.deepEqual(
     (
@@ -666,7 +957,7 @@ test("disabled policy never reads phone tables and unbound policy never reads gi
   );
   const unbound = await fixture(t, { bound: false });
   await unbound.db.exec(
-    "drop table phone_welcome_claims,phone_verification_sends,phone_verification_challenges",
+    "drop table phone_contact_changes,phone_contact_bindings,phone_welcome_claims,phone_verification_sends,phone_verification_challenges",
   );
   assert.deepEqual(
     (

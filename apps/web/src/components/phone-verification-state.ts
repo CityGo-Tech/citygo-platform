@@ -24,6 +24,7 @@ export type PhoneVerificationState = {
     | "unavailable"
     | "email-required"
     | "already-granted"
+    | "phone-bound"
     | "confirmed"
     | "closed";
   busy: boolean;
@@ -163,9 +164,11 @@ export function createPhoneVerificationResource({
           ? "email-required"
           : policy.giftStatus === "granted"
             ? "already-granted"
-            : policy.giftStatus === "eligible"
-              ? "ready"
-              : "unavailable",
+            : policy.giftStatus === "phone_bound"
+              ? "phone-bound"
+              : policy.giftStatus === "eligible"
+                ? "ready"
+                : "unavailable",
       policy.deliveryProvider,
     );
   }
@@ -191,9 +194,11 @@ export function createPhoneVerificationResource({
     commit({
       ...next,
       error:
-        next.deliveryProvider !== provider
-          ? "Условия подтверждения изменились. Проверьте их и подтвердите согласие заново."
-          : "Условия подтверждения изменились. Проверьте текущий статус подарка.",
+        next.phase === "phone-bound"
+          ? ""
+          : next.deliveryProvider !== provider
+            ? "Условия подтверждения изменились. Проверьте их и подтвердите согласие заново."
+            : "Условия подтверждения изменились. Проверьте текущий статус подарка.",
     });
     return false;
   }

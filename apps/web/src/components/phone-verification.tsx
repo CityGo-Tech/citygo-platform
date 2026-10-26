@@ -118,7 +118,9 @@ export function PhoneVerificationPanel({
       <h1 id="phone-gift-heading" tabIndex={-1}>
         Подтверждение телефона
       </h1>
-      <p>Разовый подарок 500 ₽ CityGo после подтверждения номера.</p>
+      {state?.phase !== "phone-bound" && (
+        <p>Разовый подарок 500 ₽ CityGo после подтверждения номера.</p>
+      )}
       {(!state || state.phase === "loading") && (
         <p role="status">Проверяем доступность подарка…</p>
       )}
@@ -143,6 +145,11 @@ export function PhoneVerificationPanel({
       )}
       {state?.phase === "already-granted" && (
         <p role="status">Подарок уже получен.</p>
+      )}
+      {state?.phase === "phone-bound" && (
+        <p role="status">
+          Телефон привязан. Подарок по этому номеру уже использован.
+        </p>
       )}
       {state?.phase === "closed" && (
         <p role="status">
@@ -297,6 +304,7 @@ export function PhoneVerificationPanel({
         state?.phase === "unavailable" ||
         state?.phase === "disabled" ||
         state?.phase === "already-granted" ||
+        state?.phase === "phone-bound" ||
         state?.phase === "email-required") && (
         <Button
           type="button"
@@ -304,7 +312,9 @@ export function PhoneVerificationPanel({
           disabled={busy}
           onClick={() => void resource.current?.load()}
         >
-          Обновить статус подарка
+          {state?.phase === "phone-bound"
+            ? "Обновить статус"
+            : "Обновить статус подарка"}
         </Button>
       )}
       <Button type="button" variant="secondary" onClick={onClose}>
