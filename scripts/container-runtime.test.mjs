@@ -14,6 +14,7 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { root, serviceEnv } from "./env.mjs";
 import { containerSpec } from "./container-runtime.mjs";
+import { buildSmokeImages } from "./smoke-image-build.mjs";
 import { renderNginx } from "../deploy/render-pilot.mjs";
 
 const db = "postgresql://synthetic:test@127.0.0.1:1/not-used";
@@ -1608,4 +1609,89 @@ test("context audit rejects nested secret files and synthetic secret content", (
   const keyResult = run();
   assert.equal(keyResult.status, 1);
   assert.doesNotMatch(keyResult.stderr, /AGE-SECRET-KEY/);
+});
+
+const project = "citygo-smoke-123456abcdef";
+const jobs = "sha256:" + "1".repeat(64);
+const wrong = "sha256:" + "2".repeat(64);
+test("per-service Compose labels cannot produce separate jobs artifacts: both roles use one tested image", () => {
+  const images = new Map();
+  const built = [];
+  const compose = (args) => {
+    assert.equal(args[0], "build");
+    for (const service of args.slice(1)) {
+      built.push(service);
+      // Emulate per-service image configurations with equal target/rootfs.
+      images.set(
+        `${project}-${service}`,
+        service === "migrator" ? jobs : wrong,
+      );
+    }
+  };
+  const docker = (args) => {
+    if (args[0] === "image") return images.get(args.at(-1)) ?? "";
+    assert.equal(args[0], "tag");
+    assert.equal(
+      args[1],
+      jobs,
+      "alias must bind the immutable ID, not a movable tag",
+    );
+    images.set(args[2], args[1]);
+    return "";
+  };
+  buildSmokeImages({ project, compose, docker });
+  assert.equal(
+    built.filter((s) => s === "migrator" || s === "worker").length,
+    1,
+  );
+  assert.equal(
+    images.get(`${project}-worker`),
+    images.get(`${project}-migrator`),
+  );
+});
+test("a failed build, invalid ID or failed alias identity never becomes accepted artifact evidence", () => {
+  let transports = 0;
+  assert.throws(() =>
+    buildSmokeImages({
+      project,
+      compose: () => {
+        throw Error("synthetic build failed");
+      },
+      docker: () => {
+        transports++;
+      },
+    }),
+  );
+  assert.equal(transports, 0);
+  assert.throws(() =>
+    buildSmokeImages({
+      project,
+      compose: () => {},
+      docker: () => "not-an-image-id",
+    }),
+  );
+  assert.throws(() =>
+    buildSmokeImages({
+      project,
+      compose: () => {},
+      docker: (args) =>
+        args[0] === "tag"
+          ? ""
+          : args.at(-1).endsWith("migrator")
+            ? jobs
+            : wrong,
+    }),
+  );
+});
+test("unrelated project names cannot retag host artifacts", () => {
+  const noIo = () =>
+    assert.fail("project rejection must happen before Docker I/O");
+  for (const project of [
+    "citygo-pilot",
+    "../citygo-smoke-123456abcdef",
+    "citygo-smoke-",
+  ])
+    assert.throws(() =>
+      buildSmokeImages({ project, compose: noIo, docker: noIo }),
+    );
 });
