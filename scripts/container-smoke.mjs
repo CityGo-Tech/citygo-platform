@@ -9,6 +9,7 @@ import { containerDrainSmoke } from "./container-drain-smoke.mjs";
 import { workerDrainSmoke } from "./worker-drain-smoke.mjs";
 import { assertClosedPaymentAdmission } from "./payment-admission-smoke.mjs";
 import { syntheticServiceConsentChoice } from "./smoke-service-consents.mjs";
+import { buildSmokeImages } from "./smoke-image-build.mjs";
 import {
   candidateDir,
   validateBases,
@@ -121,7 +122,7 @@ try {
       "citygo-container-context-canary-20260923",
     );
   console.log("Building isolated production images (no publication)");
-  compose(["build"], { timeout: 30 * 60 * 1000 });
+  buildSmokeImages({ project, compose, docker });
   const config = JSON.parse(compose(["config", "--format", "json"]));
   for (const name of ["api", "postgres", "migrator", "worker"])
     assert.equal(

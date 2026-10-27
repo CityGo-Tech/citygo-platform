@@ -3514,10 +3514,12 @@ async function verticalSlice(
     "POST",
     "/v1/threads/" + thread + "/messages",
     user.token,
-    { text: "Помоги написать резюме", requestId: randomUUID() },
+    // Keep this adapter/history test on a generative career request. CV without
+    // personal facts is a local clarification (dedicated grounding regressions).
+    { text: "Помоги подготовиться к собеседованию", requestId: randomUUID() },
   );
   assert.match(handoff.body, /"type":"handoff"/);
-  assert.equal((await dashboard()).thread!.agentKey, "resume-builder");
+  assert.equal((await dashboard()).thread!.agentKey, "job-search");
   await f.call("POST", "/v1/quests/" + next.id + "/start", user.token, {});
   assert.equal((await dashboard()).thread!.agentKey, "housing");
   assert.equal(

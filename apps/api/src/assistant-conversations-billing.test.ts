@@ -272,7 +272,9 @@ test("assistant selection is free; an unresolved fixed5 charge in A blocks paid 
   assert.equal((await f.balance()).heldMicros, 0);
   assert.equal((await f.balance()).spentMicros, 2_169_533);
   assert.equal((await f.balance()).availableMicros, 97_830_467);
-  const questionB = "МАРКЕР_РАБОТЫ_B: как составить резюме?";
+  // Exercise a paid career consultation. A CV without personal facts now asks
+  // locally and is covered by the dedicated grounding/fee regressions.
+  const questionB = "МАРКЕР_РАБОТЫ_B: как подготовиться к собеседованию?";
   assert.match((await f.send(jobs, questionB)).body, /"type":"done"/);
   assert.equal(f.state.posts, 2);
   assert.ok(f.state.contexts[0]!.includes(questionA));

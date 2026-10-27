@@ -13,6 +13,7 @@ import {
   dashboardResponseSchema,
   type AiCredit,
   type AiModeId,
+  type AgentKey,
 } from "@citygo/contracts";
 import type {
   ModelMessage,
@@ -26,7 +27,11 @@ import { hashPassword, tokenHash } from "./auth.js";
 
 async function fixture(
   t: TestContext,
-  options: { minimum?: "free" | "fixed"; legacy?: boolean } = {},
+  options: {
+    minimum?: "free" | "fixed";
+    legacy?: boolean;
+    agentKey?: AgentKey;
+  } = {},
 ) {
   const minimum = options.minimum !== undefined;
   const freeMinimum = options.minimum === "free";
@@ -41,7 +46,10 @@ async function fixture(
   const minimumGate = new Promise<void>((resolve) => {
     releaseMinimum = resolve;
   });
-  const control = { blockMinimum: false };
+  const control = {
+    blockMinimum: false,
+    minimumRaw: "Синтетический ответ minimum",
+  };
   t.after(async () => {
     releaseMinimum();
     await cleanup.app?.close();
@@ -86,7 +94,7 @@ async function fixture(
         });
         markMinimumStarted();
         if (control.blockMinimum) await minimumGate;
-        yield { type: "delta", text: "Синтетический ответ minimum" };
+        yield { type: "delta", text: control.minimumRaw };
         if (failures.has("minimum"))
           throw Error("Synthetic Minimum stream interrupted");
         yield {
@@ -272,7 +280,7 @@ async function fixture(
       verification: "server_get_succeeded",
     });
   const start = await call("POST", "/v1/conversations/start", token, {
-    agentKey: "housing",
+    agentKey: options.agentKey ?? "housing",
   });
   assert.equal(start.statusCode, 200, start.body);
   const threadId = start.json<{ id: string }>().id;
@@ -312,6 +320,73 @@ async function fixture(
     releaseMinimum,
   };
 }
+
+test("Minimum CV: clarification and rejected/interrupted plans cost no fixed fee; one validated draft settles exactly 3 RUB", async (t) => {
+  const f = await fixture(t, { minimum: "fixed", agentKey: "job-search" });
+  const question =
+    "Адаптируй резюме. Факты профиля: SQL. Требования вакансии: Power BI; объяснять бизнесу.";
+  const before = await f.balance();
+  const clarification = await f.send(
+    "minimum",
+    "Составь резюме. Вакансия: Power BI.",
+  );
+  assert.match(clarification.body, /"type":"done"/);
+  assert.equal(f.calls.length, 0);
+  assert.deepEqual(await f.balance(), before);
+  f.control.minimumRaw = JSON.stringify({
+    sections: [{ kind: "skills", facts: [{ id: "F1", quote: "SQL." }] }],
+    advice: ["business", "review"],
+    question: "business",
+  });
+  const accepted = await f.send("minimum", question);
+  assert.match(accepted.body, /"type":"done"/);
+  assert.doesNotMatch(accepted.body, /"type":"error"/);
+  assert.equal((await f.balance()).spentMicros, 3_000_000);
+  assert.equal((await f.balance()).heldMicros, 0);
+  f.control.minimumRaw = "Владею Power BI, рост выручки 40%";
+  const rejected = await f.send("minimum", question);
+  assert.match(rejected.body, /VALIDATION_ERROR/);
+  assert.doesNotMatch(
+    rejected.body,
+    /Владею Power BI|рост выручки|"type":"done"/,
+  );
+  assert.equal((await f.balance()).spentMicros, 3_000_000);
+  assert.equal((await f.balance()).heldMicros, 0);
+  assert.equal(f.calls.length, 2);
+  // Failed requests conservatively keep the provider capacity lease until its
+  // deadline. Use a fresh isolated provider account for the interruption case,
+  // rather than weakening that production no-blind-retry guard for this test.
+  const g = await fixture(t, { minimum: "fixed", agentKey: "job-search" });
+  g.control.minimumRaw = "Владею Power BI, рост выручки 40%";
+  g.failures.add("minimum");
+  const interrupted = await g.send("minimum", question);
+  assert.match(interrupted.body, /"type":"error"/);
+  assert.doesNotMatch(
+    interrupted.body,
+    /Владею Power BI|рост выручки|"type":"done"/,
+  );
+  assert.equal((await g.balance()).spentMicros, 0);
+  assert.equal((await g.balance()).heldMicros, 0);
+  const history = (
+    await f.db.query<{ content: string }>(
+      "select content from messages where thread_id=$1 and role='assistant'",
+      [f.threadId],
+    )
+  ).rows;
+  assert.doesNotMatch(JSON.stringify(history), /Владею Power BI|рост выручки/);
+  assert.equal(g.calls.length, 1);
+  const interruptedHistory = (
+    await g.db.query<{ content: string }>(
+      "select content from messages where thread_id=$1 and role='assistant'",
+      [g.threadId],
+    )
+  ).rows;
+  assert.doesNotMatch(
+    JSON.stringify(interruptedHistory),
+    /Владею Power BI|рост выручки/,
+  );
+  assert.equal(f.reads.length, 0);
+});
 
 test("HTTP retained consent keeps original Balanced usable without rewriting grants and blocks new recipients before any reservation", async (t) => {
   const f = await fixture(t, { legacy: true, minimum: "fixed" });

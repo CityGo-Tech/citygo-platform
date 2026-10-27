@@ -323,8 +323,14 @@ test("explicit assistant routing stays pinned through keywords; legacy routing a
     assert.doesNotMatch(reply.body, /"type":"error"/);
     return reply;
   };
-  await send(legacy.id, "Помоги составить резюме");
-  assert.equal(f.calls.at(-1)!.instructions, instructions("resume-builder"));
+  const clarification = await send(legacy.id, "Помоги составить резюме");
+  assert.match(clarification.body, /"to":"resume-builder"/);
+  assert.match(clarification.body, /Какие сведения о своём опыте/);
+  assert.equal(
+    f.calls.length,
+    0,
+    "CV without explicit personal facts asks locally without charging a provider attempt",
+  );
   const questions = {
     housing: "Помоги составить резюме",
     "job-search": "Как арендовать квартиру?",
