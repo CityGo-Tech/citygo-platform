@@ -67,6 +67,13 @@ import {
   validateVerificationDeliveryConfig,
 } from "@citygo/config";
 import { instructions, profileContext, routeAgent } from "@citygo/agents";
+import {
+  prepareCareerCv,
+  careerCvInstructions,
+  careerCvMessages,
+  careerClarification,
+  renderCareerCv,
+} from "./career-grounding.js";
 import { redactPaths } from "@citygo/observability";
 import {
   RouterAIInsufficientFundsError,
@@ -1190,10 +1197,15 @@ export async function buildApp(options: {
       let attemptError: DomainError | undefined;
       let creditHoldId: string | null = null;
       let adapterEntered = false;
+      let localCareerAnswer = false;
+      let providerOutputStarted = false;
       const reserveAttempt = async () => {
         signal.throwIfAborted();
         try {
-          if (attemptNumber > 0 && content.length > 0)
+          if (
+            attemptNumber > 0 &&
+            (content.length > 0 || providerOutputStarted)
+          )
             throw new DomainError(409, "Повтор после начала ответа запрещён.");
           creditHoldId = await repo.reserveAiAttempt({
             userId: user.id,
@@ -1262,62 +1274,124 @@ export async function buildApp(options: {
             if (error instanceof DomainError) attemptError = error;
             throw error;
           }
-          const { instructions: modelInstructions, messages: modelMessages } =
-            modelContext;
-          // Bound context and reserve both attempt + money before adapter/OAuth.
-          // RouterAI cost requires reconciliation; the fixed fee is settled
-          // atomically with a completed, persisted GigaChat answer.
-          await reserveAttempt();
-          generation = {
-            provider: provider.name,
-            requestedModel: provider.model,
-          };
-          let completed = false;
-          if (creditHoldId) {
-            if (fixedFee) await gigaFees!.dispatch(user.id, creditHoldId);
-            else await charges.dispatch(user.id, creditHoldId);
-          }
-          signal.throwIfAborted();
-          adapterEntered = true;
-          for await (const event of provider.stream(
-            modelInstructions,
-            modelMessages,
-            signal,
-            {
-              beforeRetry: reserveAttempt,
-              ...(creditHoldId && !fixedFee
-                ? {
-                    billing: {
-                      reference: creditHoldId,
-                      onGeneration: (id: string) =>
-                        charges.identify(user.id, creditHoldId!, id),
-                    },
-                  }
-                : {}),
-            },
-          )) {
+          // Personal revisions are user assertions, independent of whether the
+          // assistant response to that turn succeeded. The bounded generative
+          // context deliberately omits interrupted rounds; using it as the fact
+          // ledger could resurrect a withdrawn qualification. reserveChat has
+          // already checked this owner/thread, and its stored history is ordered.
+          // Only user messages enter this ledger, never interrupted assistant text.
+          const career = prepareCareerCv(
+            routing.to,
+            reservation.messages
+              .filter((m) => m.role === "user" && m.status === "complete")
+              .map((m) => ({ role: "user" as const, content: m.content })),
+          );
+          if (career && !career.facts.length) {
+            // Ambiguous prose is not a personal-fact register. Ask locally,
+            // without a provider attempt or a fee for an unusable CV draft.
+            localCareerAnswer = true;
+            content = careerClarification(career);
+            send({ type: "delta", text: content });
+          } else {
+            const modelInstructions =
+              modelContext.instructions + (career ? careerCvInstructions : "");
+            const modelMessages = career
+              ? careerCvMessages(career, input.text)
+              : modelContext.messages;
+            if (
+              Buffer.byteLength(
+                JSON.stringify({
+                  instructions: modelInstructions,
+                  messages: modelMessages,
+                }),
+                "utf8",
+              ) > config.LLM_MAX_INPUT_BYTES
+            )
+              throw new DomainError(
+                413,
+                "Факты и запрос слишком длинные. Сократите блок личных фактов; запрос не отправлен ИИ.",
+              );
+            // Bound context and reserve both attempt + money before adapter/OAuth.
+            // RouterAI cost requires reconciliation; the fixed fee is settled
+            // atomically with a completed, persisted GigaChat answer.
+            await reserveAttempt();
+            generation = {
+              provider: provider.name,
+              requestedModel: provider.model,
+            };
+            let completed = false;
+            // Keep the untrusted CV plan out of content: every interrupted/error
+            // path persists content, so buffering only SSE would still poison
+            // conversation history on an upstream failure.
+            let privateCvPlan = "";
+            if (creditHoldId) {
+              if (fixedFee) await gigaFees!.dispatch(user.id, creditHoldId);
+              else await charges.dispatch(user.id, creditHoldId);
+            }
             signal.throwIfAborted();
-            if (completed)
-              throw new Error("Provider sent events after completion");
-            if (event.type === "complete") {
-              if (!event.model.trim())
-                throw new Error("Provider omitted model");
-              completed = true;
-              generation = {
-                ...generation,
-                model: event.model,
-                ...(event.usage ? { usage: event.usage } : {}),
-              };
-            } else {
-              content += event.text;
-              if (content.length > limits.maxOutputCharacters)
-                throw new Error("Response too large");
-              send({ type: "delta", text: event.text });
+            adapterEntered = true;
+            for await (const event of provider.stream(
+              modelInstructions,
+              modelMessages,
+              signal,
+              {
+                beforeRetry: reserveAttempt,
+                ...(creditHoldId && !fixedFee
+                  ? {
+                      billing: {
+                        reference: creditHoldId,
+                        onGeneration: (id: string) =>
+                          charges.identify(user.id, creditHoldId!, id),
+                      },
+                    }
+                  : {}),
+              },
+            )) {
+              signal.throwIfAborted();
+              if (completed)
+                throw new Error("Provider sent events after completion");
+              if (event.type === "complete") {
+                if (!event.model.trim())
+                  throw new Error("Provider omitted model");
+                completed = true;
+                generation = {
+                  ...generation,
+                  model: event.model,
+                  ...(event.usage ? { usage: event.usage } : {}),
+                };
+              } else {
+                providerOutputStarted ||= event.text.length > 0;
+                if (career) privateCvPlan += event.text;
+                else content += event.text;
+                if (
+                  (career ? privateCvPlan : content).length >
+                  limits.maxOutputCharacters
+                )
+                  throw new Error("Response too large");
+                // CV model output is a selection plan, never public prose.
+                if (!career) send({ type: "delta", text: event.text });
+              }
+            }
+            signal.throwIfAborted();
+            if (!completed) throw new Error("Provider stream interrupted");
+            if (!(career ? privateCvPlan : content).trim())
+              throw new Error("Empty response");
+            if (career) {
+              const grounded = renderCareerCv(career, privateCvPlan);
+              if (!grounded) {
+                content = careerClarification(career);
+                send({ type: "delta", text: content });
+                attemptError = new DomainError(
+                  422,
+                  "Не удалось подтвердить основания черновика CV. Неподтверждённый текст не выдан; уточните личные факты.",
+                  "VALIDATION_ERROR",
+                );
+                throw attemptError;
+              }
+              content = grounded;
+              send({ type: "delta", text: content });
             }
           }
-          signal.throwIfAborted();
-          if (!completed) throw new Error("Provider stream interrupted");
-          if (!content.trim()) throw new Error("Empty response");
         }
         const messageId =
           fixedFee && creditHoldId
@@ -1339,7 +1413,7 @@ export async function buildApp(options: {
                 routing.to,
                 content,
                 true,
-                !routing.human,
+                !routing.human && !localCareerAnswer,
                 generation,
                 creditHoldId ?? undefined,
               );
