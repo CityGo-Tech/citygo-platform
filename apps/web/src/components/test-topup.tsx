@@ -14,6 +14,7 @@ import {
   type PaymentAttempt,
 } from "./payment-attempt";
 import { openPaymentPopup, type PaymentPopup } from "./payment-popup";
+import { trackProductEvent } from "./product-analytics";
 
 export type TopupActions = {
   createTopup: (input: CreateTopupInput) => Promise<TopupOrder>;
@@ -167,11 +168,23 @@ export function TestTopupPanel({
         frozenCreate.current = input;
         setAttempt(next);
         const value = await actions.createTopup(input);
+        if (!value.test)
+          trackProductEvent(
+            "payment_created",
+            { surface: "wallet" },
+            value.orderId,
+          );
         const saved = { ...next, orderId: value.orderId };
         setOrder(value);
         setAttempt(saved);
         sessionStorage.setItem(key, JSON.stringify(saved));
         const opened = popup.navigate(value);
+        if (!value.test && opened)
+          trackProductEvent(
+            "payment_redirected",
+            { surface: "wallet" },
+            value.orderId,
+          );
         setPopupNotice(
           value.status === "pending" && value.confirmationUrl
             ? opened
@@ -179,7 +192,15 @@ export function TestTopupPanel({
               : "Нажмите «Перейти к оплате», чтобы продолжить."
             : "Проверьте статус платежа.",
         );
-        if (value.credited) await actions.onCredited();
+        if (value.credited) {
+          if (!value.test)
+            trackProductEvent(
+              "payment_credited",
+              { surface: "wallet" },
+              value.orderId,
+            );
+          await actions.onCredited();
+        }
       } catch (error) {
         popup.close();
         setPopupNotice("");
@@ -198,6 +219,29 @@ export function TestTopupPanel({
         : await actions.topupAttempt(attempt.requestId);
       if (value.amountKopeks !== attempt.amountKopeks)
         throw new Error("Payment attempt mismatch");
+      if (!value.test) {
+        if (value.credited && !order?.credited)
+          trackProductEvent(
+            "payment_credited",
+            { surface: "wallet" },
+            value.orderId,
+          );
+        if (value.status === "canceled" && order?.status !== "canceled")
+          trackProductEvent(
+            "payment_canceled",
+            { surface: "wallet" },
+            value.orderId,
+          );
+        if (
+          value.status === "review_required" &&
+          order?.status !== value.status
+        )
+          trackProductEvent(
+            "payment_review_required",
+            { surface: "wallet" },
+            value.orderId,
+          );
+      }
       const saved = { ...attempt, orderId: value.orderId };
       sessionStorage.setItem(key, JSON.stringify(saved));
       setAttempt(saved);
@@ -213,7 +257,10 @@ export function TestTopupPanel({
   // existing order. Keep the saved identity and server verification available.
   if (!canCreate && !attempt) return error ? <p role="alert">{error}</p> : null;
   return (
-    <section className="citygo-topup" aria-label="Пополнение баланса">
+    <section
+      className="citygo-topup ym-hide-content"
+      aria-label="Пополнение баланса"
+    >
       <h3>Пополнение баланса</h3>
       {!canCreate && (
         <p role="status">
@@ -224,6 +271,7 @@ export function TestTopupPanel({
       {canCreate && (
         <form onSubmit={create}>
           <Field
+            className="ym-disable-keys"
             label="Сумма пополнения"
             hint="От 1 до 10 000 ₽"
             inputMode="decimal"
@@ -233,6 +281,7 @@ export function TestTopupPanel({
           />
           {!attempt && (
             <Field
+              className="ym-disable-keys"
               label="Email для чека"
               hint="На этот адрес придёт чек."
               type="email"
@@ -247,6 +296,7 @@ export function TestTopupPanel({
           )}
           {!attempt?.orderId && (!attempt || frozenCreate.current) && (
             <Button
+              className="ym-show-content"
               type="submit"
               disabled={
                 locked ||
@@ -292,6 +342,14 @@ export function TestTopupPanel({
               href={order.confirmationUrl}
               target="_blank"
               rel="noopener noreferrer"
+              onClick={() => {
+                if (!order.test)
+                  trackProductEvent(
+                    "payment_redirected",
+                    { surface: "wallet" },
+                    order.orderId,
+                  );
+              }}
             >
               {order.test ? "Открыть тестовую оплату" : "Перейти к оплате"}
             </a>

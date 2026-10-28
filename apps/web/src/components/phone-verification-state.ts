@@ -1,4 +1,5 @@
 import { ApiError, type createClient } from "@citygo/api-client";
+import { trackProductEvent } from "./product-analytics";
 import {
   phoneVerificationChallengeSchema,
   phoneVerificationPolicySchema,
@@ -288,6 +289,11 @@ export function createPhoneVerificationResource({
         deliveryProvider,
       };
       const resendAt = now() + challenge.resendAfterSeconds * 1000;
+      trackProductEvent(
+        "phone_code_sent",
+        { surface: "phone" },
+        challenge.challengeId + ":" + challenge.expiresAt,
+      );
       commit({
         ...empty("ready", deliveryProvider),
         retryAt: resendAt,
@@ -330,6 +336,17 @@ export function createPhoneVerificationResource({
       );
       if (!active()) return;
       pending = null;
+      trackProductEvent(
+        "phone_verified",
+        { surface: "phone" },
+        receipt.operationId,
+      );
+      if (!receipt.alreadyGranted)
+        trackProductEvent(
+          "gift_granted",
+          { surface: "phone" },
+          receipt.operationId,
+        );
       commit({ ...empty("confirmed", current.deliveryProvider), receipt });
       // Refreshing the cabinet is independent of the committed gift receipt.
       // A presentation callback cannot turn a confirmed grant into a failure.

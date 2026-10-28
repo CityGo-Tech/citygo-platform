@@ -1,3 +1,4 @@
+import { fulfillProductAnalytics } from "./product-analytics-fixture";
 import { syntheticConsentPolicy } from "./service-consent-fixture";
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
 import type { AgentKey, Dashboard, Message } from "@citygo/contracts";
@@ -138,6 +139,7 @@ async function install(context: BrowserContext, withProfile = false) {
     return route.abort();
   });
   await context.route("**/api/v1/**", async (route) => {
+    if (await fulfillProductAnalytics(route)) return;
     if (
       route.request().method() === "GET" &&
       new URL(route.request().url()).origin === "http://localhost:3000" &&

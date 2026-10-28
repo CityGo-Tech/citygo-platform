@@ -128,6 +128,10 @@ import {
 } from "./phone-verification.js";
 import { registerAccountProfile } from "./account-profile.js";
 import { registerAdminPhoneContacts } from "./admin-phone-contacts.js";
+import {
+  registerCustomerObservability,
+  serializeRequestLog,
+} from "./customer-observability.js";
 
 export async function buildApp(options: {
   db: Database;
@@ -328,7 +332,9 @@ export async function buildApp(options: {
   );
   const currentAi = async () => control.resolve(await repo.aiRouting());
   const app = Fastify({
-    logger: options.testing ? false : { redact: redactPaths },
+    logger: options.testing
+      ? false
+      : { redact: redactPaths, serializers: { req: serializeRequestLog } },
     bodyLimit: 16 * 1024,
     genReqId: () => randomUUID(),
     trustProxy: config.TRUSTED_PROXY_CIDRS.length
@@ -888,6 +894,16 @@ export async function buildApp(options: {
     config,
     context: async (request) => {
       const actor = await authenticateAdmin(request);
+      const token =
+        bearer(request.headers.authorization) ?? request.cookies[sessionName];
+      return { userId: actor.id, sessionTokenHash: tokenHash(token!) };
+    },
+  });
+  registerCustomerObservability(app, {
+    db: options.db,
+    phoneVerificationSecret: config.PHONE_VERIFICATION_SECRET,
+    context: async (request) => {
+      const actor = await authenticate(request);
       const token =
         bearer(request.headers.authorization) ?? request.cookies[sessionName];
       return { userId: actor.id, sessionTokenHash: tokenHash(token!) };

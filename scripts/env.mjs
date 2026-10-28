@@ -101,12 +101,20 @@ export const apiKeys = [
   "GIGACHAT_SCOPE",
   "GIGACHAT_CA_BUNDLE_FILE",
 ];
+// Public, non-secret analytics settings only. An arbitrary NEXT_PUBLIC_* is
+// still rejected; enabling collection is a separate reviewed release choice.
+const analyticsKeys = [
+  "NEXT_PUBLIC_CITYGO_METRIKA_ENABLED",
+  "NEXT_PUBLIC_CITYGO_METRIKA_COUNTER_ID",
+  "NEXT_PUBLIC_CITYGO_METRIKA_WEBVISOR",
+];
 const webKeys = [
   "NODE_ENV",
   "API_INTERNAL_URL",
   "PORT",
   "NEXT_TELEMETRY_DISABLED",
   "CITYGO_WEB_STANDALONE",
+  ...analyticsKeys,
 ];
 const mobileKeys = [
   "NODE_ENV",
@@ -124,7 +132,7 @@ const scopes = {
   mobile: mobileKeys,
   worker: ["NODE_ENV", "DATABASE_URL"],
   migrator: ["NODE_ENV", "DATABASE_URL"],
-  build: ["API_INTERNAL_URL", "CITYGO_WEB_STANDALONE"],
+  build: ["API_INTERNAL_URL", "CITYGO_WEB_STANDALONE", ...analyticsKeys],
   test: ["TEST_DATABASE_URL", "PLAYWRIGHT_BROWSERS_PATH"],
   "web-test": [],
 };
@@ -198,7 +206,7 @@ export function serviceEnv(
         pick(readFile(directory, ".env.api"), ["DATABASE_URL"]),
       );
   }
-  // Build sees only Web's non-secret routing input, before Turbo hashes it.
+  // Build sees only Web's explicit non-secret inputs, before Turbo hashes them.
   const fileScope = scope === "build" ? "web" : scope;
   if (loadFiles && fileScopes.has(fileScope)) {
     const values = readFile(directory, `.env.${fileScope}`);
@@ -214,6 +222,25 @@ export function serviceEnv(
     ...pick(inherited, allowed),
     ...pick(overrides, allowed),
   };
+  if (["build", "web"].includes(scope)) {
+    for (const key of [analyticsKeys[0], analyticsKeys[2]])
+      if (env[key] !== undefined && !["disabled", "enabled"].includes(env[key]))
+        throw new Error("Invalid public analytics switch (value hidden)");
+    const counter = env.NEXT_PUBLIC_CITYGO_METRIKA_COUNTER_ID;
+    if (
+      counter !== undefined &&
+      counter !== "" &&
+      !/^[1-9][0-9]{0,9}$/.test(counter)
+    )
+      throw new Error("Invalid public analytics counter (value hidden)");
+    if (env.NEXT_PUBLIC_CITYGO_METRIKA_ENABLED === "enabled" && !counter)
+      throw new Error("Enabled analytics requires a public counter ID");
+    if (
+      env.NEXT_PUBLIC_CITYGO_METRIKA_WEBVISOR === "enabled" &&
+      env.NEXT_PUBLIC_CITYGO_METRIKA_ENABLED !== "enabled"
+    )
+      throw new Error("Session replay requires enabled analytics");
+  }
   if (
     scope === "web" &&
     env.NODE_ENV &&

@@ -91,6 +91,74 @@ test("build/Web/mobile/test environments reject all inherited runtime credential
   }
 });
 
+test("only reviewed public analytics settings reach Web/build, never API or workers", (t) => {
+  const directory = fixture(t);
+  const settings = {
+    NEXT_PUBLIC_CITYGO_METRIKA_ENABLED: "enabled",
+    NEXT_PUBLIC_CITYGO_METRIKA_COUNTER_ID: "105736701",
+    NEXT_PUBLIC_CITYGO_METRIKA_WEBVISOR: "enabled",
+    NEXT_PUBLIC_OTHER_TRACKER: "unreviewed",
+    POSTBOX_SECRET_ACCESS_KEY: "synthetic-secret",
+  };
+  for (const scope of ["build", "web"]) {
+    const env = serviceEnv(scope, { directory, inherited: settings });
+    assert.equal(env.NEXT_PUBLIC_CITYGO_METRIKA_COUNTER_ID, "105736701");
+    assert.equal(env.NEXT_PUBLIC_CITYGO_METRIKA_ENABLED, "enabled");
+    assert.equal(env.NEXT_PUBLIC_CITYGO_METRIKA_WEBVISOR, "enabled");
+    assert.equal(env.NEXT_PUBLIC_OTHER_TRACKER, undefined);
+    assert.equal(env.POSTBOX_SECRET_ACCESS_KEY, undefined);
+  }
+  for (const scope of [
+    "api",
+    "worker",
+    "migrator",
+    "mobile",
+    "test",
+    "web-test",
+  ]) {
+    const env = serviceEnv(scope, { directory, inherited: settings });
+    for (const key of Object.keys(settings).filter((key) =>
+      key.startsWith("NEXT_PUBLIC_"),
+    ))
+      assert.equal(
+        env[key],
+        undefined,
+        `${scope} must not acquire analytics settings`,
+      );
+  }
+});
+
+test("analytics public configuration cannot accept a URL, secret or ambiguous switch", (t) => {
+  const directory = fixture(t);
+  for (const invalid of [
+    { NEXT_PUBLIC_CITYGO_METRIKA_ENABLED: "true" },
+    { NEXT_PUBLIC_CITYGO_METRIKA_ENABLED: "enabled" },
+    {
+      NEXT_PUBLIC_CITYGO_METRIKA_COUNTER_ID:
+        "https://collector.invalid/synthetic-secret",
+    },
+    { NEXT_PUBLIC_CITYGO_METRIKA_COUNTER_ID: "0" },
+    { NEXT_PUBLIC_CITYGO_METRIKA_WEBVISOR: "enabled" },
+    { NEXT_PUBLIC_CITYGO_METRIKA_WEBVISOR: "synthetic-secret" },
+  ]) {
+    for (const scope of ["build", "web"])
+      assert.throws(
+        () => serviceEnv(scope, { directory, inherited: invalid }),
+        (error) =>
+          error instanceof Error && !error.message.includes("synthetic-secret"),
+      );
+  }
+  const off = serviceEnv("web", {
+    directory,
+    inherited: {
+      NEXT_PUBLIC_CITYGO_METRIKA_ENABLED: "disabled",
+      NEXT_PUBLIC_CITYGO_METRIKA_COUNTER_ID: "",
+      NEXT_PUBLIC_CITYGO_METRIKA_WEBVISOR: "disabled",
+    },
+  });
+  assert.equal(off.NEXT_PUBLIC_CITYGO_METRIKA_ENABLED, "disabled");
+});
+
 test("API gets only known API settings; worker/migrator get no LLM or API settings", (t) => {
   const directory = fixture(t, { ".env": serialized });
   const api = serviceEnv("api", { directory, inherited: {} });
@@ -368,7 +436,13 @@ test("Turbo caches only non-secret Web configuration and passes the test DB only
     assert.deepEqual(
       task.env ?? [],
       name.startsWith("@citygo/web#")
-        ? ["API_INTERNAL_URL", "CITYGO_WEB_STANDALONE"]
+        ? [
+            "API_INTERNAL_URL",
+            "CITYGO_WEB_STANDALONE",
+            "NEXT_PUBLIC_CITYGO_METRIKA_ENABLED",
+            "NEXT_PUBLIC_CITYGO_METRIKA_COUNTER_ID",
+            "NEXT_PUBLIC_CITYGO_METRIKA_WEBVISOR",
+          ]
         : [],
     );
   }

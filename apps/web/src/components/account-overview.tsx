@@ -29,15 +29,29 @@ export function AccountOverview({
             : "Баланс недоступен"}
         </div>
         <p>Для общения с помощниками</p>
-        <Button variant="ghost" disabled={disabled} onClick={onBalance}>
+        <Button
+          className="ym-show-content"
+          variant="ghost"
+          disabled={disabled}
+          onClick={onBalance}
+        >
           Баланс и пополнение
         </Button>
       </div>
       <div className={styles.actions}>
-        <Button disabled={disabled} onClick={onBalance}>
+        <Button
+          className="ym-show-content"
+          disabled={disabled}
+          onClick={onBalance}
+        >
           Пополнить баланс
         </Button>
-        <Button variant="secondary" disabled={disabled} onClick={onPhone}>
+        <Button
+          className="ym-show-content"
+          variant="secondary"
+          disabled={disabled}
+          onClick={onPhone}
+        >
           Телефон и подарок
         </Button>
         <small>

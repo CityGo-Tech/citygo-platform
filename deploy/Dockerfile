@@ -10,7 +10,13 @@ RUN corepack enable && corepack prepare pnpm@10.15.0 --activate
 RUN pnpm install --frozen-lockfile
 # Next rewrites are baked at build time. This is a route, never a credential.
 ARG API_INTERNAL_URL=http://api:4000
+ARG NEXT_PUBLIC_CITYGO_METRIKA_ENABLED=disabled
+ARG NEXT_PUBLIC_CITYGO_METRIKA_COUNTER_ID=
+ARG NEXT_PUBLIC_CITYGO_METRIKA_WEBVISOR=disabled
 ENV API_INTERNAL_URL=${API_INTERNAL_URL} CITYGO_WEB_STANDALONE=1 NEXT_TELEMETRY_DISABLED=1
+ENV NEXT_PUBLIC_CITYGO_METRIKA_ENABLED=${NEXT_PUBLIC_CITYGO_METRIKA_ENABLED} \
+    NEXT_PUBLIC_CITYGO_METRIKA_COUNTER_ID=${NEXT_PUBLIC_CITYGO_METRIKA_COUNTER_ID} \
+    NEXT_PUBLIC_CITYGO_METRIKA_WEBVISOR=${NEXT_PUBLIC_CITYGO_METRIKA_WEBVISOR}
 RUN pnpm build
 # pnpm 10.15's legacy deploy supports this non-injected workspace and lockfile.
 RUN pnpm --filter @citygo/api deploy --legacy --prod /out/api \

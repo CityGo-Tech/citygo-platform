@@ -192,6 +192,7 @@ export function PhoneVerificationPanel({
               >
                 <Field
                   label="Код из SMS"
+                  className="ym-disable-keys"
                   name="phoneCode"
                   inputMode="numeric"
                   autoComplete="one-time-code"
@@ -206,6 +207,7 @@ export function PhoneVerificationPanel({
                 />
                 <Button
                   type="submit"
+                  className="ym-show-content"
                   disabled={busy || clock?.expired || !isPhoneCode(code)}
                 >
                   {busy
@@ -255,6 +257,7 @@ export function PhoneVerificationPanel({
             >
               <Field
                 label="Российский мобильный номер"
+                className="ym-disable-keys"
                 name="phone"
                 type="tel"
                 inputMode="tel"
@@ -286,6 +289,7 @@ export function PhoneVerificationPanel({
               </label>
               <Button
                 type="submit"
+                className="ym-show-content"
                 disabled={
                   busy || !!waiting || !consent || !normalizePhone(phone)
                 }

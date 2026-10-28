@@ -13,10 +13,13 @@ import { AiBudgetControls } from "./ai-budget.js";
 import { AiCreditControls } from "./ai-credit.js";
 import { AccountsControl } from "./accounts-control.js";
 import { CustomerContactsControl } from "./customer-contacts.js";
+import { CustomerExplorer } from "./customer-explorer.js";
 import { NpdReceiptsControl } from "./npd-receipts.js";
 import { PaymentRefundsControl } from "./payment-refunds.js";
 import { PaymentAdmissionControl } from "./payment-admission.js";
-export function AdminOverview() {
+export function AdminOverview({
+  metrikaCounterId,
+}: { metrikaCounterId?: number | null } = {}) {
   const [session] = useState(createSessionGuard);
   const api = useMemo(
     () =>
@@ -165,7 +168,7 @@ export function AdminOverview() {
     }
   }
   return (
-    <main>
+    <main className="ym-hide-content ym-disable-keys">
       <Card>
         <h1>CityGo · Администрирование</h1>
         <p>
@@ -218,6 +221,19 @@ export function AdminOverview() {
           </>
         )}
       </Card>
+      {viewer?.role === "super_admin" && (
+        <CustomerExplorer
+          key={`explorer-${viewer.id}-${refreshVersion}`}
+          viewerId={viewer.id}
+          metrikaCounterId={metrikaCounterId}
+          onAccessLost={() => {
+            invalidate();
+            setError(
+              "Доступ к просмотру пользователей изменился. Обновите сводку.",
+            );
+          }}
+        />
+      )}
       {viewer?.role === "super_admin" && users && (
         <AccountsControl
           key={`accounts-${refreshVersion}`}

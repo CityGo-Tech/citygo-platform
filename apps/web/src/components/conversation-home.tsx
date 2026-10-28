@@ -25,6 +25,7 @@ import planStyles from "./personal-plan.module.css";
 import { AccountProfile } from "./account-profile";
 import { AiModeSelector } from "./ai-mode-selector";
 import { isAiModeAvailable } from "@citygo/api-client";
+import { trackProductEvent } from "./product-analytics";
 
 const topics = [
   ["Понять и спланировать", "Не понимаю, с чего начать переезд в Москву."],
@@ -158,11 +159,16 @@ export function ConversationHome(props: JourneyProps) {
         {["Мой план", "Диалоги", "Помощники", "Профиль"].map((name) => (
           <Button
             key={name}
+            className="ym-show-content"
             variant={tab === name ? "primary" : "secondary"}
             aria-pressed={tab === name}
             disabled={busy || sending}
             onClick={() => {
               setTab(name);
+              if (name === "Мой план")
+                trackProductEvent("plan_opened", { surface: "plan" });
+              if (name === "Профиль")
+                trackProductEvent("profile_opened", { surface: "profile" });
               if (name === "Диалоги") {
                 setShowList(true);
                 props.onConversations?.();
@@ -283,7 +289,7 @@ export function ConversationHome(props: JourneyProps) {
               <div
                 ref={log}
                 className={
-                  "conversation-messages " +
+                  "conversation-messages ym-hide-content " +
                   conversationHistoryStyles.viewport +
                   " " +
                   conversationHistoryStyles.chatViewport
@@ -388,6 +394,7 @@ export function ConversationHome(props: JourneyProps) {
                     Сообщение помощнику
                   </label>
                   <textarea
+                    className="ym-disable-keys ym-hide-content"
                     id="conversation-message"
                     value={props.text}
                     onChange={(e) => props.onText(e.target.value)}
@@ -397,11 +404,16 @@ export function ConversationHome(props: JourneyProps) {
                     disabled={!canSend || sending}
                   />
                   {sending ? (
-                    <Button type="button" onClick={props.onStop}>
+                    <Button
+                      className="ym-show-content"
+                      type="button"
+                      onClick={props.onStop}
+                    >
                       Остановить ответ
                     </Button>
                   ) : (
                     <Button
+                      className="ym-show-content"
                       type="submit"
                       disabled={!canSend || !props.text.trim()}
                     >

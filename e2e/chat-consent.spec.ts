@@ -1,3 +1,4 @@
+import { fulfillProductAnalytics } from "./product-analytics-fixture";
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
 import type {
   Dashboard,
@@ -111,6 +112,7 @@ async function fixture(context: BrowserContext, required = false) {
     return route.abort();
   });
   await context.route("**/api/v1/**", async (route) => {
+    if (await fulfillProductAnalytics(route)) return;
     const request = route.request(),
       path = new URL(request.url()).pathname;
     if (path === "/api/v1/auth/registration-policy")

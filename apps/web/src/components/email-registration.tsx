@@ -109,6 +109,7 @@ export function EmailRegistration({
             >
               <Field
                 label="Код из письма"
+                className="ym-disable-keys"
                 name="emailCode"
                 inputMode="numeric"
                 autoComplete="one-time-code"
@@ -125,6 +126,7 @@ export function EmailRegistration({
               <div className={styles.actions}>
                 <Button
                   type="submit"
+                  className="ym-show-content"
                   disabled={
                     busy ||
                     disabled ||
@@ -171,6 +173,7 @@ export function EmailRegistration({
             >
               <Field
                 id="registration-email"
+                className="ym-disable-keys"
                 label="Электронная почта"
                 name="email"
                 type="email"
@@ -181,6 +184,7 @@ export function EmailRegistration({
               />
               <Field
                 label="Пароль"
+                className="ym-disable-keys"
                 name="password"
                 type="password"
                 minLength={6}
@@ -217,6 +221,7 @@ export function EmailRegistration({
                 <Button
                   type="submit"
                   disabled={busy || disabled || !policy || !personalData}
+                  className="ym-show-content"
                 >
                   {busy ? "Подождите…" : "Создать аккаунт"}
                 </Button>

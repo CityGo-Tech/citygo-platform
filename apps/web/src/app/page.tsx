@@ -34,6 +34,11 @@ import { AiAccessPanel } from "../components/ai-access";
 import { chatBalanceTarget } from "../components/chat-readiness";
 import { useConversationHistory } from "../components/use-conversation-history";
 import {
+  parseProductAnalyticsConfig,
+  trackProductEvent,
+} from "../components/product-analytics";
+import { useProductAnalytics } from "../components/use-product-analytics";
+import {
   pendingEmailRegistration,
   type PendingEmailRegistration,
 } from "../components/email-registration-state";
@@ -111,6 +116,43 @@ export default function Home() {
       }),
     [session],
   );
+  const analyticsClient = useMemo(
+    () =>
+      createClient("/api", {
+        signal: () => session.capture().signal,
+      }),
+    [session],
+  );
+  useProductAnalytics({
+    config: parseProductAnalyticsConfig({
+      enabled: process.env.NEXT_PUBLIC_CITYGO_METRIKA_ENABLED,
+      counterId: process.env.NEXT_PUBLIC_CITYGO_METRIKA_COUNTER_ID,
+      webvisor: process.env.NEXT_PUBLIC_CITYGO_METRIKA_WEBVISOR,
+    }),
+    ownerId: board?.user.id ?? null,
+    role: board?.user.role,
+    blocked:
+      loading ||
+      passwordOpen ||
+      mode === "recover" ||
+      !!board?.user.mustChangePassword ||
+      !!board?.user.serviceConsentRequired,
+    surface: !board
+      ? mode === "login"
+        ? "login"
+        : "register"
+      : balanceOpen
+        ? "wallet"
+        : phoneOpen
+          ? "phone"
+          : favoritesOpen
+            ? "favorites"
+            : conversationView
+              ? "chat"
+              : "profile",
+    sessionSignal: session.capture().signal,
+    client: analyticsClient,
+  });
   const history = useConversationHistory({
     board: board?.user.serviceConsentRequired ? null : board,
     sessionSignal: session.capture().signal,
@@ -256,6 +298,7 @@ export default function Home() {
     cancelAiModeChoice();
     if (!option.consentRequired) {
       setSelectedAiMode(value);
+      trackProductEvent("mode_selected", { surface: "chat", mode: value });
       return;
     }
     setAiModeConsent({
@@ -331,6 +374,11 @@ export default function Home() {
         setPending("");
         setStreamAgent(null);
         opened = true;
+        trackProductEvent(
+          "assistant_opened",
+          { surface: "chat", assistant: detail.thread.agentKey },
+          detail.thread.id,
+        );
       });
       return completed && opened;
     } finally {
@@ -377,6 +425,7 @@ export default function Home() {
         setPending("");
         setStreamAgent(null);
         opened = true;
+        trackProductEvent("conversation_opened", { surface: "chat" });
       });
       return completed && opened;
     } finally {
@@ -479,6 +528,8 @@ export default function Home() {
     if (mode === "register" && !consents) return;
     const data = new FormData(event.currentTarget);
     const authMode = mode;
+    if (authMode === "register")
+      trackProductEvent("registration_started", { surface: "register" });
     const email = String(data.get("email"));
     let password = String(data.get("password"));
     data.delete("password");
@@ -486,6 +537,7 @@ export default function Home() {
     clearUserState();
     authPending.current = true;
     void act(async (ticket) => {
+      let accepted = false;
       try {
         if (authMode === "register") {
           const policy = await api.registrationPolicy();
@@ -509,12 +561,38 @@ export default function Home() {
             setRegistration(
               pendingEmailRegistration(email, challenge, Date.now(), consents!),
             );
+            trackProductEvent(
+              "registration_code_sent",
+              { surface: "register" },
+              challenge.challengeId,
+            );
+            accepted = true;
             return;
           }
         }
-        await api.auth(authMode, email, password, consents);
+        const authenticated = await api.auth(
+          authMode,
+          email,
+          password,
+          consents,
+        );
         ticket.check();
+        accepted = true;
+        if (authenticated.user.role === "user")
+          trackProductEvent(
+            authMode === "register"
+              ? "registration_completed"
+              : "login_completed",
+            { surface: authMode },
+          );
         await refresh(ticket);
+      } catch (cause) {
+        if (ticket.active() && !accepted)
+          trackProductEvent(
+            authMode === "register" ? "registration_failed" : "login_failed",
+            { surface: authMode },
+          );
+        throw cause;
       } finally {
         password = "";
         if (ticket.active()) authPending.current = false;
@@ -567,6 +645,11 @@ export default function Home() {
           code,
         );
         ticket.check();
+        trackProductEvent(
+          "registration_completed",
+          { surface: "register" },
+          current.challengeId,
+        );
         notifyBrowserSessionChange();
         clearUserState();
         const confirmed = session.capture();
@@ -596,7 +679,10 @@ export default function Home() {
     try {
       // Independent revocation request: closing the UI lifetime must not cancel it.
       await createClient("/api", { signal: () => controller.signal }).logout();
-      if (ticket.active()) setNotice("Вы вышли из аккаунта.");
+      if (ticket.active()) {
+        trackProductEvent("logout_completed");
+        setNotice("Вы вышли из аккаунта.");
+      }
     } catch {
       if (ticket.active()) {
         setLogoutUnconfirmed(true);
@@ -702,6 +788,13 @@ export default function Home() {
       return;
     }
     const requestId = crypto.randomUUID();
+    const submittedMode = mode?.aiMode ?? selectedAiMode;
+    let answerCompleted = false;
+    trackProductEvent("ai_request_submitted", {
+      surface: "chat",
+      mode: submittedMode,
+      assistant: snapshot.thread.agentKey,
+    });
     chatSubmitting.current = true;
     const threadId = snapshot.thread.id;
     setText("");
@@ -729,6 +822,18 @@ export default function Home() {
               setNotice(event.reason);
               setStreamAgent(event.to);
             }
+            if (event.type === "done") {
+              answerCompleted = true;
+              trackProductEvent(
+                "ai_response_completed",
+                {
+                  surface: "chat",
+                  mode: submittedMode,
+                  assistant: snapshot.thread!.agentKey,
+                },
+                requestId,
+              );
+            }
           },
           controller.signal,
           snapshot.aiAccess.policy?.id,
@@ -748,6 +853,18 @@ export default function Home() {
       if (ticket.active()) chatSubmitting.current = false;
       return;
     }
+    if (!answerCompleted)
+      trackProductEvent(
+        controller.signal.aborted
+          ? "ai_response_stopped"
+          : "ai_response_failed",
+        {
+          surface: "chat",
+          mode: submittedMode,
+          assistant: snapshot.thread.agentKey,
+        },
+        requestId,
+      );
     if (!succeeded) setText(message);
     setDraft("");
     setPending("");
@@ -791,12 +908,14 @@ export default function Home() {
   };
   const authViewSignal = session.capture().signal;
   function openBalance() {
+    trackProductEvent("wallet_opened", { surface: "wallet" });
     setPhoneOpen(false);
     setReceiptsOpen(false);
     setFavoritesOpen(false);
     setBalanceOpen(true);
   }
   function openPhone() {
+    trackProductEvent("phone_opened", { surface: "phone" });
     setBalanceOpen(false);
     setFavoritesOpen(false);
     setReceiptsOpen(false);
@@ -843,7 +962,7 @@ export default function Home() {
         </Link>
         <span className="header-caption">Новый город. Ваша история.</span>
         {board ? (
-          <div className="account">
+          <div className="account ym-hide-content">
             <Badge>{board.xp} XP</Badge>
             {board.profile &&
               !board.user.mustChangePassword &&
@@ -915,7 +1034,7 @@ export default function Home() {
           <Badge>Личный помощник по переезду</Badge>
         )}
       </header>
-      <main>
+      <main className="ym-hide-content" data-citygo-analytics-private>
         {error && (
           <div className="alert" role="alert">
             {error}
@@ -1006,6 +1125,7 @@ export default function Home() {
               <p>Сохраним план, диалоги и каждый завершённый шаг.</p>
               <form key={formVersion} onSubmit={auth}>
                 <Field
+                  className="ym-disable-keys"
                   label={
                     mode === "register"
                       ? "Электронная почта"
@@ -1019,6 +1139,7 @@ export default function Home() {
                 />
                 <Field
                   label="Пароль"
+                  className="ym-disable-keys"
                   name="password"
                   type="password"
                   minLength={mode === "register" ? 6 : 1}
@@ -1078,6 +1199,7 @@ export default function Home() {
             >
               <Field
                 label="Текущий пароль"
+                className="ym-disable-keys"
                 name="currentPassword"
                 type="password"
                 autoComplete="current-password"
@@ -1086,6 +1208,7 @@ export default function Home() {
               />
               <Field
                 label="Новый пароль"
+                className="ym-disable-keys"
                 name="password"
                 type="password"
                 autoComplete="new-password"
@@ -1241,6 +1364,10 @@ export default function Home() {
                       saved,
                     );
                     ticket.check();
+                    trackProductEvent(
+                      saved ? "favorite_added" : "favorite_removed",
+                      { surface: "favorites" },
+                    );
                     history.patchFavorite(confirmed);
                     await refresh(ticket);
                     ticket.check();
@@ -1348,6 +1475,10 @@ export default function Home() {
                   )
                     throw new Error("Mode choice needs fresh confirmation");
                   setSelectedAiMode(selected);
+                  trackProductEvent("mode_selected", {
+                    surface: "chat",
+                    mode: selected,
+                  });
                   cancelAiModeChoice();
                 }}
               />

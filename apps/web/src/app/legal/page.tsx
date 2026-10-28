@@ -25,6 +25,11 @@ export default function LegalDocuments() {
             </Link>
           </li>
           <li>
+            <Link href="/legal/analytics">
+              Аналитика сервиса и доступ к материалам аккаунта
+            </Link>
+          </li>
+          <li>
             <a href="https://app.xn--c1ajazlh.xn--p1ai/legal">
               Другие документы сервиса
             </a>
