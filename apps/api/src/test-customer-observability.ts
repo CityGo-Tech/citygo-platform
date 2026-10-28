@@ -1,5 +1,5 @@
 // Synthetic browser fixtures ONLY. Never imported by server.ts or production modules.
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { PersonalPlan, type Database } from "@citygo/db";
 import type { FastifyInstance } from "fastify";
 import { hashPassword } from "./auth.js";
@@ -18,6 +18,14 @@ export const observabilityFixture = {
   planTitle: "Найти жильё для переезда",
 } as const;
 
+// Public deterministic test credentials, never runtime keys. Each browser
+// project/retry has its own role-loss viewer so revoking one cannot invalidate
+// other tests. Normal auth/session/role checks still run against the memory DB.
+const syntheticSessionToken = (name: string) =>
+  createHash("sha256")
+    .update("citygo-public-observability-test-session-v1:" + name)
+    .digest("hex");
+
 export async function seedObservabilityE2eFixture(
   db: Database,
   app: FastifyInstance,
@@ -35,6 +43,13 @@ export async function seedObservabilityE2eFixture(
     ["customer", observabilityFixture.customerEmail, "user"],
     ["other", observabilityFixture.otherEmail, "user"],
     ["controller", observabilityFixture.controllerEmail, "super_admin"],
+    ...["desktop", "mobile-web"].flatMap((project) =>
+      [0, 1].map((retry) => [
+        `role-loss-${project}-${retry}`,
+        `observability-role-loss-${project}-${retry}@example.test`,
+        "super_admin",
+      ]),
+    ),
   ]) {
     const id = await registerSyntheticConsentingUser(
       db,
@@ -43,6 +58,13 @@ export async function seedObservabilityE2eFixture(
       app,
     );
     await db.query("update users set role=$2 where id=$1", [id, role]);
+    await db.query(
+      "insert into sessions(token_hash,user_id,expires_at)values($1,$2,clock_timestamp()+interval'1 day')",
+      [
+        createHash("sha256").update(syntheticSessionToken(name!)).digest("hex"),
+        id,
+      ],
+    );
     accounts[name!] = id;
   }
   const userId = accounts.customer!;

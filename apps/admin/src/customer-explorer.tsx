@@ -907,6 +907,7 @@ function FunnelSummary({ funnel }: { funnel: AdminCustomerFunnel }) {
       </dl>
       <details>
         <summary>Активность по дням</summary>
+        <p>Все пользователи, даты UTC.</p>
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", textAlign: "left", borderSpacing: 8 }}>
             <thead>
