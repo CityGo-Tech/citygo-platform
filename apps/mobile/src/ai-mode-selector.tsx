@@ -26,10 +26,10 @@ export function MobileAiModeSelector({
     : aiModeLabels[selected];
   return (
     <View style={styles.group}>
-      <Text nativeID="ai-mode-label">Режим ответа</Text>
+      <Text nativeID="ai-mode-label">Режим работы</Text>
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={`Режим ответа: ${selectedLabel}`}
+        accessibilityLabel={`Режим работы: ${selectedLabel}`}
         accessibilityState={{ disabled, expanded: open }}
         disabled={disabled}
         style={[styles.control, disabled && styles.disabled]}
@@ -40,7 +40,7 @@ export function MobileAiModeSelector({
         </Text>
       </Pressable>
       {open && (
-        <View accessibilityRole="radiogroup" accessibilityLabel="Режим ответа">
+        <View accessibilityRole="radiogroup" accessibilityLabel="Режим работы">
           {modes.options.map((option) => (
             <Pressable
               key={option.id}

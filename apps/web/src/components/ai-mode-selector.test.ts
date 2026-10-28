@@ -27,7 +27,7 @@ const render = (catalog: AiModes | undefined, disabled = false) =>
 test("legacy server has no selector; the new selector shows only public names and explicit unavailable choices", () => {
   assert.equal(render(undefined), "");
   const html = render(modes);
-  assert.match(html, /Режим ответа/);
+  assert.match(html, /Режим работы/);
   assert.match(html, /value="balanced" selected=""/);
   assert.match(html, /value="minimum" disabled=""/);
   assert.match(html, /Максимум/);
@@ -41,7 +41,7 @@ test("legacy server has no selector; the new selector shows only public names an
   assert.match(render(modes, true), /<select[^>]*disabled=""/);
 });
 
-test("fixed Minimum price is visible without changing its ID or availability", () => {
+test("Minimum keeps only its name without changing its price, ID or availability", () => {
   const catalog: AiModes = {
     ...modes,
     options: modes.options.map((option) =>
@@ -60,13 +60,13 @@ test("fixed Minimum price is visible without changing its ID or availability", (
   const html = render(catalog);
   assert.match(
     html,
-    /value="minimum" disabled="">Минимум · 3 ₽ за запрос — временно недоступен<\/option>/,
+    /value="minimum" disabled="">Минимум — временно недоступен<\/option>/,
   );
   assert.match(html, /value="maximum">Максимум<\/option>/);
   assert.match(html, /value="balanced" selected="">Баланс<\/option>/);
   assert.doesNotMatch(
     html,
-    /amountMicros|fixed|RUB|RouterAI|GigaChat|резерв|×10/i,
+    /amountMicros|fixed|RUB|RouterAI|GigaChat|резерв|×10|за запрос|3 ₽/i,
   );
   assert.match(render(catalog, true), /<select[^>]*disabled=""/);
 });

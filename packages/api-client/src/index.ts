@@ -929,6 +929,24 @@ export function createClient(
         );
       return result;
     },
+    conversationMessageContext: async (
+      conversationId: string,
+      messageId: string,
+    ) => {
+      const id = conversationHistoryIdSchema.parse(conversationId);
+      const target = conversationHistoryIdSchema.parse(messageId);
+      const result = await request(
+        "/v1/conversations/" + id + "/messages/" + target + "/context",
+        conversationMessagesResponseSchema,
+      );
+      if (result.threadId !== id || result.messages.at(-1)?.id !== target)
+        throw new ApiError(
+          200,
+          "Ответ сервера не соответствует исходному сообщению",
+          "invalid_response",
+        );
+      return result;
+    },
     aiConsent: (input: AiConsentInput) =>
       request("/v1/ai/consent", okResponseSchema, input),
     aiControl: () => request("/v1/admin/ai", aiControlResponseSchema),

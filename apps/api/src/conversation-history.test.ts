@@ -286,6 +286,83 @@ test("message history HTTP pages keep numeric order, full metadata and exact int
   await f.readOnly(before);
 });
 
+test("source context is an owner-bound read-only GET ending at the exact old message", async (t) => {
+  const f = await fixture(t);
+  const threadId = await f.thread(),
+    foreign = await f.thread(f.other),
+    closed = await f.thread(f.owner, "closed");
+  const base = 9007199254740993n;
+  await f.db.query(
+    `insert into messages(id,thread_id,role,content) overriding system value
+     select $1::bigint+i,$2,'user','Synthetic source '||i::text from generate_series(1,205) as i`,
+    [base.toString(), threadId],
+  );
+  await f.message(threadId, "9223372036854775807", "assistant", {
+    agentKey: "support",
+    status: "interrupted",
+    citygoFavorite: true,
+  });
+  await f.message(threadId, "9223372036854775806", "system");
+  await f.message(threadId, "9223372036854775805", "tool");
+  await f.message(foreign, "9223372036854775804");
+  await f.message(closed, "9223372036854775803");
+  f.statements.length = 0;
+  const before = await f.snapshot();
+  const path = (id: string, message: string) =>
+    `/v1/conversations/${id}/messages/${message}/context`;
+  const target = (base + 103n).toString();
+  const response = await f.call(path(threadId, target), f.ownerToken, true);
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.headers["cache-control"], "no-store");
+  const page = conversationMessagesResponseSchema.parse(response.json());
+  assert.equal(page.userId, f.owner);
+  assert.equal(page.threadId, threadId);
+  assert.equal(page.messages.length, 100);
+  assert.equal(page.messages.at(-1)!.id, target);
+  assert.equal(page.nextCursor, page.messages[0]!.id);
+  const maximum = conversationMessagesResponseSchema.parse(
+    (await f.call(path(threadId, "9223372036854775807"))).json(),
+  );
+  assert.equal(maximum.messages.at(-1)!.id, "9223372036854775807");
+  assert.equal(maximum.messages.at(-1)!.favorite, true);
+  assert.equal(maximum.messages.at(-1)!.status, "interrupted");
+  assert.equal((await f.call(path(threadId, target), "")).statusCode, 401);
+  assert.equal(
+    (await f.call(path(threadId, target), f.otherToken)).statusCode,
+    404,
+  );
+  assert.equal(
+    (await f.call(path(foreign, "9223372036854775804"))).statusCode,
+    404,
+  );
+  for (const id of [
+    "9223372036854775806",
+    "9223372036854775805",
+    "9223372036854775804",
+    "9223372036854775803",
+    "1",
+  ])
+    assert.equal((await f.call(path(threadId, id))).statusCode, 404);
+  assert.equal(
+    (await f.call(path(closed, "9223372036854775803"))).statusCode,
+    200,
+  );
+  for (const id of ["01", "0", "1%0A", "9223372036854775808"])
+    for (const requestPath of [path(threadId, id), path(id, target)])
+      assert.equal((await f.call(requestPath)).statusCode, 400);
+  for (const query of ["before=1", "limit=1000", "userId=" + f.other])
+    assert.equal(
+      (await f.call(path(threadId, target) + "?" + query)).statusCode,
+      400,
+    );
+  assert.equal(
+    (await f.call(path(threadId, target), f.ownerToken, false, "unsupported"))
+      .statusCode,
+    400,
+  );
+  await f.readOnly(before);
+});
+
 test("history owner and visible-cursor membership cannot be bypassed by super-admin, sibling, hidden or absent messages", async (t) => {
   const f = await fixture(t);
   const own = await f.thread(),
@@ -335,6 +412,7 @@ test("history HTTP validates exact IDs, one strict cursor and contract version, 
   f.statements.length = 0;
   const before = await f.snapshot();
   const path = "/v1/conversations/" + threadId + "/messages";
+  const contextPath = path + "/9007199254740993/context";
   for (const query of [
     "before=",
     "before=0",
@@ -360,6 +438,10 @@ test("history HTTP validates exact IDs, one strict cursor and contract version, 
     (await f.call(path, f.ownerToken, false, "unsupported")).statusCode,
     400,
   );
+  assert.equal(
+    (await f.call(contextPath, f.ownerToken, false, "unsupported")).statusCode,
+    400,
+  );
   await f.readOnly(before);
   await f.db.query("update users set must_change_password=true where id=$1", [
     f.owner,
@@ -367,6 +449,7 @@ test("history HTTP validates exact IDs, one strict cursor and contract version, 
   f.statements.length = 0;
   const temporary = await f.snapshot();
   assert.equal((await f.call(path)).statusCode, 403);
+  assert.equal((await f.call(contextPath)).statusCode, 403);
   await f.readOnly(temporary);
   await f.db.query(
     "update users set must_change_password=false,status='blocked' where id=$1",
@@ -375,11 +458,13 @@ test("history HTTP validates exact IDs, one strict cursor and contract version, 
   f.statements.length = 0;
   const blocked = await f.snapshot();
   assert.equal((await f.call(path)).statusCode, 401);
+  assert.equal((await f.call(contextPath)).statusCode, 401);
   await f.readOnly(blocked);
   await f.db.query("update users set status='active' where id=$1", [f.owner]);
   await f.db.query("delete from sessions where user_id=$1", [f.owner]);
   f.statements.length = 0;
   const revoked = await f.snapshot();
   assert.equal((await f.call(path)).statusCode, 401);
+  assert.equal((await f.call(contextPath)).statusCode, 401);
   await f.readOnly(revoked);
 });

@@ -18,7 +18,7 @@ export function AiModeSelector({
   if (!modes) return null;
   return (
     <SelectField
-      label="Режим ответа"
+      label="Режим работы"
       value={selected}
       disabled={disabled}
       onChange={(event) => {

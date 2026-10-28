@@ -11,7 +11,7 @@ export const aiModeUnavailableMessage =
 export function formatAiModeOptionLabel(
   option: AiModes["options"][number],
 ): string {
-  return option.price ? `${option.label} · 3 ₽ за запрос` : option.label;
+  return option.label;
 }
 
 export function isAiModeAvailable(

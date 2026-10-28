@@ -394,7 +394,7 @@ export function createAssistantModes(
       if (!ready(current) || !environmentEnabled || !productionApproved)
         throw new DomainError(
           503,
-          "Режим ответа сейчас недоступен. Обновите страницу.",
+          "Режим работы сейчас недоступен. Обновите страницу.",
           "AI_UNAVAILABLE",
         );
       if (

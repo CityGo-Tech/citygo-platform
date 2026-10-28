@@ -70,6 +70,115 @@ const notFound = (error: unknown) =>
   error.statusCode === 404 &&
   error.message === "Чат не найден";
 
+test("exact message context reaches old favorites and int64 maximum without changing the latest reader", async (t) => {
+  const f = await fixture(t);
+  const base = 9223372036854775500n;
+  await f.db.query(
+    `insert into messages(id,thread_id,role,content) overriding system value
+     select $1::bigint+i,$2,'user','Synthetic context '||i::text
+     from generate_series(1,205) as i`,
+    [base.toString(), f.thread],
+  );
+  const target = (base + 103n).toString();
+  const page = await f.repo.conversationMessageContext(
+    f.owner,
+    f.thread,
+    target,
+  );
+  conversationMessagesResponseSchema.parse(page);
+  assert.equal(page.messages.length, 100);
+  assert.equal(page.messages[0]!.id, (base + 4n).toString());
+  assert.equal(page.messages.at(-1)!.id, target);
+  assert.equal(page.nextCursor, page.messages[0]!.id);
+  assert.ok(
+    !(await f.repo.conversation(f.owner, f.thread)).thread.messages.some(
+      (row) => row.id === target,
+    ),
+    "the chosen old message is outside the unchanged latest100 reader",
+  );
+  const older = await f.repo.conversationMessages(
+    f.owner,
+    f.thread,
+    page.nextCursor!,
+  );
+  assert.deepEqual(
+    older.messages.map((row) => row.id),
+    [1n, 2n, 3n].map((i) => (base + i).toString()),
+  );
+  assert.equal(older.nextCursor, null);
+  await insert(f, "9223372036854775807");
+  const maximum = await f.repo.conversationMessageContext(
+    f.owner,
+    f.thread,
+    "9223372036854775807",
+  );
+  assert.equal(maximum.messages.at(-1)!.id, "9223372036854775807");
+  assert.equal(maximum.messages.length, 100);
+});
+
+test("context requires the exact visible source in the owned thread, including closed history", async (t) => {
+  const f = await fixture(t);
+  await insert(f, "1", "user");
+  await insert(f, "2", "assistant");
+  await insert(f, "3", "system");
+  await insert(f, "4", "tool");
+  await insert(f, "5", "user", f.sibling);
+  await insert(f, "6", "assistant", f.foreign);
+  for (const source of ["3", "4", "5", "6", "7"])
+    await assert.rejects(
+      f.repo.conversationMessageContext(f.owner, f.thread, source),
+      notFound,
+    );
+  for (const requester of [f.other, f.admin])
+    await assert.rejects(
+      f.repo.conversationMessageContext(requester, f.thread, "1"),
+      notFound,
+    );
+  await f.db.query("update agent_threads set status='closed' where id=$1", [
+    f.thread,
+  ]);
+  const page = await f.repo.conversationMessageContext(f.owner, f.thread, "1");
+  assert.deepEqual(
+    page.messages.map((row) => row.id),
+    ["1"],
+  );
+  assert.equal(page.nextCursor, null);
+});
+
+test("invalid context IDs fail before storage or bigint normalization", async () => {
+  let reads = 0;
+  const denied = async (): Promise<never> => {
+    reads++;
+    throw Error("Unexpected storage");
+  };
+  const repo = new Repository({
+    query: denied,
+    exec: denied,
+    transaction: denied,
+    close: async () => {},
+  });
+  for (const bad of [
+    "",
+    "01",
+    "1\n",
+    " 1",
+    "9223372036854775808",
+    1,
+    null,
+    undefined,
+  ])
+    for (const args of [
+      [bad, "1", "1"],
+      ["1", bad, "1"],
+      ["1", "1", bad],
+    ])
+      await assert.rejects(
+        repo.conversationMessageContext(...(args as [string, string, string])),
+        (error) => error instanceof DomainError && error.statusCode === 400,
+      );
+  assert.equal(reads, 0);
+});
+
 test("message pages traverse over 250 visible messages by exact numeric ID despite timestamps, interleaved roles and foreign messages", async (t) => {
   const f = await fixture(t),
     base = 9007199254740991n;

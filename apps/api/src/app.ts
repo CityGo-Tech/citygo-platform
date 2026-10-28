@@ -20,6 +20,8 @@ import {
   conversationStartSchema,
   conversationListQuerySchema,
   conversationMessagesQuerySchema,
+  conversationMessageContextParamsSchema,
+  conversationMessageContextQuerySchema,
   conversationHistoryIdSchema,
   conversationIdSchema,
   questionnaireSchema,
@@ -903,6 +905,17 @@ export async function buildApp(options: {
     const query = conversationMessagesQuerySchema.parse(request.query);
     return repo.conversationMessages(user.id, id, query.before);
   });
+  app.get(
+    "/v1/conversations/:id/messages/:messageId/context",
+    async (request) => {
+      const user = await authenticate(request);
+      const { id, messageId } = conversationMessageContextParamsSchema.parse(
+        request.params,
+      );
+      conversationMessageContextQuerySchema.parse(request.query);
+      return repo.conversationMessageContext(user.id, id, messageId);
+    },
+  );
   app.get("/v1/conversations/:id", async (request) => {
     const user = await authenticate(request);
     const id = conversationIdSchema.parse(
@@ -1108,7 +1121,7 @@ export async function buildApp(options: {
         if (!gigaFees)
           throw new DomainError(
             503,
-            "Режим ответа сейчас недоступен.",
+            "Режим работы сейчас недоступен.",
             "AI_UNAVAILABLE",
           );
         await gigaFees.recoverExpired({ limit: 20 });
@@ -1116,7 +1129,7 @@ export async function buildApp(options: {
       if (!executionPolicy)
         throw new DomainError(
           503,
-          "Режим ответа сейчас недоступен.",
+          "Режим работы сейчас недоступен.",
           "AI_UNAVAILABLE",
         );
       const execution =

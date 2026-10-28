@@ -18,7 +18,7 @@ type Send = {
 const catalogId = "b".repeat(64);
 const policyId = "a".repeat(64);
 const selector = (page: Page) =>
-  page.getByLabel("Режим ответа", { exact: true });
+  page.getByLabel("Режим работы", { exact: true });
 const composer = (page: Page) =>
   page.getByLabel("Сообщение помощнику", { exact: true });
 
@@ -348,7 +348,7 @@ test("mode switches affect only the next explicit question and remain frozen thr
   await page.goto("/");
   await expect(selector(page)).toHaveValue("balanced");
   await expect(selector(page).locator('option[value="minimum"]')).toHaveText(
-    "Минимум · 3 ₽ за запрос",
+    "Минимум",
   );
   await expect(selector(page).locator('option[value="maximum"]')).toHaveText(
     "Максимум",

@@ -72,6 +72,7 @@ export default function Home() {
   const [passwordOpen, setPasswordOpen] = useState(false);
   const [receiptsOpen, setReceiptsOpen] = useState(false);
   const [favoritesOpen, setFavoritesOpen] = useState(false);
+  const [conversationNavigation, setConversationNavigation] = useState(0);
   const [phoneOpen, setPhoneOpen] = useState(false);
   const [balanceOpen, setBalanceOpen] = useState(false);
   const [conversationView, setConversationView] = useState(false);
@@ -1172,6 +1173,16 @@ export default function Home() {
                 userId={board.user.id}
                 sessionSignal={session.capture().signal}
                 onAccessDenied={requireLogin}
+                onOpenConversation={async (id) => {
+                  const opened = await openConversation(id);
+                  if (opened) {
+                    setFavoritesOpen(false);
+                    // Open the conversation tab even when Favorites was entered
+                    // from Profile or Plan. Drafts remain owned by Home/thread.
+                    setConversationNavigation((current) => current + 1);
+                  }
+                  return opened;
+                }}
                 onClose={() => {
                   setFavoritesOpen(false);
                   void refresh(session.capture()).catch(() => {});
@@ -1198,7 +1209,7 @@ export default function Home() {
               hidden={balanceOpen || phoneOpen || favoritesOpen || receiptsOpen}
             >
               <Experience
-                key={board.user.id}
+                key={board.user.id + ":" + conversationNavigation}
                 board={history.board ?? board}
                 sessionSignal={session.capture().signal}
                 onAccessDenied={requireLogin}
