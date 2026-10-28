@@ -36,6 +36,8 @@
   outline-offset: 2px;
 }
 .label {
+  display: block;
+  margin-bottom: var(--cg-space-xs);
   color: var(--cg-color-primary-strong);
   font-weight: 700;
 }

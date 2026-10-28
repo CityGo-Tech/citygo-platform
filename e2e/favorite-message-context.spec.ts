@@ -172,6 +172,14 @@ test("old saved reply opens at its exact source, older history and return keep t
   await expect(
     source(page).locator('[data-source-message="120"]'),
   ).toBeVisible();
+  const sourceLabelAndAuthorDoNotOverlap = await source(page)
+    .locator('[data-source-message="120"]')
+    .evaluate((element) => {
+      const label = element.querySelector("small")!.getBoundingClientRect();
+      const author = element.querySelector("strong")!.getBoundingClientRect();
+      return label.bottom <= author.top + 1;
+    });
+  expect(sourceLabelAndAuthorDoNotOverlap).toBe(true);
   await source(page).screenshot({
     path: info.outputPath("favorite-source.png"),
   });
