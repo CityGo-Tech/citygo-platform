@@ -216,7 +216,7 @@ export class Repository {
         mode: input.mode,
       });
       if (input.fixedFee !== undefined && !frozenMode)
-        fail(409, "Режим ответа не закреплён за запросом.");
+        fail(409, "Режим работы не закреплён за запросом.");
       if (frozenMode)
         await assertAiConsentBasisAttempt(
           tx,
@@ -722,6 +722,23 @@ export class Repository {
     threadId: string,
     beforeId?: string,
   ): Promise<ConversationMessagesPage> {
+    return this.readConversationMessages(userId, threadId, beforeId, false);
+  }
+  async conversationMessageContext(
+    userId: string,
+    threadId: string,
+    messageId: string,
+  ): Promise<ConversationMessagesPage> {
+    if (!conversationHistoryIdSchema.safeParse(messageId).success)
+      fail(400, "Недопустимый идентификатор сообщения");
+    return this.readConversationMessages(userId, threadId, messageId, true);
+  }
+  private async readConversationMessages(
+    userId: string,
+    threadId: string,
+    beforeId: string | undefined,
+    inclusive: boolean,
+  ): Promise<ConversationMessagesPage> {
     if (
       !conversationHistoryIdSchema.safeParse(userId).success ||
       !conversationHistoryIdSchema.safeParse(threadId).success ||
@@ -769,12 +786,16 @@ export class Repository {
             m.metadata->>'failureCode' as "failureCode",
             (m.metadata->'citygoFavorite'='true'::jsonb) is true as favorite
            from messages m where m.thread_id=$1 and m.role in ('user','assistant')
-            and ($2::bigint is null or m.id<$2::bigint)
+            and ($2::bigint is null or m.id${inclusive ? "<=" : "<"}$2::bigint)
            order by m.id desc limit 101`,
           [threadId, beforeId ?? null],
         )
       ).rows;
       const messages = rows.slice(0, 100).reverse();
+      // The context route must never substitute a neighbouring message if the
+      // exact target disappeared or stopped being visible during the read.
+      if (inclusive && messages.at(-1)?.id !== beforeId)
+        fail(404, "Чат не найден");
       return {
         userId,
         threadId,
@@ -1012,7 +1033,7 @@ export class Repository {
         )
           fail(
             409,
-            "Режим ответа изменился. Повторите отправку.",
+            "Режим работы изменился. Повторите отправку.",
             "AI_MODE_CHANGED",
           );
         if (

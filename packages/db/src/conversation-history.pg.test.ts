@@ -190,10 +190,41 @@ test(
         .filter((i) => i % 6 !== 0 && i % 6 !== 3)
         .map((i) => (baseId + BigInt(i)).toString()),
     );
+    // The exact old source is outside the latest100 view, while the restricted
+    // API role can read its bounded inclusive window with the existing grants.
+    const sourceId = ids[103]!;
+    const context = await repo.conversationMessageContext(
+      owner,
+      thread,
+      sourceId,
+    );
+    conversationMessagesResponseSchema.parse(context);
+    assert.deepEqual(
+      context.messages.map((message) => message.id),
+      ids.slice(4, 104),
+    );
+    assert.equal(context.messages.at(-1)!.id, sourceId);
+    assert.equal(context.nextCursor, ids[4]);
+    assert.ok(
+      !(await repo.conversationMessages(owner, thread)).messages.some(
+        (message) => message.id === sourceId,
+      ),
+    );
+    assert.deepEqual(
+      (
+        await repo.conversationMessages(owner, thread, context.nextCursor!)
+      ).messages.map((message) => message.id),
+      ids.slice(0, 4),
+    );
     const missing = (error: unknown) =>
       error instanceof DomainError && error.statusCode === 404;
-    for (const actor of [other, superAdmin])
+    for (const actor of [other, superAdmin]) {
       await assert.rejects(repo.conversationMessages(actor, thread), missing);
+      await assert.rejects(
+        repo.conversationMessageContext(actor, thread, sourceId),
+        missing,
+      );
+    }
     for (const badCursor of [
       foreignId,
       (baseId + 3n).toString(),
@@ -227,13 +258,23 @@ test(
       await hold;
     });
     await lockReady;
-    let settled = false;
+    let settled = false,
+      contextSettled = false;
     const pending = repo.conversationMessages(owner, thread).finally(() => {
       settled = true;
     });
+    const pendingContext = repo
+      .conversationMessageContext(owner, thread, sourceId)
+      .finally(() => {
+        contextSettled = true;
+      });
     // Attach rejection handling immediately, including on a diagnostic assertion.
     const outcome = assert.rejects(
       pending,
+      (error) => error instanceof DomainError && error.statusCode === 403,
+    );
+    const contextOutcome = assert.rejects(
+      pendingContext,
       (error) => error instanceof DomainError && error.statusCode === 403,
     );
     try {
@@ -244,7 +285,7 @@ test(
             "select count(*)::int as n from pg_stat_activity where datname=current_database() and wait_event_type='Lock' and query like 'select status,must_change_password from users%for share'",
           )
         ).rows[0]!.n;
-        if (waiting > 0) {
+        if (waiting >= 2) {
           waited = true;
           break;
         }
@@ -252,10 +293,11 @@ test(
       }
       assert.equal(waited, true);
       assert.equal(settled, false);
+      assert.equal(contextSettled, false);
     } finally {
       unlock();
       await writer;
     }
-    await outcome;
+    await Promise.all([outcome, contextOutcome]);
   },
 );

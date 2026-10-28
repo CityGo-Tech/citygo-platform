@@ -1,0 +1,54 @@
+.panel:global(.cg-card) {
+  display: grid;
+  gap: var(--cg-space-md);
+  max-width: 816px;
+  margin: auto;
+  padding: var(--cg-space-lg);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.panel h1,
+.panel p {
+  margin: 0;
+}
+.panel h1 {
+  font-size: 32px;
+  line-height: 1.2;
+}
+.intro {
+  color: var(--cg-color-muted);
+}
+.messages {
+  display: grid;
+  gap: var(--cg-space-md);
+  max-height: min(70vh, 728px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  overflow-anchor: none;
+  scrollbar-gutter: stable;
+}
+.selected:global(.conversation-message) {
+  border: 2px solid var(--cg-color-primary-strong);
+  background: var(--cg-color-primary-soft);
+}
+.selected:focus-visible {
+  outline: 2px solid var(--cg-color-primary-strong);
+  outline-offset: 2px;
+}
+.label {
+  display: block;
+  margin-bottom: var(--cg-space-xs);
+  color: var(--cg-color-primary-strong);
+  font-weight: 700;
+}
+.notice {
+  display: grid;
+  gap: var(--cg-space-sm);
+  padding: var(--cg-space-md);
+  border-radius: var(--cg-radius-control);
+  background: var(--cg-color-primary-soft);
+}
+.panel :global(.cg-button) {
+  white-space: normal;
+  font-weight: 600;
+}

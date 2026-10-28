@@ -4,6 +4,7 @@ import { ApiError, createClient } from "@citygo/api-client";
 import type { FavoriteMessage } from "@citygo/contracts";
 import { AssistantMessage, Button, Card } from "@citygo/ui-web";
 import { agentNames } from "./agent-names";
+import { FavoriteMessageContext } from "./favorite-message-context";
 
 export function FavoriteButton({
   saved = false,
@@ -31,16 +32,21 @@ export function MessageFavoritesPanel({
   sessionSignal,
   onClose,
   onAccessDenied,
+  onOpenConversation,
 }: {
   userId: string;
   sessionSignal: AbortSignal;
   onClose: () => void;
   onAccessDenied: () => void;
+  onOpenConversation?: (threadId: string) => Promise<boolean>;
 }) {
   const [messages, setMessages] = useState<FavoriteMessage[]>([]);
   const [nextBefore, setNextBefore] = useState<string | null>(null);
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState("");
+  const [source, setSource] = useState<FavoriteMessage | null>(null);
+  const sourceButton = useRef<HTMLButtonElement | null>(null);
+  const listScroll = useRef(0);
   const denied = useRef(onAccessDenied);
   useEffect(() => {
     denied.current = onAccessDenied;
@@ -113,78 +119,115 @@ export function MessageFavoritesPanel({
   }, [userId, sessionSignal]);
   if (sessionSignal.aborted) return null;
   return (
-    <Card
-      className="message-favorites"
-      aria-label="Избранные сообщения"
-      aria-busy={busy}
-    >
-      <span className="eyebrow">ЛИЧНЫЙ КАБИНЕТ</span>
-      <h1>Избранные сообщения</h1>
-      <p>Ваши сообщения и ответы помощников — всё важное в одном месте.</p>
-      <small>Удаляется только закладка. Сообщение остаётся в диалоге.</small>
-      {error && <p role="alert">{error}</p>}
-      {busy && <p role="status">Обновляем избранное…</p>}
-      {!busy && !error && !messages.length && !nextBefore && (
-        <div className="favorites-empty">
-          <h2>Пока здесь пусто</h2>
-          <p>
-            Нажмите «В избранное» под своим сообщением или ответом помощника.
-            Сохранённое появится здесь.
-          </p>
-          <Button onClick={onClose}>Открыть диалоги</Button>
-        </div>
+    <>
+      {source && (
+        <FavoriteMessageContext
+          key={userId + ":" + source.threadId + ":" + source.id}
+          userId={userId}
+          source={source}
+          sessionSignal={sessionSignal}
+          onAccessDenied={onAccessDenied}
+          onOpenConversation={onOpenConversation}
+          onBack={() => {
+            setSource(null);
+            requestAnimationFrame(() => {
+              if (sessionSignal.aborted) return;
+              sourceButton.current?.focus({ preventScroll: true });
+              window.scrollTo({ top: listScroll.current, behavior: "instant" });
+            });
+          }}
+        />
       )}
-      <div className="favorites-list" hidden={!messages.length}>
-        {messages.map((message) => (
-          <article
-            key={message.id}
-            className="conversation-message"
-            aria-label={"Сохранённое сообщение " + message.id}
-          >
-            <strong>
-              {message.role === "user" ? "Вы" : agentNames[message.agentKey]}
-            </strong>
-            {message.role === "user" ? (
-              <p>{message.content}</p>
-            ) : (
-              <AssistantMessage content={message.content} />
-            )}
-            {message.status === "interrupted" && (
+      <div hidden={source !== null}>
+        <Card
+          className="message-favorites"
+          aria-label="Избранные сообщения"
+          aria-busy={busy}
+        >
+          <span className="eyebrow">ЛИЧНЫЙ КАБИНЕТ</span>
+          <h1>Избранные сообщения</h1>
+          <p>Ваши сообщения и ответы помощников — всё важное в одном месте.</p>
+          <small>
+            Удаляется только закладка. Сообщение остаётся в диалоге.
+          </small>
+          {error && <p role="alert">{error}</p>}
+          {busy && <p role="status">Обновляем избранное…</p>}
+          {!busy && !error && !messages.length && !nextBefore && (
+            <div className="favorites-empty">
+              <h2>Пока здесь пусто</h2>
               <p>
-                <small>Ответ прерван</small>
+                Нажмите «В избранное» под своим сообщением или ответом
+                помощника. Сохранённое появится здесь.
               </p>
-            )}
+              <Button onClick={onClose}>Открыть диалоги</Button>
+            </div>
+          )}
+          <div className="favorites-list" hidden={!messages.length}>
+            {messages.map((message) => (
+              <article
+                key={message.id}
+                className="conversation-message"
+                aria-label={"Сохранённое сообщение " + message.id}
+              >
+                <strong>
+                  {message.role === "user"
+                    ? "Вы"
+                    : agentNames[message.agentKey]}
+                </strong>
+                {message.role === "user" ? (
+                  <p>{message.content}</p>
+                ) : (
+                  <AssistantMessage content={message.content} />
+                )}
+                {message.status === "interrupted" && (
+                  <p>
+                    <small>Ответ прерван</small>
+                  </p>
+                )}
+                <Button
+                  variant="secondary"
+                  disabled={busy}
+                  onClick={(event) => {
+                    sourceButton.current = event.currentTarget;
+                    listScroll.current = window.scrollY;
+                    setSource(message);
+                  }}
+                >
+                  Открыть в диалоге
+                </Button>
+                <Button
+                  variant="ghost"
+                  disabled={busy}
+                  onClick={() => void actions?.remove(message.id)}
+                >
+                  Убрать из избранного
+                </Button>
+              </article>
+            ))}
+          </div>
+          {nextBefore && (
             <Button
-              variant="ghost"
               disabled={busy}
-              onClick={() => void actions?.remove(message.id)}
+              variant="secondary"
+              onClick={() => void actions?.load(nextBefore)}
             >
-              Убрать из избранного
+              Показать ещё
             </Button>
-          </article>
-        ))}
+          )}
+          {error && (
+            <Button
+              disabled={busy}
+              variant="secondary"
+              onClick={() => void actions?.load()}
+            >
+              Обновить список
+            </Button>
+          )}
+          <Button variant="secondary" onClick={onClose}>
+            ← В приложение
+          </Button>
+        </Card>
       </div>
-      {nextBefore && (
-        <Button
-          disabled={busy}
-          variant="secondary"
-          onClick={() => void actions?.load(nextBefore)}
-        >
-          Показать ещё
-        </Button>
-      )}
-      {error && (
-        <Button
-          disabled={busy}
-          variant="secondary"
-          onClick={() => void actions?.load()}
-        >
-          Обновить список
-        </Button>
-      )}
-      <Button variant="secondary" onClick={onClose}>
-        ← В приложение
-      </Button>
-    </Card>
+    </>
   );
 }

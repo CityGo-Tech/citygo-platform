@@ -13,6 +13,11 @@ export const conversationHistoryIdSchema = messageIdSchema.refine(
 export const conversationMessagesQuerySchema = z.strictObject({
   before: conversationHistoryIdSchema.optional(),
 });
+export const conversationMessageContextParamsSchema = z.strictObject({
+  id: conversationHistoryIdSchema,
+  messageId: conversationHistoryIdSchema,
+});
+export const conversationMessageContextQuerySchema = z.strictObject({});
 const message = dashboardResponseSchema.shape.thread
   .unwrap()
   .shape.messages.element.safeExtend({ id: conversationHistoryIdSchema })

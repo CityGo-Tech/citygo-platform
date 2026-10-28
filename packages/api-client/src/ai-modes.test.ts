@@ -18,12 +18,17 @@ const modes = (): AiModes => ({
   })),
 });
 
-test("public fixed-price text is optional and remains outside the captured request", () => {
+test("mode names stay concise while the fixed price and captured request remain unchanged", () => {
   const catalog = modes();
   const minimum = catalog.options.find((option) => option.id === "minimum")!;
   assert.equal(formatAiModeOptionLabel(minimum), "Минимум");
   minimum.price = { kind: "fixed", currency: "RUB", amountMicros: 3_000_000 };
-  assert.equal(formatAiModeOptionLabel(minimum), "Минимум · 3 ₽ за запрос");
+  assert.equal(formatAiModeOptionLabel(minimum), "Минимум");
+  assert.deepEqual(minimum.price, {
+    kind: "fixed",
+    currency: "RUB",
+    amountMicros: 3_000_000,
+  });
   assert.equal(formatAiModeOptionLabel(catalog.options[0]!), "Максимум");
   assert.deepEqual(captureAiModeSelection(catalog, "minimum"), {
     aiMode: "minimum",
