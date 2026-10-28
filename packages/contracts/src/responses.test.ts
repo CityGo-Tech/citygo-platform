@@ -238,6 +238,95 @@ test("budget responses distinguish absent operator caps from zero and retain saf
     false,
   );
 });
+test("admin AI accepts three mode executions plus one retained legacy route without widening other bounds", () => {
+  const execution = (key: string, provider: string, model: string) => ({
+    key: key.repeat(64),
+    policy: {
+      id: key.repeat(64),
+      version: "synthetic-policy-v1",
+      provider,
+      model,
+      recipient: "Synthetic recipient",
+      routing: "Synthetic route",
+      data: "Synthetic context only",
+    },
+    maxInputBytes: 8192,
+    maxOutputTokens: 4096,
+  });
+  const executions = [
+    execution("a", "routerai", "openai/gpt-6.1-sol"),
+    execution("b", "routerai", "deepseek/deepseek-v4-pro-0813"),
+    execution("c", "gigachat", "GigaChat-3-Ultra"),
+    execution("d", "routerai", "deepseek/deepseek-v4-pro-0813"),
+  ];
+  const settings = {
+    revision: 1,
+    enabled: false,
+    mode: "fixed",
+    currency: "RUB",
+    dailyLimitMicros: 0,
+    totalLimitMicros: 0,
+    userDailyLimitMicros: null,
+    rules: [],
+  };
+  const response = (availableExecutions: unknown[]) => ({
+    current: { provider: "disabled", policyId: null, revision: 1 },
+    effectiveProvider: "unconfigured",
+    environmentDisabled: false,
+    automaticFallback: false,
+    options: [],
+    audit: [],
+    budget: {
+      settings,
+      totalReservedMicros: 0,
+      reservedTodayMicros: 0,
+      day: "2026-10-28",
+      availableExecutions,
+      audit: [],
+    },
+  });
+  for (const count of [3, 4]) {
+    const page = executions.slice(0, count);
+    assert.deepEqual(
+      aiControlResponseSchema.parse(response(page)).budget!.availableExecutions,
+      page,
+      "all current and retained execution identities must remain visible",
+    );
+  }
+  assert.equal(
+    aiControlResponseSchema.safeParse(
+      response([...executions, execution("e", "routerai", "synthetic/extra")]),
+    ).success,
+    false,
+    "the read-only catalog is bounded to four executions",
+  );
+  for (const invalid of [
+    { ...executions[3], key: "not-a-policy-id" },
+    { ...executions[3], maxInputBytes: "8192" },
+    { ...executions[3], maxOutputTokens: -1 },
+    {
+      ...executions[3],
+      policy: { ...executions[3]!.policy, provider: "other" },
+    },
+    { ...executions[3], policy: { ...executions[3]!.policy, id: "invalid" } },
+  ])
+    assert.equal(
+      aiControlResponseSchema.safeParse(
+        response([...executions.slice(0, 3), invalid]),
+      ).success,
+      false,
+      "the fourth entry keeps every existing execution validation",
+    );
+  assert.equal(
+    aiBudgetSettingsSchema.safeParse({
+      ...settings,
+      rules: executions.map((item) => ({ ...item, attemptCeilingMicros: 1 })),
+    }).success,
+    false,
+    "catalog compatibility must not raise the three-rule budget limit",
+  );
+});
+
 test("dashboard validates nested profile, quest, message, policy and budget fields", () => {
   for (const change of [
     { xp: "60" },
