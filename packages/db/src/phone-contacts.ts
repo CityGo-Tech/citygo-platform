@@ -5,11 +5,18 @@ import type { Database, Sql } from "./index.js";
 import { DomainError } from "./errors.js";
 
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
+export const protectedPhoneSchema = z
+  .string()
+  .max(256)
+  .regex(
+    /^pc1\.[a-f0-9]{64}\.[a-f0-9]{24}\.(?:[a-f0-9]{2}){9,16}\.[a-f0-9]{32}$/,
+  );
 const bindingInput = z.strictObject({
   userId: creditUserIdSchema,
   phoneKey: digest,
   sourceChallengeId: z.uuid(),
   sourceClaimOperationId: z.uuid(),
+  protectedPhone: protectedPhoneSchema.optional(),
 });
 const changeInput = z
   .strictObject({
@@ -41,6 +48,20 @@ export type ActivePhoneContact = {
   sourceClaimOperationId: string;
   policyFingerprint: string;
   method: "phone_code" | "operator_transfer";
+};
+export type AdminPhoneContact = {
+  userId: string;
+  email: string;
+  username: string | null;
+  protectedPhone: string;
+  proofUserId: string;
+  phoneKey: string;
+  sourceChallengeId: string;
+  verifiedAt: string;
+};
+export type AdminPhoneContactsPage = {
+  contacts: AdminPhoneContact[];
+  nextAfterUserId: string | null;
 };
 const invalid = () =>
   new DomainError(400, "Некорректная операция привязки телефона");
@@ -96,14 +117,15 @@ export async function createPhoneContactBinding(
   const input = parse(bindingInput, raw);
   await tx.query(
     `insert into phone_contact_bindings(id,user_id,phone_key,proof_user_id,source_challenge_id,
-      source_claim_operation_id,policy_fingerprint,bind_operation_id)
-    select $4,$1,$2,$1,$3,$4,c.policy_fingerprint,$4
+      source_claim_operation_id,policy_fingerprint,bind_operation_id,protected_phone)
+    select $4,$1,$2,$1,$3,$4,c.policy_fingerprint,$4,$5
       from phone_verification_challenges c where c.id=$3`,
     [
       input.userId,
       input.phoneKey,
       input.sourceChallengeId,
       input.sourceClaimOperationId,
+      input.protectedPhone ?? null,
     ],
   );
   const binding = await activePhoneContact(tx, input.userId);
@@ -131,9 +153,109 @@ const receipt = (
   replayed,
 });
 
-// Database-owner/superuser operator tool only. No HTTP route or runtime grant.
 export class PhoneContacts {
   constructor(private db: Database) {}
+  async listForAdmin(
+    actorId: string,
+    afterUserId?: string,
+    sessionTokenHash?: string,
+  ): Promise<AdminPhoneContactsPage> {
+    const actor = parse(creditUserIdSchema, actorId);
+    const cursor =
+      afterUserId === undefined ? null : parse(creditUserIdSchema, afterUserId);
+    if (sessionTokenHash !== undefined) parse(digest, sessionTokenHash);
+    return this.db.transaction(async (tx) => {
+      if (
+        (
+          await tx.query(
+            "select id from account_security_state where id=1 for update",
+          )
+        ).rows.length !== 1
+      )
+        throw new DomainError(503, "Хранилище контактов не готово");
+      const current = (
+        await tx.query<{ role: string; must_change_password: boolean }>(
+          "select role,must_change_password from users where id=$1 and status='active' for update",
+          [actor],
+        )
+      ).rows[0];
+      if (
+        !current ||
+        current.role !== "super_admin" ||
+        current.must_change_password
+      )
+        throw new DomainError(
+          403,
+          "Контакты доступны только супер-администратору",
+        );
+      if (
+        sessionTokenHash !== undefined &&
+        (
+          await tx.query(
+            `select token_hash from sessions where token_hash=$1 and user_id=$2
+             and expires_at>clock_timestamp() for update`,
+            [sessionTokenHash, actor],
+          )
+        ).rows.length !== 1
+      )
+        throw new DomainError(401, "Войдите в аккаунт");
+      // Read the current owner, but retrieve the envelope only from the retained
+      // original phone_code proof. A transfer is never a new SMS confirmation.
+      const rows = (
+        await tx.query<AdminPhoneContact>(
+          `select b.user_id::text as "userId",credentials.email,u.username,
+          source.protected_phone as "protectedPhone",b.proof_user_id::text as "proofUserId",
+          b.phone_key as "phoneKey",b.source_challenge_id::text as "sourceChallengeId",
+          to_char(c.consumed_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "verifiedAt"
+        from phone_contact_bindings b
+        join users u on u.id=b.user_id and u.status='active'
+        join user_credentials credentials on credentials.user_id=u.id
+        join phone_welcome_claims w on w.user_id=b.proof_user_id and w.phone_key=b.phone_key
+          and w.challenge_id=b.source_challenge_id and w.operation_id=b.source_claim_operation_id
+        join phone_verification_challenges c on c.id=w.challenge_id and c.user_id=w.user_id and c.phone_key=w.phone_key
+        join ai_credit_entries e on e.operation_id=w.operation_id and e.user_id=w.user_id and e.kind='bonus'
+          and e.amount_micros=w.granted_micros
+        join phone_verification_control p on p.id=1 and p.bound_at is not null
+          and p.policy_fingerprint=c.policy_fingerprint and p.policy_fingerprint=b.policy_fingerprint
+        join phone_contact_bindings source on source.id=b.source_claim_operation_id
+          and source.method='phone_code' and source.user_id=b.proof_user_id and source.proof_user_id=b.proof_user_id
+          and source.phone_key=b.phone_key and source.source_challenge_id=b.source_challenge_id
+          and source.source_claim_operation_id=b.source_claim_operation_id and source.policy_fingerprint=b.policy_fingerprint
+          and source.previous_binding_id is null and source.bind_operation_id=source.id
+          and source.protected_phone is not null
+        where b.unlinked_at is null and b.user_id>coalesce($1::bigint,0)
+          and c.consumed_at is not null and c.consumed_operation_id=w.operation_id
+          and c.delivery='accepted' and c.superseded_at is null and c.consumed_at<=c.expires_at
+          and w.granted_micros=500000000
+          and (b.method='phone_code' and b.user_id=b.proof_user_id and b.previous_binding_id is null
+            or b.method='operator_transfer' and exists(select 1 from phone_contact_bindings previous
+              where previous.id=b.previous_binding_id and previous.phone_key=b.phone_key
+                and previous.proof_user_id=b.proof_user_id and previous.source_challenge_id=b.source_challenge_id
+                and previous.source_claim_operation_id=b.source_claim_operation_id
+                and previous.policy_fingerprint=b.policy_fingerprint and previous.unlinked_at is not null
+                and previous.unlink_operation_id=b.bind_operation_id))
+        order by b.user_id limit 51`,
+          [cursor],
+        )
+      ).rows;
+      const contacts = rows.slice(0, 50);
+      const nextAfterUserId = rows.length > 50 ? contacts.at(-1)!.userId : null;
+      await tx.query(
+        `insert into audit_log(actor_user_id,action,entity_type,entity_id,payload)
+        values($1::bigint,'customer-phone-contacts-viewed','customer-phone-contacts',$1::text,$2::jsonb)`,
+        [
+          actor,
+          JSON.stringify({
+            rowCount: contacts.length,
+            afterUserId: cursor,
+            nextAfterUserId,
+          }),
+        ],
+      );
+      return { contacts, nextAfterUserId };
+    });
+  }
+  // Database-owner/superuser operator tool only. No HTTP route or runtime grant.
   async changeByOperator(
     raw: PhoneContactChangeInput,
   ): Promise<PhoneContactChangeReceipt> {

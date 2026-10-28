@@ -12,6 +12,7 @@ import { AiControls } from "./ai-control.js";
 import { AiBudgetControls } from "./ai-budget.js";
 import { AiCreditControls } from "./ai-credit.js";
 import { AccountsControl } from "./accounts-control.js";
+import { CustomerContactsControl } from "./customer-contacts.js";
 import { NpdReceiptsControl } from "./npd-receipts.js";
 import { PaymentRefundsControl } from "./payment-refunds.js";
 import { PaymentAdmissionControl } from "./payment-admission.js";
@@ -234,6 +235,16 @@ export function AdminOverview() {
             администратора не позволяют выдавать роли.
           </p>
         </Card>
+      )}
+      {viewer?.role === "super_admin" && (
+        <CustomerContactsControl
+          key={`contacts-${viewer.id}-${refreshVersion}`}
+          viewerId={viewer.id}
+          onAccessLost={() => {
+            invalidate();
+            setError("Доступ к клиентской базе изменился. Обновите сводку.");
+          }}
+        />
       )}
       {viewer?.role === "super_admin" && (
         <PaymentAdmissionControl

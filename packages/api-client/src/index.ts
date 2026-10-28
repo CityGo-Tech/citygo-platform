@@ -2,6 +2,8 @@ import {
   accountUserResponseSchema,
   adminOverviewResponseSchema,
   adminUsersResponseSchema,
+  adminPhoneContactsQuerySchema,
+  adminPhoneContactsResponseSchema,
   aiBudgetSettingsSchema,
   aiCreditResponseSchema,
   aiModeSelectionSchema,
@@ -95,6 +97,7 @@ import {
   type AiCreditReconcile,
   type CreateTopupInput,
   type NpdReceiptListQuery,
+  type AdminPhoneContactsQuery,
   type NpdReceiptCommand,
   type PaymentRefundListQuery,
   type CreatePaymentRefundInput,
@@ -627,6 +630,31 @@ export function createClient(
         { currentPassword, password },
       ),
     accountUsers: () => request("/v1/admin/accounts", adminUsersResponseSchema),
+    adminPhoneContacts: async (input: AdminPhoneContactsQuery = {}) => {
+      const query = adminPhoneContactsQuerySchema.safeParse(input);
+      if (!query.success)
+        throw new Error("Некорректный курсор клиентской базы");
+      const search = new URLSearchParams();
+      if (query.data.afterUserId)
+        search.set("afterUserId", query.data.afterUserId);
+      const page = await request(
+        "/v1/admin/phone-contacts" + (search.size ? "?" + search : ""),
+        adminPhoneContactsResponseSchema,
+      );
+      if (
+        query.data.afterUserId &&
+        page.contacts.some(
+          (contact) =>
+            BigInt(contact.userId) <= BigInt(query.data.afterUserId!),
+        )
+      )
+        throw new ApiError(
+          200,
+          "Ответ сервера не соответствует странице клиентской базы",
+          "invalid_response",
+        );
+      return page;
+    },
     adminNpdReceipts: (input: Partial<NpdReceiptListQuery> = {}) => {
       const query = receiptInput(npdReceiptListQuerySchema, input);
       const search = new URLSearchParams({ limit: String(query.limit) });

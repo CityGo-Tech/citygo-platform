@@ -122,14 +122,25 @@ export function transactionBody(source: string, grants = false): string[] {
   let text = source.replaceAll("\r\n", "\n");
   if (grants) text = text.replace(/^\\set ON_ERROR_STOP on\n/, "");
   requireValue(!text.includes("\0"), "sql-shape");
-  const statements: { sql: string; first: string; count: number }[] = [];
+  const statements: {
+    sql: string;
+    first: string;
+    count: number;
+    namedContactConstraint: boolean;
+  }[] = [];
   let start = 0;
   let first = "";
   let count = 0;
-  // Only the leading token and whether it is alone are needed. Do not retain
-  // millions of tokens for a large statement in the 256 MiB jobs container.
+  let setTokens: string[] | undefined;
+  // Ordinary commands need only their first token and whether it is alone. The
+  // one named constraint timing exception retains at most five SET tokens,
+  // including an excess-token sentinel, never a large statement's full list.
   const token = (word: string) => {
-    if (count === 0) first = word;
+    if (count === 0) {
+      first = word;
+      if (word === "set") setTokens = [];
+    }
+    if (setTokens && setTokens.length < 5) setTokens.push(word);
     count = Math.min(2, count + 1);
   };
   for (let i = 0; i < text.length;) {
@@ -193,9 +204,21 @@ export function transactionBody(source: string, grants = false): string[] {
       continue;
     }
     if (text[i] === ";") {
-      if (count) statements.push({ sql: text.slice(start, i), first, count });
+      if (count)
+        statements.push({
+          sql: text.slice(start, i),
+          first,
+          count,
+          namedContactConstraint:
+            setTokens?.length === 4 &&
+            setTokens[0] === "set" &&
+            setTokens[1] === "constraints" &&
+            setTokens[2] === "phone_contact_binding_completion" &&
+            (setTokens[3] === "immediate" || setTokens[3] === "deferred"),
+        });
       count = 0;
       first = "";
+      setTokens = undefined;
       start = ++i;
       continue;
     }
@@ -234,7 +257,10 @@ export function transactionBody(source: string, grants = false): string[] {
         "revoke",
       ];
   requireValue(
-    body.every(({ first: leading }) => allowed.includes(leading)),
+    body.every(
+      ({ first: leading, namedContactConstraint }) =>
+        allowed.includes(leading) || (!grants && namedContactConstraint),
+    ),
     "sql-command",
   );
   return body.map(({ sql }) => sql);

@@ -342,7 +342,24 @@ test(
     const phone = new PhoneVerification(api, policy);
     await phone.begin(ctx, v);
     await phone.markAccepted(v.id, v.codeHash);
-    await phone.confirm(ctx, confirm(v));
+    const envelope = `pc1.${"1".repeat(64)}.${"2".repeat(24)}.${"a".repeat(24)}.${"3".repeat(32)}`;
+    await phone.confirm(ctx, { ...confirm(v), protectedPhone: envelope });
+    assert.equal(
+      (
+        await api.query<{ protected_phone: string }>(
+          "select protected_phone from phone_contact_bindings where user_id=$1",
+          [ctx.userId],
+        )
+      ).rows[0]!.protected_phone,
+      envelope,
+    );
+    await assert.rejects(
+      api.query(
+        "update phone_contact_bindings set protected_phone=null where user_id=$1",
+        [ctx.userId],
+      ),
+      /permission denied/,
+    );
     const before = await f.money();
     await assert.rejects(
       new PhoneContacts(api).changeByOperator(f.command()),

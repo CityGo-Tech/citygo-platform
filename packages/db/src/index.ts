@@ -53,6 +53,8 @@ export {
   createPhoneContactBinding,
   type PhoneContactChangeInput,
   type PhoneContactChangeReceipt,
+  type AdminPhoneContact,
+  type AdminPhoneContactsPage,
 } from "./phone-contacts.js";
 export {
   PhoneVerification,

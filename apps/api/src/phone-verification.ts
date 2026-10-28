@@ -16,6 +16,7 @@ import { tokenHash } from "./auth.js";
 import type { readConfig } from "@citygo/config";
 import type { SmsRuDeliveryResult } from "./verification-delivery/sms-ru.js";
 import type { ProstoSmsDeliveryResult } from "./verification-delivery/prosto-sms.js";
+import { protectedPhoneCodec } from "./protected-phone.js";
 
 export type PhoneVerificationDelivery = (input: {
   phone: string;
@@ -215,11 +216,19 @@ export function registerPhoneVerification(
     const ctx = await options.context(request);
     await unavailable();
     const input = phoneVerificationConfirmSchema.parse(request.body);
+    const phoneKey = digest("phone-identity", input.phone);
     return state!.confirm(ctx, {
       id: input.challengeId,
-      phoneKey: digest("phone-identity", input.phone),
+      phoneKey,
       proofHash: tokenHash(input.proof),
       codeHash: digest("phone-otp", input.challengeId, input.code),
+      protectedPhone: protectedPhoneCodec(
+        options.config.PHONE_VERIFICATION_SECRET!,
+      ).protect(input.phone, {
+        proofUserId: ctx.userId,
+        phoneKey,
+        sourceChallengeId: input.challengeId,
+      }),
     });
   });
 }
