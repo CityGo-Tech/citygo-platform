@@ -81,6 +81,10 @@ import { createAiExecution } from "./ai-execution.js";
 import { createAssistantModes, type ModeProviders } from "./ai-modes.js";
 import { ApiDrain, registerDrain } from "./shutdown.js";
 import { buildConversationContext } from "./conversation-context.js";
+import {
+  observeChatClientDisconnect,
+  recoverCompletedChatCharge,
+} from "./ai-credit-recovery.js";
 import { registerSyntheticHousingApi } from "./housing.js";
 import { registerPersonalPlanApi } from "./personal-plan.js";
 import {
@@ -279,7 +283,11 @@ export async function buildApp(options: {
     Object.values(providers).some(Boolean)
   )
     await assertRealAiDatabaseSafety(options.db);
-  async function reconcileCharge(userId: string, holdId: string) {
+  async function reconcileCharge(
+    userId: string,
+    holdId: string,
+    signal: AbortSignal = AbortSignal.timeout(5000),
+  ) {
     const charge = await charges.get(userId, holdId);
     if (charge.receipt) return credit.status(userId);
     const adapter = [
@@ -307,8 +315,9 @@ export async function buildApp(options: {
     const receipt = await adapter.readCharge(
       charge.generation_id,
       holdId,
-      AbortSignal.timeout(5000),
+      AbortSignal.any([signal, AbortSignal.timeout(5000)]),
     );
+    signal.throwIfAborted();
     await charges.settle(userId, holdId, receipt);
     return credit.status(userId);
   }
@@ -1167,30 +1176,94 @@ export async function buildApp(options: {
         provider.name,
         provider.model,
       );
-      const reservation = await repo.reserveChat(
-        user.id,
-        threadId,
-        input.requestId,
-        input.text,
-        {
-          policyId: aiPolicy.id,
-          revision: current.revision,
-          userDailyLimit: config.LLM_USER_DAILY_REQUEST_LIMIT,
-          globalDailyLimit: config.LLM_GLOBAL_DAILY_REQUEST_LIMIT,
-          leaseMs: limits.chatLeaseMs,
-          ...(selectedMode && modes
-            ? {
-                modeSnapshot: {
-                  mode: selectedMode.id,
-                  catalogId: selectedMode.catalogId,
-                  policy: executionPolicy,
-                  execution,
-                  ...(upstream ? { upstream } : {}),
-                },
-              }
-            : {}),
-        },
+      const clientDisconnect = observeChatClientDisconnect(
+        request.raw,
+        reply.raw,
       );
+      const abort = clientDisconnect.abort;
+      const admissionSignal = AbortSignal.any([abort.signal, drain.signal]);
+      const reservation = await (async () => {
+        try {
+          let fixed5CreditReadiness = false;
+          if (
+            creditCharging &&
+            config.AI_CREDIT_RESERVATION_MODE === "fixed5_overdraft"
+          ) {
+            const preflight = await repo.chatRecoveryPreflight(
+              user.id,
+              threadId,
+              input.requestId,
+            );
+            if (!routeAgent(input.text, preflight.agentKey).human) {
+              if (!preflight.budgetEnabled)
+                throw new DomainError(
+                  503,
+                  "Обращения к ИИ временно отключены.",
+                  "AI_BUDGET_UNAVAILABLE",
+                );
+              fixed5CreditReadiness = true;
+              await recoverCompletedChatCharge({
+                charges: preflight.charges,
+                signal: admissionSignal,
+                reconcile: (holdId, signal) =>
+                  reconcileCharge(user.id, holdId, signal),
+                reportPending: () =>
+                  request.log.warn(
+                    { code: "AI_CHARGE_COST_PENDING", phase: "before_chat" },
+                    "AI cost verification pending",
+                  ),
+              });
+              if (preflight.charges.length) {
+                // A cost GET can outlive logout or an administrative stop. Recheck
+                // the actual session/target before accepting this NEW question.
+                const account = await authenticate(request);
+                if (account.id !== user.id)
+                  throw new DomainError(401, "Войдите в аккаунт");
+                const current = await repo.chatRecoveryPreflight(
+                  user.id,
+                  threadId,
+                  input.requestId,
+                );
+                if (!current.budgetEnabled)
+                  throw new DomainError(
+                    503,
+                    "Обращения к ИИ временно отключены.",
+                    "AI_BUDGET_UNAVAILABLE",
+                  );
+              }
+            }
+          }
+          admissionSignal.throwIfAborted();
+          return await repo.reserveChat(
+            user.id,
+            threadId,
+            input.requestId,
+            input.text,
+            {
+              policyId: aiPolicy.id,
+              revision: current.revision,
+              userDailyLimit: config.LLM_USER_DAILY_REQUEST_LIMIT,
+              globalDailyLimit: config.LLM_GLOBAL_DAILY_REQUEST_LIMIT,
+              leaseMs: limits.chatLeaseMs,
+              ...(fixed5CreditReadiness ? { fixed5CreditReadiness: true } : {}),
+              ...(selectedMode && modes
+                ? {
+                    modeSnapshot: {
+                      mode: selectedMode.id,
+                      catalogId: selectedMode.catalogId,
+                      policy: executionPolicy,
+                      execution,
+                      ...(upstream ? { upstream } : {}),
+                    },
+                  }
+                : {}),
+            },
+          );
+        } catch (error) {
+          clientDisconnect.dispose();
+          throw error;
+        }
+      })();
       const routing = routeAgent(input.text, reservation.thread.agent_key);
       // A chosen assistant is a conversation boundary, not a keyword hint.
       // Keep the established human-escalation path; legacy unpinned threads
@@ -1199,7 +1272,6 @@ export async function buildApp(options: {
         routing.to = reservation.thread.conversation_agent_key;
         routing.reason = "Пользователь выбрал этого помощника";
       }
-      const abort = new AbortController();
       const signal = AbortSignal.any([
         abort.signal,
         drain.signal,
@@ -1220,6 +1292,7 @@ export async function buildApp(options: {
       reply.raw.on("close", () => {
         if (!reply.raw.writableEnded) abort.abort();
       });
+      clientDisconnect.dispose();
       const heartbeat = setInterval(() => {
         if (!reply.raw.destroyed) reply.raw.write(": keepalive\n\n");
       }, 15000);
@@ -1387,7 +1460,12 @@ export async function buildApp(options: {
         if (creditHoldId && !fixedFee) {
           // Read-only cost lookup, not a second model attempt. A lost/invalid
           // receipt leaves a durable hold for reconciliation, never a guessed fee.
-          await reconcileCharge(user.id, creditHoldId).catch(() => {});
+          await reconcileCharge(user.id, creditHoldId).catch(() => {
+            request.log.warn(
+              { code: "AI_CHARGE_COST_PENDING", phase: "after_answer" },
+              "AI cost verification pending",
+            );
+          });
         }
         send({ type: "done", messageId });
       } catch (error) {

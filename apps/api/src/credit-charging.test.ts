@@ -833,7 +833,9 @@ test("fixed5 pending cost blocks another request and owned thread despite a posi
   assert.equal(pending.amountMicros, 5 * RUB);
   assert.equal(pending.responseComplete, true);
   const beforeDenied = await admissionSnapshot(f);
-  assert.match((await f.send()).body, /"type":"error"/);
+  const denied = await f.send();
+  assert.equal(denied.statusCode, 409);
+  assert.match(denied.body, /AI_CREDIT_UNAVAILABLE/);
   assert.deepEqual(await admissionSnapshot(f), beforeDenied);
   // The schema allows one open thread per account. Closing this synthetic
   // thread must not make its unresolved monetary hold cease to protect the user.
@@ -846,10 +848,12 @@ test("fixed5 pending cost blocks another request and owned thread despite a posi
       [f.user.id],
     )
   ).rows[0]!.id;
-  assert.match((await f.send(randomUUID(), other)).body, /"type":"error"/);
+  const deniedOther = await f.send(randomUUID(), other);
+  assert.equal(deniedOther.statusCode, 409);
+  assert.match(deniedOther.body, /AI_CREDIT_UNAVAILABLE/);
   assert.deepEqual(await admissionSnapshot(f), beforeDenied);
   assert.equal(f.state.posts, 1);
-  assert.equal(f.state.gets, 1);
+  assert.equal(f.state.gets, 3);
   f.state.costDown = false;
   const response = await f.call(
     "POST",
@@ -869,7 +873,7 @@ test("fixed5 pending cost blocks another request and owned thread despite a posi
   assert.equal(balance.heldMicros, 0);
   assert.equal(balance.pending?.length, 0);
   assert.equal(f.state.posts, 1);
-  assert.equal(f.state.gets, 2);
+  assert.equal(f.state.gets, 4);
 });
 
 test("fixed5 application recreation preserves an old full reservation snapshot", async (t) => {
@@ -1049,8 +1053,49 @@ test("fixed5 interrupted transport keeps its unresolved five CityGo hold without
   );
   assert.equal(reconciliation.statusCode, 409, reconciliation.body);
   const beforeDenied = await admissionSnapshot(f);
-  assert.match((await f.send()).body, /"type":"error"/);
+  const historySnapshot = async () => {
+    const state: Record<string, unknown[]> = {};
+    for (const table of [
+      "messages",
+      "chat_requests",
+      "agent_threads",
+      "ai_usage_daily",
+      "ai_user_usage_daily",
+    ])
+      state[table] = (
+        await f.db.query(
+          `select to_jsonb(t)as value from ${table} t order by to_jsonb(t)::text`,
+        )
+      ).rows;
+    return state;
+  };
+  const historyBefore = await historySnapshot();
+  const charge = (
+    await f.db.query<{
+      dispatched: boolean;
+      response_complete: boolean;
+      generation_present: boolean;
+      receipt: unknown;
+    }>(
+      "select dispatched,response_complete,(generation_id is not null)as generation_present,receipt from ai_credit_charges where user_id=$1",
+      [f.user.id],
+    )
+  ).rows[0]!;
+  assert.deepEqual(charge, {
+    dispatched: true,
+    response_complete: false,
+    generation_present: true,
+    receipt: null,
+  });
+  const denied = await f.send();
+  assert.equal(denied.statusCode, 409);
+  assert.match(denied.body, /AI_CREDIT_UNAVAILABLE/);
   assert.deepEqual(await admissionSnapshot(f), beforeDenied);
+  assert.deepEqual(
+    await historySnapshot(),
+    historyBefore,
+    "an interrupted generation never creates repeated rejected questions, quota or chat records",
+  );
   assert.equal(f.state.posts, 1);
   assert.equal(f.state.gets, 0);
 });

@@ -27,13 +27,22 @@ async function fixture(t: TestContext) {
     }
   });
   await migrate(db);
-  const state = { posts: 0, gets: 0, costDown: true, contexts: [] as string[] };
+  const state = {
+    posts: 0,
+    gets: 0,
+    costDown: true,
+    contexts: [] as string[],
+    beforeCostRead: undefined as (() => void) | undefined,
+    disconnectResponse: undefined as (() => void) | undefined,
+    messageError: undefined as (() => void) | undefined,
+  };
   const references = new Map<string, string>();
   const provider = new RouterAIProvider("synthetic-only-key", "test/model", {
     upstream: "test-upstream",
     fetch: async (url, init) => {
       if (init?.method === "GET") {
         state.gets++;
+        state.beforeCostRead?.();
         if (state.costDown)
           return new Response("synthetic unavailable", { status: 503 });
         const id = new URL(String(url)).searchParams.get("id")!;
@@ -107,8 +116,21 @@ async function fixture(t: TestContext) {
   await db.query(
     "update ai_budget set daily_limit_micros=100000000,total_limit_micros=100000000,rules=jsonb_set(rules,'{0,attemptCeilingMicros}','6000000'::jsonb)",
   );
-  const app = await buildApp({ db, config, provider, testing: true });
+  let app = await buildApp({ db, config, provider, testing: true });
   cleanup.app = app;
+  const observeTestResponse = () => {
+    app.addHook("onRequest", (request, reply, done) => {
+      if (/^\/v1\/threads\/\d+\/messages$/.test(request.url))
+        state.disconnectResponse = () => reply.raw.emit("close");
+      done();
+    });
+    app.addHook("onError", (request, _reply, _error, done) => {
+      if (/^\/v1\/threads\/\d+\/messages$/.test(request.url))
+        state.messageError?.();
+      done();
+    });
+  };
+  observeTestResponse();
   const call = (
     method: "GET" | "POST",
     path: string,
@@ -174,7 +196,13 @@ async function fixture(t: TestContext) {
     });
   const balance = async () =>
     (await call("GET", "/v1/ai/credit", user.token)).json<AiCredit>();
-  return { db, state, call, user, admin, start, send, balance };
+  const recreate = async () => {
+    await app.close();
+    app = await buildApp({ db, config, provider, testing: true });
+    cleanup.app = app;
+    observeTestResponse();
+  };
+  return { db, state, call, user, admin, start, send, balance, recreate };
 }
 
 async function monetarySnapshot(db: Database) {
@@ -200,6 +228,144 @@ async function monetarySnapshot(db: Database) {
     ).rows;
   return result;
 }
+
+test("next explicit question recovers a completed owned charge after restart before accepting history; invalid targets and repeated IDs never fetch cost", async (t) => {
+  const f = await fixture(t);
+  const a = await f.start("housing"),
+    b = await f.start("job-search");
+  const firstId = randomUUID();
+  assert.match(
+    (await f.send(a, "Первый вопрос", firstId)).body,
+    /"type":"done"/,
+  );
+  const snapshot = async () => {
+    const result: Record<string, unknown[]> = {};
+    for (const table of [
+      "messages",
+      "chat_requests",
+      "agent_threads",
+      "ai_usage_daily",
+      "ai_user_usage_daily",
+    ])
+      result[table] = (
+        await f.db.query(
+          `select to_jsonb(t)as value from ${table} t order by to_jsonb(t)::text`,
+        )
+      ).rows;
+    return result;
+  };
+  const before = await snapshot();
+  const money = await monetarySnapshot(f.db);
+  const retryId = randomUUID();
+  const failed = await f.send(b, "Второй вопрос", retryId);
+  assert.equal(failed.statusCode, 409);
+  assert.match(failed.body, /AI_CREDIT_UNAVAILABLE/);
+  assert.deepEqual(await snapshot(), before);
+  assert.deepEqual(await monetarySnapshot(f.db), money);
+  assert.equal(f.state.posts, 1);
+  assert.equal(f.state.gets, 2);
+  const foreign = await f.call(
+    "POST",
+    "/v1/conversations/start",
+    f.admin.token,
+    {},
+  );
+  assert.equal(foreign.statusCode, 200);
+  const reads = f.state.gets;
+  assert.equal(
+    (await f.send(foreign.json().id, "Чужой разговор")).statusCode,
+    404,
+  );
+  assert.equal((await f.send(a, "Повтор", firstId)).statusCode, 409);
+  assert.equal(
+    (
+      await f.call("POST", `/v1/threads/${b}/messages`, f.user.token, {
+        text: "Вопрос",
+        requestId: randomUUID(),
+        policyId: "0".repeat(64),
+        creditReservationMode: "fixed5_overdraft",
+      })
+    ).statusCode,
+    409,
+  );
+  assert.equal(
+    (
+      await f.call("POST", `/v1/threads/${b}/messages`, "", {
+        text: "Вопрос",
+        requestId: randomUUID(),
+        policyId: f.user.policyId,
+        creditReservationMode: "fixed5_overdraft",
+      })
+    ).statusCode,
+    401,
+  );
+  await f.db.query("update users set status='blocked'where id=$1", [f.user.id]);
+  assert.equal((await f.send(b, "Недоступный аккаунт")).statusCode, 401);
+  await f.db.query("update users set status='active'where id=$1", [f.user.id]);
+  assert.equal(f.state.gets, reads);
+  assert.equal(f.state.posts, 1);
+  await f.recreate();
+  f.state.costDown = false;
+  assert.match(
+    (await f.send(b, "Второй вопрос", retryId)).body,
+    /"type":"done"/,
+  );
+  assert.equal(f.state.posts, 2);
+  assert.equal(f.state.gets, 4);
+  assert.equal((await f.balance()).heldMicros, 0);
+  assert.equal((await f.balance()).spentMicros, 4_339_066);
+  const after = await snapshot();
+  assert.equal((await f.send(b, "Повтор второго", retryId)).statusCode, 409);
+  assert.deepEqual(await snapshot(), after);
+  assert.equal(f.state.posts, 2);
+  assert.equal(f.state.gets, 4);
+});
+
+test("a pending cost never prevents an explicit human help path or causes a model retry", async (t) => {
+  const f = await fixture(t);
+  const a = await f.start("housing"),
+    b = await f.start("job-search");
+  assert.match((await f.send(a, "Вопрос о переезде")).body, /"type":"done"/);
+  const before = await monetarySnapshot(f.db);
+  const gets = f.state.gets;
+  assert.match((await f.send(b, "Нужен живой человек")).body, /"type":"done"/);
+  assert.equal(f.state.gets, gets);
+  assert.equal(f.state.posts, 1);
+  assert.deepEqual(await monetarySnapshot(f.db), before);
+});
+
+test("client disconnect during explicit completed-charge GET never admits history or dispatches another model", async (t) => {
+  const f = await fixture(t);
+  const thread = await f.start("housing");
+  assert.match((await f.send(thread, "Первый вопрос")).body, /"type":"done"/);
+  const before = await monetarySnapshot(f.db);
+  const history = async () =>
+    (
+      await f.db.query(`select
+        (select jsonb_agg(to_jsonb(t) order by id) from messages t) as messages,
+        (select jsonb_agg(to_jsonb(t) order by request_id) from chat_requests t) as requests,
+        (select jsonb_agg(to_jsonb(t) order by id) from agent_threads t) as threads,
+        (select jsonb_agg(to_jsonb(t)) from ai_usage_daily t) as quota,
+        (select jsonb_agg(to_jsonb(t)) from ai_user_usage_daily t) as user_quota`)
+    ).rows;
+  const originalHistory = await history();
+  const handlerRejected = new Promise<void>((resolve) => {
+    f.state.messageError = resolve;
+  });
+  f.state.costDown = false;
+  f.state.beforeCostRead = () => {
+    assert.ok(f.state.disconnectResponse);
+    f.state.disconnectResponse();
+  };
+  await assert.rejects(f.send(thread, "Отменённый новый вопрос"), {
+    code: "LIGHT_ECONNRESET",
+  });
+  await handlerRejected;
+  assert.equal(f.state.posts, 1);
+  assert.equal(f.state.gets, 2);
+  assert.deepEqual(await monetarySnapshot(f.db), before);
+  assert.deepEqual(await history(), originalHistory);
+});
 
 test("assistant selection is free; an unresolved fixed5 charge in A blocks paid B user-wide and their model contexts never mix", async (t) => {
   const f = await fixture(t);
