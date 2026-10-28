@@ -1,3 +1,4 @@
+import { fulfillProductAnalytics } from "./product-analytics-fixture";
 import { syntheticConsentPolicy } from "./service-consent-fixture";
 import { expect, test, type Page } from "@playwright/test";
 import type { Dashboard } from "@citygo/contracts";
@@ -55,6 +56,7 @@ async function install(page: Page) {
     resendAfterSeconds: state.resendSeconds,
   });
   await page.route("**/api/v1/**", async (route) => {
+    if (await fulfillProductAnalytics(route)) return;
     if (
       route.request().method() === "GET" &&
       new URL(route.request().url()).origin === "http://localhost:3000" &&

@@ -1,3 +1,4 @@
+import { fulfillProductAnalytics } from "./product-analytics-fixture";
 import { expect, test, type Page } from "@playwright/test";
 import type { Dashboard, ServiceConsentPolicy } from "@citygo/contracts";
 import { syntheticConsentPolicy } from "./service-consent-fixture";
@@ -55,6 +56,7 @@ async function fixture(page: Page, gated = false) {
     aiAccess: { policy: null, granted: false, dailyLimit: 0 },
   });
   await page.route("**/api/v1/**", async (route) => {
+    if (await fulfillProductAnalytics(route)) return;
     const path = new URL(route.request().url()).pathname;
     if (path === "/api/v1/dashboard")
       return route.fulfill({

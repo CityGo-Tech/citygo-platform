@@ -1,3 +1,4 @@
+import { fulfillProductAnalytics } from "./product-analytics-fixture";
 import { syntheticConsentPolicy } from "./service-consent-fixture";
 import { test, expect, type Page } from "@playwright/test";
 import type { Dashboard } from "@citygo/contracts";
@@ -51,6 +52,7 @@ function fixture(id: string, withProfile = true): Dashboard {
 async function install(page: Page, withProfile = true) {
   const state = { board: fixture("A", withProfile) as Dashboard | null };
   await page.route("**/api/v1/**", async (route) => {
+    if (await fulfillProductAnalytics(route)) return;
     const path = new URL(route.request().url()).pathname;
     if (path.endsWith("/auth/registration-policy")) {
       await route.fulfill({

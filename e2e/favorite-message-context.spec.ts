@@ -1,3 +1,4 @@
+import { fulfillProductAnalytics } from "./product-analytics-fixture";
 import { expect, test, type Page } from "@playwright/test";
 import type { Dashboard, Message } from "@citygo/contracts";
 import { syntheticConsentPolicy } from "./service-consent-fixture";
@@ -55,6 +56,7 @@ async function install(page: Page) {
   };
   await page.route("https://**", (route) => route.abort());
   await page.route("**/api/v1/**", async (route) => {
+    if (await fulfillProductAnalytics(route)) return;
     const req = route.request(),
       url = new URL(req.url()),
       path = url.pathname;

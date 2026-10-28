@@ -1,3 +1,4 @@
+import { fulfillProductAnalytics } from "./product-analytics-fixture";
 import { syntheticConsentPolicy } from "./service-consent-fixture";
 import { test, expect, type Page } from "@playwright/test";
 import type { Dashboard, TopupOrder } from "@citygo/contracts";
@@ -91,6 +92,7 @@ async function fixture(
   );
   // Entire application API is intercepted. No real payment, account, DB or AI.
   await page.route("**/api/v1/**", async (route) => {
+    if (await fulfillProductAnalytics(route)) return;
     if (
       route.request().method() === "GET" &&
       new URL(route.request().url()).origin === "http://localhost:3000" &&

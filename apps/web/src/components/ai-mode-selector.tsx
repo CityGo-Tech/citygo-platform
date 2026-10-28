@@ -18,6 +18,7 @@ export function AiModeSelector({
   if (!modes) return null;
   return (
     <SelectField
+      className="ym-show-content"
       label="Режим работы"
       value={selected}
       disabled={disabled}

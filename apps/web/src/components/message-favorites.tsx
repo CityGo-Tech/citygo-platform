@@ -5,6 +5,7 @@ import type { FavoriteMessage } from "@citygo/contracts";
 import { AssistantMessage, Button, Card } from "@citygo/ui-web";
 import { agentNames } from "./agent-names";
 import { FavoriteMessageContext } from "./favorite-message-context";
+import { trackProductEvent } from "./product-analytics";
 
 export function FavoriteButton({
   saved = false,
@@ -104,8 +105,10 @@ export function MessageFavoritesPanel({
       setError("");
       try {
         await api.setMessageFavorite(id, false);
-        if (active())
+        if (active()) {
+          trackProductEvent("favorite_removed", { surface: "favorites" });
           setMessages((current) => current.filter((item) => item.id !== id));
+        }
       } catch (cause) {
         failure(cause);
       } finally {

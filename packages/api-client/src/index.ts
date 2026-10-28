@@ -125,6 +125,7 @@ import {
   type Operation,
 } from "./transport.js";
 import { readEvents } from "./sse.js";
+import { createAdminCustomerMethods } from "./admin-customers.js";
 export {
   createAiModeConsentResource,
   type AiModeConsentChoice,
@@ -629,6 +630,7 @@ export function createClient(
         options.native ? nativeAuthResponseSchema : authResponseSchema,
         { currentPassword, password },
       ),
+    ...createAdminCustomerMethods(request),
     accountUsers: () => request("/v1/admin/accounts", adminUsersResponseSchema),
     adminPhoneContacts: async (input: AdminPhoneContactsQuery = {}) => {
       const query = adminPhoneContactsQuerySchema.safeParse(input);

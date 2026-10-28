@@ -1,3 +1,4 @@
+import { fulfillProductAnalytics } from "./product-analytics-fixture";
 import { syntheticConsentPolicy } from "./service-consent-fixture";
 import { test, expect, type Page } from "@playwright/test";
 import type {
@@ -49,6 +50,7 @@ test("bootstrap password gate hides the conversation and privileged links until 
   // Every application API request is intercepted: no real accounts, database,
   // credentials or AI provider can be reached by this browser test.
   await page.route("**/api/v1/**", async (route) => {
+    if (await fulfillProductAnalytics(route)) return;
     if (
       route.request().method() === "GET" &&
       new URL(route.request().url()).origin === "http://localhost:3000" &&
@@ -154,6 +156,7 @@ async function adminFixture(page: Page, viewer: AccountUser) {
     deliver = resolve;
   });
   await page.route("**/api/v1/**", async (route) => {
+    if (await fulfillProductAnalytics(route)) return;
     if (
       route.request().method() === "GET" &&
       new URL(route.request().url()).origin === "http://localhost:3000" &&

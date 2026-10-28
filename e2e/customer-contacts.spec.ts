@@ -1,3 +1,4 @@
+import { fulfillProductAnalytics } from "./product-analytics-fixture";
 import { expect, test } from "@playwright/test";
 import type {
   AccountUser,
@@ -40,7 +41,8 @@ test("super admin explicitly views customer phones and pages without retaining t
 }) => {
   let role = "super_admin";
   let requests = 0;
-  await page.route("**/api/v1/**", (route) => {
+  await page.route("**/api/v1/**", async (route) => {
+    if (await fulfillProductAnalytics(route)) return;
     const url = new URL(route.request().url());
     if (url.pathname === "/api/v1/dashboard") {
       const dashboard: Dashboard = {
@@ -110,6 +112,7 @@ test("a late customer-phone response cannot reveal numbers after session change"
   });
   let requested = false;
   await page.route("**/api/v1/**", async (route) => {
+    if (await fulfillProductAnalytics(route)) return;
     const path = new URL(route.request().url()).pathname;
     if (path === "/api/v1/dashboard")
       return route.fulfill({

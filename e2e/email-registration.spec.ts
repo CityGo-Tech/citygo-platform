@@ -1,3 +1,4 @@
+import { fulfillProductAnalytics } from "./product-analytics-fixture";
 import {
   syntheticConsentPolicy,
   syntheticConsents,
@@ -50,6 +51,7 @@ async function install(page: Page) {
     resendAfterSeconds: state.resendSeconds,
   });
   await page.route("**/api/v1/**", async (route) => {
+    if (await fulfillProductAnalytics(route)) return;
     const path = new URL(route.request().url()).pathname;
     if (path === "/api/v1/dashboard")
       return route.fulfill({

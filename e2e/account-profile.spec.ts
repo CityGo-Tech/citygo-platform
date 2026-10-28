@@ -1,3 +1,4 @@
+import { fulfillProductAnalytics } from "./product-analytics-fixture";
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
 import type { AccountProfile, Dashboard } from "@citygo/contracts";
 import { syntheticConsentPolicy } from "./service-consent-fixture";
@@ -104,6 +105,7 @@ async function fixture(context: BrowserContext) {
     return route.abort();
   });
   await context.route("**/api/v1/**", async (route) => {
+    if (await fulfillProductAnalytics(route)) return;
     const request = route.request(),
       path = new URL(request.url()).pathname,
       method = request.method();

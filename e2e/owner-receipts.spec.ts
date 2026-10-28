@@ -1,3 +1,4 @@
+import { fulfillProductAnalytics } from "./product-analytics-fixture";
 import { syntheticConsentPolicy } from "./service-consent-fixture";
 import { test, expect, type Page } from "@playwright/test";
 import type { Dashboard, OwnerNpdReceiptTask } from "@citygo/contracts";
@@ -58,6 +59,7 @@ async function fixture(page: Page, userId = "1") {
     return route.fallback();
   });
   await page.route("**/api/v1/**", async (route) => {
+    if (await fulfillProductAnalytics(route)) return;
     if (
       route.request().method() === "GET" &&
       new URL(route.request().url()).origin === "http://localhost:3000" &&

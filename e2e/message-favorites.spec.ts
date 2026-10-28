@@ -1,3 +1,4 @@
+import { fulfillProductAnalytics } from "./product-analytics-fixture";
 import { syntheticConsentPolicy } from "./service-consent-fixture";
 import { test, expect } from "@playwright/test";
 import type { Dashboard } from "@citygo/contracts";
@@ -85,6 +86,7 @@ test("late valid favorite response cannot reappear after logout", async ({
     aiAccess: { policy: null, granted: false, dailyLimit: 0 },
   };
   await page.route("**/api/v1/**", async (route) => {
+    if (await fulfillProductAnalytics(route)) return;
     if (
       route.request().method() === "GET" &&
       new URL(route.request().url()).origin === "http://localhost:3000" &&
@@ -155,6 +157,7 @@ test("favorites page through exact bigint IDs, remove only a bookmark and reload
   const removed = new Set<string>();
   const cursors: (string | null)[] = [];
   await page.route("**/api/v1/**", async (route) => {
+    if (await fulfillProductAnalytics(route)) return;
     if (
       route.request().method() === "GET" &&
       new URL(route.request().url()).origin === "http://localhost:3000" &&
@@ -256,6 +259,7 @@ test("an active favorite panel rejects another owner's page without rendering it
     aiAccess: { policy: null, granted: false, dailyLimit: 0 },
   };
   await page.route("**/api/v1/**", async (route) => {
+    if (await fulfillProductAnalytics(route)) return;
     if (
       route.request().method() === "GET" &&
       new URL(route.request().url()).origin === "http://localhost:3000" &&
