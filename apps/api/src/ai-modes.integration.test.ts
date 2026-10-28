@@ -10,6 +10,7 @@ import {
   ServiceConsents,
 } from "@citygo/db";
 import {
+  aiControlResponseSchema,
   dashboardResponseSchema,
   type AiCredit,
   type AiModeId,
@@ -312,6 +313,69 @@ async function fixture(
     releaseMinimum,
   };
 }
+
+test("HTTP administrative AI catalog accepts three modes plus retained Balanced compatibility without expanding budget rules or charging", async (t) => {
+  const f = await fixture(t, { legacy: true, minimum: "fixed" });
+  await f.db.query("update users set role='super_admin' where id=$1", [
+    f.board.user.id,
+  ]);
+  const before = await f.balance();
+  const response = await f.call("GET", "/v1/admin/ai", f.token);
+  assert.equal(response.statusCode, 200, response.body);
+  const control = aiControlResponseSchema.parse(response.json());
+  const executions = control.budget!.availableExecutions;
+  assert.equal(
+    executions.length,
+    4,
+    "three mode executions and a distinct historical Balanced execution are valid",
+  );
+  assert.equal(new Set(executions.map((execution) => execution.key)).size, 4);
+  for (const route of f.modes.routes) {
+    assert.ok(route.provider, "all three synthetic modes are configured");
+    assert.ok(
+      executions.some((execution) => execution.key === route.execution.key),
+    );
+  }
+  assert.ok(
+    executions.some(
+      (execution) =>
+        execution.key === f.modes.legacyBalancedCompatibility!.execution.key,
+    ),
+  );
+  assert.equal(
+    control.options.length,
+    3,
+    "public provider choices remain unchanged",
+  );
+  assert.equal(
+    control.budget!.settings.rules.length,
+    3,
+    "the stored monetary approval still has its original three-rule bound",
+  );
+  assert(
+    control.budget!.settings.rules.every(
+      (rule) => rule.policy.provider === "routerai",
+    ),
+  );
+  assert.equal(f.config.AI_CREDIT_RESERVATION_MODE, "fixed5_overdraft");
+  assert.equal(f.config.AI_CREDIT_MODE, "routerai_citygo_10x");
+  assert.equal(f.config.AI_MINIMUM_FIXED_FEE, "enabled");
+  assert.deepEqual(
+    await f.balance(),
+    before,
+    "reading administrative catalog does not reserve or charge balance",
+  );
+  assert.deepEqual(f.calls, []);
+  assert.deepEqual(f.reads, []);
+  assert.equal(
+    (
+      await f.db.query(
+        "select 1 from ai_credit_entries where kind in('hold','settle')",
+      )
+    ).rows.length,
+    0,
+  );
+});
 
 test("HTTP retained consent keeps original Balanced usable without rewriting grants and blocks new recipients before any reservation", async (t) => {
   const f = await fixture(t, { legacy: true, minimum: "fixed" });

@@ -126,7 +126,9 @@ const budget = z.object({
   totalReservedMicros: count,
   day: z.iso.date(),
   reservedTodayMicros: count,
-  availableExecutions: z.array(execution).max(3),
+  // Three current modes can coexist with the exact retained legacy route.
+  // Budget rules still have their separate three-rule admission limit.
+  availableExecutions: z.array(execution).max(4),
   audit: z
     .array(
       z.object({
