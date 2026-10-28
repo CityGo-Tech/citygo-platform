@@ -96,7 +96,7 @@ grant select on phone_verification_control to citygo_api;
 -- transfers, terminal unlink and their authority receipts have no API grants.
 grant select on phone_contact_bindings to citygo_api;
 grant insert(id,user_id,phone_key,proof_user_id,source_challenge_id,
-  source_claim_operation_id,policy_fingerprint,bind_operation_id)
+  source_claim_operation_id,policy_fingerprint,bind_operation_id,protected_phone)
   on phone_contact_bindings to citygo_api;
 
 grant select,insert on phone_verification_challenges,phone_verification_sends,phone_welcome_claims to citygo_api;

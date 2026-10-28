@@ -310,7 +310,24 @@ test("actual restricted API attaches a real new claim but cannot transfer, unlin
   await f.db.exec("set role citygo_api");
   await f.phone.begin(next, v);
   await f.phone.markAccepted(v.id, v.codeHash);
-  await f.phone.confirm(next, confirm(v));
+  const envelope = `pc1.${"1".repeat(64)}.${"2".repeat(24)}.${"a".repeat(24)}.${"3".repeat(32)}`;
+  await f.phone.confirm(next, { ...confirm(v), protectedPhone: envelope });
+  assert.equal(
+    (
+      await f.db.query<{ protected_phone: string }>(
+        "select protected_phone from phone_contact_bindings where user_id=$1",
+        [next.userId],
+      )
+    ).rows[0]!.protected_phone,
+    envelope,
+  );
+  await assert.rejects(
+    f.db.query(
+      "update phone_contact_bindings set protected_phone=null where user_id=$1",
+      [next.userId],
+    ),
+    /permission denied/,
+  );
   await assert.rejects(f.contacts.changeByOperator(f.command()), status(403));
   await f.db.exec(
     "reset role;grant update(unlinked_at,unlink_operation_id) on phone_contact_bindings to citygo_api;grant insert on phone_contact_changes to citygo_api;set role citygo_api",

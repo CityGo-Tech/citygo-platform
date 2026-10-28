@@ -204,15 +204,40 @@ test("HTTP email + phone OTP creates exactly one gift; replay is the same receip
     code: input.code === "000000" ? "111111" : "000000",
   });
   assert.equal(wrong.statusCode, 400);
+  assert.equal(
+    (
+      await f.db.query(
+        "select 1 from phone_contact_bindings where protected_phone is not null",
+      )
+    ).rows.length,
+    0,
+  );
   const response = await f.post("confirm", input);
   assert.equal(response.statusCode, 200);
   const receipt = phoneVerificationReceiptSchema.parse(response.json());
   assert.equal(receipt.grantedMicros, 500_000_000);
   assert.equal(receipt.alreadyGranted, false);
+  const protectedBeforeReplay = (
+    await f.db.query<{ protected_phone: string }>(
+      "select protected_phone from phone_contact_bindings where user_id=$1",
+      [f.user.id],
+    )
+  ).rows[0]!.protected_phone;
+  assert.match(protectedBeforeReplay, /^pc1\./);
+  assert.ok(!protectedBeforeReplay.includes(phone));
   assert.deepEqual((await f.post("confirm", input)).json(), {
     ...receipt,
     alreadyGranted: true,
   });
+  assert.equal(
+    (
+      await f.db.query<{ protected_phone: string }>(
+        "select protected_phone from phone_contact_bindings where user_id=$1",
+        [f.user.id],
+      )
+    ).rows[0]!.protected_phone,
+    protectedBeforeReplay,
+  );
   assert.deepEqual(await f.money(), { entries: 1, claims: 1 });
   assert.deepEqual(
     (
@@ -233,6 +258,68 @@ test("HTTP email + phone OTP creates exactly one gift; replay is the same receip
     409,
   );
   assert.equal(f.sent.length, 1);
+});
+
+test("saved customer phones are disclosed only to a current super-admin session, never a user or ordinary admin", async (t) => {
+  const f = await fixture(t, { prostoSms: true });
+  const start = await f.post("start", { phone });
+  assert.equal(start.statusCode, 200, start.body);
+  const challenge = phoneVerificationChallengeSchema.parse(start.json());
+  const accepted = await f.post("confirm", {
+    challengeId: challenge.challengeId,
+    proof: challenge.proof,
+    phone,
+    code: f.sent[0]!.code,
+  });
+  assert.equal(accepted.statusCode, 200, accepted.body);
+  const listing = (ownHeaders = f.auth, query = "") =>
+    f.app.inject({
+      url: "/v1/admin/phone-contacts" + query,
+      headers: ownHeaders,
+    });
+  assert.equal(
+    (await listing({ ...headers, authorization: "" })).statusCode,
+    401,
+  );
+  assert.equal((await listing()).statusCode, 403);
+  await f.db.query("update users set role='admin' where id=$1", [f.user.id]);
+  assert.equal((await listing()).statusCode, 403);
+  await f.db.query("update users set role='super_admin' where id=$1", [f.user.id]);
+  const visible = await listing();
+  assert.equal(visible.statusCode, 200, visible.body);
+  assert.equal(visible.headers["cache-control"], "no-store");
+  const body = visible.json();
+  assert.equal(body.contacts.length, 1);
+  assert.deepEqual(body.contacts[0], {
+    userId: f.user.id,
+    email: "verified-phone@example.test",
+    username: null,
+    phone,
+    verifiedAt: body.contacts[0].verifiedAt,
+  });
+  assert.match(body.contacts[0].verifiedAt, /^\d{4}-\d{2}-\d{2}T/);
+  assert.equal(body.nextAfterUserId, null);
+  assert.ok(!visible.body.includes("pc1."));
+  assert.ok(!visible.body.includes("phoneKey"));
+  const invalidQuery = await listing(f.auth, "?afterUserId=0");
+  assert.equal(invalidQuery.statusCode, 400);
+  const policy = await f.app.inject({
+    url: "/v1/phone-verification/policy",
+    headers: f.auth,
+  });
+  assert.ok(!policy.body.includes(phone));
+  const audit = await f.db.query<{ payload: unknown }>(
+    "select payload from audit_log where action='customer-phone-contacts-viewed'",
+  );
+  assert.equal(audit.rows.length, 1);
+  assert.ok(!JSON.stringify(audit.rows).includes(phone));
+  assert.ok(!JSON.stringify(audit.rows).includes("pc1."));
+  assert.equal(f.sent.length, 1);
+  assert.deepEqual(await f.money(), { entries: 1, claims: 1 });
+  await f.db.query("delete from sessions where token_hash=$1", [
+    tokenHash(f.token),
+  ]);
+  assert.equal((await listing()).statusCode, 401);
 });
 
 test("HTTP distinct verified accounts cannot claim one normalized 8/+7 mobile twice, including an already accepted second challenge", async (t) => {

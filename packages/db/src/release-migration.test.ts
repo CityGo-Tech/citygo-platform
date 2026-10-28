@@ -126,6 +126,45 @@ test("SQL lexer handles token-dense input without retaining its full token list"
   assert.deepEqual(transactionBody(`begin;${sql};commit;`), [sql]);
 });
 
+test("migration SQL admits only the exact contact completion constraint timing, never general SET or ACL settings", () => {
+  for (const sql of [
+    "set constraints phone_contact_binding_completion immediate",
+    "SET CONSTRAINTS phone_contact_binding_completion DEFERRED",
+    "/* before */ SeT /* nested /* x */ */ ConStraints\nphone_contact_binding_completion -- mode\n ImMeDiAtE /* after */",
+  ]) {
+    assert.deepEqual(transactionBody(`begin;${sql};commit;`), [sql]);
+    assert.throws(
+      () => transactionBody(`begin;${sql};commit;`, true),
+      /sql-command/,
+    );
+  }
+  for (const sql of [
+    "set constraints all immediate",
+    "set constraints other_constraint deferred",
+    "set constraints public.phone_contact_binding_completion immediate",
+    'set constraints "phone_contact_binding_completion" immediate',
+    "set constraints 'phone_contact_binding_completion' immediate",
+    "set constraints phone_contact_binding_completion 'immediate'",
+    "set constraints phone_contact_binding_completion immediate extra",
+    "set constraints phone_contact_binding_completion immediate, other_constraint",
+    "set constraints phone_contact_binding_completion, other_constraint immediate",
+    "set constraints phone_contact_binding_completion invalid",
+    "set local constraints phone_contact_binding_completion immediate",
+    "set session constraints phone_contact_binding_completion immediate",
+    "set role citygo_api",
+    "set standard_conforming_strings=off",
+    "set constraints phone_contact_binding_completion immediate; set role citygo_api",
+    "set constraints phone_contact_binding_completion immediate; rollback",
+    "set constraints phone_contact_binding_completion immediate; commit; begin; select 1",
+  ])
+    assert.throws(() => transactionBody(`begin;${sql};commit;`), /sql-command/);
+  const denseSet = `set constraints phone_contact_binding_completion immediate ${"extra ".repeat(200000)}`;
+  assert.throws(
+    () => transactionBody(`begin;${denseSet};commit;`),
+    /sql-command/,
+  );
+});
+
 function fixture({
   history = [{ name: "0001_first.sql", checksum: sha256(first) }],
   identity = {},

@@ -43,7 +43,7 @@ test("reset and exact disposable rewinds retain active and unlinked contact proo
     (select count(*)::int from pg_sequences where schemaname='public') as sequences,
     (select count(*)::int from citygo_migrations) as migrations`)
     ).rows,
-    [{ tables: 70, sequences: 21, migrations: 35 }],
+    [{ tables: 70, sequences: 21, migrations: 36 }],
   );
   await configurePhoneVerification(db, policy);
   const email = new EmailRegistration(db),

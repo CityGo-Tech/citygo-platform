@@ -32,7 +32,7 @@ test("exact disposable rewinds reject populated personal-plan history and tombst
   await migrate(db);
   assert.equal(
     (await db.query("select name from citygo_migrations")).rows.length,
-    35,
+    36,
   );
   const owner = await new Repository(db).register(
     "plan-rewind@example.test",

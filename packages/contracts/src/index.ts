@@ -5,6 +5,7 @@ export * from "./account-profile.js";
 export * from "./service-consents.js";
 export * from "./password-recovery.js";
 export * from "./phone-verification.js";
+export * from "./admin-phone-contacts.js";
 export * from "./message-favorites.js";
 export * from "./personal-plan.js";
 export * from "./conversation-history.js";

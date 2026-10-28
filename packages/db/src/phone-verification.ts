@@ -10,6 +10,7 @@ import { DomainError } from "./errors.js";
 import {
   activePhoneContact,
   createPhoneContactBinding,
+  protectedPhoneSchema,
 } from "./phone-contacts.js";
 
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
@@ -39,7 +40,9 @@ const beginSchema = z.strictObject({
   codeHash: digest,
   ipKey: digest,
 });
-const confirmSchema = beginSchema.omit({ ipKey: true });
+const confirmSchema = beginSchema.omit({ ipKey: true }).extend({
+  protectedPhone: protectedPhoneSchema.optional(),
+});
 export type PhoneVerificationPolicy = z.infer<typeof policySchema>;
 export type PhoneVerificationContext = z.infer<typeof contextSchema>;
 export type PhoneVerificationBegin = z.infer<typeof beginSchema>;
@@ -551,6 +554,9 @@ export class PhoneVerification {
         phoneKey: input.phoneKey,
         sourceChallengeId: input.id,
         sourceClaimOperationId: operationId,
+        ...(input.protectedPhone
+          ? { protectedPhone: input.protectedPhone }
+          : {}),
       });
       await tx.query(
         `insert into audit_log(actor_user_id,action,entity_type,entity_id,payload)
