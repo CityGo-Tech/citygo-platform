@@ -155,6 +155,33 @@ test(
     );
     assert.equal((await store.create(owner, input)).item.revision, 2);
     assert.deepEqual((await store.list(other)).items, []);
+    const state = (await store.list(owner)).items[0]!;
+    assert.deepEqual(await store.summary(owner), {
+      userId: owner,
+      total: 1,
+      pending: state.status === "pending" ? 1 : 0,
+      completed: state.status === "completed" ? 1 : 0,
+    });
+    assert.deepEqual(await store.summary(other), {
+      userId: other,
+      total: 0,
+      pending: 0,
+      completed: 0,
+    });
+    assert.equal(
+      (await store.list(owner, undefined, state.status)).items[0]?.id,
+      id,
+    );
+    assert.deepEqual(
+      (
+        await store.list(
+          owner,
+          undefined,
+          state.status === "pending" ? "completed" : "pending",
+        )
+      ).items,
+      [],
+    );
     await assert.rejects(
       store.remove(other, id, 2),
       (error) => error instanceof DomainError && error.statusCode === 404,

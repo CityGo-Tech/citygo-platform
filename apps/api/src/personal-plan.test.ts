@@ -14,6 +14,7 @@ import {
   personalPlanPageSchema,
   personalPlanItemResultSchema,
   personalPlanRemoveResultSchema,
+  personalPlanSummarySchema,
 } from "@citygo/contracts";
 import { readConfig } from "@citygo/config";
 import type { StreamingProvider } from "@citygo/llm";
@@ -194,6 +195,87 @@ async function fixture(t: TestContext) {
     },
   };
 }
+
+test("HTTP filtered plan and all-page summary require current ownership and exclude tombstones without model or money calls", async (t) => {
+  const f = await fixture(t);
+  const items = [];
+  for (let index = 0; index < 24; index++) {
+    const r = await f.call("POST", "/v1/personal-plan", f.create());
+    assert.equal(r.statusCode, 200, r.body);
+    items.push(personalPlanItemResultSchema.parse(r.json()).item);
+  }
+  for (const item of items.slice(0, 2)) {
+    const r = await f.call("PATCH", "/v1/personal-plan/" + item.id, {
+      expectedRevision: 1,
+      title: item.title,
+      details: item.details,
+      status: "completed",
+    });
+    assert.equal(r.statusCode, 200, r.body);
+  }
+  assert.equal(
+    (
+      await f.call("DELETE", "/v1/personal-plan/" + items[2]!.id, {
+        expectedRevision: 1,
+      })
+    ).statusCode,
+    200,
+  );
+  const summary = await f.call("GET", "/v1/personal-plan/summary");
+  assert.equal(summary.statusCode, 200, summary.body);
+  assert.deepEqual(personalPlanSummarySchema.parse(summary.json()), {
+    userId: f.owner,
+    total: 23,
+    pending: 21,
+    completed: 2,
+  });
+  const first = personalPlanPageSchema.parse(
+    (await f.call("GET", "/v1/personal-plan?status=pending")).json(),
+  );
+  assert.equal(first.items.length, 20);
+  assert.ok(first.items.every((item) => item.status === "pending"));
+  assert.ok(first.nextBefore);
+  const next = personalPlanPageSchema.parse(
+    (
+      await f.call(
+        "GET",
+        "/v1/personal-plan?status=pending&before=" + first.nextBefore,
+      )
+    ).json(),
+  );
+  assert.equal(next.items.length, 1);
+  assert.equal(next.nextBefore, null);
+  assert.equal(
+    (await f.call("GET", "/v1/personal-plan?status=all")).statusCode,
+    400,
+  );
+  assert.equal(
+    (await f.call("GET", "/v1/personal-plan/summary?userId=" + f.owner))
+      .statusCode,
+    400,
+  );
+  assert.equal(
+    (await f.call("GET", "/v1/personal-plan/summary", undefined, ""))
+      .statusCode,
+    401,
+  );
+  assert.deepEqual(
+    (
+      await f.call("GET", "/v1/personal-plan/summary", undefined, f.otherToken)
+    ).json(),
+    { userId: f.other, total: 0, pending: 0, completed: 0 },
+  );
+  await f.db.query("delete from sessions where user_id=$1", [f.owner]);
+  assert.equal(
+    (await f.call("GET", "/v1/personal-plan/summary")).statusCode,
+    401,
+  );
+  assert.equal(
+    (await f.call("GET", "/v1/personal-plan?status=pending")).statusCode,
+    401,
+  );
+  assert.equal(f.modelCalls(), 0);
+});
 
 test("personal plan HTTP CRUD persists a private action and preserves all legacy, money and AI state", async (t) => {
   const f = await fixture(t);

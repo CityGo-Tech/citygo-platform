@@ -29,6 +29,45 @@ const item: PersonalPlanItem = {
 const invalid = (error: unknown) =>
   error instanceof ApiError && error.code === "invalid_response";
 
+test("personal plan filtered reads preserve old call and reject mismatched status; summary accepts only consistent bounded counts", async () => {
+  const paths: string[] = [];
+  let response: unknown = { userId: "1", items: [item], nextBefore: null };
+  const client = createClient("http://synthetic", {
+    fetch: async (url) => {
+      paths.push(String(url));
+      return Response.json(response);
+    },
+  });
+  await client.personalPlan();
+  await client.personalPlan("9007199254740993", "pending");
+  await client.personalPlan(undefined, "pending");
+  assert.deepEqual(paths, [
+    "http://synthetic/v1/personal-plan",
+    "http://synthetic/v1/personal-plan?before=9007199254740993&status=pending",
+    "http://synthetic/v1/personal-plan?status=pending",
+  ]);
+  await assert.rejects(client.personalPlan(undefined, "completed"), invalid);
+  const before = paths.length;
+  await assert.rejects(client.personalPlan(undefined, "all" as "pending"));
+  assert.equal(paths.length, before);
+  const summary = { userId: "1", total: 200, pending: 123, completed: 77 };
+  response = summary;
+  assert.deepEqual(await client.personalPlanSummary(), summary);
+  assert.equal(paths.at(-1), "http://synthetic/v1/personal-plan/summary");
+  for (const change of [
+    { total: 201 },
+    { total: 199 },
+    { pending: -1 },
+    { completed: 1.1 },
+    { pending: "123" },
+    { userId: "01" },
+    { extra: true },
+  ]) {
+    response = { ...summary, ...change };
+    await assert.rejects(client.personalPlanSummary(), invalid);
+  }
+});
+
 test("personal plan client uses exact verbs, normalized commands and existing transport headers", async () => {
   const calls: { path: string; method: string; body: unknown }[] = [];
   const update = {

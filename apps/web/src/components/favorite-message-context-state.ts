@@ -22,6 +22,7 @@ export function createFavoriteContextResource({
   older,
   publish,
   onAccessDenied,
+  unavailableMessage = "Исходное сообщение недоступно. Вернитесь к избранному.",
 }: {
   userId: string;
   threadId: string;
@@ -31,6 +32,7 @@ export function createFavoriteContextResource({
   older: (before: string, signal: AbortSignal) => Promise<unknown>;
   publish: (state: FavoriteContextState) => void;
   onAccessDenied: () => void;
+  unavailableMessage?: string;
 }) {
   let state: FavoriteContextState = {
     phase: "ready",
@@ -116,7 +118,7 @@ export function createFavoriteContextResource({
           phase: "error",
           error:
             cause instanceof ApiError && cause.status === 404
-              ? "Исходное сообщение недоступно. Вернитесь к избранному."
+              ? unavailableMessage
               : "Не удалось открыть историю. Попробуйте ещё раз.",
         });
       }

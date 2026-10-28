@@ -4,11 +4,14 @@ import {
   personalPlanIdSchema,
   personalPlanItemSchema,
   personalPlanQuerySchema,
+  personalPlanSummarySchema,
   removePersonalPlanItemSchema,
   updatePersonalPlanItemSchema,
   type CreatePersonalPlanItem,
   type PersonalPlanItem,
   type PersonalPlanPage,
+  type PersonalPlanStatus,
+  type PersonalPlanSummary,
   type UpdatePersonalPlanItem,
 } from "@citygo/contracts";
 import type { Database, Sql } from "./index.js";
@@ -61,14 +64,19 @@ function item(row: Stored): PersonalPlanItem {
 export class PersonalPlan {
   constructor(private readonly db: Database) {}
 
-  async list(userId: string, before?: string): Promise<PersonalPlanPage> {
+  async list(
+    userId: string,
+    before?: string,
+    status?: PersonalPlanStatus,
+  ): Promise<PersonalPlanPage> {
     personalPlanIdSchema.parse(userId);
-    personalPlanQuerySchema.parse({ before });
+    personalPlanQuerySchema.parse({ before, status });
     const rows = (
       await this.db.query<Stored>(
         `select ${fields} ${ownedSource} and p.deleted_at is null
-         and ($2::bigint is null or p.id<$2::bigint) order by p.id desc limit 21`,
-        [userId, before ?? null],
+         and ($2::bigint is null or p.id<$2::bigint)
+         and ($3::text is null or p.status=$3::text) order by p.id desc limit 21`,
+        [userId, before ?? null, status ?? null],
       )
     ).rows;
     const items = rows.slice(0, 20).map(item);
@@ -77,6 +85,30 @@ export class PersonalPlan {
       items,
       nextBefore: rows.length > 20 ? items.at(-1)!.id : null,
     };
+  }
+
+  async summary(userId: string): Promise<PersonalPlanSummary> {
+    personalPlanIdSchema.parse(userId);
+    // Same visibility as list(), over every page. A single aggregate snapshot
+    // cannot mix counts from concurrent edits, removals or source changes.
+    const counts = (
+      await this.db.query<{
+        total: number;
+        pending: number;
+        completed: number;
+      }>(
+        `select count(*)::integer as total,
+       count(*) filter(where p.status='pending')::integer as pending,
+       count(*) filter(where p.status='completed')::integer as completed
+       ${ownedSource} and p.deleted_at is null`,
+        [userId],
+      )
+    ).rows[0];
+    try {
+      return personalPlanSummarySchema.parse({ userId, ...counts });
+    } catch {
+      throw new DomainError(500, "Не удалось прочитать личный план.");
+    }
   }
 
   private async lockOwner(tx: Sql, userId: string) {

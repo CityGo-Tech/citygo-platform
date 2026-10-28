@@ -10,6 +10,8 @@ import {
   personalPlanPageSchema,
   personalPlanItemResultSchema,
   personalPlanRemoveResultSchema,
+  personalPlanStatusSchema,
+  personalPlanSummarySchema,
 } from "./personal-plan.js";
 
 const create = {
@@ -32,6 +34,57 @@ const item = {
   createdAt: "2026-10-24T12:00:00Z",
   updatedAt: "2026-10-24T15:00:00+03:00",
 };
+
+test("plan filters preserve old query and accept only the two exact statuses; summary totals are bounded and consistent", () => {
+  assert.deepEqual(personalPlanQuerySchema.parse({}), {});
+  assert.deepEqual(
+    personalPlanQuerySchema.parse({
+      before: "9007199254740993",
+      status: "pending",
+    }),
+    { before: "9007199254740993", status: "pending" },
+  );
+  assert.equal(personalPlanStatusSchema.parse("completed"), "completed");
+  for (const status of [
+    "all",
+    "Pending",
+    "pending\n",
+    "",
+    null,
+    ["pending"],
+    "cancelled",
+  ])
+    assert.equal(personalPlanQuerySchema.safeParse({ status }).success, false);
+  const summary = {
+    userId: "9007199254740993",
+    total: 200,
+    pending: 123,
+    completed: 77,
+  };
+  assert.deepEqual(personalPlanSummarySchema.parse(summary), summary);
+  assert.equal(
+    personalPlanSummarySchema.safeParse({
+      userId: "1",
+      total: 0,
+      pending: 0,
+      completed: 0,
+    }).success,
+    true,
+  );
+  for (const change of [
+    { total: 201 },
+    { total: 199 },
+    { pending: -1 },
+    { completed: 1.5 },
+    { total: "200" },
+    { userId: "1\n" },
+    { extra: true },
+  ])
+    assert.equal(
+      personalPlanSummarySchema.safeParse({ ...summary, ...change }).success,
+      false,
+    );
+});
 
 test("personal plan IDs reject alternate numeric spellings, newline selectors and overflow without throwing", () => {
   for (const value of [

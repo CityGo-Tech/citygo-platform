@@ -7,6 +7,7 @@ import {
   updatePersonalPlanItemSchema,
   removePersonalPlanItemSchema,
   personalPlanPageSchema,
+  personalPlanSummarySchema,
   personalPlanItemResultSchema,
   personalPlanRemoveResultSchema,
 } from "@citygo/contracts";
@@ -59,7 +60,16 @@ export function registerPersonalPlanApi(
     const query = input(personalPlanQuerySchema, request.query);
     return output(
       personalPlanPageSchema,
-      await stored(plan.list(user.id, query.before)),
+      await stored(plan.list(user.id, query.before, query.status)),
+      user.id,
+    );
+  });
+  app.get("/v1/personal-plan/summary", readLimit, async (request) => {
+    const user = await options.authenticate(request);
+    input(emptyQuery, request.query);
+    return output(
+      personalPlanSummarySchema,
+      await stored(plan.summary(user.id)),
       user.id,
     );
   });

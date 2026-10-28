@@ -6,8 +6,14 @@ import type {
   PersonalPlanItem,
   UpdatePersonalPlanItem,
 } from "@citygo/contracts";
-import { Button, Card, Field } from "@citygo/ui-web";
+import { Button, Card, Field, Progress } from "@citygo/ui-web";
 import styles from "./personal-plan.module.css";
+import {
+  createPersonalPlanResource,
+  type PersonalPlanFilter,
+  type PersonalPlanState,
+} from "./personal-plan-state";
+import { FavoriteMessageContext } from "./favorite-message-context";
 
 type OwnerProps = {
   userId: string;
@@ -209,15 +215,6 @@ export function PlanStepComposer({
   );
 }
 
-type PlanActions = {
-  load: (before?: string) => Promise<void>;
-  update: (
-    item: PersonalPlanItem,
-    value: UpdatePersonalPlanItem,
-  ) => Promise<void>;
-  remove: (item: PersonalPlanItem) => Promise<void>;
-};
-
 export function PersonalPlanPanel({
   userId,
   sessionSignal,
@@ -232,152 +229,143 @@ export function PersonalPlanPanel({
   onHelpers: () => void;
   navigationBusy?: boolean;
 }) {
-  const [items, setItems] = useState<PersonalPlanItem[]>([]);
-  const [nextBefore, setNextBefore] = useState<string | null>(null);
-  const [busy, setBusy] = useState(true);
-  const [error, setError] = useState("");
-  const [needsRefresh, setNeedsRefresh] = useState(false);
+  const [snapshot, setSnapshot] = useState<{
+    owner: string;
+    signal: AbortSignal;
+    state: PersonalPlanState;
+  } | null>(null);
   const [editing, setEditing] = useState<PersonalPlanItem | null>(null);
   const [fields, setFields] = useState<StepFields>({ title: "", details: "" });
   const [removing, setRemoving] = useState<PersonalPlanItem | null>(null);
-  const [actions, setActions] = useState<PlanActions | null>(null);
+  const [source, setSource] = useState<PersonalPlanItem | null>(null);
+  const resource = useRef<ReturnType<typeof createPersonalPlanResource> | null>(
+    null,
+  );
   const denied = useRef(onAccessDenied);
   denied.current = onAccessDenied;
   const editorTitle = useRef<HTMLHeadingElement>(null);
+  const lastSource = useRef<string | null>(null);
 
   useEffect(() => {
+    setEditing(null);
+    setRemoving(null);
+    setSource(null);
+    lastSource.current = null;
     const controller = new AbortController();
     const signal = AbortSignal.any([controller.signal, sessionSignal]);
-    const api = createClient("/api", { signal: () => signal });
-    let pending = false;
-    const active = () => !signal.aborted;
-    const owner = (value: { userId: string }) => {
-      if (value.userId !== userId) {
-        setItems([]);
-        setEditing(null);
-        setRemoving(null);
-        controller.abort();
-        denied.current();
-        return false;
-      }
-      return true;
+    const api = (requestSignal: AbortSignal) =>
+      createClient("/api", { signal: () => requestSignal });
+    const current = createPersonalPlanResource({
+      userId,
+      sessionSignal: signal,
+      client: {
+        page: (before, status, requestSignal) =>
+          api(requestSignal).personalPlan(before, status),
+        summary: (requestSignal) => api(requestSignal).personalPlanSummary(),
+        update: (item, value, requestSignal) =>
+          api(requestSignal).updatePersonalPlanItem(item.id, value),
+        remove: (item, requestSignal) =>
+          api(requestSignal).removePersonalPlanItem(item.id, item.revision),
+      },
+      publish: (state) =>
+        setSnapshot({ owner: userId, signal: sessionSignal, state }),
+      onAccessDenied: () => denied.current(),
+    });
+    resource.current = current;
+    void current.load();
+    return () => {
+      current.dispose();
+      controller.abort();
+      if (resource.current === current) resource.current = null;
     };
-    const failure = (cause: unknown, mutation: boolean) => {
-      if (!active()) return;
-      if (cause instanceof ApiError && [401, 403].includes(cause.status)) {
-        setItems([]);
-        setEditing(null);
-        setRemoving(null);
-        controller.abort();
-        denied.current();
-      } else {
-        setNeedsRefresh(true);
-        setError(
-          cause instanceof ApiError && cause.status === 409
-            ? "Шаг уже изменён. Обновите план и проверьте актуальную версию перед следующим действием."
-            : mutation
-              ? "Не удалось подтвердить изменение. Оно уже могло сохраниться. Обновите план перед повторным действием."
-              : "Не удалось загрузить план. Попробуйте обновить список.",
-        );
-      }
-    };
-    const load = async (before?: string) => {
-      if (!active() || pending) return;
-      pending = true;
-      setBusy(true);
-      setError("");
-      try {
-        const page = await api.personalPlan(before);
-        if (!active()) return;
-        if (!owner(page)) return;
-        setItems((current) =>
-          before
-            ? [
-                ...current,
-                ...page.items.filter(
-                  (item) => !current.some((old) => old.id === item.id),
-                ),
-              ]
-            : page.items,
-        );
-        setNextBefore(page.nextBefore);
-        setNeedsRefresh(false);
-        setEditing(null);
-        setRemoving(null);
-      } catch (cause) {
-        failure(cause, false);
-      } finally {
-        pending = false;
-        if (active()) setBusy(false);
-      }
-    };
-    const update = async (
-      item: PersonalPlanItem,
-      value: UpdatePersonalPlanItem,
-    ) => {
-      if (!active() || pending) return;
-      pending = true;
-      setBusy(true);
-      setError("");
-      try {
-        const result = await api.updatePersonalPlanItem(item.id, value);
-        if (!active()) return;
-        if (!owner(result)) return;
-        if (
-          result.item.source.messageId !== item.source.messageId ||
-          result.item.source.threadId !== item.source.threadId ||
-          result.item.source.role !== item.source.role
-        )
-          throw new Error("Plan update source mismatch");
-        setItems((current) =>
-          current.map((old) => (old.id === item.id ? result.item : old)),
-        );
-        setEditing(null);
-      } catch (cause) {
-        failure(cause, true);
-      } finally {
-        pending = false;
-        if (active()) setBusy(false);
-      }
-    };
-    const remove = async (item: PersonalPlanItem) => {
-      if (!active() || pending) return;
-      pending = true;
-      setBusy(true);
-      setError("");
-      try {
-        const result = await api.removePersonalPlanItem(item.id, item.revision);
-        if (!active()) return;
-        if (!owner(result)) return;
-        setItems((current) => current.filter((old) => old.id !== item.id));
-        setRemoving(null);
-      } catch (cause) {
-        failure(cause, true);
-      } finally {
-        pending = false;
-        if (active()) setBusy(false);
-      }
-    };
-    setActions({ load, update, remove });
-    void load();
-    return () => controller.abort();
   }, [userId, sessionSignal]);
+
+  const current =
+    !sessionSignal.aborted &&
+    snapshot?.owner === userId &&
+    snapshot.signal === sessionSignal
+      ? snapshot.state
+      : null;
+  const items = current?.items ?? [];
+  const summary = current?.summary ?? null;
+  const nextBefore = current?.nextBefore ?? null;
+  const filter = current?.filter ?? "all";
+  const busy = !current || current.phase === "loading" || current.mutating;
+  const error = current?.error ?? "";
+  const needsRefresh = current?.needsRefresh ?? false;
+  const actions = current ? resource.current : null;
+  const refresh = () => {
+    setEditing(null);
+    setRemoving(null);
+    void actions?.load();
+  };
+  const selectFilter = (value: PersonalPlanFilter) => {
+    setEditing(null);
+    setRemoving(null);
+    void actions?.select(value);
+  };
+  const update = async (
+    item: PersonalPlanItem,
+    value: UpdatePersonalPlanItem,
+  ) => {
+    if (await actions?.update(item, value)) {
+      setEditing(null);
+      setRemoving(null);
+    }
+  };
+  const remove = async (item: PersonalPlanItem) => {
+    if (await actions?.remove(item)) setRemoving(null);
+  };
+
+  useEffect(() => {
+    if (source || !lastSource.current) return;
+    const id = lastSource.current;
+    const button = [
+      ...document.querySelectorAll<HTMLButtonElement>("[data-plan-source]"),
+    ].find((element) => element.dataset.planSource === id);
+    button?.focus({ preventScroll: true });
+    lastSource.current = null;
+  }, [source]);
 
   useEffect(() => {
     if (editing) editorTitle.current?.focus({ preventScroll: true });
   }, [editing]);
-  if (sessionSignal.aborted) return null;
+  if (sessionSignal.aborted || current?.phase === "closed") return null;
   const disabled = busy || needsRefresh || navigationBusy || !actions;
   const save = (event: FormEvent) => {
     event.preventDefault();
-    if (!editing || disabled || !fields.title.trim()) return;
-    void actions?.update(editing, {
+    if (!current || !editing || disabled || !fields.title.trim()) return;
+    void update(editing, {
       expectedRevision: editing.revision,
       title: fields.title.trim(),
       details: fields.details.trim(),
       status: editing.status,
     });
   };
+  if (source && current)
+    return (
+      <FavoriteMessageContext
+        key={userId + ":" + source.source.messageId}
+        userId={userId}
+        source={{
+          id: source.source.messageId,
+          threadId: source.source.threadId,
+        }}
+        sessionSignal={sessionSignal}
+        onBack={() => setSource(null)}
+        onAccessDenied={onAccessDenied}
+        onOpenConversation={onOpenConversation}
+        labels={{
+          eyebrow: "ИЗ МОЕГО ПЛАНА",
+          intro: "Исходное сообщение и история перед ним.",
+          back: "← В мой план",
+          selected: "Источник шага",
+          selectedAria: "Исходное сообщение шага",
+          returnToSource: "К исходному сообщению",
+          unavailable: "Исходное сообщение недоступно. Вернитесь к плану.",
+        }}
+      />
+    );
   return (
     <Card
       className={styles.panel}
@@ -395,36 +383,87 @@ export function PersonalPlanPanel({
         <Button
           variant="ghost"
           disabled={busy || navigationBusy}
-          onClick={() => void actions?.load()}
+          onClick={refresh}
         >
           Обновить план
         </Button>
       </div>
+      {summary && (
+        <div className={styles.progress}>
+          <Progress
+            value={
+              summary.total ? (summary.completed / summary.total) * 100 : 0
+            }
+            label={`Выполнено ${summary.completed} из ${summary.total}`}
+          />
+        </div>
+      )}
+      <nav className={styles.filters} aria-label="Статус шагов плана">
+        {(
+          [
+            ["all", "Все", summary?.total],
+            ["pending", "В работе", summary?.pending],
+            ["completed", "Выполнено", summary?.completed],
+          ] as const
+        ).map(([value, label, count]) => (
+          <Button
+            key={value}
+            type="button"
+            variant={filter === value ? "primary" : "secondary"}
+            aria-pressed={filter === value}
+            disabled={navigationBusy || current?.mutating || !actions}
+            onClick={() => selectFilter(value)}
+          >
+            {label} <span className={styles.count}>{count ?? "—"}</span>
+          </Button>
+        ))}
+      </nav>
       {error && (
         <div className={styles.error} role="alert">
           <p>{error}</p>
-          <Button
-            variant="secondary"
-            disabled={busy}
-            onClick={() => void actions?.load()}
-          >
+          <Button variant="secondary" disabled={busy} onClick={refresh}>
             Обновить список
           </Button>
         </div>
       )}
       {busy && <p role="status">Обновляем план…</p>}
-      {!busy && !error && !items.length && !nextBefore && (
-        <div className={styles.empty}>
-          <span className={styles.meta}>ПЕРВЫЙ ШАГ</span>
-          <h2>Начнём с того, что важно вам</h2>
-          <p>
-            В диалоге нажмите «Добавить шаг в план» под своим сообщением или
-            ответом помощника. Проверьте и подтвердите формулировку — шаг
-            сохранится здесь.
-          </p>
-          <Button onClick={onContinue}>Открыть диалог</Button>
-        </div>
-      )}
+      {!busy &&
+        !error &&
+        !items.length &&
+        !nextBefore &&
+        summary?.total === 0 && (
+          <div className={styles.empty}>
+            <span className={styles.meta}>ПЕРВЫЙ ШАГ</span>
+            <h2>Начнём с того, что важно вам</h2>
+            <p>
+              В диалоге нажмите «Добавить шаг в план» под своим сообщением или
+              ответом помощника. Проверьте и подтвердите формулировку — шаг
+              сохранится здесь.
+            </p>
+            <Button onClick={onContinue}>Открыть диалог</Button>
+          </div>
+        )}
+      {!busy &&
+        !error &&
+        !items.length &&
+        summary !== null &&
+        summary.total > 0 && (
+          <div className={styles.empty}>
+            <h2>
+              {filter === "completed"
+                ? "Выполненных шагов пока нет"
+                : "Нет шагов в работе"}
+            </h2>
+            <p>
+              {filter === "completed"
+                ? "Отметьте готовый шаг — он появится здесь."
+                : "Вы завершили все сохранённые шаги."}
+            </p>
+            <Button variant="secondary" onClick={() => selectFilter("all")}>
+              Показать все шаги
+            </Button>
+          </div>
+        )}
       <ol className={styles.list} aria-label="Сохранённые шаги">
         {items.map((item) => (
           <li key={item.id}>
@@ -434,7 +473,7 @@ export function PersonalPlanPanel({
               data-plan-id={item.id}
             >
               <span className={styles.meta}>
-                {item.status === "completed" ? "✓ ВЫПОЛНЕНО" : "СЛЕДУЮЩИЙ ШАГ"}
+                {item.status === "completed" ? "✓ ВЫПОЛНЕНО" : "В РАБОТЕ"}
               </span>
               <h2>{item.title}</h2>
               {item.details && <p className={styles.details}>{item.details}</p>}
@@ -445,7 +484,7 @@ export function PersonalPlanPanel({
                   : "ответа помощника"}{" "}
                 · {new Date(item.createdAt).toLocaleDateString("ru-RU")}
               </small>
-              {editing?.id === item.id ? (
+              {current && editing?.id === item.id ? (
                 <form className={styles.editor} onSubmit={save}>
                   <h3 ref={editorTitle} tabIndex={-1}>
                     Изменить шаг
@@ -472,7 +511,7 @@ export function PersonalPlanPanel({
                     </Button>
                   </div>
                 </form>
-              ) : removing?.id === item.id ? (
+              ) : current && removing?.id === item.id ? (
                 <div className={styles.confirmRemove}>
                   <p>
                     Удалить этот шаг? Сообщение и исходный диалог останутся.
@@ -480,7 +519,7 @@ export function PersonalPlanPanel({
                   <div className={styles.actions}>
                     <Button
                       disabled={disabled}
-                      onClick={() => void actions?.remove(item)}
+                      onClick={() => void remove(item)}
                     >
                       Подтвердить удаление
                     </Button>
@@ -499,7 +538,7 @@ export function PersonalPlanPanel({
                     variant="secondary"
                     disabled={disabled}
                     onClick={() =>
-                      void actions?.update(item, {
+                      void update(item, {
                         expectedRevision: item.revision,
                         title: item.title,
                         details: item.details,
@@ -539,9 +578,13 @@ export function PersonalPlanPanel({
                 className={styles.source}
                 variant="ghost"
                 disabled={busy || navigationBusy}
-                onClick={() => void onOpenConversation(item.source.threadId)}
+                data-plan-source={item.id}
+                onClick={() => {
+                  lastSource.current = item.id;
+                  setSource(item);
+                }}
               >
-                Открыть исходный диалог
+                Открыть исходное сообщение
               </Button>
             </article>
           </li>
@@ -551,7 +594,7 @@ export function PersonalPlanPanel({
         <Button
           variant="secondary"
           disabled={disabled}
-          onClick={() => void actions?.load(nextBefore)}
+          onClick={() => void actions?.loadMore()}
         >
           Показать ещё шаги
         </Button>

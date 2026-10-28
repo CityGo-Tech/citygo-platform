@@ -9,11 +9,12 @@ export const personalPlanIdSchema = messageIdSchema.refine(
 const revision = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 const title = z.string().trim().min(1).max(120);
 const details = z.string().trim().max(4000);
+export const personalPlanStatusSchema = z.enum(["pending", "completed"]);
 export const personalPlanItemSchema = z.strictObject({
   id: personalPlanIdSchema,
   title,
   details,
-  status: z.enum(["pending", "completed"]),
+  status: personalPlanStatusSchema,
   revision,
   source: z.strictObject({
     messageId: personalPlanIdSchema,
@@ -40,7 +41,19 @@ export const removePersonalPlanItemSchema = z.strictObject({
 });
 export const personalPlanQuerySchema = z.strictObject({
   before: personalPlanIdSchema.optional(),
+  status: personalPlanStatusSchema.optional(),
 });
+const count = z.number().int().min(0).max(200);
+export const personalPlanSummarySchema = z
+  .strictObject({
+    userId: personalPlanIdSchema,
+    total: count,
+    pending: count,
+    completed: count,
+  })
+  .refine((value) => value.total === value.pending + value.completed, {
+    message: "Plan totals must agree with the two statuses",
+  });
 export const personalPlanPageSchema = z
   .strictObject({
     userId: personalPlanIdSchema,
@@ -88,6 +101,8 @@ export const personalPlanRemoveResultSchema = z.strictObject({
 });
 
 export type PersonalPlanItem = z.infer<typeof personalPlanItemSchema>;
+export type PersonalPlanStatus = z.infer<typeof personalPlanStatusSchema>;
+export type PersonalPlanSummary = z.infer<typeof personalPlanSummarySchema>;
 export type CreatePersonalPlanItem = z.infer<
   typeof createPersonalPlanItemSchema
 >;
