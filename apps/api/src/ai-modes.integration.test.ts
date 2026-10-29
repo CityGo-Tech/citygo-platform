@@ -747,6 +747,7 @@ test("an unresolved Maximum charge is reconciled by its original profile and blo
   );
   assert.equal((await f.balance()).heldMicros, 5000000);
   const blocked = await f.send("balanced", "Следующий вопрос");
+  assert.equal(blocked.statusCode, 409);
   assert.match(blocked.body, /AI_CREDIT_UNAVAILABLE/);
   assert.equal(f.calls.length, 1);
   const charge = (
@@ -766,7 +767,7 @@ test("an unresolved Maximum charge is reconciled by its original profile and blo
     { userId: f.board.user.id, holdId: charge.hold_id, confirmReconcile: true },
   );
   assert.equal(reconciled.statusCode, 200, reconciled.body);
-  assert.deepEqual(f.reads, ["maximum", "maximum"]);
+  assert.deepEqual(f.reads, ["maximum", "maximum", "maximum"]);
   assert.equal(f.calls.length, 1);
   const balance = await f.balance();
   assert.equal(balance.heldMicros, 0);
@@ -778,7 +779,7 @@ test("an unresolved Maximum charge is reconciled by its original profile and blo
     { userId: f.board.user.id, holdId: charge.hold_id, confirmReconcile: true },
   );
   assert.equal(repeated.statusCode, 200);
-  assert.equal(f.reads.length, 2);
+  assert.equal(f.reads.length, 3);
 });
 
 test("HTTP fixed Minimum keeps all three modes in one history and charges three only after success while RouterAI stays times ten", async (t) => {
@@ -878,6 +879,46 @@ test("HTTP fixed Minimum keeps all three modes in one history and charges three 
       "Синтетический ответ maximum",
     ],
   );
+});
+
+test("an unresolved RouterAI charge also blocks fixed Minimum before new history, request quota or fee reservation", async (t) => {
+  const f = await fixture(t, { minimum: "fixed" });
+  f.failures.add("maximum");
+  assert.match(
+    (await f.send("maximum", "Первый вопрос")).body,
+    /"type":"done"/,
+  );
+  const snapshot = async () => {
+    const result: Record<string, unknown[]> = {};
+    for (const table of [
+      "messages",
+      "chat_requests",
+      "agent_threads",
+      "ai_usage_daily",
+      "ai_user_usage_daily",
+      "ai_credit_accounts",
+      "ai_credit_entries",
+      "ai_credit_charges",
+      "gigachat_request_fees",
+      "gigachat_account_leases",
+    ])
+      result[table] = (
+        await f.db.query(
+          `select to_jsonb(t) as value from ${table} t order by to_jsonb(t)::text`,
+        )
+      ).rows;
+    return result;
+  };
+  const before = await snapshot();
+  const response = await f.send("minimum", "Дешёвый режим не обходит сверку");
+  assert.equal(response.statusCode, 409, response.body);
+  assert.equal(response.json().code, "AI_CREDIT_UNAVAILABLE");
+  assert.deepEqual(await snapshot(), before);
+  assert.deepEqual(
+    f.calls.map((call) => call.mode),
+    ["maximum"],
+  );
+  assert.deepEqual(f.reads, ["maximum", "maximum"]);
 });
 
 test("HTTP interrupted fixed Minimum returns the five-ruble hold and rejects duplicate dispatch without a fabricated charge", async (t) => {

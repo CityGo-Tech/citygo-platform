@@ -6,6 +6,8 @@ import {
   connectProductAnalytics,
   contentFreeParams,
   createProductAnalytics,
+  createPendingProductEvents,
+  createRegistrationProductFlow,
   isAnalyticsIdentity,
   parseProductAnalyticsConfig,
   productEvents,
@@ -76,12 +78,51 @@ test("admin, recovery, query/hash URLs, localhost and private incoming referrers
   assert.equal(analyticsReferrerAllowed(""), true);
   assert.equal(analyticsReferrerAllowed(location.origin + "/"), true);
   for (const value of [
+    "https://t.me/",
+    "https://yandex.ru/",
+    "https://mail.example/",
+  ])
+    assert.equal(analyticsReferrerAllowed(value), true);
+  for (const value of [
     "https://mail.example/message/private",
     location.origin + "/?email=private@example.ru",
     location.origin + "/#otp-secret",
     "https://user:password@pilot.xn--c1ajazlh.xn--p1ai/",
+    "javascript:alert(1)",
+    "https://t.me/private-message",
+    "https://mail.example/?token=private",
+    "https://mail.example/#secret",
   ])
     assert.equal(analyticsReferrerAllowed(value), false);
+});
+
+test("pending goals are bounded, sanitized, deduplicated, expiring and memory-only", () => {
+  let now = 0;
+  const pending = createPendingProductEvents(() => now);
+  assert.equal(
+    pending.add("gift_granted", { surface: "phone" }, "receipt"),
+    true,
+  );
+  assert.equal(
+    pending.add("gift_granted", { surface: "phone" }, "receipt"),
+    false,
+  );
+  assert.equal(
+    pending.add("gift_granted", { email: "private@example.test" } as never),
+    false,
+  );
+  assert.equal(pending.add("private-message" as never), false);
+  now = 120_000;
+  const sent: unknown[] = [];
+  pending.drain((...args) => sent.push(args));
+  assert.equal(sent.length, 0);
+  for (let i = 0; i < 101; i++) pending.add("wallet_opened", {}, String(i));
+  pending.drain((...args) => sent.push(args));
+  assert.equal(sent.length, 100);
+  assert.deepEqual(sent[0], ["wallet_opened", {}, "1"]);
+  pending.add("gift_granted");
+  pending.clear();
+  pending.drain(() => assert.fail("revoked queue revived"));
 });
 
 test("initialization disables automatic URLs, titles, link tracking, ecommerce and tag manager", () => {
@@ -98,6 +139,74 @@ test("initialization disables automatic URLs, titles, link tracking, ecommerce a
   assert.equal(init.childIframe, false);
   assert.equal(init.disableYtm, true);
   assert.equal(init.webvisor, true);
+});
+
+test("registration bridge carries only observed, unsubmitted stages to its proven user", () => {
+  let now = 0;
+  const events = createRegistrationProductFlow(() => now),
+    old = new AbortController(),
+    next = new AbortController();
+  const flow = events.begin(old.signal);
+  const start = events.pending(old.signal, null)[0]!;
+  events.submitted(start.onceKey);
+  events.codeSent(flow, "123e4567-e89b-42d3-a456-426614174001", old.signal);
+  assert.equal(events.pending(old.signal, null).length, 1);
+  assert.equal(
+    events.prepare(
+      flow,
+      { id: "101", role: "user" },
+      old.signal,
+      "123e4567-e89b-42d3-a456-426614174001",
+    ),
+    flow,
+  );
+  old.abort();
+  assert.equal(events.transfer(flow!, "101", next.signal), true);
+  assert.deepEqual(events.pending(next.signal, "202"), []);
+  assert.deepEqual(
+    events.pending(next.signal, "101").map((stage) => stage.event),
+    ["registration_code_sent"],
+  );
+  assert.equal(events.transfer(flow!, "202", next.signal), false);
+  assert.deepEqual(events.pending(next.signal, "101"), []);
+  const expired = events.begin(next.signal);
+  now = 600_000;
+  assert.equal(
+    events.prepare(expired, { id: "101", role: "user" }, next.signal),
+    null,
+  );
+});
+
+test("registration bridge rejects unobserved codes, wrong challenges, admins and canceled flows", () => {
+  for (const reason of [
+    "unobserved",
+    "challenge",
+    "admin",
+    "abort",
+    "signal",
+  ]) {
+    const events = createRegistrationProductFlow(),
+      owner = new AbortController(),
+      other = new AbortController();
+    const flow = events.begin(owner.signal);
+    if (reason !== "unobserved")
+      events.codeSent(
+        flow,
+        "123e4567-e89b-42d3-a456-426614174001",
+        owner.signal,
+      );
+    if (reason === "abort") owner.abort();
+    const prepared = events.prepare(
+      flow,
+      { id: "101", role: reason === "admin" ? "admin" : "user" },
+      reason === "signal" ? other.signal : owner.signal,
+      reason === "challenge"
+        ? "123e4567-e89b-42d3-a456-426614174002"
+        : "123e4567-e89b-42d3-a456-426614174001",
+    );
+    assert.equal(prepared, null, reason);
+    assert.deepEqual(events.pending(owner.signal, null), [], reason);
+  }
 });
 
 test("only purpose-separated opaque IDs can correlate an account with the collector", () => {

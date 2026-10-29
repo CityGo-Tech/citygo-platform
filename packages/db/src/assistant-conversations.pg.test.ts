@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { agentKeys } from "@citygo/contracts";
+import { agentKeys, CITYGO_10X_TARIFF } from "@citygo/contracts";
 import {
   connectDatabase,
   ensureConversation,
@@ -158,6 +158,74 @@ test(
     assert.equal(
       (await backend.query("select * from ai_credit_entries")).rows.length,
       0,
+    );
+    const policyId = "a".repeat(64);
+    await backend.query(
+      "insert into ai_routing(id,provider,policy_id,revision)values(1,'routerai',$1,1) on conflict(id)do update set provider='routerai',policy_id=$1,revision=1",
+      [policyId],
+    );
+    await backend.query(
+      "insert into ai_consents(user_id,policy_id,granted)values($1,$2,true)",
+      [owner, policyId],
+    );
+    const guarded = new Repository(
+      runtime,
+      true,
+      CITYGO_10X_TARIFF,
+      false,
+      "fixed5_overdraft",
+    );
+    const access = {
+      policyId,
+      revision: 1,
+      userDailyLimit: 100,
+      globalDailyLimit: 100,
+      fixed5CreditReadiness: true,
+    };
+    const accepted = await Promise.allSettled([
+      guarded.reserveChat(
+        owner,
+        pinned[0]!.id,
+        randomUUID(),
+        "Synthetic A",
+        access,
+      ),
+      guarded.reserveChat(
+        owner,
+        pinned[1]!.id,
+        randomUUID(),
+        "Synthetic B",
+        access,
+      ),
+    ]);
+    assert.equal(
+      accepted.filter((result) => result.status === "fulfilled").length,
+      1,
+      "owner lock must serialize different threads before any monetary hold exists",
+    );
+    assert.equal(
+      (await backend.query("select *from chat_requests")).rows.length,
+      1,
+    );
+    assert.equal((await backend.query("select *from messages")).rows.length, 1);
+    await assert.rejects(
+      guarded.chatRecoveryPreflight(owner, foreign.id, randomUUID()),
+      /Чат не найден/,
+    );
+    await backend.query(
+      "update agent_threads set busy_until=clock_timestamp()-interval '1 second'where user_id=$1",
+      [owner],
+    );
+    await guarded.reserveChat(
+      owner,
+      pinned[1]!.id,
+      randomUUID(),
+      "Synthetic expired lease",
+      access,
+    );
+    assert.equal(
+      (await backend.query("select *from chat_requests")).rows.length,
+      2,
     );
   },
 );

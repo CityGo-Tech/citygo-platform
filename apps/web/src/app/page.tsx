@@ -36,6 +36,7 @@ import { useConversationHistory } from "../components/use-conversation-history";
 import {
   parseProductAnalyticsConfig,
   trackProductEvent,
+  type RegistrationAnalyticsFlow,
 } from "../components/product-analytics";
 import { useProductAnalytics } from "../components/use-product-analytics";
 import {
@@ -73,6 +74,7 @@ export default function Home() {
   );
   const [registration, setRegistration] =
     useState<PendingEmailRegistration | null>(null);
+  const registrationAnalytics = useRef<RegistrationAnalyticsFlow | null>(null);
   const authPending = useRef(false);
   const [passwordOpen, setPasswordOpen] = useState(false);
   const [receiptsOpen, setReceiptsOpen] = useState(false);
@@ -123,7 +125,7 @@ export default function Home() {
       }),
     [session],
   );
-  useProductAnalytics({
+  const analytics = useProductAnalytics({
     config: parseProductAnalyticsConfig({
       enabled: process.env.NEXT_PUBLIC_CITYGO_METRIKA_ENABLED,
       counterId: process.env.NEXT_PUBLIC_CITYGO_METRIKA_COUNTER_ID,
@@ -183,6 +185,7 @@ export default function Home() {
     setLogoutUnconfirmed(false);
     setPasswordOpen(false);
     setRegistration(null);
+    registrationAnalytics.current = null;
     authPending.current = false;
     setReceiptsOpen(false);
     setFavoritesOpen(false);
@@ -528,13 +531,15 @@ export default function Home() {
     if (mode === "register" && !consents) return;
     const data = new FormData(event.currentTarget);
     const authMode = mode;
-    if (authMode === "register")
-      trackProductEvent("registration_started", { surface: "register" });
     const email = String(data.get("email"));
     let password = String(data.get("password"));
     data.delete("password");
     notifyBrowserSessionChange();
     clearUserState();
+    if (authMode === "register")
+      registrationAnalytics.current = analytics.beginRegistration(
+        session.capture().signal,
+      );
     authPending.current = true;
     void act(async (ticket) => {
       let accepted = false;
@@ -561,10 +566,10 @@ export default function Home() {
             setRegistration(
               pendingEmailRegistration(email, challenge, Date.now(), consents!),
             );
-            trackProductEvent(
-              "registration_code_sent",
-              { surface: "register" },
+            analytics.registrationCodeSent(
+              registrationAnalytics.current,
               challenge.challengeId,
+              ticket.signal,
             );
             accepted = true;
             return;
@@ -578,13 +583,22 @@ export default function Home() {
         );
         ticket.check();
         accepted = true;
-        if (authenticated.user.role === "user")
-          trackProductEvent(
-            authMode === "register"
-              ? "registration_completed"
-              : "login_completed",
-            { surface: authMode },
-          );
+        const flow =
+          authMode === "register"
+            ? analytics.prepareRegistrationSuccess(
+                registrationAnalytics.current,
+                authenticated.user,
+                ticket.signal,
+              )
+            : null;
+        analytics.authSuccess(
+          authMode === "register"
+            ? "registration_completed"
+            : "login_completed",
+          authenticated.user,
+          ticket.signal,
+          flow,
+        );
         await refresh(ticket);
       } catch (cause) {
         if (ticket.active() && !accepted)
@@ -639,20 +653,27 @@ export default function Home() {
     authPending.current = true;
     void act(async (ticket) => {
       try {
-        await api.confirmEmailRegistration(
+        const authenticated = await api.confirmEmailRegistration(
           current.challengeId,
           current.proof,
           code,
         );
         ticket.check();
-        trackProductEvent(
-          "registration_completed",
-          { surface: "register" },
+        const flow = analytics.prepareRegistrationSuccess(
+          registrationAnalytics.current,
+          authenticated.user,
+          ticket.signal,
           current.challengeId,
         );
         notifyBrowserSessionChange();
         clearUserState();
         const confirmed = session.capture();
+        analytics.authSuccess(
+          "registration_completed",
+          authenticated.user,
+          confirmed.signal,
+          flow,
+        );
         setBusy(true);
         try {
           await refresh(confirmed);

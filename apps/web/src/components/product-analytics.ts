@@ -110,7 +110,17 @@ export function analyticsReferrerAllowed(value: string): boolean {
   if (value === "") return true;
   try {
     const url = new URL(value);
-    return !url.username && !url.password && analyticsLocationAllowed(url);
+    // Browsers commonly reduce an outside referral to its origin alone. That
+    // contains no path or parameters and must not suppress the whole
+    // subsequent registration/phone/chat visit. Private referral URLs stay out.
+    return (
+      (url.protocol === "https:" || url.protocol === "http:") &&
+      !url.username &&
+      !url.password &&
+      url.pathname === "/" &&
+      url.search === "" &&
+      url.hash === ""
+    );
   } catch {
     return false;
   }
@@ -260,6 +270,203 @@ export type ProductEventSink = (
   params?: ProductEventParams,
   onceKey?: string,
 ) => void;
+
+export type RegistrationAnalyticsFlow = { readonly key: symbol };
+/** Only observed registration stages may bridge its successful auth reset.
+ * No credentials, OTP, contact, URL or persisted queue enters this handle.
+ */
+export function createRegistrationProductFlow(now = Date.now) {
+  type Stage = {
+    event: "registration_started" | "registration_code_sent";
+    onceKey: string;
+    submitted: boolean;
+  };
+  type Flow = {
+    handle: RegistrationAnalyticsFlow;
+    signal: AbortSignal;
+    cancel: () => void;
+    at: number;
+    stages: Stage[];
+    challengeId?: string;
+    preparedOwner?: string;
+    transferred: boolean;
+  };
+  let current: Flow | null = null;
+  let sequence = 0;
+  function clear() {
+    current?.signal.removeEventListener("abort", current.cancel);
+    current = null;
+  }
+  function fresh() {
+    if (current && now() - current.at >= 600_000) clear();
+    return current;
+  }
+  return {
+    begin(signal: AbortSignal): RegistrationAnalyticsFlow | null {
+      clear();
+      if (signal.aborted) return null;
+      const handle = Object.freeze({ key: Symbol("registration-flow") });
+      const flow: Flow = {
+        handle,
+        signal,
+        at: now(),
+        transferred: false,
+        stages: [
+          {
+            event: "registration_started",
+            onceKey: "registration:" + ++sequence + ":started",
+            submitted: false,
+          },
+        ],
+        cancel: () => {
+          if (current === flow && (!flow.preparedOwner || flow.transferred))
+            clear();
+        },
+      };
+      current = flow;
+      signal.addEventListener("abort", flow.cancel, { once: true });
+      return handle;
+    },
+    codeSent(
+      handle: RegistrationAnalyticsFlow | null,
+      challengeId: string,
+      signal: AbortSignal,
+    ) {
+      const flow = fresh();
+      if (
+        !flow ||
+        flow.handle !== handle ||
+        flow.signal !== signal ||
+        signal.aborted ||
+        flow.preparedOwner ||
+        !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(
+          challengeId,
+        ) ||
+        (flow.challengeId !== undefined && flow.challengeId !== challengeId)
+      )
+        return;
+      flow.challengeId = challengeId;
+      if (flow.stages.length === 1)
+        flow.stages.push({
+          event: "registration_code_sent",
+          onceKey: "registration:" + sequence + ":code",
+          submitted: false,
+        });
+    },
+    prepare(
+      handle: RegistrationAnalyticsFlow | null,
+      user: { id: string; role?: string },
+      signal: AbortSignal,
+      challengeId?: string,
+    ): RegistrationAnalyticsFlow | null {
+      const flow = fresh();
+      if (
+        !flow ||
+        flow.handle !== handle ||
+        flow.signal !== signal ||
+        signal.aborted ||
+        flow.preparedOwner ||
+        user.role !== "user" ||
+        !/^[1-9][0-9]{0,17}$/.test(user.id) ||
+        flow.challengeId !== challengeId
+      ) {
+        clear();
+        return null;
+      }
+      flow.preparedOwner = user.id;
+      return flow.handle;
+    },
+    transfer(
+      handle: RegistrationAnalyticsFlow,
+      ownerId: string,
+      signal: AbortSignal,
+    ): boolean {
+      const flow = fresh();
+      if (
+        !flow ||
+        flow.handle !== handle ||
+        flow.preparedOwner !== ownerId ||
+        flow.transferred ||
+        signal.aborted
+      ) {
+        clear();
+        return false;
+      }
+      flow.signal.removeEventListener("abort", flow.cancel);
+      flow.signal = signal;
+      flow.transferred = true;
+      signal.addEventListener("abort", flow.cancel, { once: true });
+      return true;
+    },
+    pending(signal: AbortSignal, ownerId: string | null) {
+      const flow = fresh();
+      if (
+        !flow ||
+        flow.signal !== signal ||
+        signal.aborted ||
+        (ownerId === null
+          ? !!flow.preparedOwner
+          : !flow.transferred || flow.preparedOwner !== ownerId)
+      )
+        return [];
+      return flow.stages
+        .filter((stage) => !stage.submitted)
+        .map(({ event, onceKey }) => ({ event, onceKey }));
+    },
+    submitted(onceKey?: string) {
+      const stage = fresh()?.stages.find((value) => value.onceKey === onceKey);
+      if (stage) stage.submitted = true;
+    },
+    clear,
+  };
+}
+
+/** A short, bounded, memory-only wait for identity and the actual SDK load. */
+export function createPendingProductEvents(now = Date.now) {
+  type Pending = {
+    event: ProductEvent;
+    params: ProductEventParams;
+    onceKey?: string;
+    at: number;
+  };
+  const pending: Pending[] = [];
+  const fresh = () => {
+    while (pending.length && now() - pending[0]!.at >= 120_000) pending.shift();
+  };
+  return {
+    add(event: ProductEvent, value: ProductEventParams = {}, onceKey?: string) {
+      const params = contentFreeParams(value);
+      if (
+        !productEvents.includes(event) ||
+        params === null ||
+        (onceKey !== undefined &&
+          (typeof onceKey !== "string" || onceKey.length > 200))
+      )
+        return false;
+      fresh();
+      if (
+        onceKey !== undefined &&
+        pending.some((item) => item.event === event && item.onceKey === onceKey)
+      )
+        return false;
+      if (pending.length === 100) pending.shift();
+      pending.push({ event, params, onceKey, at: now() });
+      return true;
+    },
+    drain(send: ProductEventSink) {
+      fresh();
+      for (const item of pending.splice(0))
+        send(item.event, item.params, item.onceKey);
+    },
+    clear() {
+      pending.length = 0;
+    },
+    discard(onceKey: string) {
+      for (let i = pending.length - 1; i >= 0; i--)
+        if (pending[i]!.onceKey === onceKey) pending.splice(i, 1);
+    },
+  };
+}
 let sink: ProductEventSink | null = null;
 export function connectProductAnalytics(next: ProductEventSink): () => void {
   sink = next;

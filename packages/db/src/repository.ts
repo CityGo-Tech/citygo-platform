@@ -984,6 +984,7 @@ export class Repository {
       globalDailyLimit: number;
       leaseMs?: number;
       modeSnapshot?: AiRequestModeSnapshot;
+      fixed5CreditReadiness?: boolean;
     },
   ) {
     access = {
@@ -1019,6 +1020,34 @@ export class Repository {
         ).rows.length
       )
         fail(409, "Этот запрос уже был принят");
+      if (access.fixed5CreditReadiness === true) {
+        if (
+          !this.creditCharging ||
+          this.creditReservationMode !== "fixed5_overdraft"
+        )
+          fail(400, "Недопустимая проверка денежного допуска");
+        // user -> thread locks above serialize cross-thread admissions. This
+        // check precedes EVERY quota/request/message write, not just dispatch.
+        // A real unexpired lease covers the gap before its monetary hold exists.
+        const running = await tx.query(
+          `select t.id from agent_threads t where t.user_id=$1
+           and t.lease_token is not null and t.busy_until>clock_timestamp()
+           and exists(select 1 from chat_requests r where r.thread_id=t.id and r.status='running') limit 1`,
+          [userId],
+        );
+        if (running.rows.length) fail(409, "Дождитесь текущего ответа");
+        const pending = await tx.query(
+          `select e.id from ai_credit_entries e where e.user_id=$1 and e.kind='hold'
+           and not exists(select 1 from ai_credit_entries r where r.hold_id=e.operation_id) limit 1`,
+          [userId],
+        );
+        if (pending.rows.length)
+          fail(
+            409,
+            "Стоимость предыдущего запроса ещё проверяется. Попробуйте позже.",
+            "AI_CREDIT_UNAVAILABLE",
+          );
+      }
       let consentBasis: ConsentGrantEvidence | undefined;
       let legacyBasis = false;
       if (access.modeSnapshot) {
@@ -1155,6 +1184,69 @@ export class Repository {
         profile,
         messages: await this.history(tx, threadId),
         ...(modeSnapshot ? { modeSnapshot } : {}),
+      };
+    });
+  }
+  /** Read-only target validation before any optional provider cost GET.
+   * Never accepts a question, consumes quota, creates a hold or changes a lease.
+   */
+  async chatRecoveryPreflight(
+    userId: string,
+    threadId: string,
+    requestId: string,
+  ) {
+    return this.db.transaction(async (tx) => {
+      const owner =
+        (
+          await tx.query<{ status: string; must_change_password: boolean }>(
+            "select status,must_change_password from users where id=$1 for share",
+            [userId],
+          )
+        ).rows[0] ?? fail(401, "Войдите в аккаунт");
+      if (owner.status !== "active") fail(401, "Войдите в аккаунт");
+      if (owner.must_change_password)
+        fail(403, "Сначала измените временный пароль");
+      const thread =
+        (
+          await tx.query<{ agentKey: AgentKey; busy: boolean }>(
+            `select agent_key as "agentKey",(busy_until>clock_timestamp()) is true as busy
+         from agent_threads where id=$1 and user_id=$2 and status<>'closed' for share`,
+            [threadId, userId],
+          )
+        ).rows[0] ?? fail(404, "Чат не найден");
+      if (thread.busy) fail(409, "Дождитесь текущего ответа");
+      if (
+        (
+          await tx.query(
+            "select request_id from chat_requests where thread_id=$1 and request_id=$2",
+            [threadId, requestId],
+          )
+        ).rows.length
+      )
+        fail(409, "Этот запрос уже был принят");
+      const charges = (
+        await tx.query<{
+          holdId: string;
+          responseComplete: boolean | null;
+          generationPresent: boolean;
+        }>(
+          `select e.operation_id::text as "holdId",c.response_complete as "responseComplete",
+         (c.generation_id is not null) as "generationPresent"
+         from ai_credit_entries e left join ai_credit_charges c on c.hold_id=e.operation_id and c.user_id=e.user_id
+         where e.user_id=$1 and e.kind='hold' and not exists(select 1 from ai_credit_entries r where r.hold_id=e.operation_id)
+         order by e.id limit 2`,
+          [userId],
+        )
+      ).rows;
+      const budget = (
+        await tx.query<{ enabled: boolean }>(
+          "select enabled from ai_budget where id=1",
+        )
+      ).rows[0];
+      return {
+        agentKey: thread.agentKey,
+        charges,
+        budgetEnabled: budget?.enabled === true,
       };
     });
   }
