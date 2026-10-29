@@ -55,6 +55,34 @@
 .toolbar {
   justify-content: space-between;
 }
+.progress {
+  padding: var(--cg-space-md);
+  border-radius: var(--cg-radius-card);
+  background: var(--cg-color-primary-soft);
+}
+.progress :global(.cg-progress) {
+  display: grid;
+  gap: var(--cg-space-sm);
+  font-size: 14px;
+  font-weight: 600;
+}
+.progress progress {
+  width: 100%;
+}
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--cg-space-sm);
+}
+.filters button {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: normal;
+}
+.count {
+  margin-inline-start: 4px;
+  font-variant-numeric: tabular-nums;
+}
 .list {
   display: grid;
   gap: var(--cg-space-md);

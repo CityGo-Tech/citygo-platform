@@ -165,6 +165,10 @@ async function install(context: BrowserContext, withProfile = false) {
         json: { error: "Synthetic signed out" },
       });
     if (path === "/api/v1/dashboard") return route.fulfill({ json: board() });
+    if (path === "/api/v1/personal-plan/summary" && request.method() === "GET")
+      return route.fulfill({
+        json: { userId: state.owner, total: 0, pending: 0, completed: 0 },
+      });
     if (path === "/api/v1/personal-plan" && request.method() === "GET")
       return route.fulfill({
         json: { userId: state.owner, items: [], nextBefore: null },

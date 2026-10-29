@@ -11,6 +11,16 @@ import {
 import { useHistoryScrollAnchor } from "./conversation-history";
 import styles from "./favorite-message-context.module.css";
 
+const defaultLabels = {
+  eyebrow: "ИЗ ИЗБРАННОГО",
+  intro: "История перед сохранённым сообщением.",
+  back: "← В избранное",
+  selected: "Сохранённое сообщение",
+  selectedAria: "Сохранённое сообщение в диалоге",
+  returnToSource: "К сохранённому сообщению",
+  unavailable: "Исходное сообщение недоступно. Вернитесь к избранному.",
+};
+
 export function FavoriteMessageContext({
   userId,
   source,
@@ -18,14 +28,17 @@ export function FavoriteMessageContext({
   onBack,
   onAccessDenied,
   onOpenConversation,
+  labels,
 }: {
   userId: string;
-  source: FavoriteMessage;
+  source: Pick<FavoriteMessage, "id" | "threadId">;
   sessionSignal: AbortSignal;
   onBack: () => void;
   onAccessDenied: () => void;
   onOpenConversation?: (threadId: string) => Promise<boolean>;
+  labels?: Partial<typeof defaultLabels>;
 }) {
+  const copy = { ...defaultLabels, ...labels };
   const [state, setState] = useState<FavoriteContextState>({
     phase: "loading",
     messages: [],
@@ -65,6 +78,7 @@ export function FavoriteMessageContext({
       older: (before) => api.conversationMessages(source.threadId, before),
       publish: setState,
       onAccessDenied: () => denied.current(),
+      unavailableMessage: copy.unavailable,
     });
     resource.current = value;
     void value.loadSource();
@@ -74,7 +88,7 @@ export function FavoriteMessageContext({
       controller.abort();
       if (resource.current === value) resource.current = null;
     };
-  }, [userId, source.threadId, source.id, sessionSignal]);
+  }, [userId, source.threadId, source.id, sessionSignal, copy.unavailable]);
   const scroll = useHistoryScrollAnchor(log, state.messages, {
     threadId: source.threadId,
     detached: true,
@@ -117,11 +131,11 @@ export function FavoriteMessageContext({
       aria-label="Исходный диалог"
       aria-busy={busy}
     >
-      <span className="eyebrow">ИЗ ИЗБРАННОГО</span>
+      <span className="eyebrow">{copy.eyebrow}</span>
       <h1>Сообщение в диалоге</h1>
-      <p className={styles.intro}>История перед сохранённым сообщением.</p>
+      <p className={styles.intro}>{copy.intro}</p>
       <Button variant="secondary" disabled={opening} onClick={onBack}>
-        ← В избранное
+        {copy.back}
       </Button>
       {state.error && <p role="alert">{state.error}</p>}
       {openError && <p role="alert">{openError}</p>}
@@ -159,7 +173,7 @@ export function FavoriteMessageContext({
               void resource.current?.loadSource();
             }}
           >
-            К сохранённому сообщению
+            {copy.returnToSource}
           </Button>
         </div>
       )}
@@ -185,13 +199,11 @@ export function FavoriteMessageContext({
               (message.id === source.id ? styles.selected : "")
             }
             aria-label={
-              message.id === source.id
-                ? "Сохранённое сообщение в диалоге"
-                : undefined
+              message.id === source.id ? copy.selectedAria : undefined
             }
           >
             {message.id === source.id && (
-              <small className={styles.label}>Сохранённое сообщение</small>
+              <small className={styles.label}>{copy.selected}</small>
             )}
             <strong>
               {message.role === "user" ? "Вы" : agentNames[message.agentKey]}

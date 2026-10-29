@@ -22,7 +22,7 @@ function deferred<T>() {
   });
   return { promise, resolve, reject };
 }
-function setup(total = 2500) {
+function setup(total = 2500, unavailableMessage?: string) {
   const source = rows(9007199254740992n, total);
   const target = source.at(-1)!.id;
   const owner = new AbortController();
@@ -61,6 +61,7 @@ function setup(total = 2500) {
     },
     publish: (state) => states.push(state),
     onAccessDenied: () => denied++,
+    unavailableMessage,
   });
   return {
     source,
@@ -74,6 +75,21 @@ function setup(total = 2500) {
     denied: () => denied,
   };
 }
+
+test("the same owned non-favorite source resource can report a plan-specific unavailable message", async () => {
+  const s = setup(2, "Исходное сообщение недоступно. Вернитесь к плану.");
+  s.transport.context = async () => {
+    throw new ApiError(404, "Missing");
+  };
+  await s.resource.loadSource();
+  assert.equal(
+    s.resource.snapshot().error,
+    "Исходное сообщение недоступно. Вернитесь к плану.",
+  );
+  assert.deepEqual(s.resource.snapshot().messages, []);
+  assert.equal(s.denied(), 0);
+  assert.equal(s.source.at(-1)!.favorite, false);
+});
 
 test("source history has no automatic reads; one explicit GET finds exact bigint target and earlier pages", async () => {
   const s = setup(250);

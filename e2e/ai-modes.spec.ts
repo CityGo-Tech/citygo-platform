@@ -279,6 +279,10 @@ async function fixture(
           emailConfirmation: "available",
         },
       });
+    if (path === "/api/v1/personal-plan/summary" && method === "GET")
+      return route.fulfill({
+        json: { userId: state.owner, total: 0, pending: 0, completed: 0 },
+      });
     if (path === "/api/v1/personal-plan" && method === "GET")
       return route.fulfill({
         json: { userId: state.owner, items: [], nextBefore: null },

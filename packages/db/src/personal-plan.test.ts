@@ -68,6 +68,74 @@ async function count(db: Database, table: string) {
   ).rows[0]!.count;
 }
 
+test("plan status filters run before bigint keyset pagination and summary includes every visible page but no tombstones or other owners", async (t) => {
+  const f = await fixture(t);
+  await f.db.query(
+    "select setval('personal_plan_items_id_seq',9007199254740992,true)",
+  );
+  const created = [];
+  for (let index = 0; index < 43; index++) {
+    const result = await f.store.create(f.owner, f.input());
+    if (index % 3 === 0)
+      result.item = (
+        await f.store.update(f.owner, result.item.id, {
+          expectedRevision: 1,
+          title: result.item.title,
+          details: result.item.details,
+          status: "completed",
+        })
+      ).item;
+    created.push(result.item);
+  }
+  await f.store.remove(f.owner, created[0]!.id, created[0]!.revision);
+  const foreign = await f.source(f.other);
+  await f.store.create(f.other, { ...f.input(), sourceMessageId: foreign.id });
+  assert.deepEqual(await f.store.summary(f.owner), {
+    userId: f.owner,
+    total: 42,
+    pending: 28,
+    completed: 14,
+  });
+  assert.deepEqual(await f.store.summary(f.other), {
+    userId: f.other,
+    total: 1,
+    pending: 1,
+    completed: 0,
+  });
+  const first = await f.store.list(f.owner, undefined, "pending");
+  assert.equal(first.items.length, 20);
+  assert.ok(first.nextBefore);
+  assert.ok(
+    first.items.every(
+      (item) =>
+        item.status === "pending" && BigInt(item.id) > 9007199254740992n,
+    ),
+  );
+  const second = await f.store.list(f.owner, first.nextBefore!, "pending");
+  assert.equal(second.items.length, 8);
+  assert.equal(second.nextBefore, null);
+  assert.equal(
+    new Set([...first.items, ...second.items].map((item) => item.id)).size,
+    28,
+  );
+  const complete = await f.store.list(f.owner, undefined, "completed");
+  assert.equal(complete.items.length, 14);
+  assert.ok(complete.items.every((item) => item.status === "completed"));
+  assert.equal((await f.store.list(f.owner)).items.length, 20);
+  await assert.rejects(f.store.list(f.owner, undefined, "all" as "pending"));
+  await f.db.query("update users set status='blocked' where id=$1", [f.owner]);
+  assert.deepEqual(await f.store.summary(f.owner), {
+    userId: f.owner,
+    total: 0,
+    pending: 0,
+    completed: 0,
+  });
+  assert.deepEqual(
+    (await f.store.list(f.owner, undefined, "pending")).items,
+    [],
+  );
+});
+
 test("private plan works without a profile, retains source ownership and never changes chat, quests or money", async (t) => {
   const f = await fixture(t);
   const created = await f.store.create(f.owner, f.input());

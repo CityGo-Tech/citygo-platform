@@ -4,6 +4,7 @@ import { expect, test, type BrowserContext, type Page } from "@playwright/test";
 import type {
   CreatePersonalPlanItem,
   Dashboard,
+  Message,
   PersonalPlanItem,
   UpdatePersonalPlanItem,
 } from "@citygo/contracts";
@@ -53,6 +54,12 @@ async function fixture(
     items: initial,
     responseOwner: null as string | null,
     reads: [] as (string | null)[],
+    statusReads: [] as (string | null)[],
+    summaryReads: 0,
+    listCompletions: 0,
+    failSummary: false,
+    sourceHistory: null as Message[] | null,
+    sourceMissing: false,
     posts: [] as CreatePersonalPlanItem[],
     updates: [] as UpdatePersonalPlanItem[],
     removes: [] as { expectedRevision: number }[],
@@ -140,6 +147,29 @@ async function fixture(
     if (!state.authenticated)
       return route.fulfill({ status: 401, json: { error: "Signed out" } });
     if (path === "/api/v1/dashboard") return route.fulfill({ json: board() });
+    const sourceContext = path.match(
+      /^\/api\/v1\/conversations\/(10|20)\/messages\/(\d+)\/context$/,
+    );
+    if (sourceContext && request.method() === "GET") {
+      state.sourceReads.push(path);
+      if (state.sourceMissing)
+        return route.fulfill({
+          status: 404,
+          json: { error: "Source unavailable" },
+        });
+      return route.fulfill({
+        json: {
+          userId: state.owner,
+          threadId: sourceContext[1],
+          messages:
+            state.sourceHistory ??
+            thread(state.owner).messages.filter(
+              (message) => BigInt(message.id) <= BigInt(sourceContext[2]!),
+            ),
+          nextCursor: null,
+        },
+      });
+    }
     if (
       path === "/api/v1/conversations/10" ||
       path === "/api/v1/conversations/20"
@@ -149,14 +179,38 @@ async function fixture(
         json: { userId: state.owner, thread: thread(state.owner) },
       });
     }
+    if (
+      path === "/api/v1/personal-plan/summary" &&
+      request.method() === "GET"
+    ) {
+      state.summaryReads++;
+      if (state.failSummary)
+        return route.fulfill({
+          status: 503,
+          json: { error: "Summary unavailable" },
+        });
+      const rows = state.owner === "101" ? state.items : [];
+      return route.fulfill({
+        json: {
+          userId: state.responseOwner ?? state.owner,
+          total: rows.length,
+          pending: rows.filter((row) => row.status === "pending").length,
+          completed: rows.filter((row) => row.status === "completed").length,
+        },
+      });
+    }
     if (path === "/api/v1/personal-plan" && request.method() === "GET") {
       const owner = state.owner,
-        before = url.searchParams.get("before");
+        before = url.searchParams.get("before"),
+        status = url.searchParams.get("status");
       state.reads.push(before);
+      state.statusReads.push(status);
       const rows =
         owner === "101"
           ? state.items.filter(
-              (row) => !before || BigInt(row.id) < BigInt(before),
+              (row) =>
+                (!before || BigInt(row.id) < BigInt(before)) &&
+                (!status || row.status === status),
             )
           : [];
       const page = {
@@ -164,11 +218,13 @@ async function fixture(
         items: rows.slice(0, 20),
         nextBefore: rows.length > 20 ? rows[19]!.id : null,
       };
-      if (state.holdList && owner === "101") await listGate;
+      if (state.holdList && owner === "101" && status === null) await listGate;
       try {
         await route.fulfill({ json: page });
       } catch {
         /* Invalidated view. */
+      } finally {
+        state.listCompletions++;
       }
       return;
     }
@@ -306,10 +362,12 @@ test("explicit message preview, CRUD revisions, source and reload preserve a per
     ),
   ).toBe(true);
   await entry
-    .getByRole("button", { name: "Открыть исходный диалог", exact: true })
+    .getByRole("button", { name: "Открыть исходное сообщение", exact: true })
     .click();
   await expect(page.getByRole("log")).toContainText("Сравните районы");
-  expect(state.sourceReads).toContain("10");
+  expect(state.sourceReads).toContain(
+    "/api/v1/conversations/10/messages/11/context",
+  );
   await page.reload();
   await openPlan(page);
   await expect(entry).toContainText("Сравнить три района");
@@ -453,6 +511,295 @@ test("plan pagination retains exact bigint IDs and no horizontal overflow", asyn
   });
 });
 
+test("whole-plan progress and status pagination find steps beyond the first twenty with keyboard controls", async ({
+  page,
+  context,
+}, info) => {
+  if (info.project.name === "mobile-web")
+    await page.setViewportSize({ width: 375, height: 812 });
+  const rows = Array.from({ length: 45 }, (_, index) => ({
+    ...item(String(9007199254741200n - BigInt(index)), "Шаг " + (index + 1)),
+    status: index < 23 ? ("completed" as const) : ("pending" as const),
+  }));
+  const state = await fixture(context, rows);
+  await page.goto("/");
+  await openPlan(page);
+  const panel = planPanel(page),
+    filters = panel.getByRole("navigation", { name: "Статус шагов плана" });
+  await expect(
+    panel.getByRole("progressbar", { name: "Выполнено 23 из 45", exact: true }),
+  ).toBeVisible();
+  await expect(panel.getByRole("article")).toHaveCount(20);
+  const pending = filters.getByRole("button", { name: /^В работе\s+22$/ });
+  await pending.focus();
+  await pending.press("Space");
+  await expect(pending).toHaveAttribute("aria-pressed", "true");
+  await expect(panel.getByRole("article")).toHaveCount(20);
+  await expect(
+    panel.getByRole("heading", { name: "Шаг 24", exact: true }),
+  ).toBeVisible();
+  expect(state.statusReads.at(-1)).toBe("pending");
+  await panel
+    .getByRole("progressbar", { name: "Выполнено 23 из 45", exact: true })
+    .scrollIntoViewIfNeeded();
+  await page.screenshot({
+    path: info.outputPath(`plan-progress-${info.project.name}.png`),
+  });
+  await panel
+    .getByRole("button", { name: "Показать ещё шаги", exact: true })
+    .click();
+  await expect(panel.getByRole("article")).toHaveCount(22);
+  expect(state.reads.at(-1)).toBe(rows[42]!.id);
+  expect(state.statusReads.at(-1)).toBe("pending");
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  expect(state.posts).toEqual([]);
+  expect(state.updates).toEqual([]);
+  expect(state.removes).toEqual([]);
+  expect(state.external).toBe(0);
+  expect(state.forbidden).toEqual([]);
+});
+
+test("completing and reopening a step refresh the selected filter and all summary counts", async ({
+  page,
+  context,
+}) => {
+  const state = await fixture(context, [
+    item("30", "Первый шаг"),
+    item("29", "Второй шаг"),
+  ]);
+  await page.goto("/");
+  await openPlan(page);
+  const panel = planPanel(page),
+    filters = panel.getByRole("navigation", { name: "Статус шагов плана" });
+  await filters.getByRole("button", { name: /^В работе\s+2$/ }).click();
+  await panel
+    .getByRole("article")
+    .first()
+    .getByRole("button", { name: "Отметить выполненным", exact: true })
+    .click();
+  await expect(panel.getByRole("article")).toHaveCount(1);
+  await expect(
+    panel.getByRole("progressbar", { name: "Выполнено 1 из 2", exact: true }),
+  ).toBeVisible();
+  await panel
+    .getByRole("article")
+    .first()
+    .getByRole("button", { name: "Отметить выполненным", exact: true })
+    .click();
+  await expect(panel).toContainText("Нет шагов в работе");
+  await expect(panel).not.toContainText("Начнём с того, что важно вам");
+  await filters.getByRole("button", { name: /^Выполнено\s+2$/ }).click();
+  await expect(panel.getByRole("article")).toHaveCount(2);
+  await panel
+    .getByRole("article")
+    .first()
+    .getByRole("button", { name: "Вернуть в работу", exact: true })
+    .click();
+  await expect(panel.getByRole("article")).toHaveCount(1);
+  await expect(
+    panel.getByRole("progressbar", { name: "Выполнено 1 из 2", exact: true }),
+  ).toBeVisible();
+  expect(state.statusReads.at(-1)).toBe("completed");
+  expect(state.summaryReads).toBeGreaterThanOrEqual(6);
+  expect(state.external).toBe(0);
+  expect(state.forbidden).toEqual([]);
+});
+
+test("deleting the last completed step refreshes progress without losing a pending step", async ({
+  page,
+  context,
+}) => {
+  const state = await fixture(context, [
+    { ...item("30", "Готовый шаг"), status: "completed" },
+    item("29", "В работе"),
+  ]);
+  await page.goto("/");
+  await openPlan(page);
+  const panel = planPanel(page);
+  await panel
+    .getByRole("navigation", { name: "Статус шагов плана" })
+    .getByRole("button", { name: /^Выполнено\s+1$/ })
+    .click();
+  const entry = panel.getByRole("article").first();
+  await entry.getByRole("button", { name: "Удалить", exact: true }).click();
+  await entry
+    .getByRole("button", { name: "Подтвердить удаление", exact: true })
+    .click();
+  await expect(panel).toContainText("Выполненных шагов пока нет");
+  await expect(
+    panel.getByRole("progressbar", { name: "Выполнено 0 из 1", exact: true }),
+  ).toBeVisible();
+  await panel
+    .getByRole("button", { name: "Показать все шаги", exact: true })
+    .click();
+  await expect(panel.getByRole("article")).toHaveCount(1);
+  await expect(
+    panel.getByRole("heading", { name: "В работе", exact: true }),
+  ).toBeVisible();
+  expect(state.items).toHaveLength(1);
+  expect(state.removes).toEqual([{ expectedRevision: 1 }]);
+  expect(state.forbidden).toEqual([]);
+});
+
+test("a filter change cancels the old page and a summary failure requires an explicit retry", async ({
+  page,
+  context,
+}) => {
+  const state = await fixture(context, [
+    { ...item("30", "OLD_COMPLETED_PAGE"), status: "completed" },
+    item("29", "Текущий шаг"),
+  ]);
+  state.holdList = true;
+  try {
+    await page.goto("/");
+    await openPlan(page);
+    const panel = planPanel(page);
+    await expect.poll(() => state.reads.length).toBe(1);
+    await panel
+      .getByRole("navigation", { name: "Статус шагов плана" })
+      .getByRole("button", { name: /^В работе/ })
+      .click();
+    await expect(
+      panel.getByRole("heading", { name: "Текущий шаг", exact: true }),
+    ).toBeVisible();
+    state.releaseList();
+    await expect.poll(() => state.listCompletions).toBeGreaterThanOrEqual(2);
+    await expect(
+      panel.getByText("OLD_COMPLETED_PAGE", { exact: true }),
+    ).toHaveCount(0);
+    state.failSummary = true;
+    await panel
+      .getByRole("button", { name: "Обновить план", exact: true })
+      .click();
+    await expect(panel.getByRole("alert")).toContainText(
+      "Не удалось загрузить план",
+    );
+    await expect(
+      panel.getByRole("button", { name: "Отметить выполненным", exact: true }),
+    ).toBeDisabled();
+    state.failSummary = false;
+    await panel
+      .getByRole("button", { name: "Обновить список", exact: true })
+      .click();
+    await expect(panel.getByRole("alert")).toHaveCount(0);
+    await expect(
+      panel.getByRole("button", { name: "Отметить выполненным", exact: true }),
+    ).toBeEnabled();
+    expect(state.statusReads.at(-1)).toBe("pending");
+    expect(state.forbidden).toEqual([]);
+  } finally {
+    state.releaseList();
+  }
+});
+
+test("a step opens its exact older non-favorite source and returns to the same filtered plan", async ({
+  page,
+  context,
+}) => {
+  const saved = {
+    ...item("30", "Шаг из старого ответа"),
+    status: "completed" as const,
+    source: { messageId: "5", threadId: "10", role: "assistant" as const },
+  };
+  const state = await fixture(context, [saved]);
+  state.sourceHistory = [
+    {
+      id: "4",
+      role: "user",
+      agentKey: "support",
+      status: "complete",
+      content: "Старый вопрос",
+      favorite: false,
+    },
+    {
+      id: "5",
+      role: "assistant",
+      agentKey: "support",
+      status: "complete",
+      content: "ТОЧНЫЙ_СТАРЫЙ_ИСТОЧНИК",
+      favorite: false,
+    },
+  ];
+  await page.goto("/");
+  await openPlan(page);
+  await planPanel(page)
+    .getByRole("navigation", { name: "Статус шагов плана" })
+    .getByRole("button", { name: /^Выполнено\s+1$/ })
+    .click();
+  await planPanel(page)
+    .getByRole("button", { name: "Открыть исходное сообщение", exact: true })
+    .click();
+  const source = page.getByRole("region", {
+    name: "Исходный диалог",
+    exact: true,
+  });
+  await expect(source.locator('[data-source-message="5"]')).toBeFocused();
+  await expect(
+    source.getByRole("article", {
+      name: "Исходное сообщение шага",
+      exact: true,
+    }),
+  ).toContainText("ТОЧНЫЙ_СТАРЫЙ_ИСТОЧНИК");
+  await expect(source).not.toContainText("Сравните районы по времени в пути");
+  expect(state.sourceReads).toEqual([
+    "/api/v1/conversations/10/messages/5/context",
+  ]);
+  await source
+    .getByRole("button", { name: "← В мой план", exact: true })
+    .click();
+  await expect(
+    planPanel(page)
+      .getByRole("navigation", { name: "Статус шагов плана" })
+      .getByRole("button", { name: /^Выполнено\s+1$/ }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await expect(
+    planPanel(page).getByRole("button", {
+      name: "Открыть исходное сообщение",
+      exact: true,
+    }),
+  ).toBeFocused();
+  expect(state.posts).toEqual([]);
+  expect(state.updates).toEqual([]);
+  expect(state.forbidden).toEqual([]);
+  expect(state.external).toBe(0);
+});
+
+test("an unavailable step source has a plan-specific retry and never substitutes the latest conversation", async ({
+  page,
+  context,
+}) => {
+  const state = await fixture(context, [item()]);
+  state.sourceMissing = true;
+  await page.goto("/");
+  await openPlan(page);
+  await planPanel(page)
+    .getByRole("button", { name: "Открыть исходное сообщение", exact: true })
+    .click();
+  const source = page.getByRole("region", {
+    name: "Исходный диалог",
+    exact: true,
+  });
+  await expect(source.getByRole("alert")).toContainText("Вернитесь к плану");
+  await expect(source.getByRole("article")).toHaveCount(0);
+  expect(state.sourceReads).toHaveLength(1);
+  await source
+    .getByRole("button", { name: "Повторить загрузку", exact: true })
+    .click();
+  await expect.poll(() => state.sourceReads.length).toBe(2);
+  await source
+    .getByRole("button", { name: "← В мой план", exact: true })
+    .click();
+  await expect(planPanel(page).getByRole("article")).toHaveCount(1);
+  expect(state.sourceReads.every((path) => path.endsWith("/context"))).toBe(
+    true,
+  );
+  expect(state.forbidden).toEqual([]);
+});
+
 test("another owner's list is never rendered", async ({ page, context }) => {
   const state = await fixture(context, [item("90", "FOREIGN_PRIVATE_PLAN")]);
   state.responseOwner = "303";
@@ -574,7 +921,7 @@ test("real local API persists chosen messages and CAS changes without spending o
   await openPlan(page);
   await expect(entry).toContainText("ВЫПОЛНЕНО");
   await entry
-    .getByRole("button", { name: "Открыть исходный диалог", exact: true })
+    .getByRole("button", { name: "Открыть исходное сообщение", exact: true })
     .click();
   await expect(page.getByRole("log")).toContainText(
     "Синтетический вопрос для локального плана",

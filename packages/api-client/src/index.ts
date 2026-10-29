@@ -74,6 +74,7 @@ import {
   updatePersonalPlanItemSchema,
   removePersonalPlanItemSchema,
   personalPlanPageSchema,
+  personalPlanSummarySchema,
   personalPlanItemResultSchema,
   personalPlanRemoveResultSchema,
   conversationStartSchema,
@@ -108,6 +109,7 @@ import {
   type StreamEvent,
   type CreatePersonalPlanItem,
   type UpdatePersonalPlanItem,
+  type PersonalPlanStatus,
   type ServiceConsentChoice,
   type AiModesConsentChoice,
   type AccountEmailVerificationResend,
@@ -758,18 +760,22 @@ export function createClient(
         role,
       }),
     dashboard: () => request("/v1/dashboard", dashboardResponseSchema),
-    personalPlan: async (before?: string) => {
-      const query = personalPlanQuerySchema.parse(
-        before === undefined ? {} : { before },
-      );
+    personalPlan: async (before?: string, status?: PersonalPlanStatus) => {
+      const query = personalPlanQuerySchema.parse({ before, status });
+      const params = new URLSearchParams();
+      if (query.before !== undefined) params.set("before", query.before);
+      if (query.status !== undefined) params.set("status", query.status);
       const result = await request(
-        "/v1/personal-plan" +
-          (query.before === undefined ? "" : "?before=" + query.before),
+        "/v1/personal-plan" + (params.size ? "?" + params : ""),
         personalPlanPageSchema,
       );
       if (
-        query.before !== undefined &&
-        result.items.some((item) => BigInt(item.id) >= BigInt(query.before!))
+        result.items.some(
+          (item) =>
+            (query.before !== undefined &&
+              BigInt(item.id) >= BigInt(query.before)) ||
+            (query.status !== undefined && item.status !== query.status),
+        )
       )
         throw new ApiError(
           200,
@@ -778,6 +784,8 @@ export function createClient(
         );
       return result;
     },
+    personalPlanSummary: () =>
+      request("/v1/personal-plan/summary", personalPlanSummarySchema),
     createPersonalPlanItem: async (input: CreatePersonalPlanItem) => {
       const body = createPersonalPlanItemSchema.parse(input);
       const result = await request(
