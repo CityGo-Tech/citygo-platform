@@ -5,6 +5,15 @@ import {
 } from "../packages/contracts/src/admin-customer-observability";
 import type { Dashboard } from "@citygo/contracts";
 import { syntheticConsentPolicy } from "./service-consent-fixture";
+import {
+  analyticsOrigin,
+  delayedCollector,
+  enabledCollector,
+} from "./product-analytics-collector";
+
+const collectorCounter = Number(
+  process.env.CITYGO_METRIKA_E2E_COUNTER_ID ?? "113847047",
+);
 
 /** All app data are synthetic; every outside destination is rejected. */
 async function install(page: Page, role: "user" | "admin" = "user") {
@@ -16,6 +25,11 @@ async function install(page: Page, role: "user" | "admin" = "user") {
     identityReads: 0,
     holdIdentity: false,
     releaseIdentity: () => {},
+    giftGranted: false,
+    registrationPosts: 0,
+    confirmationPosts: 0,
+    phonePosts: 0,
+    dashboardReads: 0,
   };
   const board: Dashboard = {
     user: {
@@ -64,12 +78,77 @@ async function install(page: Page, role: "user" | "admin" = "user") {
       state.events.push(value.event);
       return route.fulfill({ json: { recorded: true } });
     }
-    if (path === "/api/v1/dashboard" && request.method() === "GET")
+    if (path === "/api/v1/dashboard" && request.method() === "GET") {
+      state.dashboardReads++;
       return route.fulfill(
         state.authenticated
           ? { json: board }
           : { status: 401, json: { error: "Synthetic signed-out session" } },
       );
+    }
+    if (path === "/api/v1/auth/email/register" && request.method() === "POST") {
+      state.registrationPosts++;
+      expect(Object.keys(request.postDataJSON()).sort()).toEqual([
+        "consents",
+        "email",
+        "password",
+      ]);
+      return route.fulfill({
+        json: {
+          challengeId: "123e4567-e89b-42d3-a456-426614174001",
+          proof: "1".repeat(64),
+          expiresAt: new Date(Date.now() + 600_000).toISOString(),
+          resendAfterSeconds: 60,
+        },
+      });
+    }
+    if (path === "/api/v1/auth/email/confirm" && request.method() === "POST") {
+      expect(request.postDataJSON()).toEqual({
+        challengeId: "123e4567-e89b-42d3-a456-426614174001",
+        proof: "1".repeat(64),
+        code: "654321",
+      });
+      state.confirmationPosts++;
+      state.authenticated = true;
+      return route.fulfill({ json: { user: board.user } });
+    }
+    if (
+      path === "/api/v1/phone-verification/start" &&
+      request.method() === "POST"
+    ) {
+      expect(request.postDataJSON()).toEqual({
+        phone: "+79990000000",
+        expectedDeliveryProvider: "prosto_sms",
+      });
+      state.phonePosts++;
+      return route.fulfill({
+        json: {
+          challengeId: "123e4567-e89b-42d3-a456-426614174002",
+          proof: "2".repeat(64),
+          expiresAt: new Date(Date.now() + 600_000).toISOString(),
+          resendAfterSeconds: 60,
+        },
+      });
+    }
+    if (
+      path === "/api/v1/phone-verification/confirm" &&
+      request.method() === "POST"
+    ) {
+      expect(request.postDataJSON()).toEqual({
+        challengeId: "123e4567-e89b-42d3-a456-426614174002",
+        proof: "2".repeat(64),
+        phone: "+79990000000",
+        code: "654321",
+      });
+      state.giftGranted = true;
+      return route.fulfill({
+        json: {
+          operationId: "123e4567-e89b-42d3-a456-426614174003",
+          grantedMicros: 500_000_000,
+          alreadyGranted: false,
+        },
+      });
+    }
     if (path === "/api/v1/analytics/identity" && request.method() === "GET") {
       state.identityReads++;
       if (state.holdIdentity)
@@ -105,8 +184,8 @@ async function install(page: Page, role: "user" | "admin" = "user") {
           userId: board.user.id,
           email: board.user.email,
           emailVerified: true,
-          phoneVerified: false,
-          giftStatus: "available",
+          phoneVerified: state.giftGranted,
+          giftStatus: state.giftGranted ? "claimed" : "available",
           emailConfirmation: "available",
         },
       });
@@ -118,7 +197,7 @@ async function install(page: Page, role: "user" | "admin" = "user") {
         json: {
           phoneVerification: "required",
           giftAmountMicros: 500_000_000,
-          giftStatus: "eligible",
+          giftStatus: state.giftGranted ? "granted" : "eligible",
           deliveryProvider: "prosto_sms",
         },
       });
@@ -320,7 +399,7 @@ test("trusted-origin collector respects build flags, masks, late identity, opt-o
     .toBe(true);
   let rows = await commands();
   expect(rows.find((row) => row[1] === "init")).toEqual([
-    105736701,
+    collectorCounter,
     "init",
     expect.objectContaining({
       defer: true,
@@ -334,7 +413,7 @@ test("trusted-origin collector respects build flags, masks, late identity, opt-o
     }),
   ]);
   expect(rows.find((row) => row[1] === "setUserID")).toEqual([
-    105736701,
+    collectorCounter,
     "setUserID",
     "cga_" + "a".repeat(64),
   ]);
@@ -439,3 +518,152 @@ test("trusted-origin collector respects build flags, masks, late identity, opt-o
   expect(state.outside).toEqual([]);
   expect(state.unexpected).toEqual([]);
 });
+
+test("late identity and SDK retain actual phone and gift UI outcomes from a public referral", async ({
+  page,
+}) => {
+  test.setTimeout(90_000);
+  const state = await install(page);
+  state.holdIdentity = true;
+  const collector = await delayedCollector(page);
+  await page.goto(analyticsOrigin + "/", { referer: "https://t.me/" });
+  await toolbar(page)
+    .getByRole("button", { name: "Телефон и подарок", exact: true })
+    .click();
+  await page.getByLabel("Российский мобильный номер").fill("+7 999 000-00-00");
+  await page
+    .getByRole("checkbox", { name: "Согласен на подтверждение номера по SMS." })
+    .check();
+  await page
+    .getByRole("button", { name: "Получить код по SMS", exact: true })
+    .click();
+  await page.getByLabel("Код из SMS", { exact: true }).fill("654321");
+  await page
+    .getByRole("button", {
+      name: "Подтвердить телефон и получить подарок",
+      exact: true,
+    })
+    .click();
+  await expect.poll(() => state.giftGranted).toBe(true);
+  await expect(
+    page.getByText("Телефон подтверждён. Начислено 500 ₽ CityGo.", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  expect(state.phonePosts).toBe(1);
+  if (!enabledCollector()) {
+    expect(state.identityReads).toBe(0);
+    expect(collector.sdkRequests()).toBe(0);
+    expect(await collector.commands()).toEqual([]);
+    expect(state.outside).toEqual([]);
+    expect(state.unexpected).toEqual([]);
+    return;
+  }
+  await expect.poll(() => state.identityReads).toBe(1);
+  state.holdIdentity = false;
+  state.releaseIdentity();
+  await expect.poll(() => collector.sdkRequests()).toBe(1);
+  expect(await collector.commands()).toEqual([]);
+  await toolbar(page)
+    .getByRole("button", { name: "Баланс и пополнение", exact: true })
+    .click();
+  collector.release();
+  await expect
+    .poll(() => collector.goals())
+    .toEqual([
+      "citygo_phone_opened",
+      "citygo_phone_code_sent",
+      "citygo_phone_verified",
+      "citygo_gift_granted",
+      "citygo_wallet_opened",
+    ]);
+  const beforeRestore = state.dashboardReads,
+    beforeIdentity = state.identityReads;
+  await page.evaluate(() => {
+    window.dispatchEvent(
+      new PageTransitionEvent("pagehide", { persisted: true }),
+    );
+    window.dispatchEvent(
+      new PageTransitionEvent("pageshow", { persisted: true }),
+    );
+  });
+  await expect.poll(() => state.dashboardReads).toBeGreaterThan(beforeRestore);
+  await expect.poll(() => state.identityReads).toBe(beforeIdentity + 1);
+  await expect
+    .poll(
+      async () =>
+        (await collector.commands()).filter((row) => row[1] === "init").length,
+    )
+    .toBe(2);
+  await toolbar(page)
+    .getByRole("button", { name: "Телефон и подарок", exact: true })
+    .click();
+  await expect
+    .poll(
+      async () =>
+        (await collector.goals()).filter(
+          (goal) => goal === "citygo_phone_opened",
+        ).length,
+    )
+    .toBe(2);
+  expect(JSON.stringify(await collector.commands())).not.toMatch(
+    /79990000000|654321|private-contact|private-receipt|"101"/,
+  );
+  expect(state.outside).toEqual([]);
+  expect(state.unexpected).toEqual([]);
+});
+
+for (const role of ["user", "admin"] as const) {
+  test(`email signup with an unfinished SDK hands its confirmed outcome only to ${role === "user" ? "the same user" : "no administrator"}`, async ({
+    page,
+  }) => {
+    test.setTimeout(90_000);
+    const state = await install(page, role);
+    state.authenticated = false;
+    state.holdIdentity = true;
+    const collector = await delayedCollector(page);
+    await page.goto(analyticsOrigin + "/", { referer: "https://yandex.ru/" });
+    await page
+      .getByLabel("Электронная почта", { exact: true })
+      .fill("new-user@example.test");
+    await page.getByLabel("Пароль", { exact: true }).fill("synthetic-password");
+    await page.locator("input[name=personalDataConsent]").check();
+    await page
+      .getByRole("button", { name: "Создать аккаунт", exact: true })
+      .click();
+    await page.getByLabel("Код из письма", { exact: true }).fill("654321");
+    await page
+      .getByRole("button", { name: "Подтвердить email", exact: true })
+      .click();
+    await expect(toolbar(page)).toBeVisible();
+    expect(state.registrationPosts).toBe(1);
+    expect(state.confirmationPosts).toBe(1);
+    // Download may finish after the anonymous lifetime already ended. It must
+    // neither revive that lifetime nor attribute the old queue to an admin.
+    collector.release();
+    if (enabledCollector() && role === "user") {
+      await expect.poll(() => state.identityReads).toBe(1);
+      state.holdIdentity = false;
+      state.releaseIdentity();
+      await expect
+        .poll(() => collector.goals())
+        .toEqual([
+          "citygo_registration_started",
+          "citygo_registration_code_sent",
+          "citygo_registration_completed",
+        ]);
+      const rows = await collector.commands();
+      expect(rows.filter((row) => row[1] === "setUserID")).toEqual([
+        [collectorCounter, "setUserID", "cga_" + "a".repeat(64)],
+      ]);
+      expect(JSON.stringify(rows)).not.toMatch(
+        /new-user@example|synthetic-password|654321|"101"/,
+      );
+    } else {
+      expect(state.identityReads).toBe(0);
+      expect(await collector.commands()).toEqual([]);
+    }
+    expect(state.outside).toEqual([]);
+    expect(state.unexpected).toEqual([]);
+  });
+}
