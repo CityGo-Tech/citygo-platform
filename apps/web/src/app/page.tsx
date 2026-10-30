@@ -48,6 +48,11 @@ import {
 import registrationStyles from "../components/email-registration.module.css";
 import recoveryStyles from "../components/password-recovery.module.css";
 import {
+  clearChatDrafts,
+  readChatDraft,
+  writeChatDraft,
+} from "../components/chat-drafts";
+import {
   readConversationSelection,
   writeConversationSelection,
 } from "../components/conversation-selection";
@@ -55,6 +60,14 @@ import {
 function conversationStorage() {
   try {
     return window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+function draftStorage() {
+  try {
+    return window.sessionStorage;
   } catch {
     return null;
   }
@@ -86,6 +99,7 @@ export default function Home() {
   const [balanceOpen, setBalanceOpen] = useState(false);
   const [conversationView, setConversationView] = useState(false);
   const [text, setText] = useState("");
+  const [draftRecovered, setDraftRecovered] = useState(false);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [pending, setPending] = useState("");
@@ -171,6 +185,8 @@ export default function Home() {
     setNotice("Сессия завершилась. Войдите снова.");
   }
   function clearUserState(owner?: string) {
+    clearChatDrafts(draftStorage());
+    setDraftRecovered(false);
     session.reset(owner);
     abort.current?.abort();
     abort.current = null;
@@ -229,6 +245,8 @@ export default function Home() {
       version = ++refreshVersion.current;
     }
     if (next.user.serviceConsentRequired) {
+      clearChatDrafts(draftStorage());
+      setDraftRecovered(false);
       abort.current?.abort();
       selectedConversation.current = null;
       conversationDrafts.current.clear();
@@ -278,6 +296,8 @@ export default function Home() {
           throw error;
         selectedConversation.current = null;
         writeConversationSelection(next.user.id, null, conversationStorage());
+        writeChatDraft(next.user.id, preferred, "", draftStorage());
+        conversationDrafts.current.delete(preferred);
         // A removed/inaccessible selection cannot carry its draft into the
         // legacy fallback. Never reinterpret unsent text as a different chat.
         setText("");
@@ -285,6 +305,18 @@ export default function Home() {
     }
     ticket.check();
     if (version !== refreshVersion.current) return false;
+    if (visibleThread.current !== next.thread?.id && !chatSubmitting.current) {
+      if (next.thread?.closed) {
+        writeChatDraft(next.user.id, next.thread.id, "", draftStorage());
+        conversationDrafts.current.delete(next.thread.id);
+      }
+      const restored =
+        next.thread && !next.thread.closed
+          ? readChatDraft(next.user.id, next.thread.id, draftStorage())
+          : "";
+      setText(restored);
+      setDraftRecovered(!!restored);
+    }
     visibleThread.current = next.thread?.id ?? null;
     setBoard(next);
     return next;
@@ -337,6 +369,30 @@ export default function Home() {
     setConversationView(true);
     writeConversationSelection(owner, id, conversationStorage());
   }
+  function changeText(value: string) {
+    if (
+      !board?.thread ||
+      !session.hasOwner() ||
+      session.capture().signal.aborted
+    )
+      return;
+    conversationDrafts.current.set(board.thread.id, value);
+    writeChatDraft(board.user.id, board.thread.id, value, draftStorage());
+    setDraftRecovered(false);
+    setText(value);
+  }
+  function restoreDraft(owner: string, id: string, closed: boolean) {
+    if (closed) {
+      writeChatDraft(owner, id, "", draftStorage());
+      conversationDrafts.current.delete(id);
+    }
+    const restored = closed
+      ? ""
+      : (conversationDrafts.current.get(id) ??
+        readChatDraft(owner, id, draftStorage()));
+    setText(restored);
+    setDraftRecovered(!!restored);
+  }
   async function beginConversation(agentKey?: AgentKey) {
     if (
       !board ||
@@ -381,7 +437,7 @@ export default function Home() {
             ? { ...current, thread: detail.thread }
             : current,
         );
-        setText(conversationDrafts.current.get(detail.thread.id) ?? "");
+        restoreDraft(board.user.id, detail.thread.id, detail.thread.closed);
         setDraft("");
         setPending("");
         setStreamAgent(null);
@@ -432,7 +488,7 @@ export default function Home() {
             ? { ...current, thread: detail.thread }
             : current,
         );
-        setText(conversationDrafts.current.get(id) ?? "");
+        restoreDraft(board.user.id, id, detail.thread.closed);
         setDraft("");
         setPending("");
         setStreamAgent(null);
@@ -829,6 +885,7 @@ export default function Home() {
     const requestId = crypto.randomUUID();
     const submittedMode = mode?.aiMode ?? selectedAiMode;
     let answerCompleted = false;
+    let responseStarted = false;
     trackProductEvent("ai_request_submitted", {
       surface: "chat",
       mode: submittedMode,
@@ -836,6 +893,9 @@ export default function Home() {
     });
     chatSubmitting.current = true;
     const threadId = snapshot.thread.id;
+    conversationDrafts.current.delete(threadId);
+    writeChatDraft(snapshot.user.id, threadId, "", draftStorage());
+    setDraftRecovered(false);
     setText("");
     setDraft("");
     setPending(message);
@@ -856,7 +916,10 @@ export default function Home() {
               visibleThread.current !== threadId
             )
               return;
-            if (event.type === "delta") setDraft((value) => value + event.text);
+            if (event.type === "delta") {
+              responseStarted = true;
+              setDraft((value) => value + event.text);
+            }
             if (event.type === "handoff") {
               setNotice(event.reason);
               setStreamAgent(event.to);
@@ -904,7 +967,11 @@ export default function Home() {
         },
         requestId,
       );
-    if (!succeeded) setText(message);
+    if (!succeeded && !answerCompleted && !responseStarted) {
+      setText(message);
+      conversationDrafts.current.set(threadId, message);
+      writeChatDraft(snapshot.user.id, threadId, message, draftStorage());
+    }
     setDraft("");
     setPending("");
     setSending(false);
@@ -1389,7 +1456,9 @@ export default function Home() {
                 aiMode={selectedAiMode}
                 onAiMode={chooseAiMode}
                 text={text}
-                onText={setText}
+                draftRecovered={draftRecovered}
+                onDiscardDraft={() => changeText("")}
+                onText={changeText}
                 onChat={chat}
                 onStop={() => abort.current?.abort()}
                 onPassword={() => setPasswordOpen(true)}
