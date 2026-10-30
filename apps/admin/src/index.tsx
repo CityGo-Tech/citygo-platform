@@ -17,6 +17,7 @@ import { CustomerExplorer } from "./customer-explorer.js";
 import { NpdReceiptsControl } from "./npd-receipts.js";
 import { PaymentRefundsControl } from "./payment-refunds.js";
 import { PaymentAdmissionControl } from "./payment-admission.js";
+import { HumanSupportInbox } from "./human-support.js";
 export function AdminOverview({
   metrikaCounterId,
 }: { metrikaCounterId?: number | null } = {}) {
@@ -295,6 +296,17 @@ export function AdminOverview({
             setError(
               "Доступ к возвратам или сессия изменились. Войдите под администратором и обновите сводку.",
             );
+          }}
+        />
+      )}
+      {viewer && (
+        <HumanSupportInbox
+          key={`support-${viewer.id}-${refreshVersion}`}
+          viewerId={viewer.id}
+          sessionSignal={session.capture().signal}
+          onAccessLost={() => {
+            invalidate();
+            setError("Доступ к обращениям изменился. Обновите сводку.");
           }}
         />
       )}

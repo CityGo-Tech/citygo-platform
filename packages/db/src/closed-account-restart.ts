@@ -6,6 +6,7 @@ import type { AccountResetBlocker } from "./account-reset.js";
 // One operator-only transition before the FIRST administrator bootstrap. This
 // is not account deletion, a public erasure API, a migration, or a reset job.
 const tables = [
+  "human_support_requests",
   "service_consent_events",
   "personal_plan_items",
   "password_recovery_challenges",
@@ -79,6 +80,7 @@ const tables = [
 ] as const;
 // No money, attempt, receipt, policy, migration, catalog or usage row is rewritten.
 const retainedTables = [
+  "human_support_requests",
   "service_consent_events",
   "personal_plan_items",
   "phone_verification_challenges",
@@ -317,6 +319,11 @@ async function takeSnapshot(tx: Sql): Promise<Snapshot> {
 async function inspect(tx: Sql, options: Options) {
   const { snapshot, bootstrapCompleted } = await lockedSnapshot(tx);
   const blockers: AccountResetBlocker[] = [];
+  if (snapshot.counts.human_support_requests)
+    blockers.push({
+      code: "HUMAN_SUPPORT_HISTORY_REQUIRES_REVIEW",
+      count: snapshot.counts.human_support_requests,
+    });
   if (bootstrapCompleted)
     blockers.push({ code: "BOOTSTRAP_ALREADY_COMPLETED", count: 1 });
   if (options.expectedUserCount === undefined)
