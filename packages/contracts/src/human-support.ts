@@ -84,6 +84,14 @@ export const updateSupportRequestStatusSchema = z.strictObject({
 });
 export type SupportRequest = z.infer<typeof supportRequestSchema>;
 export type AdminSupportRequest = z.infer<typeof adminSupportRequestSchema>;
+export type SupportRequestsPage = z.infer<typeof supportRequestsPageSchema>;
+export type SupportRequestResult = z.infer<typeof supportRequestResultSchema>;
+export type AdminSupportRequestsPage = z.infer<
+  typeof adminSupportRequestsPageSchema
+>;
+export type AdminSupportRequestResult = z.infer<
+  typeof adminSupportRequestResultSchema
+>;
 export type CreateSupportRequest = z.infer<typeof createSupportRequestSchema>;
 export type SupportRequestsQuery = z.infer<typeof supportRequestsQuerySchema>;
 export type UpdateSupportRequestStatus = z.infer<

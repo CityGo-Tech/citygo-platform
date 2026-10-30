@@ -1,4 +1,3 @@
-import { z } from "zod";
 import {
   supportRequestIdSchema,
   createSupportRequestSchema,
@@ -11,15 +10,35 @@ import {
   type CreateSupportRequest,
   type SupportRequestsQuery,
   type UpdateSupportRequestStatus,
+  type SupportRequestsPage,
+  type SupportRequestResult,
+  type AdminSupportRequestsPage,
+  type AdminSupportRequestResult,
 } from "@citygo/contracts";
 import { ApiError } from "./transport.js";
 
 type Request = <T>(
   path: string,
-  schema: z.ZodType<T>,
+  schema: {
+    safeParse(value: unknown): { success: true; data: T } | { success: false };
+  },
   body?: unknown,
   method?: "PATCH" | "DELETE",
 ) => Promise<T>;
+export type HumanSupportMethods = {
+  supportRequests(query?: SupportRequestsQuery): Promise<SupportRequestsPage>;
+  createSupportRequest(
+    raw: CreateSupportRequest,
+  ): Promise<SupportRequestResult>;
+  adminSupportRequests(
+    query?: SupportRequestsQuery,
+  ): Promise<AdminSupportRequestsPage>;
+  adminSupportRequest(raw: string): Promise<AdminSupportRequestResult>;
+  setSupportRequestStatus(
+    raw: string,
+    command: UpdateSupportRequestStatus,
+  ): Promise<AdminSupportRequestResult>;
+};
 const invalid = () =>
   new ApiError(
     200,
@@ -33,12 +52,14 @@ function path(base: string, query: SupportRequestsQuery) {
   if (input.status) search.set("status", input.status);
   return base + (search.size ? "?" + search.toString() : "");
 }
-function page<
-  T extends {
+function validatePage(
+  value: {
     requests: { id: string; status: string }[];
     nextBefore: string | null;
   },
->(value: T, before?: string, status?: string) {
+  before?: string,
+  status?: string,
+): void {
   if (
     value.requests.some(
       (r, i, rows) =>
@@ -51,22 +72,25 @@ function page<
         value.nextBefore !== value.requests.at(-1)?.id))
   )
     throw invalid();
-  return value;
 }
-export function createHumanSupportMethods(request: Request) {
+export function createHumanSupportMethods(
+  request: Request,
+): HumanSupportMethods {
   return {
-    supportRequests: async (query: SupportRequestsQuery = {}) =>
-      page(
-        await request(
-          path("/v1/support-requests", query),
-          supportRequestsPageSchema,
-        ),
-        query.before,
-        query.status,
-      ),
+    supportRequests: async (query: SupportRequestsQuery = {}) => {
+      // Keep the complete schema output at the transport boundary. Returning a
+      // generic page(await request(...)) can infer the minimal cursor shape in
+      // emitted declarations and erase the owner and full request DTO.
+      const value = await request<SupportRequestsPage>(
+        path("/v1/support-requests", query),
+        supportRequestsPageSchema,
+      );
+      validatePage(value, query.before, query.status);
+      return value;
+    },
     createSupportRequest: async (raw: CreateSupportRequest) => {
       const input = createSupportRequestSchema.parse(raw),
-        value = await request(
+        value = await request<SupportRequestResult>(
           "/v1/support-requests",
           supportRequestResultSchema,
           input,
@@ -78,18 +102,17 @@ export function createHumanSupportMethods(request: Request) {
         throw invalid();
       return value;
     },
-    adminSupportRequests: async (query: SupportRequestsQuery = {}) =>
-      page(
-        await request(
-          path("/v1/admin/support-requests", query),
-          adminSupportRequestsPageSchema,
-        ),
-        query.before,
-        query.status,
-      ),
+    adminSupportRequests: async (query: SupportRequestsQuery = {}) => {
+      const value = await request<AdminSupportRequestsPage>(
+        path("/v1/admin/support-requests", query),
+        adminSupportRequestsPageSchema,
+      );
+      validatePage(value, query.before, query.status);
+      return value;
+    },
     adminSupportRequest: async (raw: string) => {
       const id = supportRequestIdSchema.parse(raw),
-        value = await request(
+        value = await request<AdminSupportRequestResult>(
           "/v1/admin/support-requests/" + id,
           adminSupportRequestResultSchema,
         );
@@ -102,7 +125,7 @@ export function createHumanSupportMethods(request: Request) {
     ) => {
       const id = supportRequestIdSchema.parse(raw),
         input = updateSupportRequestStatusSchema.parse(command);
-      const value = await request(
+      const value = await request<AdminSupportRequestResult>(
         "/v1/admin/support-requests/" + id,
         adminSupportRequestResultSchema,
         input,

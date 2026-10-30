@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createClient, ApiError } from "./index.js";
-import type { SupportRequest } from "@citygo/contracts";
+import type {
+  SupportRequest,
+  SupportRequestsPage,
+  AdminSupportRequestsPage,
+} from "@citygo/contracts";
 const item: SupportRequest = {
   id: "9007199254740993",
   operationId: "41111111-1111-4111-8111-111111111111",
@@ -14,6 +18,24 @@ const item: SupportRequest = {
 };
 const invalid = (error: unknown) =>
   error instanceof ApiError && error.code === "invalid_response";
+test("validated support pages retain owner identity and the complete request DTO in public method types", async () => {
+  let response: unknown = { userId: "1", requests: [item], nextBefore: null };
+  const client = createClient("http://synthetic", {
+    fetch: async () => Response.json(response),
+  });
+  const ownerPage: SupportRequestsPage = await client.supportRequests();
+  assert.equal(ownerPage.userId, "1");
+  assert.deepEqual(ownerPage.requests[0], item);
+  const adminItem = {
+    ...item,
+    owner: { userId: "1", email: "synthetic@example.test", username: null },
+  };
+  response = { actorId: "2", requests: [adminItem], nextBefore: null };
+  const adminPage: AdminSupportRequestsPage =
+    await client.adminSupportRequests();
+  assert.equal(adminPage.actorId, "2");
+  assert.deepEqual(adminPage.requests[0], adminItem);
+});
 test("support client validates before transport, uses exact verbs and verifies operation/body/id plus bigint pagination", async () => {
   const calls: { url: string; method: string; body: unknown }[] = [];
   let response: unknown = { userId: "1", request: item };
