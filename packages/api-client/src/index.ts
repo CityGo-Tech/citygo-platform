@@ -135,6 +135,11 @@ export {
   type AiModeConsentView,
 } from "./ai-mode-consent.js";
 export {
+  createPersonalPlanResource,
+  type PersonalPlanFilter,
+  type PersonalPlanState,
+} from "./personal-plan-resource.js";
+export {
   captureAiModeSelection,
   formatAiModeOptionLabel,
   isAiModeAvailable,

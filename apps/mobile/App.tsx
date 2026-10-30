@@ -43,6 +43,7 @@ import { MobileAiModeConsentModal } from "./src/ai-mode-consent-modal";
 import { createMobileAiModeConsent } from "./src/ai-mode-consent";
 import { mobileWebDestination, defaultMobileWebUrl } from "./src/web-links";
 import { MobileServiceConsents } from "./src/service-consents";
+import { MobilePersonalPlan, type MobilePlanAccess } from "./src/personal-plan";
 import {
   changeServiceConsent,
   createServiceConsentForm,
@@ -107,6 +108,7 @@ export default function App() {
   const [board, setBoard] = useState<Dashboard | null>(null),
     [ready, setReady] = useState(false),
     [error, setError] = useState("");
+  const [planAccess, setPlanAccess] = useState<MobilePlanAccess | null>(null);
   const [selectedAiMode, setSelectedAiMode] = useState<AiModeId>("balanced");
   const [email, setEmail] = useState(""),
     [password, setPassword] = useState(""),
@@ -147,6 +149,7 @@ export default function App() {
     });
   }
   function clearUserState(owner?: string) {
+    setPlanAccess(null);
     modeConsent.current?.cancel();
     lifetime.reset(owner);
     abort.current?.abort();
@@ -660,6 +663,24 @@ export default function App() {
           behavior={Platform.OS === "ios" ? "padding" : undefined}
         >
           <StatusBar barStyle="dark-content" />
+          {board &&
+            planAccess &&
+            planAccess.userId === board.user.id &&
+            planAccess.sessionTicket.active() &&
+            !board.user.mustChangePassword &&
+            !board.user.serviceConsentRequired && (
+              <MobilePersonalPlan
+                base={base}
+                access={planAccess}
+                xp={board.xp}
+                onClose={() => setPlanAccess(null)}
+                onAccessDenied={() => void endSession(false)}
+                onOpenWebPlan={() => {
+                  setPlanAccess(null);
+                  openWebApp();
+                }}
+              />
+            )}
           <MobileAiModeConsentModal
             view={modeConsentView}
             onConfirm={(checked) => void modeConsent.current?.confirm(checked)}
@@ -914,6 +935,24 @@ export default function App() {
               </Card>
             ) : (
               <>
+                <Card>
+                  <Text style={styles.title}>Мой план</Text>
+                  <Text>Сохранённые шаги вашего переезда и прогресс.</Text>
+                  <Button
+                    title="Открыть мои шаги"
+                    disabled={busy || !!board.user.serviceConsentRequired}
+                    onPress={() => {
+                      const token = session.current;
+                      const ticket = lifetime.capture();
+                      if (!token || !ticket.active()) return;
+                      setPlanAccess({
+                        token,
+                        userId: board.user.id,
+                        sessionTicket: ticket,
+                      });
+                    }}
+                  />
+                </Card>
                 <Card>
                   <Text style={styles.title}>
                     {board.profile
