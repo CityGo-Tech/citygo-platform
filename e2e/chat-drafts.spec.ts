@@ -276,7 +276,7 @@ test("confirmed answer followed by a failed refresh never restores a paid questi
   await composer(page).fill("Уже подтверждённый вопрос");
   await page.getByRole("button", { name: "Отправить", exact: true }).click();
   await expect(
-    page.getByText("Synthetic refresh failure", { exact: true }),
+    page.getByRole("alert").filter({ hasText: "Synthetic refresh failure" }),
   ).toBeVisible();
   await expect(composer(page)).toHaveValue("");
   state.failRefresh = false;
@@ -296,7 +296,7 @@ test("failed send before a response preserves the draft but never retries it aft
   await composer(page).fill("Вопрос при недоступной связи");
   await page.getByRole("button", { name: "Отправить", exact: true }).click();
   await expect(
-    page.getByText("Synthetic send failure", { exact: true }),
+    page.getByRole("alert").filter({ hasText: "Synthetic send failure" }),
   ).toBeVisible();
   await expect(composer(page)).toHaveValue("Вопрос при недоступной связи");
   await page.reload();
