@@ -18,6 +18,7 @@
     "@citygo/design-tokens": "workspace:*",
     "@citygo/content": "workspace:*",
     "expo": "~57.0.17",
+    "expo-font": "~57.0.3",
     "expo-secure-store": "~57.0.3",
     "react-native": "0.86.3",
     "react": "19.2.3",
