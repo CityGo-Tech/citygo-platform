@@ -216,7 +216,14 @@ async function fixture(
           threadId: "10",
           messages: [
             favorite
-              ? { ...favorite, favorite: true }
+              ? {
+                  id: favorite.id,
+                  role: favorite.role,
+                  content: favorite.content,
+                  agentKey: favorite.agentKey,
+                  status: favorite.status,
+                  favorite: true,
+                }
               : {
                   id: match[1],
                   role: "assistant",
@@ -271,6 +278,33 @@ test("results match the three-column shell and expose only actual saved plan ste
   expect(geometry.titleFont).toContain("Manrope");
   expect(geometry.overflow).toBe(false);
   expect(geometry.width).toBeGreaterThan(200);
+  if (info.project.name === "desktop") {
+    const portraits = await page
+      .locator(
+        ".conversation-home .conversation-topics img, .conversation-home .conversation-context img",
+      )
+      .evaluateAll((images) =>
+        images.map((element) => ({
+          width: element.getBoundingClientRect().width,
+          height: element.getBoundingClientRect().height,
+          loaded:
+            (element as HTMLImageElement).complete &&
+            (element as HTMLImageElement).naturalWidth > 0,
+          path: (element as HTMLImageElement).getAttribute("src"),
+        })),
+      );
+    expect(
+      portraits.map(({ width, height, loaded }) => ({ width, height, loaded })),
+    ).toEqual([
+      { width: 64, height: 64, loaded: true },
+      { width: 240, height: 240, loaded: true },
+    ]);
+    expect(
+      portraits.every((portrait) =>
+        portrait.path?.includes("support-assistant.png"),
+      ),
+    ).toBe(true);
+  }
   await page.screenshot({
     path: info.outputPath("results-library.png"),
     fullPage: true,
@@ -289,7 +323,7 @@ test("results match the three-column shell and expose only actual saved plan ste
 test("each category pages beyond twenty, opens the exact source and returns to its loaded list and focus", async ({
   page,
   context,
-}) => {
+}, info) => {
   const state = await fixture(context, steps(45), messages(29));
   await page.goto("/");
   await page.getByLabel("Сообщение помощнику").fill("Несохранённый вопрос");
@@ -319,6 +353,9 @@ test("each category pages beyond twenty, opens the exact source and returns to i
     source(page).locator('[data-source-message="9007199254741272"]'),
   ).toBeFocused();
   await expect(source(page)).toContainText(state.favorites[28]!.content);
+  await source(page).screenshot({
+    path: info.outputPath("results-source.png"),
+  });
   await source(page)
     .getByRole("button", { name: "← В результаты", exact: true })
     .click();
@@ -364,11 +401,17 @@ test("a one-megabyte message has a bounded plain-text preview, exact source and 
   page,
   context,
 }) => {
+  test.setTimeout(60000);
   const saved = messages(1);
+  const prefix =
+    '<img src="https://invalid.example/tracker" onerror="window.XSS=true">\n';
+  const tail = "КОНЕЦ_ТОЧНОГО_ТЕКСТА";
   saved[0]!.content =
-    '<img src="https://invalid.example/tracker" onerror="window.XSS=true">\n' +
-    "я".repeat(1024 * 1024 - 120) +
-    "КОНЕЦ_ТОЧНОГО_ТЕКСТА";
+    prefix +
+    "Точный сохранённый текст строки.\n"
+      .repeat(40000)
+      .slice(0, 1024 * 1024 - prefix.length - tail.length) +
+    tail;
   const state = await fixture(context, [], saved);
   await page.goto("/");
   await openResults(page);

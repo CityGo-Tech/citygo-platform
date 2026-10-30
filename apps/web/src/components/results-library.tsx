@@ -107,6 +107,14 @@ export function ResultsLibrary({
     event: React.MouseEvent<HTMLButtonElement>,
     value: Pick<Source, "id" | "threadId" | "kind">,
   ) => {
+    if (
+      sessionSignal.aborted ||
+      navigationBusy ||
+      busy ||
+      !current ||
+      current.closed
+    )
+      return;
     sourceButton.current = event.currentTarget;
     listScroll.current = window.scrollY;
     setSource({ ...value, owner: userId, signal: sessionSignal });
@@ -148,12 +156,19 @@ export function ResultsLibrary({
         <Button
           variant="ghost"
           disabled={navigationBusy}
-          onClick={() =>
+          onClick={() => {
+            if (
+              sessionSignal.aborted ||
+              navigationBusy ||
+              !current ||
+              current.closed
+            )
+              return;
             downloadText(
               item.title + (item.details ? "\n\n" + item.details : ""),
               "citygo-plan-" + item.id + ".txt",
-            )
-          }
+            );
+          }}
         >
           Скачать .txt
         </Button>
@@ -181,9 +196,16 @@ export function ResultsLibrary({
         <Button
           variant="ghost"
           disabled={navigationBusy}
-          onClick={() =>
-            downloadText(item.content, "citygo-message-" + item.id + ".txt")
-          }
+          onClick={() => {
+            if (
+              sessionSignal.aborted ||
+              navigationBusy ||
+              !current ||
+              current.closed
+            )
+              return;
+            downloadText(item.content, "citygo-message-" + item.id + ".txt");
+          }}
         >
           Скачать .txt
         </Button>
@@ -193,33 +215,38 @@ export function ResultsLibrary({
   return (
     <>
       {selected && (
-        <FavoriteMessageContext
-          key={userId + ":" + selected.threadId + ":" + selected.id}
-          userId={userId}
-          source={selected}
-          sessionSignal={sessionSignal}
-          onAccessDenied={onAccessDenied}
-          onOpenConversation={onOpenConversation}
-          labels={{
-            eyebrow: "ИЗ РЕЗУЛЬТАТОВ",
-            intro: "Исходное сообщение и история перед ним.",
-            back: "← В результаты",
-            selected:
-              selected.kind === "plan"
-                ? "Источник шага"
-                : "Сохранённое сообщение",
-            unavailable:
-              "Исходное сообщение недоступно. Вернитесь к результатам.",
-          }}
-          onBack={() => {
-            setSource(null);
-            requestAnimationFrame(() => {
-              if (sessionSignal.aborted) return;
-              sourceButton.current?.focus({ preventScroll: true });
-              window.scrollTo({ top: listScroll.current, behavior: "instant" });
-            });
-          }}
-        />
+        <div className="ym-hide-content">
+          <FavoriteMessageContext
+            key={userId + ":" + selected.threadId + ":" + selected.id}
+            userId={userId}
+            source={selected}
+            sessionSignal={sessionSignal}
+            onAccessDenied={onAccessDenied}
+            onOpenConversation={onOpenConversation}
+            labels={{
+              eyebrow: "ИЗ РЕЗУЛЬТАТОВ",
+              intro: "Исходное сообщение и история перед ним.",
+              back: "← В результаты",
+              selected:
+                selected.kind === "plan"
+                  ? "Источник шага"
+                  : "Сохранённое сообщение",
+              unavailable:
+                "Исходное сообщение недоступно. Вернитесь к результатам.",
+            }}
+            onBack={() => {
+              setSource(null);
+              requestAnimationFrame(() => {
+                if (sessionSignal.aborted) return;
+                sourceButton.current?.focus({ preventScroll: true });
+                window.scrollTo({
+                  top: listScroll.current,
+                  behavior: "instant",
+                });
+              });
+            }}
+          />
+        </div>
       )}
       <div hidden={selected !== null}>
         <Card
