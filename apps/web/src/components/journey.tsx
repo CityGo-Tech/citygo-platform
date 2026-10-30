@@ -5,6 +5,7 @@ import type {
   AgentKey,
   Dashboard,
   ConversationSummary,
+  ConversationFilters,
   Quest,
   AiModeId,
 } from "@citygo/contracts";
@@ -56,7 +57,8 @@ export type JourneyProps = {
   onBegin?: (agentKey?: AgentKey) => Promise<boolean>;
   conversations?: ConversationSummary[] | null;
   conversationNextCursor?: string | null;
-  onConversations?: (before?: string) => void;
+  conversationFilters?: ConversationFilters;
+  onConversations?: (before?: string, filters?: ConversationFilters) => void;
   onOpenConversation?: (id: string) => Promise<boolean>;
   onPassword?: () => void;
   onBalance?: () => void;

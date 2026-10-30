@@ -119,6 +119,28 @@ test(
     const foreign = await ensureConversation(runtime, other, "housing");
     assert.notEqual(foreign.id, raced[0]!.id);
     assert.equal((await repo.conversations(owner)).conversations.length, 6);
+    await db.query(
+      "insert into messages(thread_id,role,content) values($1,'user','PG 100%_literal'),($2,'user','PG 100%_literal')",
+      [raced[0]!.id, foreign.id],
+    );
+    const filtered = await repo.conversations(owner, undefined, {
+      search: "PG 100%_literal",
+      assistantKey: "housing",
+      status: "active",
+    });
+    assert.deepEqual(
+      filtered.conversations.map((item) => item.id),
+      [raced[0]!.id],
+    );
+    assert.equal(
+      (
+        await repo.conversations(owner, undefined, {
+          search: "PG 100%_literal",
+          status: "closed",
+        })
+      ).conversations.length,
+      0,
+    );
     await assert.rejects(repo.conversation(owner, foreign.id), /Чат не найден/);
     await assert.rejects(
       runtime.query(

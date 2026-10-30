@@ -90,7 +90,13 @@ export const conversationIdSchema = z
 export const conversationStartSchema = z.strictObject({
   agentKey: agentKeySchema.optional(),
 });
-export const conversationListQuerySchema = z.strictObject({
+export const conversationFiltersSchema = z.strictObject({
+  search: z.string().trim().min(1).max(160).optional(),
+  assistantKey: agentKeySchema.optional(),
+  status: z.enum(["active", "closed"]).optional(),
+});
+export type ConversationFilters = z.infer<typeof conversationFiltersSchema>;
+export const conversationListQuerySchema = conversationFiltersSchema.extend({
   before: conversationIdSchema.optional(),
 });
 export type ConversationSummary = {

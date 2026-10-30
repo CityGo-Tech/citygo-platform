@@ -902,18 +902,25 @@ export function createClient(
         );
       return result;
     },
-    conversations: async (before?: string) => {
-      const query = conversationListQuerySchema.parse(
-        before === undefined ? {} : { before },
-      );
+    conversations: async (
+      before?: string,
+      filters: import("@citygo/contracts").ConversationFilters = {},
+    ) => {
+      const query = conversationListQuerySchema.parse({ ...filters, before });
+      const params = new URLSearchParams();
+      for (const [key, value] of Object.entries(query))
+        if (value !== undefined) params.set(key, value);
       const result = await request(
-        "/v1/conversations" +
-          (query.before !== undefined ? "?before=" + query.before : ""),
+        "/v1/conversations" + (params.size ? "?" + params.toString() : ""),
         conversationListResponseSchema,
       );
       if (
         result.conversations.some(
           (thread, index, rows) =>
+            (query.assistantKey !== undefined &&
+              thread.assistantKey !== query.assistantKey) ||
+            (query.status !== undefined &&
+              thread.closed !== (query.status === "closed")) ||
             (query.before !== undefined &&
               BigInt(thread.id) >= BigInt(query.before)) ||
             (index > 0 && BigInt(thread.id) >= BigInt(rows[index - 1]!.id)),

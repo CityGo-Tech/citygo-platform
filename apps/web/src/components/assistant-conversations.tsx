@@ -1,7 +1,12 @@
 "use client";
 import Image from "next/image";
-import type { AgentKey, ConversationSummary } from "@citygo/contracts";
-import { Button, Card } from "@citygo/ui-web";
+import { useEffect, useState, type FormEvent } from "react";
+import type {
+  AgentKey,
+  ConversationSummary,
+  ConversationFilters,
+} from "@citygo/contracts";
+import { Button, Card, Field, SelectField } from "@citygo/ui-web";
 
 export const assistantCatalog: {
   key: AgentKey;
@@ -125,6 +130,7 @@ export function ConversationList({
   busy,
   onOpen,
   onLoad,
+  filters,
   onHelpers,
   onFavorites,
 }: {
@@ -132,19 +138,94 @@ export function ConversationList({
   nextCursor: string | null;
   busy: boolean;
   onOpen: (id: string) => Promise<boolean>;
-  onLoad: (before?: string) => void;
+  filters: ConversationFilters;
+  onLoad: (before?: string, filters?: ConversationFilters) => void;
   onHelpers: () => void;
   onFavorites?: () => void;
 }) {
+  const [search, setSearch] = useState(filters.search ?? "");
+  const [assistant, setAssistant] = useState(filters.assistantKey ?? "");
+  const [status, setStatus] = useState(filters.status ?? "");
+  useEffect(() => {
+    setSearch(filters.search ?? "");
+    setAssistant(filters.assistantKey ?? "");
+    setStatus(filters.status ?? "");
+  }, [filters.search, filters.assistantKey, filters.status]);
+  const apply = (event: FormEvent) => {
+    event.preventDefault();
+    onLoad(undefined, {
+      ...(search.trim() ? { search: search.trim() } : {}),
+      ...(assistant ? { assistantKey: assistant as AgentKey } : {}),
+      ...(status ? { status: status as "active" | "closed" } : {}),
+    });
+  };
   return (
     <Card className="assistant-directory" aria-label="Ваши разговоры">
       <span className="eyebrow">CITYGO · ВАШ ПЕРЕЕЗД</span>
       <h1>Ваши разговоры</h1>
       <p>Здесь ваши разговоры с помощниками.</p>
+      <form
+        className="conversation-directory-filters ym-hide-content"
+        onSubmit={apply}
+      >
+        <Field
+          label="Найти в переписке"
+          className="ym-disable-keys"
+          type="search"
+          maxLength={160}
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+          disabled={busy}
+        />
+        <SelectField
+          label="Помощник"
+          value={assistant}
+          disabled={busy}
+          onChange={(event) =>
+            setAssistant(event.target.value as AgentKey | "")
+          }
+        >
+          <option value="">Все помощники</option>
+          {assistantCatalog.map((item) => (
+            <option key={item.key} value={item.key}>
+              {item.title}
+            </option>
+          ))}
+        </SelectField>
+        <SelectField
+          label="Статус"
+          value={status}
+          disabled={busy}
+          onChange={(event) =>
+            setStatus(event.target.value as "active" | "closed" | "")
+          }
+        >
+          <option value="">Все разговоры</option>
+          <option value="active">Можно продолжить</option>
+          <option value="closed">История</option>
+        </SelectField>
+        <div className="conversation-directory-actions">
+          <Button type="submit" disabled={busy}>
+            Найти
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            disabled={busy}
+            onClick={() => onLoad(undefined, {})}
+          >
+            Сбросить
+          </Button>
+        </div>
+      </form>
       {conversations === null ? (
         <p role="status">Загружаем разговоры…</p>
       ) : conversations.length === 0 ? (
-        <p>Выберите помощника, чтобы начать разговор.</p>
+        <p>
+          {Object.keys(filters).length
+            ? "По этим условиям разговоров пока нет."
+            : "Выберите помощника, чтобы начать разговор."}
+        </p>
       ) : (
         conversations.map((item) => {
           const title = item.assistantKey
@@ -186,7 +267,7 @@ export function ConversationList({
         <Button
           variant="secondary"
           disabled={busy}
-          onClick={() => onLoad(nextCursor)}
+          onClick={() => onLoad(nextCursor, filters)}
         >
           Загрузить ещё разговоры
         </Button>
@@ -199,7 +280,11 @@ export function ConversationList({
         <Button variant="secondary" disabled={busy} onClick={onFavorites}>
           Найти сохранённое сообщение
         </Button>
-        <Button variant="ghost" disabled={busy} onClick={() => onLoad()}>
+        <Button
+          variant="ghost"
+          disabled={busy}
+          onClick={() => onLoad(undefined, filters)}
+        >
           Обновить разговоры
         </Button>
       </div>

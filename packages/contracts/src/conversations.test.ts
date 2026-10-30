@@ -138,3 +138,23 @@ test("legacy dashboards remain readable and new detail requires explicit pinned 
     true,
   );
 });
+
+test("conversation filters reject oversized, forged and ambiguous fields", () => {
+  assert.deepEqual(
+    conversationListQuerySchema.parse({
+      search: "  Москва  ",
+      assistantKey: "housing",
+      status: "active",
+    }),
+    { search: "Москва", assistantKey: "housing", status: "active" },
+  );
+  for (const value of [
+    { search: " " },
+    { search: "x".repeat(161) },
+    { search: ["x"] },
+    { assistantKey: "bubble" },
+    { status: "open" },
+    { userId: "2" },
+  ])
+    assert.equal(conversationListQuerySchema.safeParse(value).success, false);
+});

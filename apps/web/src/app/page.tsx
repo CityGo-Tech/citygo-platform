@@ -16,11 +16,13 @@ import type {
   AgentKey,
   Dashboard,
   ConversationSummary,
+  ConversationFilters,
   ServiceConsentChoice,
   AiModeId,
 } from "@citygo/contracts";
 import { Button, Card, Field, Badge } from "@citygo/ui-web";
 import { Journey } from "../components/journey";
+import { createConversationListRequests } from "../components/conversation-list-requests";
 import { ConversationHome } from "../components/conversation-home";
 import { OwnerReceiptsPanel } from "../components/owner-receipts";
 import { MessageFavoritesPanel } from "../components/message-favorites";
@@ -104,6 +106,9 @@ export default function Home() {
   const conversationEpoch = useRef(0);
   const conversationSwitch = useRef(false);
   const conversationDrafts = useRef(new Map<string, string>());
+  const conversationListRequests = useRef(createConversationListRequests());
+  const [conversationFilters, setConversationFilters] =
+    useState<ConversationFilters>({});
   const [conversations, setConversations] = useState<
     ConversationSummary[] | null
   >(null);
@@ -198,6 +203,8 @@ export default function Home() {
     conversationSwitch.current = false;
     conversationEpoch.current++;
     refreshVersion.current++;
+    conversationListRequests.current.reset();
+    setConversationFilters({});
     setConversations(null);
     setConversationNextCursor(null);
     setFormVersion((value) => value + 1);
@@ -232,6 +239,8 @@ export default function Home() {
       setDraft("");
       setPending("");
       setSending(false);
+      conversationListRequests.current.reset();
+      setConversationFilters({});
       setConversations(null);
       setConversationNextCursor(null);
       setConversationView(false);
@@ -436,11 +445,20 @@ export default function Home() {
         conversationSwitch.current = false;
     }
   }
-  function loadConversations(before?: string) {
+  function loadConversations(before?: string, filters?: ConversationFilters) {
     if (!board || board.user.serviceConsentRequired || busy || sending) return;
+    if (before !== undefined && before !== conversationNextCursor) return;
+    const query = filters ?? conversationFilters;
+    const currentRequest = conversationListRequests.current.begin(query);
+    if (!before) {
+      setConversationFilters(query);
+      setConversations(null);
+      setConversationNextCursor(null);
+    }
     void act(async (ticket) => {
-      const page = await api.conversations(before);
+      const page = await api.conversations(before, query);
       ticket.check();
+      if (!currentRequest()) return;
       if (page.userId !== board.user.id) {
         clearUserState();
         return;
@@ -1404,6 +1422,7 @@ export default function Home() {
                 conversations={conversations}
                 conversationNextCursor={conversationNextCursor}
                 onConversations={loadConversations}
+                conversationFilters={conversationFilters}
                 onOpenConversation={openConversation}
                 onStart={(id) =>
                   act(async (ticket) => {

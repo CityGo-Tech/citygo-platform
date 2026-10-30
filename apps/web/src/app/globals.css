@@ -852,3 +852,17 @@ footer {
   border-radius: 8px;
   border: 1px solid var(--cg-color-border);
 }
+
+/* Figma 6:26: filters stay inside the existing conversation card. */
+.conversation-directory-filters {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: var(--cg-space-md);
+  align-items: flex-end;
+}
+.conversation-directory-filters .cg-field {
+  gap: var(--cg-space-sm);
+  flex: 1 1 160px;
+  min-width: 0;
+}
