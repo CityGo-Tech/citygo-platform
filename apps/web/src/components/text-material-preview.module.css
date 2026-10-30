@@ -1,0 +1,104 @@
+.dialog {
+  width: min(816px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  margin: auto;
+  padding: 0;
+  overflow: auto;
+  border: 0;
+  border-radius: var(--cg-radius-card);
+  background: var(--cg-color-surface);
+  color: var(--cg-color-foreground);
+}
+.dialog::backdrop {
+  background: #17192b66;
+}
+.card {
+  display: grid;
+  gap: var(--cg-space-md);
+  margin: 0;
+  padding: var(--cg-space-lg);
+}
+.card h2 {
+  margin: 0;
+  font-size: 32px;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: -0.025em;
+}
+.card p,
+.card h3 {
+  margin: 0;
+}
+.card h3 {
+  font-size: 20px;
+  line-height: 1.45;
+}
+.eyebrow {
+  color: var(--cg-color-primary-strong);
+  font-size: 11px;
+  font-weight: 700;
+}
+.notice,
+.file {
+  display: grid;
+  gap: var(--cg-space-sm);
+  min-width: 0;
+  overflow-wrap: anywhere;
+  padding: var(--cg-space-md);
+  border: 1px solid var(--cg-color-border);
+  border-radius: var(--cg-radius-card);
+}
+.notice {
+  background: var(--cg-color-primary-soft);
+  font-size: 14px;
+}
+.notice p {
+  color: var(--cg-color-foreground);
+}
+.file {
+  padding: var(--cg-space-lg);
+}
+.file textarea,
+.file input {
+  width: 100%;
+  min-width: 0;
+}
+.file textarea {
+  padding: var(--cg-space-compact);
+  border: 1px solid var(--cg-color-control-border);
+  border-radius: var(--cg-radius-control);
+  resize: vertical;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--cg-space-compact);
+}
+.actions button {
+  flex: 1 1 220px;
+}
+.error {
+  color: var(--cg-color-danger);
+}
+@media (max-width: 540px) {
+  .dialog {
+    width: calc(100vw - 24px);
+    max-height: calc(100dvh - 24px);
+  }
+  .card {
+    padding: var(--cg-space-lg);
+  }
+  .card h2 {
+    font-size: 28px;
+  }
+  .file {
+    padding: var(--cg-space-md);
+  }
+  .actions {
+    flex-direction: column;
+  }
+  .actions button {
+    flex: 0 1 auto;
+    width: 100%;
+  }
+}
