@@ -92,15 +92,8 @@ export function HumanSupportPanel({
         {state?.receipt ? "Обращение сохранено" : "Можно обратиться к человеку"}
       </h1>
       <p className={styles.intro}>
-        Без AI-запроса, обязательной анкеты и платного баланса.
+        Оставьте вопрос владельцу CityGo. Обращение бесплатно.
       </p>
-      <div className={styles.context}>
-        <strong>Кто поможет</strong>
-        <p>
-          Обращение владельцу CityGo. Это не обещание риелтора, юриста или
-          круглосуточного оператора.
-        </p>
-      </div>
       {state?.receipt && (
         <div role="status" className={styles.notice}>
           <strong>Обращение №{state.receipt.id} сохранено</strong>
@@ -114,7 +107,7 @@ export function HumanSupportPanel({
             {state.receipt.status === "closed"
               ? "Закрыто владельцем"
               : "Открыто"}
-            . Срочные и экстренные вопросы — не этот канал.
+            .
           </p>
         </div>
       )}

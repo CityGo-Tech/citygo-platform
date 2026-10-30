@@ -32,7 +32,6 @@
   line-height: 1.45;
   color: var(--cg-color-muted);
 }
-.context,
 .question,
 .notice,
 .list li {
@@ -70,7 +69,6 @@
 .notice {
   background: var(--cg-color-primary-soft);
 }
-.context p,
 .notice p,
 .list p {
   color: var(--cg-color-foreground);

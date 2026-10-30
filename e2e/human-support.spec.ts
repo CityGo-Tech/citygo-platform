@@ -45,7 +45,7 @@ test("an explicit human question is saved without AI or payment and the real adm
   });
   await expect(panel).toBeVisible();
   await expect(panel).toContainText(
-    "Без AI-запроса, обязательной анкеты и платного баланса.",
+    "Оставьте вопрос владельцу CityGo. Обращение бесплатно.",
   );
   await panel
     .getByRole("textbox", { name: "Ваш вопрос" })
