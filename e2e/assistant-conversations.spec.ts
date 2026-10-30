@@ -775,6 +775,35 @@ test("conversation search filters owned history, resets to all and never sends a
   await expect(
     page.getByRole("combobox", { name: "Статус", exact: true }),
   ).toHaveValue("");
+  // Reset also clears local, unapplied edits when server filters are already empty.
+  const queriesBeforeEdits = f.state.listQueries.length;
+  await page
+    .getByLabel("Найти в переписке", { exact: true })
+    .fill("неотправленный поиск");
+  await page
+    .getByRole("combobox", { name: "Помощник", exact: true })
+    .selectOption("housing");
+  await page
+    .getByRole("combobox", { name: "Статус", exact: true })
+    .selectOption("closed");
+  expect(f.state.listQueries).toHaveLength(queriesBeforeEdits);
+  await page.getByRole("button", { name: "Сбросить", exact: true }).click();
+  await expect(
+    page.getByLabel("Найти в переписке", { exact: true }),
+  ).toHaveValue("");
+  await expect(
+    page.getByRole("combobox", { name: "Помощник", exact: true }),
+  ).toHaveValue("");
+  await expect(
+    page.getByRole("combobox", { name: "Статус", exact: true }),
+  ).toHaveValue("");
+  await expect(
+    page.getByRole("article", {
+      name: "Диалог: Помощник по работе",
+      exact: true,
+    }),
+  ).toBeVisible();
+  expect(f.state.listQueries.at(-1)).toBe("");
   const form = page.locator(".conversation-directory-filters");
   await form.scrollIntoViewIfNeeded();
   const height = (await form.boundingBox())!.height;

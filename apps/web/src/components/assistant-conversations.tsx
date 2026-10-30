@@ -212,7 +212,12 @@ export function ConversationList({
             type="button"
             variant="ghost"
             disabled={busy}
-            onClick={() => onLoad(undefined, {})}
+            onClick={() => {
+              setSearch("");
+              setAssistant("");
+              setStatus("");
+              onLoad(undefined, {});
+            }}
           >
             Сбросить
           </Button>
