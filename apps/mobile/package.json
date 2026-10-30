@@ -17,17 +17,17 @@
     "@citygo/ui-native": "workspace:*",
     "@citygo/design-tokens": "workspace:*",
     "@citygo/content": "workspace:*",
-    "expo": "~57.0.17",
-    "expo-font": "~57.0.3",
-    "expo-secure-store": "~57.0.3",
-    "react-native": "0.86.3",
-    "react": "19.2.3",
-    "react-dom": "19.2.3",
-    "expo-crypto": "~57.0.2",
-    "react-native-safe-area-context": "~5.7.0"
+    "expo": "~58.0.20",
+    "expo-font": "~58.0.10",
+    "expo-secure-store": "~58.0.2",
+    "react-native": "0.88.1",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "expo-crypto": "~58.0.7",
+    "react-native-safe-area-context": "~5.10.1"
   },
   "devDependencies": {
-    "@types/react": "^19.2.0",
+    "@types/react": "^19.3.0",
     "typescript": "^5.9.2"
   }
 }
