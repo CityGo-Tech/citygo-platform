@@ -128,6 +128,7 @@ import {
 } from "./transport.js";
 import { readEvents } from "./sse.js";
 import { createAdminCustomerMethods } from "./admin-customers.js";
+import { createHumanSupportMethods } from "./human-support.js";
 export {
   createAiModeConsentResource,
   type AiModeConsentChoice,
@@ -638,6 +639,7 @@ export function createClient(
         { currentPassword, password },
       ),
     ...createAdminCustomerMethods(request),
+    ...createHumanSupportMethods(request),
     accountUsers: () => request("/v1/admin/accounts", adminUsersResponseSchema),
     adminPhoneContacts: async (input: AdminPhoneContactsQuery = {}) => {
       const query = adminPhoneContactsQuerySchema.safeParse(input);

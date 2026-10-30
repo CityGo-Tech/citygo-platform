@@ -25,6 +25,7 @@ export function AccountProfile({
   onPhone,
   onFavorites,
   onPassword,
+  onSupport,
 }: {
   userId: string;
   sessionSignal: AbortSignal;
@@ -36,6 +37,7 @@ export function AccountProfile({
   onPhone?: () => void;
   onFavorites?: () => void;
   onPassword?: () => void;
+  onSupport?: () => void;
 }) {
   const [snapshot, setSnapshot] = useState<{
     owner: string;
@@ -314,6 +316,9 @@ export function AccountProfile({
         </Button>
       </section>
       <div className="account-profile-actions">
+        <Button variant="secondary" onClick={onSupport}>
+          Помощь человека
+        </Button>
         <Button variant="secondary" disabled={disabled} onClick={onPassword}>
           Изменить пароль
         </Button>

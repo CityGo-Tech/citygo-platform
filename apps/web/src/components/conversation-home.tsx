@@ -23,6 +23,7 @@ import {
 } from "./personal-plan";
 import planStyles from "./personal-plan.module.css";
 import { AccountProfile } from "./account-profile";
+import { HumanSupportPanel } from "./human-support";
 import { AiModeSelector } from "./ai-mode-selector";
 import { isAiModeAvailable } from "@citygo/api-client";
 import { trackProductEvent } from "./product-analytics";
@@ -60,7 +61,8 @@ export function ConversationHome(props: JourneyProps) {
     },
   );
   const agent = props.streamAgent ?? board.thread?.agentKey ?? "support";
-  const contextAgent = tab === "Мой план" ? "support" : agent;
+  const contextAgent =
+    tab === "Мой план" || tab === "Помощь человека" ? "support" : agent;
   const canSend =
     !!board.thread &&
     isAiModeAvailable(
@@ -118,6 +120,9 @@ export function ConversationHome(props: JourneyProps) {
           height={64}
           alt="Координатор переезда CityGo"
         />
+        <Button variant="secondary" onClick={() => setTab("Помощь человека")}>
+          Помощь человека
+        </Button>
       </Card>
     </aside>
   );
@@ -200,7 +205,20 @@ export function ConversationHome(props: JourneyProps) {
           }}
         />
       )}
-      {tab === "Мой план" ? (
+      {tab === "Помощь человека" ? (
+        <div className="conversation-workspace">
+          {sidebar}
+          <div className="conversation-main">
+            <HumanSupportPanel
+              userId={board.user.id}
+              sessionSignal={props.sessionSignal}
+              onAccessDenied={props.onAccessDenied}
+              onClose={() => setTab("Диалоги")}
+            />
+          </div>
+          {rail}
+        </div>
+      ) : tab === "Мой план" ? (
         <div className={"conversation-workspace " + planStyles.workspace}>
           {sidebar}
           <div className="conversation-main">
@@ -253,6 +271,7 @@ export function ConversationHome(props: JourneyProps) {
           onPhone={props.onPhone}
           onFavorites={props.onFavorites}
           onPassword={props.onPassword}
+          onSupport={() => setTab("Помощь человека")}
         />
       ) : (
         <div className="conversation-workspace">

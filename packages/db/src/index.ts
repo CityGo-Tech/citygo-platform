@@ -7,6 +7,10 @@ export {
   type CustomerObservabilityContext,
 } from "./customer-observability.js";
 export { PersonalPlan } from "./personal-plan.js";
+export {
+  HumanSupportRequests,
+  type HumanSupportContext,
+} from "./human-support.js";
 export { ServiceConsents } from "./service-consents.js";
 export {
   parseLegacyBalancedConsentCompatibility,
