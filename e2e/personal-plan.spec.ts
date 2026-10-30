@@ -234,14 +234,17 @@ async function fixture(
       const saved = state.items.find((row) => row.title === input.title) ?? {
         ...item("9007199254741031", input.title),
         details: input.details,
-        source: {
-          messageId: input.sourceMessageId,
-          threadId: "10",
-          role:
-            input.sourceMessageId === "10"
-              ? ("user" as const)
-              : ("assistant" as const),
-        },
+        source:
+          input.sourceMessageId === null
+            ? null
+            : {
+                messageId: input.sourceMessageId,
+                threadId: "10",
+                role:
+                  input.sourceMessageId === "10"
+                    ? ("user" as const)
+                    : ("assistant" as const),
+              },
       };
       if (!state.items.some((row) => row.id === saved.id))
         state.items.unshift(saved);
@@ -926,4 +929,50 @@ test("real local API persists chosen messages and CAS changes without spending o
   await expect(page.getByRole("log")).toContainText(
     "Синтетический вопрос для локального плана",
   );
+});
+
+test("standalone plan creation survives reload, shows its own origin and exposes no invented message source", async ({
+  page,
+  context,
+}) => {
+  const state = await fixture(context);
+  await page.goto("/");
+  await openPlan(page);
+  await planPanel(page)
+    .getByRole("button", { name: "Добавить шаг", exact: true })
+    .click();
+  const form = page.getByRole("region", {
+    name: "Добавление шага в план",
+    exact: true,
+  });
+  await expect(form.getByLabel("Название шага", { exact: true })).toHaveValue(
+    "",
+  );
+  await form
+    .getByLabel("Название шага", { exact: true })
+    .fill("Собрать коробки");
+  await form
+    .getByLabel("Описание шага", { exact: true })
+    .fill("Мой список вещей");
+  await form
+    .getByRole("button", { name: "Подтвердить добавление", exact: true })
+    .click();
+  const entry = planPanel(page)
+    .getByRole("article")
+    .filter({ hasText: "Собрать коробки" });
+  await expect(entry).toContainText("Ваш шаг");
+  await expect(
+    entry.getByRole("button", {
+      name: "Открыть исходное сообщение",
+      exact: true,
+    }),
+  ).toHaveCount(0);
+  expect(state.posts).toHaveLength(1);
+  expect(state.posts[0]?.sourceMessageId).toBeNull();
+  await page.reload();
+  await openPlan(page);
+  await expect(entry).toContainText("Мой список вещей");
+  expect(state.sourceReads).toEqual([]);
+  expect(state.forbidden).toEqual([]);
+  expect(state.external).toBe(0);
 });

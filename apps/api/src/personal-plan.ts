@@ -82,7 +82,7 @@ export function registerPersonalPlanApi(
       await stored(plan.create(user.id, command)),
       user.id,
     );
-    if (result.item.source.messageId !== command.sourceMessageId)
+    if ((result.item.source?.messageId ?? null) !== command.sourceMessageId)
       throw new Error("Invalid personal plan source response");
     return result;
   });

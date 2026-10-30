@@ -802,7 +802,7 @@ export function createClient(
       );
       // An idempotent replay may return an edited current item. Its immutable
       // original source must still agree with the frozen creation request.
-      if (result.item.source.messageId !== body.sourceMessageId)
+      if ((result.item.source?.messageId ?? null) !== body.sourceMessageId)
         throw new ApiError(
           200,
           "Ответ сервера не соответствует источнику шага",

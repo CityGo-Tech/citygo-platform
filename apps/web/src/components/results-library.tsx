@@ -148,11 +148,12 @@ export function ResultsLibrary({
         Сохранён {new Date(item.createdAt).toLocaleDateString("ru-RU")}
       </small>
       <div className={styles.actions}>
-        {sourceAction({
-          id: item.source.messageId,
-          threadId: item.source.threadId,
-          kind: "plan",
-        })}
+        {item.source &&
+          sourceAction({
+            id: item.source.messageId,
+            threadId: item.source.threadId,
+            kind: "plan",
+          })}
         <Button
           variant="ghost"
           disabled={navigationBusy}

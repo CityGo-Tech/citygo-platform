@@ -624,3 +624,50 @@ test("personal plan corrupt stored output is a bounded generic server failure, n
   );
   assert.equal(f.modelCalls(), 0);
 });
+
+test("HTTP manual plan steps need an active owner, preserve null source and never call a model or alter money", async (t) => {
+  const f = await fixture(t);
+  const before = await f.legacySnapshot();
+  const command = { ...f.create(), sourceMessageId: null };
+  assert.equal(
+    (await f.call("POST", "/v1/personal-plan", command, "")).statusCode,
+    401,
+  );
+  const first = await f.call("POST", "/v1/personal-plan", command);
+  assert.equal(first.statusCode, 200, first.body);
+  const result = personalPlanItemResultSchema.parse(first.json());
+  assert.equal(result.item.source, null);
+  assert.deepEqual(
+    (await f.call("POST", "/v1/personal-plan", command)).json(),
+    result,
+  );
+  const foreign = await f.call(
+    "PATCH",
+    "/v1/personal-plan/" + result.item.id,
+    {
+      expectedRevision: 1,
+      title: "Foreign",
+      details: "",
+      status: "pending",
+    },
+    f.otherToken,
+  );
+  assert.equal(foreign.statusCode, 404);
+  assert.equal(
+    (
+      await f.call("POST", "/v1/personal-plan", {
+        ...command,
+        sourceMessageId: f.sources.assistant,
+      })
+    ).statusCode,
+    409,
+  );
+  assert.deepEqual(
+    personalPlanPageSchema.parse(
+      (await f.call("GET", "/v1/personal-plan")).json(),
+    ).items,
+    [result.item],
+  );
+  assert.deepEqual(await f.legacySnapshot(), before);
+  assert.equal(f.modelCalls(), 0);
+});

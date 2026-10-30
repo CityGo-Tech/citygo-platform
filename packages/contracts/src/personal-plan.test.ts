@@ -112,7 +112,7 @@ test("personal plan IDs reject alternate numeric spellings, newline selectors an
         ...create,
         sourceMessageId: value,
       }).success,
-      false,
+      value === null,
     );
   }
   for (const value of ["1", "9007199254740993", "9223372036854775807"])
@@ -293,4 +293,24 @@ test("personal plan pages bound descending bigint IDs and a full-page cursor wit
     { before: "2", limit: 200 },
   ])
     assert.equal(personalPlanQuerySchema.safeParse(input).success, false);
+});
+
+test("manual plan creation explicitly chooses no source and null receipts cannot forge a message", () => {
+  const manual = { ...create, sourceMessageId: null };
+  assert.deepEqual(createPersonalPlanItemSchema.parse(manual), manual);
+  assert.equal(
+    createPersonalPlanItemSchema.safeParse({
+      ...create,
+      sourceMessageId: undefined,
+    }).success,
+    false,
+  );
+  assert.equal(
+    personalPlanItemSchema.safeParse({ ...item, source: null }).success,
+    true,
+  );
+  assert.equal(
+    personalPlanItemSchema.safeParse({ ...item, source: {} }).success,
+    false,
+  );
 });

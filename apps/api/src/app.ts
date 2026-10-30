@@ -532,9 +532,9 @@ export async function buildApp(options: {
       );
       if (result.rows.length !== 25) throw new Error("Pending migration");
       const supportMigration = await options.db.query(
-        "select name from citygo_migrations where name='0037_human_support_requests.sql'",
+        "select name from citygo_migrations where name in ('0037_human_support_requests.sql','0038_manual_personal_plan.sql')",
       );
-      if (supportMigration.rows.length !== 1)
+      if (supportMigration.rows.length !== 2)
         throw new Error("Pending support migration");
       await options.db.query(
         "select id,user_id,status,revision from human_support_requests limit 0",
