@@ -24,6 +24,7 @@ import {
 import planStyles from "./personal-plan.module.css";
 import { AccountProfile } from "./account-profile";
 import { HumanSupportPanel } from "./human-support";
+import { ResultsLibrary } from "./results-library";
 import { AiModeSelector } from "./ai-mode-selector";
 import { isAiModeAvailable } from "@citygo/api-client";
 import { trackProductEvent } from "./product-analytics";
@@ -62,8 +63,11 @@ export function ConversationHome(props: JourneyProps) {
     },
   );
   const agent = props.streamAgent ?? board.thread?.agentKey ?? "support";
-  const contextAgent =
-    tab === "Мой план" || tab === "Помощь человека" ? "support" : agent;
+  const contextAgent = ["Мой план", "Результаты", "Помощь человека"].includes(
+    tab,
+  )
+    ? "support"
+    : agent;
   const canSend =
     !!board.thread &&
     isAiModeAvailable(
@@ -162,28 +166,30 @@ export function ConversationHome(props: JourneyProps) {
   return (
     <section className="conversation-home">
       <nav aria-label="Личный кабинет CityGo" className="conversation-tabs">
-        {["Мой план", "Диалоги", "Помощники", "Профиль"].map((name) => (
-          <Button
-            key={name}
-            className="ym-show-content"
-            variant={tab === name ? "primary" : "secondary"}
-            aria-pressed={tab === name}
-            disabled={busy || sending}
-            onClick={() => {
-              setTab(name);
-              if (name === "Мой план")
-                trackProductEvent("plan_opened", { surface: "plan" });
-              if (name === "Профиль")
-                trackProductEvent("profile_opened", { surface: "profile" });
-              if (name === "Диалоги") {
-                setShowList(true);
-                props.onConversations?.();
-              }
-            }}
-          >
-            {name}
-          </Button>
-        ))}
+        {["Мой план", "Диалоги", "Помощники", "Результаты", "Профиль"].map(
+          (name) => (
+            <Button
+              key={name}
+              className="ym-show-content"
+              variant={tab === name ? "primary" : "secondary"}
+              aria-pressed={tab === name}
+              disabled={busy || sending}
+              onClick={() => {
+                setTab(name);
+                if (name === "Мой план")
+                  trackProductEvent("plan_opened", { surface: "plan" });
+                if (name === "Профиль")
+                  trackProductEvent("profile_opened", { surface: "profile" });
+                if (name === "Диалоги") {
+                  setShowList(true);
+                  props.onConversations?.();
+                }
+              }}
+            >
+              {name}
+            </Button>
+          ),
+        )}
       </nav>
       {planSource && (
         <PlanStepComposer
@@ -215,6 +221,27 @@ export function ConversationHome(props: JourneyProps) {
               sessionSignal={props.sessionSignal}
               onAccessDenied={props.onAccessDenied}
               onClose={() => setTab("Диалоги")}
+            />
+          </div>
+          {rail}
+        </div>
+      ) : tab === "Результаты" ? (
+        <div className={"conversation-workspace " + planStyles.workspace}>
+          {sidebar}
+          <div className="conversation-main">
+            <ResultsLibrary
+              key={board.user.id}
+              userId={board.user.id}
+              sessionSignal={props.sessionSignal}
+              onAccessDenied={props.onAccessDenied}
+              navigationBusy={busy || sending}
+              onOpenConversation={open}
+              onPlan={() => setTab("Мой план")}
+              onFavorites={props.onFavorites}
+              onContinue={() => {
+                setTab("Диалоги");
+                setShowList(false);
+              }}
             />
           </div>
           {rail}
