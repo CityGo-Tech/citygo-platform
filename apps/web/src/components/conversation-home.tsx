@@ -27,6 +27,7 @@ import { HumanSupportPanel } from "./human-support";
 import { AiModeSelector } from "./ai-mode-selector";
 import { isAiModeAvailable } from "@citygo/api-client";
 import { trackProductEvent } from "./product-analytics";
+import { TextMaterialPreview } from "./text-material-preview";
 
 const topics = [
   ["Понять и спланировать", "Не понимаю, с чего начать переезд в Москву."],
@@ -421,6 +422,14 @@ export function ConversationHome(props: JourneyProps) {
                     rows={3}
                     placeholder="Хочу переехать в Москву, но пока не понимаю, с чего начать"
                     disabled={!canSend || sending}
+                  />
+                  <TextMaterialPreview
+                    userId={board.user.id}
+                    threadId={board.thread.id}
+                    sessionSignal={props.sessionSignal}
+                    draft={props.text}
+                    disabled={!canSend || sending}
+                    onDraft={props.onText}
                   />
                   {sending ? (
                     <Button
