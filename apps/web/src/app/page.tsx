@@ -305,11 +305,13 @@ export default function Home() {
     }
     ticket.check();
     if (version !== refreshVersion.current) return false;
+    if (next.thread?.closed) {
+      writeChatDraft(next.user.id, next.thread.id, "", draftStorage());
+      conversationDrafts.current.delete(next.thread.id);
+      setText("");
+      setDraftRecovered(false);
+    }
     if (visibleThread.current !== next.thread?.id && !chatSubmitting.current) {
-      if (next.thread?.closed) {
-        writeChatDraft(next.user.id, next.thread.id, "", draftStorage());
-        conversationDrafts.current.delete(next.thread.id);
-      }
       const restored =
         next.thread && !next.thread.closed
           ? readChatDraft(next.user.id, next.thread.id, draftStorage())

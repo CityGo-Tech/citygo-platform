@@ -15,6 +15,7 @@ async function fixture(context: BrowserContext) {
     hold: false,
     failRefresh: false,
     failStream: false,
+    closed: false,
     release: () => {},
   };
   const gate = new Promise<void>((resolve) => {
@@ -35,7 +36,7 @@ async function fixture(context: BrowserContext) {
       id: state.owner === "101" ? "20" : "30",
       agentKey: "housing",
       assistantKey: "housing",
-      closed: false,
+      closed: state.closed,
       messages:
         state.owner === "101"
           ? messages
@@ -243,6 +244,26 @@ test("draft restore never crosses authenticated owner after reload", async ({
   ).toHaveCount(0);
   expect(state.sends).toEqual([]);
   expect(state.unexpected).toEqual([]);
+});
+
+test("a conversation closed during refresh removes its draft even when the selected ID is unchanged", async ({
+  page,
+  context,
+}) => {
+  const state = await fixture(context);
+  await page.goto("/");
+  await composer(page).fill("Черновик закрытого разговора");
+  state.closed = true;
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await expect(
+    page.getByText("Это завершённый разговор.", { exact: false }),
+  ).toBeVisible();
+  expect(
+    await page.evaluate(() =>
+      sessionStorage.getItem("citygo:chat-draft:v1:101:20"),
+    ),
+  ).toBeNull();
+  expect(state.sends).toEqual([]);
 });
 
 test("confirmed answer followed by a failed refresh never restores a paid question as unsent", async ({
