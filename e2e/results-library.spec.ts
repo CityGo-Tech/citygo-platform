@@ -59,6 +59,7 @@ async function fixture(
   plan = steps(),
   favorites = messages(),
 ) {
+  const pageGates = new Map<string, Promise<void>>();
   const state = {
     owner: "101",
     authenticated: true,
@@ -66,6 +67,20 @@ async function fixture(
     plan,
     favorites,
     reads: [] as string[],
+    pageReplies: [] as string[],
+    holdPage(path: string) {
+      let release!: () => void;
+      pageGates.set(
+        path,
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+      );
+      return () => {
+        pageGates.delete(path);
+        release();
+      };
+    },
     writes: [] as string[],
     unexpected: [] as string[],
     external: 0,
@@ -171,10 +186,13 @@ async function fixture(
         nextBefore: rows.length > 20 ? rows[19]!.id : null,
       };
       if (state.holdPlan) await gate;
+      await pageGates.get(path + url.search);
       try {
         return await route.fulfill({ json });
       } catch {
         return;
+      } finally {
+        state.pageReplies.push(path + url.search);
       }
     }
     if (path === "/api/v1/messages/favorites") {
@@ -191,13 +209,20 @@ async function fixture(
               (item) => !before || BigInt(item.id) < BigInt(before),
             )
           : [];
-      return route.fulfill({
-        json: {
-          userId: state.responseOwner ?? state.owner,
-          messages: rows.slice(0, 20),
-          nextBefore: rows.length > 20 ? rows[19]!.id : null,
-        },
-      });
+      await pageGates.get(path + url.search);
+      try {
+        return await route.fulfill({
+          json: {
+            userId: state.responseOwner ?? state.owner,
+            messages: rows.slice(0, 20),
+            nextBefore: rows.length > 20 ? rows[19]!.id : null,
+          },
+        });
+      } catch {
+        return;
+      } finally {
+        state.pageReplies.push(path + url.search);
+      }
     }
     const match = path.match(
       /^\/api\/v1\/conversations\/10\/messages\/(\d+)\/context$/,
@@ -397,6 +422,71 @@ test("each category pages beyond twenty, opens the exact source and returns to i
   expect(state.unexpected).toEqual([]);
 });
 
+test("cancelled pagination keeps forty saved results in both categories and retries only the retained cursor", async ({
+  page,
+  context,
+}) => {
+  const state = await fixture(context, steps(45), messages(45));
+  await page.goto("/");
+  await openResults(page);
+  for (const category of ["plan", "favorites"] as const) {
+    const current = categories(page).getByRole("button", {
+      name: category === "plan" ? /^Шаги плана/ : "Избранные сообщения",
+    });
+    const other = categories(page).getByRole("button", {
+      name: category === "plan" ? "Избранные сообщения" : /^Шаги плана/,
+    });
+    await current.click();
+    await expect(results(page).getByRole("article")).toHaveCount(20);
+    await results(page)
+      .getByRole("button", { name: "Показать ещё", exact: true })
+      .click();
+    await expect(results(page).getByRole("article")).toHaveCount(40);
+    const path =
+      category === "plan"
+        ? "/api/v1/personal-plan"
+        : "/api/v1/messages/favorites";
+    const rows = category === "plan" ? state.plan : state.favorites;
+    const pendingPath = path + "?before=" + rows[39]!.id;
+    const release = state.holdPage(pendingPath);
+    try {
+      await results(page)
+        .getByRole("button", { name: "Показать ещё", exact: true })
+        .click();
+      await expect
+        .poll(() => state.reads.filter((read) => read === pendingPath).length)
+        .toBe(1);
+      await expect(results(page)).toHaveAttribute("aria-busy", "true");
+      await other.click();
+      await expect(results(page)).toHaveAttribute("aria-busy", "false");
+      const readsBeforeReturn = state.reads.length;
+      await current.click();
+      await expect(results(page).getByRole("article")).toHaveCount(40);
+      await expect(results(page)).toHaveAttribute("aria-busy", "false");
+      expect(state.reads.length).toBe(readsBeforeReturn);
+      release();
+      await expect
+        .poll(
+          () => state.pageReplies.filter((read) => read === pendingPath).length,
+        )
+        .toBe(1);
+      await expect(results(page).getByRole("article")).toHaveCount(40);
+      await results(page)
+        .getByRole("button", { name: "Показать ещё", exact: true })
+        .click();
+      await expect(results(page).getByRole("article")).toHaveCount(45);
+      expect(state.reads.filter((read) => read === pendingPath)).toHaveLength(
+        2,
+      );
+      expect(state.reads.filter((read) => read === path)).toHaveLength(1);
+    } finally {
+      release();
+    }
+  }
+  expect(state.writes).toEqual([]);
+  expect(state.unexpected).toEqual([]);
+  expect(state.external).toBe(0);
+});
 test("a one-megabyte message has a bounded plain-text preview, exact source and an explicit exact local download", async ({
   page,
   context,

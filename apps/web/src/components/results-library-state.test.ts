@@ -16,7 +16,7 @@ function deferred<T>() {
   });
   return { promise, resolve };
 }
-function setup() {
+function setup(favoriteCount = 29) {
   const plan: PersonalPlanItem[] = Array.from({ length: 45 }, (_, i) => ({
     id: String(9007199254741100n - BigInt(i)),
     title: "Шаг " + i,
@@ -27,14 +27,17 @@ function setup() {
     createdAt: "2026-10-28T10:00:00Z",
     updatedAt: "2026-10-28T10:00:00Z",
   }));
-  const favorites: FavoriteMessage[] = Array.from({ length: 29 }, (_, i) => ({
-    id: String(9007199254741300n - BigInt(i)),
-    threadId: "10",
-    role: "assistant",
-    agentKey: "support",
-    status: "complete",
-    content: "Ответ " + i,
-  }));
+  const favorites: FavoriteMessage[] = Array.from(
+    { length: favoriteCount },
+    (_, i) => ({
+      id: String(9007199254741300n - BigInt(i)),
+      threadId: "10",
+      role: "assistant",
+      agentKey: "support",
+      status: "complete",
+      content: "Ответ " + i,
+    }),
+  );
   const slice = <T extends { id: string }>(rows: T[], before?: string) => {
     const matching = rows.filter(
       (item) => !before || BigInt(item.id) < BigInt(before),
@@ -141,6 +144,78 @@ test("switching categories aborts an old page and discards its late data", async
   assert.equal(s.resource.snapshot().plan.phase, "ready");
 });
 
+for (const category of ["plan", "favorites"] as const) {
+  test(`cancelled ${category} pagination retains forty cached items and its cursor without an uncursored refetch`, async () => {
+    const s = setup(45);
+    await (category === "plan"
+      ? s.resource.load()
+      : s.resource.select(category));
+    await s.resource.loadMore();
+    const cached = s.resource.snapshot()[category];
+    assert.equal(cached.items.length, 40);
+    assert.notEqual(cached.nextBefore, null);
+    const gate = deferred<unknown>();
+    const original = s.client[category];
+    s.client[category] = (before, signal) => {
+      s.reads.push({ category, before, signal });
+      return gate.promise;
+    };
+    const pending = s.resource.loadMore();
+    const signal = s.reads.at(-1)!.signal;
+    assert.equal(s.reads.at(-1)!.before, cached.nextBefore);
+    await s.resource.select(category === "plan" ? "favorites" : "plan");
+    assert.equal(signal.aborted, true);
+    const readsBeforeReturn = s.reads.length;
+    await s.resource.select(category);
+    assert.equal(s.reads.length, readsBeforeReturn);
+    assert.deepEqual(s.resource.snapshot()[category], cached);
+    gate.resolve(
+      category === "plan"
+        ? s.planPage(cached.nextBefore!)
+        : s.favoritePage(cached.nextBefore!),
+    );
+    await pending;
+    assert.deepEqual(s.resource.snapshot()[category], cached);
+    s.client[category] = original;
+    await s.resource.loadMore();
+    assert.equal(s.reads.at(-1)!.before, cached.nextBefore);
+    assert.equal(s.resource.snapshot()[category].items.length, 45);
+    assert.equal(s.resource.snapshot()[category].nextBefore, null);
+    assert.equal(
+      s.reads.filter(
+        (read) => read.category === category && read.before === undefined,
+      ).length,
+      1,
+    );
+    assert.equal(s.denied(), 0);
+  });
+
+  test(`cancelled first ${category} load stays empty and reads the first page on return`, async () => {
+    const s = setup();
+    const gate = deferred<unknown>();
+    const original = s.client[category];
+    s.client[category] = (before, signal) => {
+      s.reads.push({ category, before, signal });
+      return gate.promise;
+    };
+    const pending =
+      category === "plan" ? s.resource.load() : s.resource.select(category);
+    const signal = s.reads.at(-1)!.signal;
+    await s.resource.select(category === "plan" ? "favorites" : "plan");
+    assert.equal(signal.aborted, true);
+    assert.equal(s.resource.snapshot()[category].phase, "idle");
+    assert.deepEqual(s.resource.snapshot()[category].items, []);
+    gate.resolve(category === "plan" ? s.planPage() : s.favoritePage());
+    await pending;
+    assert.deepEqual(s.resource.snapshot()[category].items, []);
+    s.client[category] = original;
+    await s.resource.select(category);
+    assert.equal(s.resource.snapshot()[category].phase, "ready");
+    assert.equal(s.resource.snapshot()[category].items.length, 20);
+    assert.equal(s.reads.at(-1)!.before, undefined);
+    assert.equal(s.denied(), 0);
+  });
+}
 test("duplicate load-more clicks share one read", async () => {
   const s = setup();
   await s.resource.load();

@@ -207,7 +207,9 @@ export function createResultsResource({
           ...state[previous],
           phase:
             state[previous].phase === "loading"
-              ? "idle"
+              ? state[previous].items.length
+                ? "ready"
+                : "idle"
               : state[previous].phase,
         },
       });
