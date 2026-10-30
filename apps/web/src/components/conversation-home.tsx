@@ -61,7 +61,8 @@ export function ConversationHome(props: JourneyProps) {
     },
   );
   const agent = props.streamAgent ?? board.thread?.agentKey ?? "support";
-  const contextAgent = tab === "Мой план" ? "support" : agent;
+  const contextAgent =
+    tab === "Мой план" || tab === "Помощь человека" ? "support" : agent;
   const canSend =
     !!board.thread &&
     isAiModeAvailable(

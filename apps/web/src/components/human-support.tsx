@@ -129,7 +129,7 @@ export function HumanSupportPanel({
             Новый вопрос
           </Button>
           <Button variant="secondary" onClick={onClose}>
-            Вернуться к материалам
+            Вернуться к диалогу
           </Button>
         </div>
       ) : (
@@ -168,7 +168,7 @@ export function HumanSupportPanel({
                 : "Отправить обращение"}
             </Button>
             <Button type="button" variant="secondary" onClick={onClose}>
-              Вернуться к материалам
+              Вернуться к диалогу
             </Button>
           </div>
         </form>
