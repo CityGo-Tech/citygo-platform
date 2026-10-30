@@ -1,0 +1,91 @@
+.panel {
+  border-top: 1px solid var(--cg-color-border);
+  padding-top: var(--cg-space-md);
+  min-width: 0;
+}
+.content {
+  display: grid;
+  gap: var(--cg-space-md);
+  padding-top: var(--cg-space-sm);
+}
+.content h3,
+.content p {
+  margin: 0;
+}
+.intro,
+.count {
+  font-size: 14px;
+  color: var(--cg-color-muted);
+  line-height: 1.5;
+}
+.list {
+  display: grid;
+  gap: var(--cg-space-md);
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+.row {
+  display: grid;
+  gap: var(--cg-space-sm);
+  padding: var(--cg-space-md);
+  border: 1px solid var(--cg-color-border);
+  border-radius: var(--cg-radius-card);
+  background: var(--cg-color-surface);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.check {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--cg-space-sm);
+  font-size: 14px;
+  line-height: 1.5;
+}
+.check input {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  accent-color: var(--cg-color-primary-strong);
+}
+.details {
+  font-size: 14px;
+  white-space: pre-wrap;
+  line-height: 1.5;
+}
+.actions {
+  display: flex;
+  gap: var(--cg-space-sm);
+  align-items: center;
+  flex-wrap: wrap;
+}
+.actions button {
+  white-space: normal;
+}
+.editor {
+  display: grid;
+  gap: var(--cg-space-md);
+}
+.editor label {
+  display: grid;
+  gap: var(--cg-space-sm);
+  font-size: 14px;
+}
+.editor textarea {
+  width: 100%;
+  min-height: 100px;
+  box-sizing: border-box;
+  border: 1px solid var(--cg-color-border);
+  border-radius: var(--cg-radius-control);
+  padding: var(--cg-space-sm);
+  font: inherit;
+  resize: vertical;
+}
+@media (max-width: 600px) {
+  .actions > * {
+    flex: 1 1 100%;
+  }
+  .row {
+    padding: var(--cg-space-sm);
+  }
+}

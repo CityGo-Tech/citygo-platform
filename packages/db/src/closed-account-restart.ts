@@ -8,6 +8,7 @@ import type { AccountResetBlocker } from "./account-reset.js";
 const tables = [
   "human_support_requests",
   "service_consent_events",
+  "personal_plan_checklists",
   "personal_plan_items",
   "password_recovery_challenges",
   "account_email_confirmation_challenges",
@@ -82,6 +83,7 @@ const tables = [
 const retainedTables = [
   "human_support_requests",
   "service_consent_events",
+  "personal_plan_checklists",
   "personal_plan_items",
   "phone_verification_challenges",
   "phone_verification_control",
@@ -346,10 +348,15 @@ async function inspect(tx: Sql, options: Options) {
       code: "EMAIL_REGISTRATION_HISTORY_REQUIRES_REVIEW",
       count: verificationHistoryCount,
     });
-  if (snapshot.counts.personal_plan_items)
+  if (
+    snapshot.counts.personal_plan_items ||
+    snapshot.counts.personal_plan_checklists
+  )
     blockers.push({
       code: "PERSONAL_PLAN_HISTORY_REQUIRES_REVIEW",
-      count: snapshot.counts.personal_plan_items,
+      count:
+        snapshot.counts.personal_plan_items! +
+        snapshot.counts.personal_plan_checklists!,
     });
   if (snapshot.counts.password_recovery_challenges)
     blockers.push({

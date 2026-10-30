@@ -8,6 +8,7 @@ import type {
 } from "@citygo/contracts";
 import { Button, Card, Field, Progress } from "@citygo/ui-web";
 import styles from "./personal-plan.module.css";
+import { PlanItemChecklist } from "./plan-checklist";
 import {
   createPersonalPlanResource,
   type PersonalPlanFilter,
@@ -512,6 +513,16 @@ export function PersonalPlanPanel({
               </span>
               <h2>{item.title}</h2>
               {item.details && <p className={styles.details}>{item.details}</p>}
+              <PlanItemChecklist
+                userId={userId}
+                itemId={item.id}
+                sessionSignal={sessionSignal}
+                disabled={disabled}
+                onAccessDenied={onAccessDenied}
+                onSaved={() => {
+                  void actions?.load();
+                }}
+              />
               <small>
                 {item.source
                   ? item.source.role === "user"

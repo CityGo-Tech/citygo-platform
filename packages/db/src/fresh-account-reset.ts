@@ -8,6 +8,7 @@ import { DomainError } from "./errors.js";
 const tables = [
   "human_support_requests",
   "service_consent_events",
+  "personal_plan_checklists",
   "personal_plan_items",
   "password_recovery_challenges",
   "account_email_confirmation_challenges",
@@ -111,6 +112,7 @@ const protectedAdmission = [
 const protectedEmpty = [
   "human_support_requests",
   // User-chosen steps and their tombstones need a separate erasure review.
+  "personal_plan_checklists",
   "personal_plan_items",
   ...protectedNpd,
   ...protectedRefunds,
@@ -417,10 +419,15 @@ async function inspect(tx: Sql, options: Options) {
       code: "EMAIL_REGISTRATION_HISTORY_REQUIRES_REVIEW",
       count: verificationHistoryCount,
     });
-  if (snapshot.counts.personal_plan_items)
+  if (
+    snapshot.counts.personal_plan_items ||
+    snapshot.counts.personal_plan_checklists
+  )
     blockers.push({
       code: "PERSONAL_PLAN_HISTORY_REQUIRES_REVIEW",
-      count: snapshot.counts.personal_plan_items,
+      count:
+        snapshot.counts.personal_plan_items! +
+        snapshot.counts.personal_plan_checklists!,
     });
   if (snapshot.counts.password_recovery_challenges)
     blockers.push({
