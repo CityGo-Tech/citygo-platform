@@ -2,6 +2,7 @@ import { PGlite } from "@electric-sql/pglite";
 import pg from "pg";
 export { Repository, DomainError } from "./repository.js";
 export { MessageFavorites } from "./message-favorites.js";
+export { ConversationMessageSearch } from "./conversation-message-search.js";
 export {
   CustomerObservability,
   type CustomerObservabilityContext,
