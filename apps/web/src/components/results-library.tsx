@@ -86,6 +86,7 @@ function ResultFilters({
     >
       <Field
         label="Поиск в результатах"
+        className="ym-disable-keys"
         type="search"
         value={search}
         maxLength={160}

@@ -743,6 +743,9 @@ test("results search finds older server pages, preserves category filters and re
       element.classList.contains("ym-hide-content"),
     ),
   ).toBe(true);
+  await expect(form.getByLabel("Поиск в результатах")).toHaveClass(
+    /ym-disable-keys/,
+  );
   expect(await page.evaluate(() => location.search)).toBe("");
   const storage = await page.evaluate(() =>
     JSON.stringify({ ...localStorage, ...sessionStorage }),
