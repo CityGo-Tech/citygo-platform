@@ -34,6 +34,7 @@ import {
   currentAssistantHandoffSource,
   type AssistantHandoffSource,
 } from "./assistant-handoff-state";
+import { MessageTextActions } from "./message-text-actions";
 
 const topics = [
   ["Понять и спланировать", "Не понимаю, с чего начать переезд в Москву."],
@@ -476,6 +477,23 @@ export function ConversationHome(props: JourneyProps) {
                     >
                       Добавить шаг в план
                     </Button>
+                    {message.status === "complete" && (
+                      <MessageTextActions
+                        key={
+                          board.user.id +
+                          ":" +
+                          board.thread!.id +
+                          ":" +
+                          message.id
+                        }
+                        userId={board.user.id}
+                        threadId={board.thread!.id}
+                        messageId={message.id}
+                        text={message.content}
+                        sessionSignal={props.sessionSignal}
+                        disabled={busy || sending}
+                      />
+                    )}
                   </article>
                 ))}
                 {props.pending && (
