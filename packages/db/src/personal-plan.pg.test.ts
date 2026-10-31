@@ -3,6 +3,8 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
+  exportPersonalPlan,
+  PlanChecklists,
   connectDatabase,
   migrate,
   PersonalPlan,
@@ -362,6 +364,22 @@ test(
       status: "completed",
     });
     assert.equal((await store.list(other)).items[0]?.source, null);
+    const exportedItem = (await store.list(other)).items[0]!;
+    await new PlanChecklists(runtime).save(other, exportedItem.id, {
+      expectedRevision: exportedItem.revision,
+      entries: [
+        {
+          id: randomUUID(),
+          title: "Чек-лист API роли",
+          details: "Полное описание",
+          completed: true,
+        },
+      ],
+    });
+    const exported = await exportPersonalPlan(runtime, other);
+    assert.equal(exported.items.length, 1);
+    assert.equal(exported.items[0]!.checklist[0]!.completed, true);
+    assert.equal(exported.items[0]!.title, "Собственный шаг");
     await backend.query("delete from messages where id=$1", [source]);
     assert.equal(
       (await backend.query("select id from personal_plan_items")).rows.length,

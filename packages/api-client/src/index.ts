@@ -1,3 +1,4 @@
+import { personalPlanExportSchema } from "@citygo/contracts";
 import {
   personalPlanIdSchema as checklistItemIdSchema,
   planChecklistSchema,
@@ -841,6 +842,8 @@ export function createClient(
         );
       return value;
     },
+    exportPersonalPlan: () =>
+      request("/v1/personal-plan/export", personalPlanExportSchema),
     personalPlanSummary: () =>
       request("/v1/personal-plan/summary", personalPlanSummarySchema),
     createPersonalPlanItem: async (input: CreatePersonalPlanItem) => {

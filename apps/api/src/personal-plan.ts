@@ -8,10 +8,16 @@ import {
   removePersonalPlanItemSchema,
   personalPlanPageSchema,
   personalPlanSummarySchema,
+  personalPlanExportSchema,
   personalPlanItemResultSchema,
   personalPlanRemoveResultSchema,
 } from "@citygo/contracts";
-import { PersonalPlan, DomainError, type Database } from "@citygo/db";
+import {
+  PersonalPlan,
+  DomainError,
+  exportPersonalPlan,
+  type Database,
+} from "@citygo/db";
 
 const params = z.strictObject({ id: personalPlanIdSchema });
 const emptyQuery = z.strictObject({});
@@ -65,6 +71,15 @@ export function registerPersonalPlanApi(
       ),
       user.id,
     );
+  });
+  app.get("/v1/personal-plan/export", readLimit, async (request, reply) => {
+    const user = await options.authenticate(request);
+    input(emptyQuery, request.query);
+    reply.header("cache-control", "no-store");
+    const snapshot = await stored(exportPersonalPlan(options.db, user.id));
+    const current = await options.authenticate(request);
+    if (current.id !== user.id) throw new Error("Personal plan owner changed");
+    return output(personalPlanExportSchema, snapshot, user.id);
   });
   app.get("/v1/personal-plan/summary", readLimit, async (request) => {
     const user = await options.authenticate(request);
