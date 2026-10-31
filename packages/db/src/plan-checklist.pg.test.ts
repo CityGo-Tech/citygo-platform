@@ -58,6 +58,10 @@ test(
     url.pathname = "/" + name;
     const backend = await connectDatabase(url.toString());
     cleanup.db = backend;
+    // Match init.sql: functions created by the migrator are not PUBLIC-executable.
+    await backend.exec(
+      "alter default privileges revoke execute on functions from public",
+    );
     await migrate(backend);
     for (const role of Object.values(roles)) {
       await backend.exec(
@@ -77,6 +81,14 @@ test(
         (name) => roles[name as keyof typeof roles],
       );
     await backend.exec(grants);
+    const [functionAccess] = await backend.query<{
+      api: boolean;
+      worker: boolean;
+    }>(
+      "select has_function_privilege($1, 'citygo_valid_plan_checklist(jsonb)', 'EXECUTE') as api, has_function_privilege($2, 'citygo_valid_plan_checklist(jsonb)', 'EXECUTE') as worker",
+      [roles.citygo_api, roles.citygo_worker],
+    );
+    assert.deepEqual(functionAccess, { api: true, worker: false });
     const asApi = <T>(work: (tx: Sql) => Promise<T>) =>
       backend.transaction(async (tx) => {
         await tx.exec(`set local role ${roles.citygo_api}`);
