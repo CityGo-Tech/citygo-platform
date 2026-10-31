@@ -257,9 +257,42 @@ export function PersonalPlanPanel({
       : "";
   const setSearchDraft = (value: string) =>
     setSearchInput({ owner: userId, signal: sessionSignal, value });
-  const [editing, setEditing] = useState<PersonalPlanItem | null>(null);
+  const [editing, setEditingState] = useState<PersonalPlanItem | null>(null);
+  const editingRef = useRef<PersonalPlanItem | null>(null);
+  const setEditing = (value: PersonalPlanItem | null) => {
+    editingRef.current = value;
+    setEditingState(value);
+  };
   const [fields, setFields] = useState<StepFields>({ title: "", details: "" });
-  const [removing, setRemoving] = useState<PersonalPlanItem | null>(null);
+  const [removing, setRemovingState] = useState<PersonalPlanItem | null>(null);
+  const removingRef = useRef<PersonalPlanItem | null>(null);
+  const setRemoving = (value: PersonalPlanItem | null) => {
+    removingRef.current = value;
+    setRemovingState(value);
+  };
+  const checklistScope = useRef({
+    owner: userId,
+    signal: sessionSignal,
+    items: new Set<string>(),
+  });
+  const [, updateChecklistActivity] = useState(0);
+  if (
+    checklistScope.current.owner !== userId ||
+    checklistScope.current.signal !== sessionSignal
+  )
+    checklistScope.current = {
+      owner: userId,
+      signal: sessionSignal,
+      items: new Set<string>(),
+    };
+  const scope = checklistScope.current;
+  function checklistActivity(itemId: string, active: boolean) {
+    if (scope !== checklistScope.current || sessionSignal.aborted) return;
+    const wasActive = scope.items.has(itemId);
+    if (active) scope.items.add(itemId);
+    else scope.items.delete(itemId);
+    if (wasActive !== active) updateChecklistActivity((value) => value + 1);
+  }
   const [source, setSource] = useState<PersonalPlanItem | null>(null);
   const resource = useRef<ReturnType<typeof createPersonalPlanResource> | null>(
     null,
@@ -320,15 +353,48 @@ export function PersonalPlanPanel({
   const error = current?.error ?? "";
   const needsRefresh = current?.needsRefresh ?? false;
   const actions = current ? resource.current : null;
+  const interactionActive = !!editing || !!removing || scope.items.size > 0;
+  const listControlsDisabled =
+    navigationBusy ||
+    !actions ||
+    !!current?.mutating ||
+    needsRefresh ||
+    interactionActive;
+  function listChangeBlocked() {
+    const latest = actions?.snapshot();
+    return (
+      sessionSignal.aborted ||
+      navigationBusy ||
+      !latest ||
+      latest.phase === "closed" ||
+      latest.mutating ||
+      latest.needsRefresh ||
+      !!editingRef.current ||
+      !!removingRef.current ||
+      scope.items.size > 0
+    );
+  }
   const refresh = () => {
-    setEditing(null);
-    setRemoving(null);
-    void actions?.load();
+    if (
+      sessionSignal.aborted ||
+      navigationBusy ||
+      !actions ||
+      actions.snapshot().mutating ||
+      editingRef.current ||
+      removingRef.current ||
+      scope.items.size > 0
+    )
+      return;
+    void actions.load();
   };
   const selectFilter = (value: PersonalPlanFilter) => {
-    setEditing(null);
-    setRemoving(null);
+    if (listChangeBlocked()) return;
     void actions?.select(value);
+  };
+  const resetSearch = () => {
+    if (listChangeBlocked()) return;
+    setSearchDraft("");
+    void actions?.select("all", "");
   };
   const update = async (
     item: PersonalPlanItem,
@@ -429,12 +495,18 @@ export function PersonalPlanPanel({
       </p>
       <div className={styles.toolbar}>
         <span className={styles.meta}>МОЙ ПЛАН</span>
-        <Button disabled={disabled} onClick={() => setCreating(true)}>
+        <Button
+          disabled={disabled || interactionActive}
+          onClick={() => {
+            if (listChangeBlocked()) return;
+            setCreating(true);
+          }}
+        >
           Добавить шаг
         </Button>
         <Button
           variant="ghost"
-          disabled={busy || navigationBusy}
+          disabled={busy || navigationBusy || interactionActive}
           onClick={refresh}
         >
           Обновить план
@@ -456,10 +528,8 @@ export function PersonalPlanPanel({
         aria-label="Поиск в моём плане"
         onSubmit={(event) => {
           event.preventDefault();
-          if (current?.mutating || navigationBusy || !actions) return;
-          setEditing(null);
-          setRemoving(null);
-          void actions.select(filter, searchDraft);
+          if (listChangeBlocked()) return;
+          void actions?.select(filter, searchDraft);
         }}
       >
         <Field
@@ -468,26 +538,18 @@ export function PersonalPlanPanel({
           type="search"
           maxLength={160}
           value={searchDraft}
-          disabled={navigationBusy || current?.mutating || !actions}
+          disabled={listControlsDisabled}
           onChange={(event) => setSearchDraft(event.target.value)}
         />
         <div className={styles.actions}>
-          <Button
-            type="submit"
-            disabled={navigationBusy || current?.mutating || !actions}
-          >
+          <Button type="submit" disabled={listControlsDisabled}>
             Найти
           </Button>
           <Button
             type="button"
             variant="ghost"
-            disabled={navigationBusy || current?.mutating || !actions}
-            onClick={() => {
-              setSearchDraft("");
-              setEditing(null);
-              setRemoving(null);
-              void actions?.select("all", "");
-            }}
+            disabled={listControlsDisabled}
+            onClick={resetSearch}
           >
             Сбросить
           </Button>
@@ -506,7 +568,7 @@ export function PersonalPlanPanel({
             type="button"
             variant={filter === value ? "primary" : "secondary"}
             aria-pressed={filter === value}
-            disabled={navigationBusy || current?.mutating || !actions}
+            disabled={listControlsDisabled}
             onClick={() => selectFilter(value)}
           >
             {label} <span className={styles.count}>{count ?? "—"}</span>
@@ -516,7 +578,11 @@ export function PersonalPlanPanel({
       {error && (
         <div className={styles.error} role="alert">
           <p>{error}</p>
-          <Button variant="secondary" disabled={busy} onClick={refresh}>
+          <Button
+            variant="secondary"
+            disabled={busy || interactionActive}
+            onClick={refresh}
+          >
             Обновить список
           </Button>
         </div>
@@ -560,10 +626,8 @@ export function PersonalPlanPanel({
             </p>
             <Button
               variant="secondary"
-              onClick={() => {
-                setSearchDraft("");
-                void actions?.select("all", "");
-              }}
+              disabled={listControlsDisabled}
+              onClick={resetSearch}
             >
               Показать все шаги
             </Button>
@@ -588,6 +652,9 @@ export function PersonalPlanPanel({
                 sessionSignal={sessionSignal}
                 disabled={disabled}
                 onAccessDenied={onAccessDenied}
+                onInteractionChange={(active) =>
+                  checklistActivity(item.id, active)
+                }
                 onSaved={() => {
                   void actions?.load();
                 }}
@@ -694,9 +761,10 @@ export function PersonalPlanPanel({
                 <Button
                   className={styles.source}
                   variant="ghost"
-                  disabled={busy || navigationBusy}
+                  disabled={busy || navigationBusy || interactionActive}
                   data-plan-source={item.id}
                   onClick={() => {
+                    if (listChangeBlocked()) return;
                     lastSource.current = item.id;
                     setSource(item);
                   }}

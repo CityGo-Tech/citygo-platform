@@ -25,6 +25,7 @@ async function fixture(context: BrowserContext) {
     unexpected: [] as string[],
     external: 0,
     lostReceipt: false,
+    planReads: 0,
   };
   const board = (): Dashboard => ({
     user: {
@@ -66,7 +67,8 @@ async function fixture(context: BrowserContext) {
           currentAiConsentRequired: false,
         },
       });
-    if (path === "/api/v1/personal-plan")
+    if (path === "/api/v1/personal-plan") {
+      state.planReads++;
       return route.fulfill({
         json: {
           userId: state.owner,
@@ -74,6 +76,7 @@ async function fixture(context: BrowserContext) {
           nextBefore: null,
         },
       });
+    }
     if (path === "/api/v1/personal-plan/summary")
       return route.fulfill({
         json: {
@@ -375,6 +378,153 @@ test("unfinished checklist editors and removal decisions block unrelated row wri
     }),
   ).toBeEnabled();
   expect(item.status).toBe("pending");
+  expect(state.unexpected).toEqual([]);
+  expect(state.external).toBe(0);
+});
+
+test("checklist interaction blocks parent search reset and filters without losing drafts or removal choices", async ({
+  page,
+  context,
+}) => {
+  const { state } = await fixture(context);
+  await page.goto("/");
+  await open(page);
+  const list = panel(page),
+    search = page.getByRole("search", { name: "Поиск в моём плане" });
+  await search.getByLabel("Найти шаг", { exact: true }).fill("Подготовка");
+  await list
+    .getByRole("button", { name: "Добавить пункт", exact: true })
+    .click();
+  await list
+    .getByLabel("Название пункта", { exact: true })
+    .fill("Несохранённый пункт");
+  await list
+    .getByLabel("Подробности пункта", { exact: true })
+    .fill("Не терять мои подробности");
+  const before = state.planReads;
+  await expect(
+    search.getByRole("button", { name: "Найти", exact: true }),
+  ).toBeDisabled();
+  await expect(
+    search.getByRole("button", { name: "Сбросить", exact: true }),
+  ).toBeDisabled();
+  await expect(page.getByRole("button", { name: /^В работе / })).toBeDisabled();
+  await search.evaluate((form) =>
+    form.dispatchEvent(
+      new Event("submit", { bubbles: true, cancelable: true }),
+    ),
+  );
+  await search
+    .getByRole("button", { name: "Сбросить", exact: true })
+    .evaluate((button: HTMLButtonElement) => button.click());
+  await expect(list.getByLabel("Название пункта", { exact: true })).toHaveValue(
+    "Несохранённый пункт",
+  );
+  await expect(
+    list.getByRole("textbox", { name: "Подробности пункта", exact: true }),
+  ).toHaveValue("Не терять мои подробности");
+  expect(state.planReads).toBe(before);
+  expect(state.writes).toHaveLength(0);
+  await list
+    .getByRole("button", { name: "Отмена пункта", exact: true })
+    .click();
+  await expect(
+    search.getByRole("button", { name: "Найти", exact: true }),
+  ).toBeEnabled();
+  await list
+    .getByRole("button", { name: "Добавить пункт", exact: true })
+    .click();
+  await list
+    .getByLabel("Название пункта", { exact: true })
+    .fill("Сохранённый пункт");
+  await list
+    .getByRole("button", { name: "Сохранить пункт", exact: true })
+    .click();
+  await expect(
+    list.getByRole("checkbox", { name: "Сохранённый пункт", exact: true }),
+  ).toBeVisible();
+  await list
+    .getByRole("button", { name: "Удалить пункт", exact: true })
+    .click();
+  const savedReads = state.planReads;
+  await expect(
+    search.getByRole("button", { name: "Сбросить", exact: true }),
+  ).toBeDisabled();
+  await search.evaluate((form) =>
+    form.dispatchEvent(
+      new Event("submit", { bubbles: true, cancelable: true }),
+    ),
+  );
+  await expect(
+    list.getByRole("button", {
+      name: "Подтвердить удаление пункта",
+      exact: true,
+    }),
+  ).toBeVisible();
+  expect(state.planReads).toBe(savedReads);
+  expect(state.writes).toHaveLength(1);
+  await list
+    .getByRole("button", { name: "Оставить пункт", exact: true })
+    .click();
+  await expect(
+    search.getByRole("button", { name: "Найти", exact: true }),
+  ).toBeEnabled();
+  await search.getByRole("button", { name: "Найти", exact: true }).click();
+  await expect.poll(() => state.planReads).toBeGreaterThan(savedReads);
+  expect(state.unexpected).toEqual([]);
+  expect(state.external).toBe(0);
+});
+test("uncertain checklist result blocks parent search even after editor cancellation until explicit readback", async ({
+  page,
+  context,
+}) => {
+  const { state } = await fixture(context);
+  await page.goto("/");
+  await open(page);
+  const list = panel(page),
+    search = page.getByRole("search", { name: "Поиск в моём плане" });
+  await search.getByLabel("Найти шаг", { exact: true }).fill("Подготовка");
+  await list
+    .getByRole("button", { name: "Добавить пункт", exact: true })
+    .click();
+  await list
+    .getByLabel("Название пункта", { exact: true })
+    .fill("Неопределённый результат");
+  state.lostReceipt = true;
+  await list
+    .getByRole("button", { name: "Сохранить пункт", exact: true })
+    .click();
+  await expect(list.getByRole("alert")).toContainText("уже могло сохраниться");
+  await list
+    .getByRole("button", { name: "Отмена пункта", exact: true })
+    .click();
+  await expect(
+    search.getByRole("button", { name: "Найти", exact: true }),
+  ).toBeDisabled();
+  await expect(
+    search.getByRole("button", { name: "Сбросить", exact: true }),
+  ).toBeDisabled();
+  const before = state.planReads;
+  await search.evaluate((form) =>
+    form.dispatchEvent(
+      new Event("submit", { bubbles: true, cancelable: true }),
+    ),
+  );
+  expect(state.planReads).toBe(before);
+  expect(state.writes).toHaveLength(1);
+  await list
+    .getByRole("button", { name: "Обновить чек-лист", exact: true })
+    .click();
+  await expect(
+    list.getByRole("checkbox", {
+      name: "Неопределённый результат",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    search.getByRole("button", { name: "Найти", exact: true }),
+  ).toBeEnabled();
+  expect(state.writes).toHaveLength(1);
   expect(state.unexpected).toEqual([]);
   expect(state.external).toBe(0);
 });

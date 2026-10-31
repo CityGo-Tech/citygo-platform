@@ -15,6 +15,7 @@ export function PlanItemChecklist({
   disabled,
   onAccessDenied,
   onSaved,
+  onInteractionChange,
 }: {
   userId: string;
   itemId: string;
@@ -22,6 +23,7 @@ export function PlanItemChecklist({
   disabled: boolean;
   onAccessDenied: () => void;
   onSaved: () => void;
+  onInteractionChange?: (active: boolean) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [snapshot, setSnapshot] = useState<{
@@ -30,17 +32,47 @@ export function PlanItemChecklist({
     signal: AbortSignal;
     state: PlanChecklistState;
   } | null>(null);
-  const [editor, setEditor] = useState<{
+  const [editor, setEditorState] = useState<{
     id: string;
     title: string;
     details: string;
   } | null>(null);
-  const [removing, setRemoving] = useState<string | null>(null);
+  const [removing, setRemovingState] = useState<string | null>(null);
+  const editorActive = useRef(false);
+  const removalActive = useRef(false);
+  const transportActive = useRef(false);
+  const activity = useRef(false);
   const resource = useRef<ReturnType<
     typeof createPlanChecklistResource
   > | null>(null);
-  const handlers = useRef({ onAccessDenied, onSaved });
-  handlers.current = { onAccessDenied, onSaved };
+  const handlers = useRef({ onAccessDenied, onSaved, onInteractionChange });
+  handlers.current = { onAccessDenied, onSaved, onInteractionChange };
+  function notifyInteraction() {
+    const active =
+      editorActive.current || removalActive.current || transportActive.current;
+    if (activity.current === active) return;
+    activity.current = active;
+    handlers.current.onInteractionChange?.(active);
+  }
+  function setEditor(value: typeof editor) {
+    editorActive.current = value !== null;
+    notifyInteraction();
+    setEditorState(value);
+  }
+  function setRemoving(value: string | null) {
+    removalActive.current = value !== null;
+    notifyInteraction();
+    setRemovingState(value);
+  }
+  useEffect(() => {
+    // Capture this owner/item's release callback: an old cleanup may not clear
+    // another session's interaction lock.
+    const release = handlers.current.onInteractionChange;
+    return () => {
+      activity.current = false;
+      release?.(false);
+    };
+  }, [userId, itemId, sessionSignal]);
   useEffect(() => {
     if (!open) return;
     setEditor(null);
@@ -61,13 +93,16 @@ export function PlanItemChecklist({
             entries,
           }),
       },
-      publish: (state) =>
+      publish: (state) => {
+        transportActive.current = state.busy || state.needsRefresh;
+        notifyInteraction();
         setSnapshot({
           owner: userId,
           item: itemId,
           signal: sessionSignal,
           state,
-        }),
+        });
+      },
       onAccessDenied: () => handlers.current.onAccessDenied(),
       onSaved: () => handlers.current.onSaved(),
     });
@@ -118,8 +153,11 @@ export function PlanItemChecklist({
         type="button"
         variant="ghost"
         aria-expanded={open}
-        disabled={disabled}
-        onClick={() => setOpen((value) => !value)}
+        disabled={disabled || activity.current}
+        onClick={() => {
+          if (disabled || activity.current) return;
+          setOpen((value) => !value);
+        }}
       >
         {open ? "Скрыть чек-лист" : "Чек-лист"}
       </Button>

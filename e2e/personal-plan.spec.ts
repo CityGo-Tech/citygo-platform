@@ -1060,3 +1060,76 @@ test("switching status cancels an older plan search response without restoring i
   expect(state.forbidden).toEqual([]);
   expect(state.external).toBe(0);
 });
+
+test("unfinished step edits and removal choices block search reset and status changes until explicit cancellation", async ({
+  page,
+  context,
+}) => {
+  const state = await fixture(context, [item("30", "Первоначальный шаг")]);
+  await page.goto("/");
+  await openPlan(page);
+  const plan = planPanel(page),
+    search = plan.getByRole("search", { name: "Поиск в моём плане" }),
+    row = plan.getByRole("article").first();
+  await search
+    .getByLabel("Найти шаг", { exact: true })
+    .fill("не применённый поиск");
+  await row.getByRole("button", { name: "Изменить", exact: true }).click();
+  const title = row.getByLabel("Название шага", { exact: true });
+  await title.fill("Мой несохранённый шаг");
+  await row
+    .getByLabel("Описание шага", { exact: true })
+    .fill("Не терять мои подробности");
+  const before = state.reads.length;
+  await expect(
+    search.getByRole("button", { name: "Найти", exact: true }),
+  ).toBeDisabled();
+  await expect(
+    search.getByRole("button", { name: "Сбросить", exact: true }),
+  ).toBeDisabled();
+  await expect(plan.getByRole("button", { name: /^В работе / })).toBeDisabled();
+  await search.evaluate((form) =>
+    form.dispatchEvent(
+      new Event("submit", { bubbles: true, cancelable: true }),
+    ),
+  );
+  await search
+    .getByRole("button", { name: "Сбросить", exact: true })
+    .evaluate((button: HTMLButtonElement) => button.click());
+  await expect(title).toHaveValue("Мой несохранённый шаг");
+  await expect(row.getByLabel("Описание шага", { exact: true })).toHaveValue(
+    "Не терять мои подробности",
+  );
+  expect(state.reads.length).toBe(before);
+  expect(state.updates).toEqual([]);
+  await row
+    .getByRole("button", { name: "Отмена редактирования", exact: true })
+    .click();
+  await expect(
+    search.getByRole("button", { name: "Найти", exact: true }),
+  ).toBeEnabled();
+  await row.getByRole("button", { name: "Удалить", exact: true }).click();
+  await expect(
+    search.getByRole("button", { name: "Сбросить", exact: true }),
+  ).toBeDisabled();
+  await search.evaluate((form) =>
+    form.dispatchEvent(
+      new Event("submit", { bubbles: true, cancelable: true }),
+    ),
+  );
+  await expect(
+    row.getByRole("button", { name: "Подтвердить удаление", exact: true }),
+  ).toBeVisible();
+  expect(state.reads.length).toBe(before);
+  expect(state.removes).toEqual([]);
+  await row
+    .getByRole("button", { name: "Отмена удаления", exact: true })
+    .click();
+  await search.getByRole("button", { name: "Сбросить", exact: true }).click();
+  await expect(search.getByLabel("Найти шаг", { exact: true })).toHaveValue("");
+  await expect(
+    search.getByRole("button", { name: "Найти", exact: true }),
+  ).toBeEnabled();
+  expect(state.forbidden).toEqual([]);
+  expect(state.external).toBe(0);
+});
