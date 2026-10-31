@@ -212,20 +212,22 @@ export function ConversationHome(props: JourneyProps) {
           ),
         )}
       </nav>
-      <SupportUpdatesNotice
-        userId={board.user.id}
-        sessionSignal={props.sessionSignal}
-        onAccessDenied={props.onAccessDenied}
-        disabled={busy || sending}
-        onOpen={(id) => {
-          setSupportSelection({
-            owner: board.user.id,
-            signal: props.sessionSignal,
-            id,
-          });
-          setTab("Помощь человека");
-        }}
-      />
+      {board.supportUpdatesAvailable === true && (
+        <SupportUpdatesNotice
+          userId={board.user.id}
+          sessionSignal={props.sessionSignal}
+          onAccessDenied={props.onAccessDenied}
+          disabled={busy || sending}
+          onOpen={(id) => {
+            setSupportSelection({
+              owner: board.user.id,
+              signal: props.sessionSignal,
+              id,
+            });
+            setTab("Помощь человека");
+          }}
+        />
+      )}
       {handoffSource &&
         props.onHandoff &&
         currentAssistantHandoffSource(

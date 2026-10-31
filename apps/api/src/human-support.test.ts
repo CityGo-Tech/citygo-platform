@@ -58,6 +58,12 @@ test("HTTP support service is independently saved, owner-scoped and admin CAS co
   const owner = await user("support-owner@example.test"),
     other = await user("support-other@example.test"),
     admin = await user("support-admin@example.test", "admin");
+  const dashboard = await app.inject({
+    url: "/v1/dashboard",
+    headers: owner.headers,
+  });
+  assert.equal(dashboard.statusCode, 200, dashboard.body);
+  assert.equal(dashboard.json().supportUpdatesAvailable, true);
   const input = {
     operationId: randomUUID(),
     body: "Не понимаю, с какого шага начать переезд. Нужна помощь человека.",

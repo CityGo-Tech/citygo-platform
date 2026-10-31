@@ -1050,6 +1050,7 @@ export async function buildApp(options: {
     })();
     const result = {
       ...dashboard,
+      supportUpdatesAvailable: true,
       aiAccess: {
         ...dashboard.aiAccess,
         ...modeCapabilities,
