@@ -940,7 +940,8 @@ export async function buildApp(options: {
   app.get("/v1/conversations", async (request) => {
     const user = await authenticate(request);
     const query = conversationListQuerySchema.parse(request.query);
-    return repo.conversations(user.id, query.before);
+    const { before, ...filters } = query;
+    return repo.conversations(user.id, before, filters);
   });
   app.get("/v1/conversations/:id/messages", async (request) => {
     const user = await authenticate(request);

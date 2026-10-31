@@ -360,3 +360,79 @@ test("invalid owners, assistant choices and cursors fail before storage access",
   );
   assert.equal(touched, false);
 });
+
+test("conversation filters search only owned visible messages before keyset pagination with literal matching", async (t) => {
+  const db = await fixture(t),
+    owner = await user(db),
+    other = await user(db),
+    repo = new Repository(db);
+  const matching: string[] = [];
+  for (let i = 0; i < 44; i++) {
+    const id = (
+      await db.query<{ id: string }>(
+        "insert into agent_threads(user_id,agent_key,conversation_agent_key,status) values($1,'housing','housing','closed') returning id::text",
+        [owner],
+      )
+    ).rows[0]!.id;
+    if (i % 2 === 0) matching.push(id);
+    await db.query(
+      "insert into messages(thread_id,role,content) values($1,'user',$2),($1,'assistant','latest preview')",
+      [id, i % 2 === 0 ? "Needle 100%_literal" : "no match"],
+    );
+  }
+  const foreign = await ensureConversation(db, other, "housing");
+  await db.query(
+    "insert into messages(thread_id,role,content) values($1,'user','Needle 100%_literal')",
+    [foreign.id],
+  );
+  const hidden = await ensureConversation(db, owner, "support");
+  await db.query(
+    "insert into messages(thread_id,role,content) values($1,'system','Needle 100%_literal'),($1,'tool','Needle 100%_literal')",
+    [hidden.id],
+  );
+  const filters = {
+    search: "NEEDLE 100%_literal",
+    assistantKey: "housing" as const,
+    status: "closed" as const,
+  };
+  const first = await repo.conversations(owner, undefined, filters);
+  assert.equal(first.conversations.length, 20);
+  assert.ok(
+    first.conversations.every(
+      (x) =>
+        x.closed &&
+        x.assistantKey === "housing" &&
+        x.preview === "latest preview",
+    ),
+  );
+  const next = await repo.conversations(owner, first.nextCursor!, filters);
+  assert.equal(next.nextCursor, null);
+  assert.deepEqual(
+    [...first.conversations, ...next.conversations].map((x) => x.id),
+    matching.reverse(),
+  );
+  assert.deepEqual(
+    (
+      await repo.conversations(owner, undefined, { search: "%" })
+    ).conversations.map((x) => x.id),
+    matching.slice(0, 20),
+  );
+  assert.equal(
+    (
+      await repo.conversations(owner, undefined, {
+        search: "Needle",
+        assistantKey: "support",
+      })
+    ).conversations.length,
+    0,
+  );
+  assert.equal(
+    (await repo.conversations(owner, undefined, { status: "active" }))
+      .conversations[0]!.id,
+    hidden.id,
+  );
+  await assert.rejects(
+    repo.conversations(owner, undefined, { status: "invalid" as "active" }),
+    DomainError,
+  );
+});

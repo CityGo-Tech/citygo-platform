@@ -18,12 +18,14 @@ import type {
   QuestPlanReference,
   CityGoTariffSnapshot,
   ConversationList,
+  ConversationFilters,
   ConversationSummary,
   ConversationMessagesPage,
 } from "@citygo/contracts";
 import {
   LEGACY_AT_COST_TARIFF,
   conversationIdSchema,
+  conversationListQuerySchema,
   conversationHistoryIdSchema,
 } from "@citygo/contracts";
 import { randomUUID } from "node:crypto";
@@ -649,7 +651,15 @@ export class Repository {
   async conversations(
     userId: string,
     beforeId?: string,
+    filters: ConversationFilters = {},
   ): Promise<ConversationList> {
+    const parsed = conversationListQuerySchema.safeParse({
+      ...filters,
+      before: beforeId,
+    });
+    if (!parsed.success)
+      throw new DomainError(400, "Недопустимый фильтр диалогов");
+    const query = parsed.data;
     if (
       !conversationIdSchema.safeParse(userId).success ||
       (beforeId !== undefined &&
@@ -666,8 +676,20 @@ export class Repository {
           coalesce((select left(m.content,240) from messages m where m.thread_id=t.id
             and m.role in ('user','assistant') order by m.id desc limit 1),'') as preview
          from agent_threads t where t.user_id=$1 and ($2::bigint is null or t.id<$2::bigint)
+          and ($3::text is null or exists (
+            select 1 from messages search_message where search_message.thread_id=t.id
+              and search_message.role in ('user','assistant')
+              and position(lower($3::text) in lower(search_message.content))>0))
+          and ($4::text is null or t.conversation_agent_key=$4::text)
+          and ($5::text is null or (case when t.status='closed' then 'closed' else 'active' end)=$5::text)
          order by t.id desc limit 21`,
-        [userId, beforeId ?? null],
+        [
+          userId,
+          beforeId ?? null,
+          query.search ?? null,
+          query.assistantKey ?? null,
+          query.status ?? null,
+        ],
       )
     ).rows;
     const conversations = rows.slice(0, 20).map((row) => {

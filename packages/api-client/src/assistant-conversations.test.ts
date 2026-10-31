@@ -255,3 +255,41 @@ test("a cancelled conversation read cannot invalidate the replacement session on
   await new Promise<void>((resolve) => setImmediate(resolve));
   assert.equal(invalidated, 0);
 });
+
+test("conversation client encodes filter terms once and rejects mismatched assistant/status receipts", async () => {
+  const paths: string[] = [];
+  let response = {
+    userId: "1",
+    conversations: [summary("4")],
+    nextCursor: null,
+  };
+  const client = createClient("http://synthetic", {
+    fetch: async (url) => {
+      paths.push(String(url));
+      return Response.json(response, { headers });
+    },
+  });
+  await client.conversations(undefined, {
+    search: "город & 100%",
+    assistantKey: "housing",
+    status: "active",
+  });
+  const query = new URL(paths[0]!).searchParams;
+  assert.equal(query.get("search"), "город & 100%");
+  assert.equal(query.get("assistantKey"), "housing");
+  assert.equal(query.get("status"), "active");
+  await assert.rejects(
+    client.conversations(undefined, { status: "closed" }),
+    invalidResponse,
+  );
+  await assert.rejects(
+    client.conversations(undefined, { assistantKey: "support" }),
+    invalidResponse,
+  );
+  const count = paths.length;
+  await assert.rejects(
+    client.conversations(undefined, { search: "x".repeat(161) }),
+  );
+  assert.equal(paths.length, count);
+  response = { ...response, conversations: [] };
+});

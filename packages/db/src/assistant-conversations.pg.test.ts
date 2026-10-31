@@ -119,6 +119,32 @@ test(
     const foreign = await ensureConversation(runtime, other, "housing");
     assert.notEqual(foreign.id, raced[0]!.id);
     assert.equal((await repo.conversations(owner)).conversations.length, 6);
+    const filterSeeds = await db.query<{ id: string }>(
+      "insert into messages(thread_id,role,content) values($1,'user','PG 100%_literal'),($2,'user','PG 100%_literal') returning id::text",
+      [raced[0]!.id, foreign.id],
+    );
+    const filtered = await repo.conversations(owner, undefined, {
+      search: "PG 100%_literal",
+      assistantKey: "housing",
+      status: "active",
+    });
+    assert.deepEqual(
+      filtered.conversations.map((item) => item.id),
+      [raced[0]!.id],
+    );
+    assert.equal(
+      (
+        await repo.conversations(owner, undefined, {
+          search: "PG 100%_literal",
+          status: "closed",
+        })
+      ).conversations.length,
+      0,
+    );
+    // Search fixtures must not change the later admission test's empty history.
+    await db.query("delete from messages where id=any($1::bigint[])", [
+      filterSeeds.rows.map((row) => row.id),
+    ]);
     await assert.rejects(repo.conversation(owner, foreign.id), /Чат не найден/);
     await assert.rejects(
       runtime.query(

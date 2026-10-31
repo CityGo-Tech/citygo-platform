@@ -370,3 +370,46 @@ test("explicit assistant routing stays pinned through keywords; legacy routing a
     [{ human: true }],
   );
 });
+
+test("conversation HTTP applies owner-bound search and filters and rejects forged filter input", async (t) => {
+  const f = await fixture(t);
+  for (const [owner, agent, status, text] of [
+    [f.owner, "housing", "closed", "MATCH & literal"],
+    [f.owner, "support", "closed", "MATCH"],
+    [f.other, "housing", "closed", "MATCH & literal"],
+  ]) {
+    const id = (
+      await f.db.query<{ id: string }>(
+        "insert into agent_threads(user_id,agent_key,conversation_agent_key,status) values($1,$2,$2,$3) returning id::text",
+        [owner, agent, status],
+      )
+    ).rows[0]!.id;
+    await f.db.query(
+      "insert into messages(thread_id,role,content) values($1,'user',$2)",
+      [id, text],
+    );
+  }
+  const reply = await f.call(
+    "GET",
+    "/v1/conversations?search=MATCH%20%26&assistantKey=housing&status=closed",
+    f.tokens[0],
+  );
+  assert.equal(reply.statusCode, 200, reply.body);
+  const page = conversationListResponseSchema.parse(reply.json());
+  assert.equal(page.userId, f.owner);
+  assert.equal(page.conversations.length, 1);
+  assert.equal(page.conversations[0]!.preview, "MATCH & literal");
+  for (const query of [
+    "search=" + "x".repeat(161),
+    "status=open",
+    "assistantKey=bubble",
+    "search=x&search=y",
+    "userId=" + f.other,
+  ])
+    assert.equal(
+      (await f.call("GET", "/v1/conversations?" + query, f.tokens[0]))
+        .statusCode,
+      400,
+    );
+  assert.equal(f.calls.length, 0);
+});

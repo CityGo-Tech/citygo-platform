@@ -278,7 +278,10 @@ export function ConversationHome(props: JourneyProps) {
                 nextCursor={props.conversationNextCursor ?? null}
                 busy={busy || sending}
                 onOpen={open}
-                onLoad={(before) => props.onConversations?.(before)}
+                filters={props.conversationFilters ?? {}}
+                onLoad={(before, filters) =>
+                  props.onConversations?.(before, filters)
+                }
                 onHelpers={() => setTab("Помощники")}
                 onFavorites={props.onFavorites}
               />

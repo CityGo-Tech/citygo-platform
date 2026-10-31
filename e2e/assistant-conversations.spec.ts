@@ -61,6 +61,7 @@ async function install(context: BrowserContext, withProfile = false) {
     external: 0,
     starts: [] as (AgentKey | undefined)[],
     reads: [] as { owner: string; id: string }[],
+    listQueries: [] as string[],
     failingReads: new Set<string>(),
     unexpected: [] as string[],
     waitForStream: false,
@@ -174,9 +175,27 @@ async function install(context: BrowserContext, withProfile = false) {
         json: { userId: state.owner, items: [], nextBefore: null },
       });
     if (path === "/api/v1/conversations" && request.method() === "GET") {
+      state.listQueries.push(url.search);
       const rows = (
         state.owner === "101" ? [...threads.values()] : [threadFor("110")!]
-      ).sort((a, b) => (BigInt(a.id) > BigInt(b.id) ? -1 : 1));
+      )
+        .filter(
+          (thread) =>
+            (!url.searchParams.has("assistantKey") ||
+              thread.assistantKey === url.searchParams.get("assistantKey")) &&
+            (!url.searchParams.has("status") ||
+              thread.closed ===
+                (url.searchParams.get("status") === "closed")) &&
+            (!url.searchParams.has("search") ||
+              thread.messages.some(
+                (message) =>
+                  ["user", "assistant"].includes(message.role) &&
+                  message.content
+                    .toLowerCase()
+                    .includes(url.searchParams.get("search")!.toLowerCase()),
+              )),
+        )
+        .sort((a, b) => (BigInt(a.id) > BigInt(b.id) ? -1 : 1));
       return route.fulfill({
         json: {
           userId: state.responseOwner ?? state.owner,
@@ -684,4 +703,122 @@ test("focus detects a different server owner during an active stream and a late 
   } finally {
     f.state.releaseStream();
   }
+});
+
+test("conversation search filters owned history, resets to all and never sends a model request", async ({
+  page,
+  context,
+}, testInfo) => {
+  const f = await install(context);
+  f.threads.set("30", {
+    id: "30",
+    agentKey: "housing",
+    assistantKey: "housing",
+    closed: true,
+    messages: pair("housing", 400, "КВАРТИРА 100%"),
+  });
+  f.threads.set("31", {
+    id: "31",
+    agentKey: "job-search",
+    assistantKey: "job-search",
+    closed: false,
+    messages: pair("job-search", 410, "ВАКАНСИЯ"),
+  });
+  await page.goto("/");
+  await allConversations(page);
+  await page
+    .getByLabel("Найти в переписке", { exact: true })
+    .fill("квартира 100%");
+  await page
+    .getByRole("combobox", { name: "Помощник", exact: true })
+    .selectOption("housing");
+  await page
+    .getByRole("combobox", { name: "Статус", exact: true })
+    .selectOption("closed");
+  await page.getByRole("button", { name: "Найти", exact: true }).click();
+  await expect(
+    page.getByRole("article", {
+      name: "Диалог: Помощник по жилью",
+      exact: true,
+    }),
+  ).toContainText("КВАРТИРА 100%");
+  await expect(
+    page.getByRole("article", {
+      name: "Диалог: Помощник по работе",
+      exact: true,
+    }),
+  ).toHaveCount(0);
+  const query = new URLSearchParams(f.state.listQueries.at(-1));
+  expect(query.get("search")).toBe("квартира 100%");
+  expect(query.get("assistantKey")).toBe("housing");
+  expect(query.get("status")).toBe("closed");
+  await page
+    .getByLabel("Найти в переписке", { exact: true })
+    .fill("нет совпадения");
+  await page.getByRole("button", { name: "Найти", exact: true }).click();
+  await expect(
+    page.getByText("По этим условиям разговоров пока нет.", { exact: true }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Сбросить", exact: true }).click();
+  await expect(
+    page.getByRole("article", {
+      name: "Диалог: Помощник по работе",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByLabel("Найти в переписке", { exact: true }),
+  ).toHaveValue("");
+  await expect(
+    page.getByRole("combobox", { name: "Помощник", exact: true }),
+  ).toHaveValue("");
+  await expect(
+    page.getByRole("combobox", { name: "Статус", exact: true }),
+  ).toHaveValue("");
+  // Reset also clears local, unapplied edits when server filters are already empty.
+  const queriesBeforeEdits = f.state.listQueries.length;
+  await page
+    .getByLabel("Найти в переписке", { exact: true })
+    .fill("неотправленный поиск");
+  await page
+    .getByRole("combobox", { name: "Помощник", exact: true })
+    .selectOption("housing");
+  await page
+    .getByRole("combobox", { name: "Статус", exact: true })
+    .selectOption("closed");
+  expect(f.state.listQueries).toHaveLength(queriesBeforeEdits);
+  await page.getByRole("button", { name: "Сбросить", exact: true }).click();
+  await expect(
+    page.getByLabel("Найти в переписке", { exact: true }),
+  ).toHaveValue("");
+  await expect(
+    page.getByRole("combobox", { name: "Помощник", exact: true }),
+  ).toHaveValue("");
+  await expect(
+    page.getByRole("combobox", { name: "Статус", exact: true }),
+  ).toHaveValue("");
+  await expect(
+    page.getByRole("article", {
+      name: "Диалог: Помощник по работе",
+      exact: true,
+    }),
+  ).toBeVisible();
+  expect(f.state.listQueries.at(-1)).toBe("");
+  const form = page.locator(".conversation-directory-filters");
+  await form.scrollIntoViewIfNeeded();
+  const height = (await form.boundingBox())!.height;
+  expect(height).toBeLessThan(420);
+  for (const control of [
+    page.getByRole("searchbox", { name: "Найти в переписке" }),
+    page.getByRole("combobox", { name: "Помощник", exact: true }),
+    page.getByRole("combobox", { name: "Статус", exact: true }),
+  ])
+    expect((await control.boundingBox())!.height).toBeLessThan(80);
+  await page.screenshot({
+    path: testInfo.outputPath("conversation-filters.png"),
+  });
+  expect(f.state.messages).toBe(0);
+  expect(f.state.paymentPosts).toBe(0);
+  expect(f.state.external).toBe(0);
+  expect(f.state.unexpected).toEqual([]);
 });
