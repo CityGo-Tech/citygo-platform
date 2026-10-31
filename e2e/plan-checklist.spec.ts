@@ -604,7 +604,7 @@ test("checklist save 404 preserves the visible draft until explicit cancellation
     "Несохранённый пункт 🧳",
   );
   await expect(
-    list.getByLabel("Подробности пункта", { exact: true }),
+    list.getByRole("textbox", { name: "Подробности пункта", exact: true }),
   ).toHaveValue("Скопировать перед отменой");
   await expect(
     list.getByLabel("Название пункта", { exact: true }),
