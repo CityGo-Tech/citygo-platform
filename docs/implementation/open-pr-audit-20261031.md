@@ -22,7 +22,7 @@
 React Native 0.86, OpenAI 6 и PGlite 0.3:
 
 - Next / plugin-next 15.5.28, Fastify 5.12.7, прямые Zod 4.6.7, Sharp 0.35.5.
-- Отдельные override для fast-uri 3.1.9 / 4.2.3, PostCSS 8.5.23 и shell-quote 1.12.0.
+- Отдельные override для fast-uri 3.1.9 / 4.2.3, PostCSS ^8.5.28 только внутри Next 15, source-map-js 1.2.2 и shell-quote 1.12.0.
   Major fast-uri не смешиваются; Zod 3 внутри Expo CLI не заменяется на Zod 4.
 - setup-node закреплён на официальном `v7.1.0`:
   `949feb2413d6458794dcd2491c4babbbce0c15c1`. Права, triggers и release gates сохранены.
@@ -30,10 +30,10 @@ React Native 0.86, OpenAI 6 и PGlite 0.3:
   связки React/Mobile и dev tools. Major обновления остаются отдельными PR.
   Minor обновления 0.x по-прежнему требуют проверки совместимости.
 
-Повторный audit нового lockfile: 27 предупреждений — 0 critical, 13 high,
+Повторный audit нового lockfile: 26 предупреждений — 0 critical, 12 high,
 9 moderate и 5 low. Оставшиеся пути относятся к lint/build/mobile tooling:
 brace-expansion/minimatch, tsup/esbuild, Expo CLI/config и связанным библиотекам.
-Это не чистый audit и не основание отключать предупреждения. Их исправление
+Это не чистый audit и не основание отключать предупреждения. Классификация выше описывает пути зависимостей, а не доказывает недостижимость уязвимостей. Их исправление
 требует отдельной проверки совместимости, особенно Zod 3, glob и Expo SDK.
 
 Полный Linux/Docker-прогон должен относиться к окончательному SHA этого PR.

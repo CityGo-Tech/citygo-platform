@@ -50,8 +50,9 @@
     "overrides": {
       "fast-uri@3": "3.1.9",
       "fast-uri@4": "4.2.3",
-      "postcss@>=8.0.0 <8.5.23": "8.5.23",
-      "shell-quote@1": "1.12.0"
+      "shell-quote@1": "1.12.0",
+      "next@15>postcss": "^8.5.28",
+      "source-map-js@1": "1.2.2"
     }
   }
 }
