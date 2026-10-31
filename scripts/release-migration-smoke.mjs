@@ -439,7 +439,7 @@ export async function releaseMigrationSmoke({
   ]).trim();
   assert.match(
     migrationPath,
-    /^\/app\/node_modules\/[a-zA-Z0-9_@./+-]+\/migrations\/0040_human_support_replies\.sql$/,
+    /^\/app\/node_modules\/[a-zA-Z0-9_@./+-]+\/migrations\/0043_balance_history\.sql$/,
   );
   const sqlFile = join(directory, "synthetic-failing-migration.sql");
   // Sequence increments survive rollback: prove the executor reached the SQL,
@@ -603,7 +603,7 @@ export async function releaseMigrationSmoke({
     );
     docker(["rm", ident]); // Exact disposable fixtures ONLY; runtime retains them.
   }
-  assert.equal(psql("select count(*) from citygo_migrations"), "40");
+  assert.equal(psql("select count(*) from citygo_migrations"), "43");
   assertClosedPaymentAdmission(psql);
   assertPaymentAdmissionAcls(psql);
   assert.equal(
