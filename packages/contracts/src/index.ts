@@ -10,6 +10,7 @@ export * from "./admin-customer-observability.js";
 export * from "./message-favorites.js";
 export * from "./personal-plan.js";
 export * from "./conversation-history.js";
+export * from "./conversation-message-search.js";
 export * from "./llm.js";
 export * from "./ai-access.js";
 export * from "./ai-modes.js";
@@ -58,3 +59,4 @@ export const healthResponseSchema = z.object({
 export type HealthResponse = z.infer<typeof healthResponseSchema>;
 export type RelocationStage = z.infer<typeof relocationStageSchema>;
 export * from "./plan-checklist.js";
+export * from "./personal-plan-export.js";

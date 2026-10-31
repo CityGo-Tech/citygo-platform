@@ -1,4 +1,5 @@
 import Fastify from "fastify";
+import { registerConversationMessageSearch } from "./conversation-message-search.js";
 import cookie from "@fastify/cookie";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
@@ -933,6 +934,7 @@ export async function buildApp(options: {
     const input = changeRoleSchema.parse(request.body);
     return { user: await accounts.setRole(actor.id, input.userId, input.role) };
   });
+  registerConversationMessageSearch(app, options.db, authenticate);
   app.post("/v1/conversations/start", async (request) => {
     const user = await authenticate(request);
     const input = conversationStartSchema.parse(request.body ?? {});
