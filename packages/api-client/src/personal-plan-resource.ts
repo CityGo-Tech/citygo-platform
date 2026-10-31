@@ -70,7 +70,10 @@ export function createPersonalPlanResource({
   const snapshot = () => ({
     ...state,
     summary: state.summary ? { ...state.summary } : null,
-    items: state.items.map((item) => ({ ...item, source: { ...item.source } })),
+    items: state.items.map((item) => ({
+      ...item,
+      source: item.source ? { ...item.source } : null,
+    })),
   });
   function commit(next: PersonalPlanState) {
     if (!active()) return;
@@ -197,9 +200,9 @@ export function createPersonalPlanResource({
       if (!current() || !owner(receipt)) return false;
       if (
         "item" in receipt &&
-        (receipt.item.source.messageId !== item.source.messageId ||
-          receipt.item.source.threadId !== item.source.threadId ||
-          receipt.item.source.role !== item.source.role)
+        (receipt.item.source?.messageId !== item.source?.messageId ||
+          receipt.item.source?.threadId !== item.source?.threadId ||
+          receipt.item.source?.role !== item.source?.role)
       )
         throw new Error("Plan source changed");
       const [page, summary] = await Promise.all([

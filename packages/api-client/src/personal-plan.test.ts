@@ -283,3 +283,24 @@ test("personal plan commands obey session cancellation before dispatch and durin
   await assert.rejects(pending, cancelled);
   release(Response.json({ userId: "1", item }));
 });
+
+test("manual plan client requires a null source receipt and keeps message-bound commands strict", async () => {
+  let response = {
+    userId: "1",
+    item: { ...item, source: null } as PersonalPlanItem,
+  };
+  const client = createClient("http://synthetic", {
+    fetch: async () => Response.json(response),
+  });
+  assert.equal(
+    (await client.createPersonalPlanItem({ ...create, sourceMessageId: null }))
+      .item.source,
+    null,
+  );
+  await assert.rejects(client.createPersonalPlanItem(create), invalid);
+  response = { userId: "1", item };
+  await assert.rejects(
+    client.createPersonalPlanItem({ ...create, sourceMessageId: null }),
+    invalid,
+  );
+});

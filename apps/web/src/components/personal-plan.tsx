@@ -42,6 +42,7 @@ function StepEditor({
   return (
     <>
       <Field
+        className="ym-disable-keys"
         label="Название шага"
         value={title}
         maxLength={120}
@@ -54,6 +55,7 @@ function StepEditor({
         <textarea
           id={detailsId}
           aria-describedby={detailsHintId}
+          className="ym-disable-keys"
           value={details}
           maxLength={4000}
           rows={5}
@@ -77,13 +79,13 @@ export function PlanStepComposer({
   onSaved,
   onCancel,
 }: OwnerProps & {
-  source: PlanMessageSource;
+  source: PlanMessageSource | null;
   onSaved: () => void;
   onCancel: (checkPlan: boolean) => void;
 }) {
   const [fields, setFields] = useState<StepFields>({
-    title: source.content.trim().split(/\r?\n/)[0]!.slice(0, 120),
-    details: source.content.slice(0, 4000),
+    title: source?.content.trim().split(/\r?\n/)[0]!.slice(0, 120) ?? "",
+    details: source?.content.slice(0, 4000) ?? "",
   });
   const [frozen, setFrozen] = useState<CreatePersonalPlanItem | null>(null);
   const [busy, setBusy] = useState(false);
@@ -110,7 +112,7 @@ export function PlanStepComposer({
         if (!value.title.trim()) return;
         request = {
           operationId: crypto.randomUUID(),
-          sourceMessageId: source.messageId,
+          sourceMessageId: source?.messageId ?? null,
           title: value.title.trim(),
           details: value.details.trim(),
         };
@@ -129,9 +131,10 @@ export function PlanStepComposer({
           return;
         }
         if (
-          result.item.source.messageId !== source.messageId ||
-          result.item.source.threadId !== source.threadId ||
-          result.item.source.role !== source.role
+          (result.item.source?.messageId ?? null) !==
+            (source?.messageId ?? null) ||
+          result.item.source?.threadId !== source?.threadId ||
+          result.item.source?.role !== source?.role
         )
           throw new Error("Plan receipt owner or source mismatch");
         callbacks.current.onSaved();
@@ -153,7 +156,13 @@ export function PlanStepComposer({
     setSubmit(() => send);
     heading.current?.focus({ preventScroll: true });
     return () => controller.abort();
-  }, [userId, sessionSignal, source.messageId, source.threadId, source.role]);
+  }, [
+    userId,
+    sessionSignal,
+    source?.messageId,
+    source?.threadId,
+    source?.role,
+  ]);
 
   if (sessionSignal.aborted) return null;
   const confirm = (event: FormEvent) => {
@@ -162,7 +171,7 @@ export function PlanStepComposer({
   };
   return (
     <section
-      className={styles.composer}
+      className={styles.composer + " ym-hide-content"}
       aria-label="Добавление шага в план"
       aria-busy={busy}
     >
@@ -170,10 +179,11 @@ export function PlanStepComposer({
         Добавить шаг в план
       </h2>
       <p>
-        Выберите действие и уточните формулировку перед сохранением. Добавление
-        шага не подтверждает достоверность ответа помощника.
+        {source
+          ? "Выберите действие и уточните формулировку перед сохранением."
+          : "Запишите действие, которое хотите сделать."}
       </p>
-      {source.content.length > 4000 && (
+      {source && source.content.length > 4000 && (
         <small>
           В описание перенесены первые 4 000 символов сообщения. Исходный диалог
           сохранится по ссылке.
@@ -234,6 +244,7 @@ export function PersonalPlanPanel({
     signal: AbortSignal;
     state: PersonalPlanState;
   } | null>(null);
+  const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<PersonalPlanItem | null>(null);
   const [fields, setFields] = useState<StepFields>({ title: "", details: "" });
   const [removing, setRemoving] = useState<PersonalPlanItem | null>(null);
@@ -247,6 +258,7 @@ export function PersonalPlanPanel({
   const lastSource = useRef<string | null>(null);
 
   useEffect(() => {
+    setCreating(false);
     setEditing(null);
     setRemoving(null);
     setSource(null);
@@ -342,7 +354,7 @@ export function PersonalPlanPanel({
       status: editing.status,
     });
   };
-  if (source && current)
+  if (source?.source && current)
     return (
       <FavoriteMessageContext
         key={userId + ":" + source.source.messageId}
@@ -366,6 +378,26 @@ export function PersonalPlanPanel({
         }}
       />
     );
+  if (creating && current)
+    return (
+      <Card className={styles.panel}>
+        <PlanStepComposer
+          userId={userId}
+          sessionSignal={sessionSignal}
+          onAccessDenied={onAccessDenied}
+          source={null}
+          onSaved={() => {
+            setCreating(false);
+            if (filter === "all") void actions?.load();
+            else void actions?.select("all");
+          }}
+          onCancel={(checkPlan) => {
+            setCreating(false);
+            if (checkPlan) void actions?.load();
+          }}
+        />
+      </Card>
+    );
   return (
     <Card
       className={styles.panel}
@@ -375,11 +407,14 @@ export function PersonalPlanPanel({
       <span className={styles.eyebrow}>CITYGO · ВАШ ПЕРЕЕЗД</span>
       <h1>Ваш переезд — понятными шагами</h1>
       <p className={styles.intro}>
-        Здесь — шаги, которые вы выбрали в разговорах с помощниками. Уточняйте
+        Сохраняйте собственные шаги или выбирайте их из разговоров. Уточняйте
         план в своём темпе, даже если бюджет и дата ещё неизвестны.
       </p>
       <div className={styles.toolbar}>
         <span className={styles.meta}>МОЙ ПЛАН</span>
+        <Button disabled={disabled} onClick={() => setCreating(true)}>
+          Добавить шаг
+        </Button>
         <Button
           variant="ghost"
           disabled={busy || navigationBusy}
@@ -436,9 +471,9 @@ export function PersonalPlanPanel({
             <span className={styles.meta}>ПЕРВЫЙ ШАГ</span>
             <h2>Начнём с того, что важно вам</h2>
             <p>
-              В диалоге нажмите «Добавить шаг в план» под своим сообщением или
-              ответом помощника. Проверьте и подтвердите формулировку — шаг
-              сохранится здесь.
+              Добавьте свой шаг кнопкой выше или в диалоге нажмите «Добавить шаг
+              в план» под сообщением или ответом помощника. Проверьте и
+              подтвердите формулировку — шаг сохранится здесь.
             </p>
             <Button onClick={onContinue}>Открыть диалог</Button>
           </div>
@@ -468,7 +503,7 @@ export function PersonalPlanPanel({
         {items.map((item) => (
           <li key={item.id}>
             <article
-              className={styles.item}
+              className={styles.item + " ym-hide-content"}
               aria-label={"Шаг: " + item.title}
               data-plan-id={item.id}
             >
@@ -478,10 +513,11 @@ export function PersonalPlanPanel({
               <h2>{item.title}</h2>
               {item.details && <p className={styles.details}>{item.details}</p>}
               <small>
-                Из{" "}
-                {item.source.role === "user"
-                  ? "вашего сообщения"
-                  : "ответа помощника"}{" "}
+                {item.source
+                  ? item.source.role === "user"
+                    ? "Из вашего сообщения"
+                    : "Из ответа помощника"
+                  : "Ваш шаг"}{" "}
                 · {new Date(item.createdAt).toLocaleDateString("ru-RU")}
               </small>
               {current && editing?.id === item.id ? (
@@ -574,18 +610,20 @@ export function PersonalPlanPanel({
                   </Button>
                 </div>
               )}
-              <Button
-                className={styles.source}
-                variant="ghost"
-                disabled={busy || navigationBusy}
-                data-plan-source={item.id}
-                onClick={() => {
-                  lastSource.current = item.id;
-                  setSource(item);
-                }}
-              >
-                Открыть исходное сообщение
-              </Button>
+              {item.source && (
+                <Button
+                  className={styles.source}
+                  variant="ghost"
+                  disabled={busy || navigationBusy}
+                  data-plan-source={item.id}
+                  onClick={() => {
+                    lastSource.current = item.id;
+                    setSource(item);
+                  }}
+                >
+                  Открыть исходное сообщение
+                </Button>
+              )}
             </article>
           </li>
         ))}

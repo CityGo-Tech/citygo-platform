@@ -343,10 +343,33 @@ test(
         0,
         table,
       );
+    // A separate owner has capacity for a truly source-less row under actual API grants.
+    const manualCommand = {
+      ...input,
+      operationId: randomUUID(),
+      sourceMessageId: null,
+    };
+    const manualReplay = await Promise.all([
+      store.create(other, manualCommand),
+      store.create(other, manualCommand),
+    ]);
+    assert.deepEqual(manualReplay[0], manualReplay[1]);
+    assert.equal(manualReplay[0]!.item.source, null);
+    await store.update(other, manualReplay[0]!.item.id, {
+      expectedRevision: 1,
+      title: "Собственный шаг",
+      details: "",
+      status: "completed",
+    });
+    assert.equal((await store.list(other)).items[0]?.source, null);
     await backend.query("delete from messages where id=$1", [source]);
     assert.equal(
       (await backend.query("select id from personal_plan_items")).rows.length,
-      0,
+      1,
+    );
+    assert.equal(
+      (await store.list(other)).items[0]?.id,
+      manualReplay[0]!.item.id,
     );
   },
 );

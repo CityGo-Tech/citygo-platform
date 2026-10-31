@@ -19,13 +19,13 @@ import { DomainError } from "./errors.js";
 
 const MAX_ACTIVE_ITEMS = 200;
 const fields = `p.id::text,p.title,p.details,p.status,p.revision::text,
-  json_build_object('messageId',m.id::text,'threadId',t.id::text,'role',m.role) as source,
+  case when p.source_message_id is null then null else json_build_object('messageId',m.id::text,'threadId',t.id::text,'role',m.role) end as source,
   to_char(p.created_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "createdAt",
   to_char(p.updated_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "updatedAt"`;
-const ownedSource = `from personal_plan_items p join messages m on m.id=p.source_message_id
-  join agent_threads t on t.id=m.thread_id
+const ownedSource = `from personal_plan_items p left join messages m on m.id=p.source_message_id
+  left join agent_threads t on t.id=m.thread_id
   join users u on u.id=p.user_id
-  where p.user_id=$1 and t.user_id=$1 and m.role in ('user','assistant')
+  where p.user_id=$1 and (p.source_message_id is null or (t.user_id=$1 and m.role in ('user','assistant')))
   and u.status='active' and not u.must_change_password`;
 type Stored = Omit<PersonalPlanItem, "revision"> & {
   revision: string;
@@ -156,12 +156,15 @@ export class PersonalPlan {
           );
         return { userId, item: item(previous) };
       }
-      const source = await tx.query(
-        `select m.id from messages m join agent_threads t on t.id=m.thread_id
+      const source =
+        input.sourceMessageId === null
+          ? null
+          : await tx.query(
+              `select m.id from messages m join agent_threads t on t.id=m.thread_id
          where m.id=$1 and t.user_id=$2 and m.role in ('user','assistant')`,
-        [input.sourceMessageId, userId],
-      );
-      if (source.rows.length !== 1) throw missing();
+              [input.sourceMessageId, userId],
+            );
+      if (source !== null && source.rows.length !== 1) throw missing();
       const count = (
         await tx.query<{ count: number }>(
           "select count(*)::integer as count from personal_plan_items where user_id=$1 and deleted_at is null",

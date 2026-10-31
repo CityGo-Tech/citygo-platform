@@ -67,7 +67,7 @@ export function createResultsResource({
       ...state.plan,
       items: state.plan.items.map((item) => ({
         ...item,
-        source: { ...item.source },
+        source: item.source ? { ...item.source } : null,
       })),
     },
     favorites: {

@@ -200,7 +200,7 @@ test("private plan works without a profile, retains source ownership and never c
         ...f.input(),
         sourceMessageId: userSource.id,
       })
-    ).item.source.role,
+    ).item.source?.role,
     "user",
   );
 });
@@ -449,4 +449,67 @@ test("database guards keep creation identity and tombstones immutable and migrat
     1,
   );
   assert.equal(await count(old, "personal_plan_items"), 0);
+});
+
+test("manual steps persist without a message, replay independently, retain null source through CAS and cannot adopt another owner's source", async (t) => {
+  const f = await fixture(t);
+  const command = { ...f.input(), sourceMessageId: null };
+  const first = await f.store.create(f.owner, command);
+  assert.equal(first.item.source, null);
+  assert.equal(first.item.title, "Найти район");
+  assert.deepEqual(await f.store.create(f.owner, command), first);
+  assert.deepEqual((await f.store.list(f.other)).items, []);
+  assert.equal((await f.store.list(f.owner)).items[0]?.source, null);
+  assert.equal((await f.store.summary(f.owner)).total, 1);
+  await assert.rejects(
+    f.store.update(f.other, first.item.id, {
+      expectedRevision: 1,
+      title: "Foreign",
+      details: "",
+      status: "pending",
+    }),
+    errorStatus(404),
+  );
+  await assert.rejects(
+    f.store.create(f.owner, { ...command, sourceMessageId: f.message.id }),
+    errorStatus(409),
+  );
+  const changed = await f.store.update(f.owner, first.item.id, {
+    expectedRevision: 1,
+    title: "Мой готовый шаг",
+    details: "",
+    status: "completed",
+  });
+  assert.equal(changed.item.source, null);
+  assert.equal(changed.item.revision, 2);
+  assert.equal((await f.store.create(f.owner, command)).item.revision, 2);
+  await assert.rejects(
+    f.store.update(f.owner, first.item.id, {
+      expectedRevision: 1,
+      title: "Stale",
+      details: "",
+      status: "pending",
+    }),
+    errorStatus(409, 2),
+  );
+  const foreign = await f.source(f.other);
+  await assert.rejects(
+    f.db.query(
+      "update personal_plan_items set source_message_id=$2,revision=revision+1,updated_at=clock_timestamp() where id=$1",
+      [first.item.id, foreign.id],
+    ),
+    { code: "23514" },
+  );
+  await f.db.query("delete from messages where id=$1", [f.message.id]);
+  assert.equal((await f.store.list(f.owner)).items[0]?.id, first.item.id);
+  await f.store.remove(f.owner, first.item.id, 2);
+  assert.deepEqual((await f.store.list(f.owner)).items, []);
+  await assert.rejects(f.store.create(f.owner, command), errorStatus(409));
+  for (const table of [
+    "ai_credit_entries",
+    "ai_model_attempts",
+    "user_quests",
+    "xp_events",
+  ])
+    assert.equal(await count(f.db, table), 0, table);
 });

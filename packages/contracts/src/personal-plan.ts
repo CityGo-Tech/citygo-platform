@@ -16,17 +16,19 @@ export const personalPlanItemSchema = z.strictObject({
   details,
   status: personalPlanStatusSchema,
   revision,
-  source: z.strictObject({
-    messageId: personalPlanIdSchema,
-    threadId: personalPlanIdSchema,
-    role: z.enum(["user", "assistant"]),
-  }),
+  source: z
+    .strictObject({
+      messageId: personalPlanIdSchema,
+      threadId: personalPlanIdSchema,
+      role: z.enum(["user", "assistant"]),
+    })
+    .nullable(),
   createdAt: z.iso.datetime({ offset: true }),
   updatedAt: z.iso.datetime({ offset: true }),
 });
 export const createPersonalPlanItemSchema = z.strictObject({
   operationId: z.uuid().toLowerCase(),
-  sourceMessageId: personalPlanIdSchema,
+  sourceMessageId: personalPlanIdSchema.nullable(),
   title,
   details,
 });
