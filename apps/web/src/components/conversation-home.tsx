@@ -29,6 +29,11 @@ import { AiModeSelector } from "./ai-mode-selector";
 import { isAiModeAvailable } from "@citygo/api-client";
 import { trackProductEvent } from "./product-analytics";
 import { TextMaterialPreview } from "./text-material-preview";
+import { AssistantHandoffDialog } from "./assistant-handoff";
+import {
+  currentAssistantHandoffSource,
+  type AssistantHandoffSource,
+} from "./assistant-handoff-state";
 
 const topics = [
   ["Понять и спланировать", "Не понимаю, с чего начать переезд в Москву."],
@@ -50,6 +55,8 @@ export function ConversationHome(props: JourneyProps) {
   const [showList, setShowList] = useState(false);
   const [planSource, setPlanSource] = useState<PlanMessageSource | null>(null);
   const [planGeneration, setPlanGeneration] = useState(0);
+  const [handoffSource, setHandoffSource] =
+    useState<AssistantHandoffSource | null>(null);
   const { board, busy, sending } = props;
   const log = useRef<HTMLDivElement>(null);
   const historyScroll = useHistoryScrollAnchor(
@@ -191,6 +198,38 @@ export function ConversationHome(props: JourneyProps) {
           ),
         )}
       </nav>
+      {handoffSource &&
+        props.onHandoff &&
+        currentAssistantHandoffSource(
+          handoffSource,
+          board,
+          props.sessionSignal,
+        ) && (
+          <AssistantHandoffDialog
+            key={
+              handoffSource.userId +
+              ":" +
+              handoffSource.threadId +
+              ":" +
+              handoffSource.messageId
+            }
+            source={handoffSource}
+            board={board}
+            sessionSignal={props.sessionSignal}
+            disabled={busy || sending}
+            onPrepare={async (input) => {
+              const prepared = await props.onHandoff!(input);
+              if (prepared && !input.source.sessionSignal.aborted) {
+                setTab("Диалоги");
+                setShowList(false);
+                setPlanSource(null);
+                setHandoffSource(null);
+              }
+              return prepared;
+            }}
+            onClose={() => setHandoffSource(null)}
+          />
+        )}
       {planSource && (
         <PlanStepComposer
           key={board.user.id + ":" + planSource.messageId}
@@ -390,6 +429,39 @@ export function ConversationHome(props: JourneyProps) {
                         props.onFavorite?.(message.id, !message.favorite)
                       }
                     />
+                    {message.status === "complete" && props.onHandoff && (
+                      <Button
+                        variant="ghost"
+                        disabled={
+                          busy ||
+                          sending ||
+                          !!planSource ||
+                          !!handoffSource ||
+                          props.sessionSignal.aborted
+                        }
+                        onClick={() => {
+                          if (
+                            busy ||
+                            sending ||
+                            props.sessionSignal.aborted ||
+                            !board.thread
+                          )
+                            return;
+                          setHandoffSource({
+                            userId: board.user.id,
+                            threadId: board.thread.id,
+                            messageId: message.id,
+                            assistantKey:
+                              board.thread.assistantKey ??
+                              board.thread.agentKey,
+                            content: message.content,
+                            sessionSignal: props.sessionSignal,
+                          });
+                        }}
+                      >
+                        Другому помощнику
+                      </Button>
+                    )}
                     <Button
                       variant="ghost"
                       disabled={busy || sending || !!planSource}

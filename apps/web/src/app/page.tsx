@@ -24,6 +24,12 @@ import { Button, Card, Field, Badge } from "@citygo/ui-web";
 import { Journey } from "../components/journey";
 import { createConversationListRequests } from "../components/conversation-list-requests";
 import { ConversationHome } from "../components/conversation-home";
+import {
+  assistantHandoffDraft,
+  currentAssistantHandoffSource,
+  assistantHandoffTarget,
+  type AssistantHandoffInput,
+} from "../components/assistant-handoff-state";
 import { OwnerReceiptsPanel } from "../components/owner-receipts";
 import { MessageFavoritesPanel } from "../components/message-favorites";
 import { EmailRegistration } from "../components/email-registration";
@@ -395,7 +401,10 @@ export default function Home() {
     setText(restored);
     setDraftRecovered(!!restored);
   }
-  async function beginConversation(agentKey?: AgentKey) {
+  async function beginConversation(
+    agentKey?: AgentKey,
+    handoff?: AssistantHandoffInput,
+  ) {
     if (
       !board ||
       board.user.serviceConsentRequired ||
@@ -405,6 +414,24 @@ export default function Home() {
       conversationSwitch.current
     )
       return false;
+    if (
+      handoff &&
+      (agentKey !== handoff.target ||
+        !assistantHandoffTarget(handoff.source, handoff.target) ||
+        !currentAssistantHandoffSource(
+          handoff.source,
+          board,
+          session.capture().signal,
+        ))
+    )
+      return false;
+    if (handoff) {
+      try {
+        assistantHandoffDraft(handoff.text);
+      } catch {
+        return false;
+      }
+    }
     conversationSwitch.current = true;
     const epoch = ++conversationEpoch.current;
     const version = ++refreshVersion.current;
@@ -432,6 +459,22 @@ export default function Home() {
           clearUserState();
           return;
         }
+        let preparedDraft: string | null = null;
+        if (handoff) {
+          if (
+            detail.thread.closed ||
+            detail.thread.id === handoff.source.threadId ||
+            (detail.thread.assistantKey ?? detail.thread.agentKey) !==
+              handoff.target
+          )
+            throw new Error(
+              "Handoff target does not match the selected assistant",
+            );
+          const existing =
+            conversationDrafts.current.get(detail.thread.id) ??
+            readChatDraft(board.user.id, detail.thread.id, draftStorage());
+          preparedDraft = assistantHandoffDraft(handoff.text, existing);
+        }
         rememberConversation(board.user.id, detail.thread.id);
         visibleThread.current = detail.thread.id;
         setBoard((current) =>
@@ -439,7 +482,18 @@ export default function Home() {
             ? { ...current, thread: detail.thread }
             : current,
         );
-        restoreDraft(board.user.id, detail.thread.id, detail.thread.closed);
+        if (preparedDraft !== null) {
+          conversationDrafts.current.set(detail.thread.id, preparedDraft);
+          writeChatDraft(
+            board.user.id,
+            detail.thread.id,
+            preparedDraft,
+            draftStorage(),
+          );
+          setText(preparedDraft);
+          setDraftRecovered(false);
+        } else
+          restoreDraft(board.user.id, detail.thread.id, detail.thread.closed);
         setDraft("");
         setPending("");
         setStreamAgent(null);
@@ -1490,6 +1544,7 @@ export default function Home() {
                 }
                 topups={topups}
                 onBegin={beginConversation}
+                onHandoff={(input) => beginConversation(input.target, input)}
                 conversations={conversations}
                 conversationNextCursor={conversationNextCursor}
                 onConversations={loadConversations}
