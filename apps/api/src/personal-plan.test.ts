@@ -671,3 +671,54 @@ test("HTTP manual plan steps need an active owner, preserve null source and neve
   assert.deepEqual(await f.legacySnapshot(), before);
   assert.equal(f.modelCalls(), 0);
 });
+
+test("HTTP personal plan search uses literal title/details matching and current owner without AI or balance changes", async (t) => {
+  const f = await fixture(t);
+  for (const title of ["Район 100%_\\", "Район обычный"]) {
+    const result = await f.call("POST", "/v1/personal-plan", {
+      ...f.create(),
+      title,
+      details: "Детали дороги",
+    });
+    assert.equal(result.statusCode, 200, result.body);
+  }
+  const before = await f.legacySnapshot();
+  for (const search of ["%", "_", "\\", "район 100%_\\"]) {
+    const url =
+      "/v1/personal-plan?" + new URLSearchParams({ search, status: "pending" });
+    const response = await f.call("GET", url);
+    assert.equal(response.statusCode, 200, response.body);
+    assert.equal(response.json().items.length, 1);
+    assert.equal(response.json().items[0].title, "Район 100%_\\");
+    assert.deepEqual(
+      (await f.call("GET", url, undefined, f.otherToken)).json().items,
+      [],
+    );
+  }
+  assert.equal(
+    (
+      await f.call(
+        "GET",
+        "/v1/personal-plan?search=" + encodeURIComponent("детали дороги"),
+      )
+    ).json().items.length,
+    2,
+  );
+  for (const query of [
+    "search=",
+    "search=a&search=b",
+    "search=" + "a".repeat(161),
+    "search=a%00b",
+  ])
+    assert.equal(
+      (await f.call("GET", "/v1/personal-plan?" + query)).statusCode,
+      400,
+    );
+  assert.equal(
+    (await f.call("GET", "/v1/personal-plan?search=район", undefined, ""))
+      .statusCode,
+    401,
+  );
+  assert.deepEqual(await f.legacySnapshot(), before);
+  assert.equal(f.modelCalls(), 0);
+});

@@ -773,11 +773,16 @@ export function createClient(
         role,
       }),
     dashboard: () => request("/v1/dashboard", dashboardResponseSchema),
-    personalPlan: async (before?: string, status?: PersonalPlanStatus) => {
-      const query = personalPlanQuerySchema.parse({ before, status });
+    personalPlan: async (
+      before?: string,
+      status?: PersonalPlanStatus,
+      search?: string,
+    ) => {
+      const query = personalPlanQuerySchema.parse({ before, status, search });
       const params = new URLSearchParams();
       if (query.before !== undefined) params.set("before", query.before);
       if (query.status !== undefined) params.set("status", query.status);
+      if (query.search !== undefined) params.set("search", query.search);
       const result = await request(
         "/v1/personal-plan" + (params.size ? "?" + params : ""),
         personalPlanPageSchema,

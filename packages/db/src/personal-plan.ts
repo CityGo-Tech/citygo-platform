@@ -68,15 +68,23 @@ export class PersonalPlan {
     userId: string,
     before?: string,
     status?: PersonalPlanStatus,
+    search?: string,
   ): Promise<PersonalPlanPage> {
     personalPlanIdSchema.parse(userId);
-    personalPlanQuerySchema.parse({ before, status });
+    const query = personalPlanQuerySchema.parse({ before, status, search });
     const rows = (
       await this.db.query<Stored>(
         `select ${fields} ${ownedSource} and p.deleted_at is null
          and ($2::bigint is null or p.id<$2::bigint)
-         and ($3::text is null or p.status=$3::text) order by p.id desc limit 21`,
-        [userId, before ?? null, status ?? null],
+         and ($3::text is null or p.status=$3::text)
+         and ($4::text is null or position(lower($4::text) in lower(p.title || E'\\n' || p.details))>0)
+         order by p.id desc limit 21`,
+        [
+          userId,
+          query.before ?? null,
+          query.status ?? null,
+          query.search ?? null,
+        ],
       )
     ).rows;
     const items = rows.slice(0, 20).map(item);

@@ -60,7 +60,9 @@ export function registerPersonalPlanApi(
     const query = input(personalPlanQuerySchema, request.query);
     return output(
       personalPlanPageSchema,
-      await stored(plan.list(user.id, query.before, query.status)),
+      await stored(
+        plan.list(user.id, query.before, query.status, query.search),
+      ),
       user.id,
     );
   });

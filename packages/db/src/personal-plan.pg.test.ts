@@ -371,5 +371,39 @@ test(
       (await store.list(other)).items[0]?.id,
       manualReplay[0]!.item.id,
     );
+    // Real SQL under citygo_api grants: %/_/backslash are ordinary text.
+    for (let n = 0; n < 45; n++)
+      await store.create(owner, {
+        ...input,
+        operationId: randomUUID(),
+        sourceMessageId: null,
+        title: n < 24 ? `Literal %_\\ ${n}` : `Other ${n}`,
+        details: n === 0 ? "Unique detail" : "",
+      });
+    for (const search of ["%", "_", "\\", "literal %_\\"]) {
+      const first = await store.list(owner, undefined, "pending", search);
+      assert.equal(first.items.length, 20);
+      const next = await store.list(
+        owner,
+        first.nextBefore!,
+        "pending",
+        search,
+      );
+      assert.equal(next.items.length, 4);
+      assert.equal(next.nextBefore, null);
+      assert.equal(
+        new Set([...first.items, ...next.items].map((x) => x.id)).size,
+        24,
+      );
+      assert.deepEqual(
+        (await store.list(other, undefined, undefined, search)).items,
+        [],
+      );
+    }
+    assert.equal(
+      (await store.list(owner, undefined, undefined, "unique detail")).items
+        .length,
+      1,
+    );
   },
 );

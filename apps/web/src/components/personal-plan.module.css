@@ -69,6 +69,11 @@
 .progress progress {
   width: 100%;
 }
+.search {
+  display: grid;
+  gap: var(--cg-space-sm);
+  min-width: 0;
+}
 .filters {
   display: flex;
   flex-wrap: wrap;

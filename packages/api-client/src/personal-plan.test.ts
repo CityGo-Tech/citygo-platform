@@ -304,3 +304,21 @@ test("manual plan client requires a null source receipt and keeps message-bound 
     invalid,
   );
 });
+
+test("personal plan search is normalized and encoded once with status/cursor; invalid search never reaches transport", async () => {
+  const urls: string[] = [];
+  const client = createClient("http://synthetic", {
+    fetch: async (url) => {
+      urls.push(String(url));
+      return Response.json({ userId: "1", items: [], nextBefore: null });
+    },
+  });
+  await client.personalPlan("9007199254740993", "pending", "  Квартира %_\\  ");
+  const url = new URL(urls[0]!);
+  assert.equal(url.searchParams.get("search"), "Квартира %_\\");
+  assert.equal(url.searchParams.get("status"), "pending");
+  assert.equal(url.searchParams.get("before"), "9007199254740993");
+  for (const search of ["", "  ", "x".repeat(161), "x\0y"])
+    await assert.rejects(client.personalPlan(undefined, undefined, search));
+  assert.equal(urls.length, 1);
+});

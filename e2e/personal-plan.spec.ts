@@ -55,6 +55,7 @@ async function fixture(
     responseOwner: null as string | null,
     reads: [] as (string | null)[],
     statusReads: [] as (string | null)[],
+    searchReads: [] as (string | null)[],
     summaryReads: 0,
     listCompletions: 0,
     failSummary: false,
@@ -205,12 +206,18 @@ async function fixture(
         status = url.searchParams.get("status");
       state.reads.push(before);
       state.statusReads.push(status);
+      const search = url.searchParams.get("search");
+      state.searchReads.push(search);
       const rows =
         owner === "101"
           ? state.items.filter(
               (row) =>
                 (!before || BigInt(row.id) < BigInt(before)) &&
-                (!status || row.status === status),
+                (!status || row.status === status) &&
+                (!search ||
+                  (row.title + "\n" + row.details)
+                    .toLowerCase()
+                    .includes(search.toLowerCase())),
             )
           : [];
       const page = {
@@ -973,6 +980,156 @@ test("standalone plan creation survives reload, shows its own origin and exposes
   await openPlan(page);
   await expect(entry).toContainText("Мой список вещей");
   expect(state.sourceReads).toEqual([]);
+  expect(state.forbidden).toEqual([]);
+  expect(state.external).toBe(0);
+});
+
+test("plan literal search reaches older pages, combines status and resets applied and unsubmitted conditions", async ({
+  page,
+  context,
+}) => {
+  const rows = Array.from({ length: 47 }, (_, n) => ({
+    ...item(
+      String(9007199254741200n - BigInt(n)),
+      n < 22 ? `Иное ${n}` : `Район %_\\ ${n}`,
+    ),
+    status: n === 46 ? ("completed" as const) : ("pending" as const),
+  }));
+  const state = await fixture(context, rows);
+  await page.goto("/");
+  await openPlan(page);
+  const panel = planPanel(page),
+    search = panel.getByRole("search", { name: "Поиск в моём плане" });
+  await search.getByLabel("Найти шаг", { exact: true }).fill("  район %_\\  ");
+  await search.getByRole("button", { name: "Найти", exact: true }).click();
+  await expect(panel.getByRole("article")).toHaveCount(20);
+  expect(state.searchReads.at(-1)).toBe("район %_\\");
+  await expect(search).toHaveClass(/ym-hide-content/);
+  await expect(search.getByLabel("Найти шаг", { exact: true })).toHaveClass(
+    /ym-disable-keys/,
+  );
+  await page.screenshot({ path: test.info().outputPath("plan-search.png") });
+  await panel
+    .getByRole("button", { name: "Показать ещё шаги", exact: true })
+    .click();
+  await expect(panel.getByRole("article")).toHaveCount(25);
+  await panel.getByRole("button", { name: /^Выполнено 1$/ }).click();
+  await expect(panel.getByRole("article")).toHaveCount(1);
+  await search.getByLabel("Найти шаг", { exact: true }).fill("не применено");
+  await search.getByRole("button", { name: "Сбросить", exact: true }).click();
+  await expect(search.getByLabel("Найти шаг", { exact: true })).toHaveValue("");
+  await expect(panel.getByRole("article")).toHaveCount(20);
+  expect(state.searchReads.at(-1)).toBeNull();
+  expect(state.statusReads.at(-1)).toBeNull();
+  expect(state.posts).toEqual([]);
+  expect(state.updates).toEqual([]);
+  expect(state.removes).toEqual([]);
+  expect(state.forbidden).toEqual([]);
+  expect(state.external).toBe(0);
+});
+
+test("switching status cancels an older plan search response without restoring its rows", async ({
+  page,
+  context,
+}) => {
+  const rows = [
+    ...Array.from({ length: 25 }, (_, n) => ({
+      ...item(String(9007199254741200n - BigInt(n)), `Район ${n}`),
+      status: n === 24 ? ("completed" as const) : ("pending" as const),
+    })),
+    item("2", "Иное"),
+  ];
+  const state = await fixture(context, rows);
+  await page.goto("/");
+  await openPlan(page);
+  const panel = planPanel(page),
+    search = panel.getByRole("search", { name: "Поиск в моём плане" });
+  state.holdList = true;
+  await search.getByLabel("Найти шаг", { exact: true }).fill("район");
+  await search.getByRole("button", { name: "Найти", exact: true }).click();
+  await expect.poll(() => state.searchReads.at(-1)).toBe("район");
+  await panel.getByRole("button", { name: /^В работе / }).click();
+  await expect(panel.getByRole("article")).toHaveCount(20);
+  expect(state.statusReads.at(-1)).toBe("pending");
+  state.releaseList();
+  await expect.poll(() => state.listCompletions).toBeGreaterThanOrEqual(3);
+  await expect(
+    panel.getByRole("button", { name: /^В работе / }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await expect(panel.getByRole("article")).toHaveCount(20);
+  expect(state.forbidden).toEqual([]);
+  expect(state.external).toBe(0);
+});
+
+test("unfinished step edits and removal choices block search reset and status changes until explicit cancellation", async ({
+  page,
+  context,
+}) => {
+  const state = await fixture(context, [item("30", "Первоначальный шаг")]);
+  await page.goto("/");
+  await openPlan(page);
+  const plan = planPanel(page),
+    search = plan.getByRole("search", { name: "Поиск в моём плане" }),
+    row = plan.getByRole("article").first();
+  await search
+    .getByLabel("Найти шаг", { exact: true })
+    .fill("не применённый поиск");
+  await row.getByRole("button", { name: "Изменить", exact: true }).click();
+  const title = row.getByLabel("Название шага", { exact: true });
+  await title.fill("Мой несохранённый шаг");
+  await row
+    .getByLabel("Описание шага", { exact: true })
+    .fill("Не терять мои подробности");
+  const before = state.reads.length;
+  await expect(
+    search.getByRole("button", { name: "Найти", exact: true }),
+  ).toBeDisabled();
+  await expect(
+    search.getByRole("button", { name: "Сбросить", exact: true }),
+  ).toBeDisabled();
+  await expect(plan.getByRole("button", { name: /^В работе / })).toBeDisabled();
+  await search.evaluate((form) =>
+    form.dispatchEvent(
+      new Event("submit", { bubbles: true, cancelable: true }),
+    ),
+  );
+  await search
+    .getByRole("button", { name: "Сбросить", exact: true })
+    .evaluate((button: HTMLButtonElement) => button.click());
+  await expect(title).toHaveValue("Мой несохранённый шаг");
+  await expect(row.getByLabel("Описание шага", { exact: true })).toHaveValue(
+    "Не терять мои подробности",
+  );
+  expect(state.reads.length).toBe(before);
+  expect(state.updates).toEqual([]);
+  await row
+    .getByRole("button", { name: "Отмена редактирования", exact: true })
+    .click();
+  await expect(
+    search.getByRole("button", { name: "Найти", exact: true }),
+  ).toBeEnabled();
+  await row.getByRole("button", { name: "Удалить", exact: true }).click();
+  await expect(
+    search.getByRole("button", { name: "Сбросить", exact: true }),
+  ).toBeDisabled();
+  await search.evaluate((form) =>
+    form.dispatchEvent(
+      new Event("submit", { bubbles: true, cancelable: true }),
+    ),
+  );
+  await expect(
+    row.getByRole("button", { name: "Подтвердить удаление", exact: true }),
+  ).toBeVisible();
+  expect(state.reads.length).toBe(before);
+  expect(state.removes).toEqual([]);
+  await row
+    .getByRole("button", { name: "Отмена удаления", exact: true })
+    .click();
+  await search.getByRole("button", { name: "Сбросить", exact: true }).click();
+  await expect(search.getByLabel("Найти шаг", { exact: true })).toHaveValue("");
+  await expect(
+    search.getByRole("button", { name: "Найти", exact: true }),
+  ).toBeEnabled();
   expect(state.forbidden).toEqual([]);
   expect(state.external).toBe(0);
 });
