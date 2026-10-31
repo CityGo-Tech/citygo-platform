@@ -1,3 +1,4 @@
+import { personalPlanExportSchema } from "@citygo/contracts";
 import {
   personalPlanIdSchema as checklistItemIdSchema,
   planChecklistSchema,
@@ -88,6 +89,8 @@ import {
   conversationStartSchema,
   conversationListQuerySchema,
   conversationMessagesQuerySchema,
+  conversationMessageSearchQuerySchema,
+  conversationMessageSearchPageSchema,
   conversationMessagesResponseSchema,
   conversationHistoryIdSchema,
   conversationIdSchema,
@@ -839,6 +842,8 @@ export function createClient(
         );
       return value;
     },
+    exportPersonalPlan: () =>
+      request("/v1/personal-plan/export", personalPlanExportSchema),
     personalPlanSummary: () =>
       request("/v1/personal-plan/summary", personalPlanSummarySchema),
     createPersonalPlanItem: async (input: CreatePersonalPlanItem) => {
@@ -1001,6 +1006,37 @@ export function createClient(
         throw new ApiError(
           200,
           "Ответ сервера не соответствует выбранному диалогу",
+          "invalid_response",
+        );
+      return result;
+    },
+    searchConversationMessages: async (
+      conversationId: string,
+      search: string,
+      before?: string,
+    ) => {
+      const id = conversationHistoryIdSchema.parse(conversationId);
+      const query = conversationMessageSearchQuerySchema.parse({
+        search,
+        ...(before === undefined ? {} : { before }),
+      });
+      const params = new URLSearchParams({ search: query.search });
+      if (query.before) params.set("before", query.before);
+      const result = await request(
+        "/v1/conversations/" + id + "/messages/search?" + params.toString(),
+        conversationMessageSearchPageSchema,
+      );
+      if (
+        result.threadId !== id ||
+        result.search !== query.search ||
+        (query.before &&
+          result.matches.some(
+            (match) => BigInt(match.messageId) >= BigInt(query.before!),
+          ))
+      )
+        throw new ApiError(
+          200,
+          "Ответ сервера не соответствует поиску в диалоге",
           "invalid_response",
         );
       return result;

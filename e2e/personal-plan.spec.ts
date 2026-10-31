@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { fulfillProductAnalytics } from "./product-analytics-fixture";
 import { syntheticConsentPolicy } from "./service-consent-fixture";
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
@@ -1132,4 +1133,121 @@ test("unfinished step edits and removal choices block search reset and status ch
   ).toBeEnabled();
   expect(state.forbidden).toEqual([]);
   expect(state.external).toBe(0);
+});
+
+test("whole plan download includes hidden pages and checklists after explicit click only", async ({
+  page,
+  context,
+}, info) => {
+  const rows = Array.from({ length: 25 }, (_, n) => ({
+    ...item(String(9007199254741030n - BigInt(n)), "Экспорт шаг " + n),
+    status: n === 24 ? ("completed" as const) : ("pending" as const),
+  }));
+  const state = await fixture(context, rows);
+  let exports = 0;
+  await context.route("**/api/v1/personal-plan/export", (route) => {
+    exports++;
+    expect(route.request().method()).toBe("GET");
+    expect(new URL(route.request().url()).search).toBe("");
+    return route.fulfill({
+      json: {
+        userId: state.owner,
+        generatedAt: stamp,
+        items: rows.map((r, n) => ({
+          ...r,
+          checklist:
+            n === 24
+              ? [
+                  {
+                    id: "11111111-1111-4111-8111-111111111111",
+                    title: "Последний пункт",
+                    details: "ВЕСЬ_ТЕКСТ_ЧЕКЛИСТА",
+                    completed: true,
+                  },
+                ]
+              : [],
+        })),
+      },
+    });
+  });
+  await page.goto("/");
+  await openPlan(page);
+  const panel = planPanel(page);
+  await expect(panel.getByRole("article")).toHaveCount(20);
+  expect(exports).toBe(0);
+  await panel.getByLabel("Найти шаг", { exact: true }).fill("Экспорт шаг 24");
+  await panel.getByRole("button", { name: "Найти", exact: true }).click();
+  await expect(panel.getByRole("article")).toHaveCount(1);
+  const saved = page.waitForEvent("download");
+  await panel
+    .getByRole("button", { name: "Скачать весь план", exact: true })
+    .click();
+  const download = await saved;
+  expect(download.suggestedFilename()).toBe("citygo-plan.txt");
+  const text = await readFile((await download.path())!, "utf8");
+  expect(text).toContain("1. [ ] Экспорт шаг 0");
+  expect(text).toContain("25. [x] Экспорт шаг 24");
+  expect(text).toContain("[x] Последний пункт");
+  expect(text).toContain("ВЕСЬ_ТЕКСТ_ЧЕКЛИСТА");
+  expect(text).not.toContain(rows[0]!.id);
+  expect(exports).toBe(1);
+  expect(state.posts).toEqual([]);
+  expect(state.updates).toEqual([]);
+  expect(state.external).toBe(0);
+  expect(state.forbidden).toEqual([]);
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  await panel.screenshot({ path: info.outputPath("whole-plan-export.png") });
+});
+
+test("cancelled plan export cannot download a delayed successful response", async ({
+  page,
+  context,
+}) => {
+  const state = await fixture(context, [item()]);
+  let release!: () => void;
+  let calls = 0,
+    downloads = 0;
+  const gate = new Promise<void>((r) => {
+    release = r;
+  });
+  await context.route("**/api/v1/personal-plan/export", async (route) => {
+    calls++;
+    await gate;
+    try {
+      await route.fulfill({
+        json: {
+          userId: state.owner,
+          generatedAt: stamp,
+          items: [{ ...item(), checklist: [] }],
+        },
+      });
+    } catch {
+      /* Cancelled local request. */
+    }
+  });
+  page.on("download", () => downloads++);
+  await page.goto("/");
+  await openPlan(page);
+  const panel = planPanel(page);
+  await panel
+    .getByRole("button", { name: "Скачать весь план", exact: true })
+    .click();
+  await expect(
+    panel.getByRole("button", { name: "Отменить скачивание", exact: true }),
+  ).toBeVisible();
+  await panel
+    .getByRole("button", { name: "Отменить скачивание", exact: true })
+    .click();
+  release();
+  await expect(
+    panel.getByRole("button", { name: "Скачать весь план", exact: true }),
+  ).toBeEnabled();
+  await page.waitForTimeout(100);
+  expect(downloads).toBe(0);
+  expect(calls).toBe(1);
+  expect(state.forbidden).toEqual([]);
 });

@@ -35,6 +35,7 @@ import {
   type AssistantHandoffSource,
 } from "./assistant-handoff-state";
 import { MessageTextActions } from "./message-text-actions";
+import { ConversationMessageSearch } from "./conversation-message-search";
 
 const topics = [
   ["Понять и спланировать", "Не понимаю, с чего начать переезд в Москву."],
@@ -368,6 +369,16 @@ export function ConversationHome(props: JourneyProps) {
               >
                 Все диалоги
               </Button>
+              {board.thread && (
+                <ConversationMessageSearch
+                  key={board.user.id + ":" + board.thread.id}
+                  userId={board.user.id}
+                  threadId={board.thread.id}
+                  sessionSignal={props.sessionSignal}
+                  onAccessDenied={props.onAccessDenied}
+                  disabled={busy || sending}
+                />
+              )}
               <ConversationHistoryControls
                 state={props.history}
                 disabled={busy || sending}

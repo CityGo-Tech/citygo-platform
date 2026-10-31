@@ -11,6 +11,11 @@ import {
   type CreateSupportRequest,
   type SupportRequestsQuery,
   type UpdateSupportRequestStatus,
+  createSupportReplySchema,
+  supportReplySchema,
+  supportRepliesQuerySchema,
+  type CreateSupportReply,
+  type SupportRepliesQuery,
 } from "@citygo/contracts";
 import type { Database, Sql } from "./index.js";
 import { DomainError } from "./errors.js";
@@ -103,6 +108,13 @@ function parsed(row: Record<string, unknown>, admin = false) {
     throw new DomainError(500, "Не удалось прочитать обращение");
   }
 }
+function parsedReply(row: unknown) {
+  try {
+    return supportReplySchema.parse(row);
+  } catch {
+    throw new DomainError(500, "Не удалось прочитать ответ");
+  }
+}
 async function audit(
   tx: Sql,
   actorId: string,
@@ -119,6 +131,149 @@ async function audit(
 /** Private requests, never AI messages, outbound notifications or CRM promises. */
 export class HumanSupportRequests {
   constructor(private readonly db: Database) {}
+  async replies(
+    raw: HumanSupportContext,
+    id: string,
+    query: SupportRepliesQuery = {},
+    admin = false,
+  ) {
+    supportRequestIdSchema.parse(id);
+    const input = supportRepliesQuerySchema.parse(query);
+    return this.db.transaction(async (tx) => {
+      const ctx = await authorize(tx, raw, admin);
+      const request = (
+        await tx.query(
+          "select id from human_support_requests where id=$1 and ($2::bigint is null or user_id=$2)",
+          [id, admin ? null : ctx.userId],
+        )
+      ).rows[0];
+      if (!request) throw missing();
+      const rows = (
+        await tx.query<Record<string, unknown>>(
+          `select id::text,request_id::text as "requestId",operation_id::text as "operationId",body,${utc("created_at")} as "createdAt" from human_support_replies where request_id=$1 and ($2::bigint is null or id<$2) order by id desc limit 21`,
+          [id, input.before ?? null],
+        )
+      ).rows;
+      const replies = rows.slice(0, 20).map((row) => parsedReply(row));
+      if (admin)
+        await audit(tx, ctx.userId, "human-support-replies-viewed", id, {
+          rowCount: replies.length,
+        });
+      return {
+        ...(admin ? { actorId: ctx.userId } : { userId: ctx.userId }),
+        requestId: id,
+        replies,
+        nextBefore: rows.length > 20 ? replies.at(-1)!.id : null,
+      };
+    });
+  }
+  async reply(
+    raw: HumanSupportContext,
+    id: string,
+    command: CreateSupportReply,
+  ) {
+    supportRequestIdSchema.parse(id);
+    const input = createSupportReplySchema.parse(command);
+    const hash = createHash("sha256")
+      .update(
+        JSON.stringify({
+          requestId: id,
+          expectedRevision: input.expectedRevision,
+          body: input.body,
+        }),
+      )
+      .digest("hex");
+    return this.db.transaction(async (tx) => {
+      // Same security -> actor/session -> request ordering as status changes.
+      const ctx = await authorize(tx, raw, true);
+      const old = (
+        await tx.query<{ revision: string; status: string; user_id: string }>(
+          "select revision::text,status,user_id::text from human_support_requests where id=$1 for update",
+          [id],
+        )
+      ).rows[0];
+      if (!old) throw missing();
+      const prior = (
+        await tx.query<Record<string, unknown>>(
+          `select id::text,request_id::text as "requestId",operation_id::text as "operationId",body,${utc("created_at")} as "createdAt",request_hash from human_support_replies where author_user_id=$1 and operation_id=$2`,
+          [ctx.userId, input.operationId],
+        )
+      ).rows[0];
+      if (prior && prior.request_hash !== hash)
+        throw new DomainError(
+          409,
+          "Операция уже использована для другого ответа.",
+          "CONFLICT",
+        );
+      let reply;
+      if (prior) {
+        const { request_hash: _hash, ...row } = prior;
+        void _hash;
+        reply = parsedReply(row);
+      } else {
+        const revision = Number(old.revision);
+        if (revision !== input.expectedRevision)
+          throw new DomainError(
+            409,
+            "Обращение изменилось. Обновите его перед ответом.",
+            "REVISION_CONFLICT",
+            revision,
+          );
+        if (old.status !== "open")
+          throw new DomainError(
+            409,
+            "Сначала откройте обращение снова.",
+            "CONFLICT",
+          );
+        if (revision === Number.MAX_SAFE_INTEGER)
+          throw new DomainError(409, "Достигнут предел версий обращения.");
+        if (
+          !(
+            await tx.query(
+              "select id from users where id=$1 and status='active'",
+              [old.user_id],
+            )
+          ).rows.length
+        )
+          throw missing();
+        const count = (
+          await tx.query<{ count: number }>(
+            "select count(*)::integer as count from human_support_replies where request_id=$1",
+            [id],
+          )
+        ).rows[0]!.count;
+        if (count >= 200)
+          throw new DomainError(
+            409,
+            "Достигнут предел ответов в обращении.",
+            "CONFLICT",
+          );
+        reply = parsedReply(
+          (
+            await tx.query(
+              `insert into human_support_replies(request_id,author_user_id,operation_id,request_hash,body) values($1,$2,$3,$4,$5) returning id::text,request_id::text as "requestId",operation_id::text as "operationId",body,${utc("created_at")} as "createdAt"`,
+              [id, ctx.userId, input.operationId, hash, input.body],
+            )
+          ).rows[0],
+        );
+        await tx.query(
+          "update human_support_requests set revision=revision+1,updated_at=greatest(statement_timestamp(),updated_at+interval '1 microsecond') where id=$1",
+          [id],
+        );
+        await audit(tx, ctx.userId, "human-support-replied", id, {
+          replyId: reply.id,
+          revision: revision + 1,
+        });
+      }
+      const row = (
+        await tx.query<Record<string, unknown>>(
+          `select ${fields},${ownerFields} from human_support_requests r join users u on u.id=r.user_id left join user_credentials c on c.user_id=u.id where r.id=$1`,
+          [id],
+        )
+      ).rows[0]!;
+      return { actorId: ctx.userId, request: parsed(row, true), reply };
+    });
+  }
   async create(raw: HumanSupportContext, command: CreateSupportRequest) {
     const input = createSupportRequestSchema.parse(command);
     const hash = createHash("sha256").update(input.body).digest("hex");

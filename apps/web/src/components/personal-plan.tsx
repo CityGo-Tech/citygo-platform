@@ -9,6 +9,7 @@ import type {
 import { Button, Card, Field, Progress } from "@citygo/ui-web";
 import styles from "./personal-plan.module.css";
 import { PlanItemChecklist } from "./plan-checklist";
+import { PlanExportAction } from "./plan-export";
 import {
   createPersonalPlanResource,
   type PersonalPlanFilter,
@@ -512,6 +513,12 @@ export function PersonalPlanPanel({
           Обновить план
         </Button>
       </div>
+      <PlanExportAction
+        userId={userId}
+        sessionSignal={sessionSignal}
+        disabled={busy || listControlsDisabled}
+        onAccessDenied={onAccessDenied}
+      />
       {summary && (
         <div className={styles.progress}>
           <Progress

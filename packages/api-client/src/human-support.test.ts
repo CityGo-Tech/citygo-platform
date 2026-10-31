@@ -96,3 +96,76 @@ test("support client validates before transport, uses exact verbs and verifies o
   );
   assert.equal(calls.length, before);
 });
+
+test("human reply client rejects foreign request, changed body, duplicate pages and invalid commands before transport", async () => {
+  const reply = {
+    id: "9007199254740995",
+    requestId: item.id,
+    operationId: "51111111-1111-4111-8111-111111111111",
+    body: "Начните со списка подходящих районов.",
+    createdAt: item.createdAt,
+  };
+  const command = {
+    operationId: reply.operationId,
+    expectedRevision: 1,
+    body: reply.body,
+  };
+  let response: unknown = {
+    actorId: "2",
+    request: {
+      ...item,
+      revision: 2,
+      owner: { userId: "1", email: "synthetic@example.test", username: null },
+    },
+    reply,
+  };
+  let calls = 0;
+  const client = createClient("http://synthetic", {
+    fetch: async () => {
+      calls++;
+      return Response.json(response);
+    },
+  });
+  await client.replyToSupportRequest(item.id, command);
+  const before = calls;
+  await assert.rejects(
+    client.replyToSupportRequest(item.id, { ...command, body: "\0" }),
+  );
+  assert.equal(calls, before);
+  response = {
+    ...(response as object),
+    reply: { ...reply, body: "Другой ответ" },
+  };
+  await assert.rejects(client.replyToSupportRequest(item.id, command), invalid);
+  response = {
+    userId: "1",
+    requestId: item.id,
+    replies: [{ ...reply, requestId: "2" }],
+    nextBefore: null,
+  };
+  await assert.rejects(client.supportReplies(item.id), invalid);
+  response = {
+    userId: "1",
+    requestId: item.id,
+    replies: [reply, reply],
+    nextBefore: null,
+  };
+  await assert.rejects(client.supportReplies(item.id), invalid);
+  response = {
+    userId: "1",
+    requestId: item.id,
+    replies: [reply],
+    nextBefore: reply.id,
+  };
+  await assert.rejects(client.supportReplies(item.id), invalid);
+  response = {
+    userId: "1",
+    requestId: item.id,
+    replies: [reply],
+    nextBefore: null,
+  };
+  await assert.rejects(
+    client.supportReplies(item.id, { before: reply.id }),
+    invalid,
+  );
+});

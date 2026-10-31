@@ -722,3 +722,41 @@ test("HTTP personal plan search uses literal title/details matching and current 
   assert.deepEqual(await f.legacySnapshot(), before);
   assert.equal(f.modelCalls(), 0);
 });
+
+test("HTTP full plan export returns the complete private snapshot and rejects query, foreign sessions and password gates without provider calls", async (t) => {
+  const f = await fixture(t);
+  for (let n = 0; n < 23; n++)
+    assert.equal(
+      (await f.call("POST", "/v1/personal-plan", f.create())).statusCode,
+      200,
+    );
+  const before = await f.legacySnapshot();
+  const response = await f.call("GET", "/v1/personal-plan/export");
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.headers["cache-control"], "no-store");
+  assert.equal(response.json().userId, f.owner);
+  assert.equal(response.json().items.length, 23);
+  assert.equal(
+    (
+      await f.call("GET", "/v1/personal-plan/export", undefined, f.otherToken)
+    ).json().items.length,
+    0,
+  );
+  assert.equal(
+    (await f.call("GET", "/v1/personal-plan/export?before=1")).statusCode,
+    400,
+  );
+  assert.equal(
+    (await f.call("GET", "/v1/personal-plan/export", undefined, "")).statusCode,
+    401,
+  );
+  assert.deepEqual(await f.legacySnapshot(), before);
+  assert.equal(f.modelCalls(), 0);
+  await f.db.query("update users set must_change_password=true where id=$1", [
+    f.owner,
+  ]);
+  assert.equal(
+    (await f.call("GET", "/v1/personal-plan/export")).statusCode,
+    403,
+  );
+});

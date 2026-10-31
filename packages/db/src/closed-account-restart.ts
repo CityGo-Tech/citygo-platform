@@ -7,6 +7,7 @@ import type { AccountResetBlocker } from "./account-reset.js";
 // is not account deletion, a public erasure API, a migration, or a reset job.
 const tables = [
   "human_support_requests",
+  "human_support_replies",
   "service_consent_events",
   "personal_plan_checklists",
   "personal_plan_items",
@@ -82,6 +83,7 @@ const tables = [
 // No money, attempt, receipt, policy, migration, catalog or usage row is rewritten.
 const retainedTables = [
   "human_support_requests",
+  "human_support_replies",
   "service_consent_events",
   "personal_plan_checklists",
   "personal_plan_items",
@@ -321,10 +323,15 @@ async function takeSnapshot(tx: Sql): Promise<Snapshot> {
 async function inspect(tx: Sql, options: Options) {
   const { snapshot, bootstrapCompleted } = await lockedSnapshot(tx);
   const blockers: AccountResetBlocker[] = [];
-  if (snapshot.counts.human_support_requests)
+  if (
+    snapshot.counts.human_support_requests ||
+    snapshot.counts.human_support_replies
+  )
     blockers.push({
       code: "HUMAN_SUPPORT_HISTORY_REQUIRES_REVIEW",
-      count: snapshot.counts.human_support_requests,
+      count:
+        (snapshot.counts.human_support_requests ?? 0) +
+        (snapshot.counts.human_support_replies ?? 0),
     });
   if (bootstrapCompleted)
     blockers.push({ code: "BOOTSTRAP_ALREADY_COMPLETED", count: 1 });
