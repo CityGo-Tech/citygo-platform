@@ -171,3 +171,119 @@ test("reply reads ignore late rows after abort and cannot expose a foreign owner
   assert.equal(states.at(-1)!.closed, true);
   assert.deepEqual(states.at(-1)!.replies, []);
 });
+
+test("explicit seen cursor acknowledges only a fully rendered prefix, keeps fresh replies unread and closes on denial", async () => {
+  const states: SupportRepliesState[] = [],
+    calls: string[] = [];
+  const signal = new AbortController();
+  let phase = 0,
+    denied = 0;
+  const reply = (id: string): SupportReply => ({
+    id,
+    requestId: "2",
+    operationId: "41111111-1111-4111-8111-111111111111",
+    body: "Ответ",
+    createdAt: "2026-10-31T10:00:00Z",
+  });
+  const r = createSupportRepliesResource({
+    viewerId: "1",
+    requestId: "2",
+    signal: signal.signal,
+    admin: false,
+    operationId: () => "unused",
+    publish: (s) => states.push(s),
+    onAccessDenied: () => denied++,
+    list: async (before) => ({
+      userId: "1",
+      requestId: "2",
+      replies: before
+        ? [reply("1")]
+        : phase
+          ? [reply("4"), reply("3"), reply("2"), reply("1")]
+          : [reply("3"), reply("2")],
+      nextBefore: !before && !phase ? "2" : null,
+    }),
+    markRead: async (through) => {
+      calls.push(through);
+      if (phase === 2) throw new ApiError(403, "blocked", "http");
+      return {
+        userId: "1",
+        requestId: "2",
+        throughReplyId: through,
+        unreadReplies: 1,
+      };
+    },
+  });
+  await r.acknowledgeDisplayed();
+  assert.equal(calls.length, 0);
+  await r.load();
+  await r.acknowledgeDisplayed();
+  assert.equal(calls.length, 0);
+  await r.load("2");
+  assert.equal(calls.length, 0);
+  await r.acknowledgeDisplayed();
+  assert.deepEqual(calls, ["3"]);
+  assert.equal(states.at(-1)!.readThrough, "3");
+  await r.acknowledgeDisplayed();
+  assert.deepEqual(calls, ["3"]);
+  phase = 1;
+  await r.load();
+  assert.equal(states.at(-1)!.readThrough, "3");
+  assert.equal(calls.length, 1);
+  phase = 2;
+  await r.acknowledgeDisplayed();
+  assert.equal(denied, 1);
+  assert.equal(states.at(-1)!.closed, true);
+  assert.deepEqual(states.at(-1)!.replies, []);
+  r.dispose();
+});
+test("late read acknowledgement after session cancellation neither restores data nor refreshes another account", async () => {
+  const states: SupportRepliesState[] = [],
+    signal = new AbortController();
+  let release!: () => void,
+    notices = 0;
+  const pending = new Promise<void>((resolve) => (release = resolve));
+  const r = createSupportRepliesResource({
+    viewerId: "1",
+    requestId: "2",
+    signal: signal.signal,
+    admin: false,
+    operationId: () => "unused",
+    publish: (s) => states.push(s),
+    onAccessDenied: () => assert.fail(),
+    onRead: () => notices++,
+    list: async () => ({
+      userId: "1",
+      requestId: "2",
+      replies: [
+        {
+          id: "3",
+          requestId: "2",
+          operationId: "41111111-1111-4111-8111-111111111111",
+          body: "Ответ",
+          createdAt: "2026-10-31T10:00:00Z",
+        },
+      ],
+      nextBefore: null,
+    }),
+    markRead: async () => {
+      await pending;
+      return {
+        userId: "1",
+        requestId: "2",
+        throughReplyId: "3",
+        unreadReplies: 0,
+      };
+    },
+  });
+  await r.load();
+  const request = r.acknowledgeDisplayed();
+  signal.abort();
+  release();
+  await request;
+  assert.equal(notices, 0);
+  assert.equal(states.at(-1)!.closed, true);
+  assert.deepEqual(states.at(-1)!.replies, []);
+  assert.equal(states.at(-1)!.readThrough, null);
+  r.dispose();
+});

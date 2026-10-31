@@ -66,6 +66,11 @@ export function SupportReplies({
       send: admin
         ? (input) => api.replyToSupportRequest(requestId, input)
         : undefined,
+      markRead: admin
+        ? undefined
+        : (throughReplyId) =>
+            api.markSupportRepliesRead(requestId, { throughReplyId }),
+      onRead: () => window.dispatchEvent(new Event("citygo-support-read")),
       operationId: () => crypto.randomUUID(),
       publish: (value) =>
         setSnapshot({
@@ -135,6 +140,31 @@ export function SupportReplies({
           </Button>
         )}
       </div>
+      {!admin && state?.loaded && state.replies.length > 0 && (
+        <div className={styles.actions}>
+          <Button
+            variant="secondary"
+            disabled={
+              state.busy ||
+              !!state.nextBefore ||
+              (state.readThrough !== null &&
+                BigInt(state.readThrough) >= BigInt(state.replies[0]!.id))
+            }
+            onClick={() => void resource.current?.acknowledgeDisplayed()}
+          >
+            {state.readThrough !== null &&
+            BigInt(state.readThrough) >= BigInt(state.replies[0]!.id)
+              ? "Ответы прочитаны"
+              : "Отметить ответы прочитанными"}
+          </Button>
+          {state.nextBefore && (
+            <small>
+              Загрузите остальные ответы, чтобы отметить всю переписку
+              прочитанной.
+            </small>
+          )}
+        </div>
+      )}
       {admin && (
         <form
           className={styles.form}

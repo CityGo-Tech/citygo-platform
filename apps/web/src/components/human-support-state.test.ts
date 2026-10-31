@@ -131,3 +131,79 @@ test("a structurally valid response for another owner clears private state and d
   assert.equal(denied, 1);
   assert.deepEqual(states.at(-1)?.requests, []);
 });
+
+test("notice opens an exact owned request outside the first list page without marking read", async () => {
+  const states: SupportState[] = [];
+  const request = {
+    id: "9007199254740993",
+    operationId: "41111111-1111-4111-8111-111111111111",
+    body: "Помогите выбрать первый шаг переезда.",
+    status: "open" as const,
+    revision: 1,
+    createdAt: "2026-10-31T10:00:00Z",
+    updatedAt: "2026-10-31T10:00:00Z",
+    closedAt: null,
+  };
+  const resource = createHumanSupportResource({
+    userId: "1",
+    signal: new AbortController().signal,
+    operationId: () => request.operationId,
+    publish: (s) => states.push(s),
+    onAccessDenied: () => assert.fail(),
+    client: {
+      supportRequests: async () => ({
+        userId: "1",
+        requests: [],
+        nextBefore: null,
+      }),
+      createSupportRequest: async () => {
+        throw Error("not called");
+      },
+      supportRequest: async (id) => {
+        assert.equal(id, request.id);
+        return { userId: "1", request };
+      },
+    },
+  });
+  await resource.load();
+  assert.equal(await resource.open(request.id), true);
+  assert.deepEqual(states.at(-1)!.requests, [request]);
+  resource.dispose();
+});
+
+test("a late direct-open result after cancellation never restores the previous account request", async () => {
+  const states: SupportState[] = [],
+    controller = new AbortController();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  const resource = createHumanSupportResource({
+    userId: "1",
+    signal: controller.signal,
+    operationId: () => item.operationId,
+    publish: (s) => states.push(s),
+    onAccessDenied: () => assert.fail(),
+    client: {
+      supportRequests: async () => ({
+        userId: "1",
+        requests: [],
+        nextBefore: null,
+      }),
+      createSupportRequest: async () => {
+        throw Error("not called");
+      },
+      supportRequest: async () => {
+        await gate;
+        return { userId: "1", request: item };
+      },
+    },
+  });
+  await resource.load();
+  const pending = resource.open(item.id),
+    count = states.length;
+  controller.abort();
+  release();
+  assert.equal(await pending, false);
+  assert.equal(states.length, count);
+  assert.deepEqual(states.at(-1)!.requests, []);
+  resource.dispose();
+});

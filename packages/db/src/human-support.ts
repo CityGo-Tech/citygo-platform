@@ -16,6 +16,10 @@ import {
   supportRepliesQuerySchema,
   type CreateSupportReply,
   type SupportRepliesQuery,
+  supportUpdatesQuerySchema,
+  markSupportRepliesReadSchema,
+  type SupportUpdatesQuery,
+  type MarkSupportRepliesRead,
 } from "@citygo/contracts";
 import type { Database, Sql } from "./index.js";
 import { DomainError } from "./errors.js";
@@ -131,6 +135,96 @@ async function audit(
 /** Private requests, never AI messages, outbound notifications or CRM promises. */
 export class HumanSupportRequests {
   constructor(private readonly db: Database) {}
+  async updates(raw: HumanSupportContext, query: SupportUpdatesQuery = {}) {
+    const input = supportUpdatesQuerySchema.parse(query);
+    return this.db.transaction(async (tx) => {
+      const ctx = await authorize(tx, raw, false);
+      // One statement keeps totals and the page in the same snapshot. The
+      // existing (request_id,id) reply index bounds the per-request lookup.
+      const value = (
+        await tx.query<{
+          unreadRequests: number;
+          unreadReplies: number;
+          requests: {
+            requestId: string;
+            lastReplyId: string;
+            unreadReplies: number;
+          }[];
+        }>(
+          `with unread as (
+        select r.id,max(p.id)::text as "lastReplyId",count(*)::integer as "unreadReplies"
+        from human_support_requests r
+        left join human_support_reads seen on seen.request_id=r.id and seen.user_id=r.user_id
+        join human_support_replies p on p.request_id=r.id and p.id>coalesce(seen.through_reply_id,0)
+        where r.user_id=$1 group by r.id
+      ) select count(*)::integer as "unreadRequests",coalesce(sum("unreadReplies"),0)::integer as "unreadReplies",
+        (select coalesce(json_agg(page),'[]'::json) from (
+          select id::text as "requestId","lastReplyId","unreadReplies" from unread
+          where ($2::bigint is null or id<$2) order by id desc limit 21
+        ) page) as requests from unread`,
+          [ctx.userId, input.before ?? null],
+        )
+      ).rows[0]!;
+      const requests = value.requests.slice(0, 20);
+      return {
+        userId: ctx.userId,
+        unreadRequests: value.unreadRequests,
+        unreadReplies: value.unreadReplies,
+        requests,
+        nextBefore:
+          value.requests.length > 20 ? requests.at(-1)!.requestId : null,
+      };
+    });
+  }
+  async markRead(
+    raw: HumanSupportContext,
+    id: string,
+    command: MarkSupportRepliesRead,
+  ) {
+    supportRequestIdSchema.parse(id);
+    const input = markSupportRepliesReadSchema.parse(command);
+    return this.db.transaction(async (tx) => {
+      // Security -> active owner/session -> request, matching all other writes.
+      const ctx = await authorize(tx, raw, false);
+      const owned = (
+        await tx.query(
+          "select id from human_support_requests where id=$1 and user_id=$2 for update",
+          [id, ctx.userId],
+        )
+      ).rows[0];
+      if (!owned) throw missing();
+      if (
+        !(
+          await tx.query(
+            "select id from human_support_replies where id=$1 and request_id=$2",
+            [input.throughReplyId, id],
+          )
+        ).rows.length
+      )
+        throw missing();
+      const seen = (
+        await tx.query<{ throughReplyId: string }>(
+          `
+        insert into human_support_reads(request_id,user_id,through_reply_id) values($1,$2,$3)
+        on conflict(request_id) do update set through_reply_id=greatest(human_support_reads.through_reply_id,excluded.through_reply_id)
+        returning through_reply_id::text as "throughReplyId"`,
+          [id, ctx.userId, input.throughReplyId],
+        )
+      ).rows[0]!;
+      const unread = (
+        await tx.query<{ count: number }>(
+          "select count(*)::integer as count from human_support_replies where request_id=$1 and id>$2",
+          [id, seen.throughReplyId],
+        )
+      ).rows[0]!.count;
+      return {
+        userId: ctx.userId,
+        requestId: id,
+        throughReplyId: seen.throughReplyId,
+        unreadReplies: unread,
+      };
+    });
+  }
   async replies(
     raw: HumanSupportContext,
     id: string,
@@ -349,19 +443,22 @@ export class HumanSupportRequests {
       };
     });
   }
-  async detail(raw: HumanSupportContext, id: string) {
+  async detail(raw: HumanSupportContext, id: string, admin = true) {
     supportRequestIdSchema.parse(id);
     return this.db.transaction(async (tx) => {
-      const ctx = await authorize(tx, raw, true);
+      const ctx = await authorize(tx, raw, admin);
       const row = (
         await tx.query<Record<string, unknown>>(
-          `select ${fields},${ownerFields} from human_support_requests r join users u on u.id=r.user_id left join user_credentials c on c.user_id=u.id where r.id=$1`,
-          [id],
+          `select ${fields}${admin ? "," + ownerFields : ""} from human_support_requests r ${admin ? "join users u on u.id=r.user_id left join user_credentials c on c.user_id=u.id" : ""} where r.id=$1 and ($2::bigint is null or r.user_id=$2)`,
+          [id, admin ? null : ctx.userId],
         )
       ).rows[0];
       if (!row) throw missing();
-      await audit(tx, ctx.userId, "human-support-viewed", id, {});
-      return { actorId: ctx.userId, request: parsed(row, true) };
+      if (admin) await audit(tx, ctx.userId, "human-support-viewed", id, {});
+      return {
+        ...(admin ? { actorId: ctx.userId } : { userId: ctx.userId }),
+        request: parsed(row, admin),
+      };
     });
   }
   async setStatus(

@@ -28,6 +28,7 @@ export * from "./npd-receipts.js";
 export * from "./responses.js";
 export * from "./human-support.js";
 export * from "./human-support-replies.js";
+export * from "./human-support-read.js";
 export * from "./protocol.js";
 export * from "./r1.js";
 // Candidate DTOs only: Prepared/brands do not authorize confirmation or XP.

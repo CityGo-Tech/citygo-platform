@@ -24,6 +24,7 @@ import {
 import planStyles from "./personal-plan.module.css";
 import { AccountProfile } from "./account-profile";
 import { HumanSupportPanel } from "./human-support";
+import { SupportUpdatesNotice } from "./support-updates";
 import { ResultsLibrary } from "./results-library";
 import { AiModeSelector } from "./ai-mode-selector";
 import { isAiModeAvailable } from "@citygo/api-client";
@@ -54,6 +55,17 @@ const greeting =
 /** Conversation home and user-selected plan, from Figma 6:14 / 6:24. */
 export function ConversationHome(props: JourneyProps) {
   const [tab, setTab] = useState("Диалоги");
+  const [supportSelection, setSupportSelection] = useState<{
+    owner: string;
+    signal: AbortSignal;
+    id: string;
+  } | null>(null);
+  const supportRequestId =
+    !props.sessionSignal.aborted &&
+    supportSelection?.owner === props.board.user.id &&
+    supportSelection.signal === props.sessionSignal
+      ? supportSelection.id
+      : null;
   const [showList, setShowList] = useState(false);
   const [planSource, setPlanSource] = useState<PlanMessageSource | null>(null);
   const [planGeneration, setPlanGeneration] = useState(0);
@@ -200,6 +212,20 @@ export function ConversationHome(props: JourneyProps) {
           ),
         )}
       </nav>
+      <SupportUpdatesNotice
+        userId={board.user.id}
+        sessionSignal={props.sessionSignal}
+        onAccessDenied={props.onAccessDenied}
+        disabled={busy || sending}
+        onOpen={(id) => {
+          setSupportSelection({
+            owner: board.user.id,
+            signal: props.sessionSignal,
+            id,
+          });
+          setTab("Помощь человека");
+        }}
+      />
       {handoffSource &&
         props.onHandoff &&
         currentAssistantHandoffSource(
@@ -258,6 +284,8 @@ export function ConversationHome(props: JourneyProps) {
           {sidebar}
           <div className="conversation-main">
             <HumanSupportPanel
+              key={board.user.id + ":" + (supportRequestId ?? "list")}
+              initialRequestId={supportRequestId}
               userId={board.user.id}
               sessionSignal={props.sessionSignal}
               onAccessDenied={props.onAccessDenied}
@@ -343,7 +371,10 @@ export function ConversationHome(props: JourneyProps) {
           onPhone={props.onPhone}
           onFavorites={props.onFavorites}
           onPassword={props.onPassword}
-          onSupport={() => setTab("Помощь человека")}
+          onSupport={() => {
+            setSupportSelection(null);
+            setTab("Помощь человека");
+          }}
         />
       ) : (
         <div className="conversation-workspace">

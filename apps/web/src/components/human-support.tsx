@@ -18,11 +18,13 @@ export function HumanSupportPanel({
   sessionSignal,
   onAccessDenied,
   onClose,
+  initialRequestId,
 }: {
   userId: string;
   sessionSignal: AbortSignal;
   onAccessDenied: () => void;
   onClose: () => void;
+  initialRequestId?: string | null;
 }) {
   const [draft, setDraft] = useState({
     owner: userId,
@@ -61,19 +63,31 @@ export function HumanSupportPanel({
       onAccessDenied: () => denied.current(),
     });
     resource.current = current;
-    void current.load();
+    void current.load().then(async () => {
+      if (
+        initialRequestId &&
+        (await current.open(initialRequestId)) &&
+        !signal.aborted
+      ) {
+        setReplyRequest(initialRequestId);
+      }
+    });
     return () => {
       current.dispose();
       controller.abort();
       if (resource.current === current) resource.current = null;
     };
-  }, [userId, sessionSignal]);
+  }, [userId, sessionSignal, initialRequestId]);
   const state =
     !sessionSignal.aborted &&
     snapshot?.owner === userId &&
     snapshot.signal === sessionSignal
       ? snapshot.value
       : null;
+  useEffect(() => {
+    if (replyRequest && !sessionSignal.aborted)
+      document.getElementById("human-support-thread-" + replyRequest)?.focus();
+  }, [replyRequest, userId, sessionSignal]);
   if (sessionSignal.aborted) return null;
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -114,6 +128,7 @@ export function HumanSupportPanel({
           </p>
         </div>
       )}
+      {state?.error && state.receipt && <p role="alert">{state.error}</p>}
       {state?.receipt ? (
         <div className={styles.actions}>
           <Button
@@ -192,7 +207,11 @@ export function HumanSupportPanel({
         )}
         <ul className={styles.list}>
           {state?.requests.map((item) => (
-            <li key={item.id}>
+            <li
+              key={item.id}
+              id={"human-support-thread-" + item.id}
+              tabIndex={-1}
+            >
               <strong>
                 Обращение №{item.id} ·{" "}
                 {item.status === "closed" ? "Закрыто владельцем" : "Открыто"}

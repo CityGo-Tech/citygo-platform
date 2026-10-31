@@ -24,6 +24,14 @@ import {
   type AdminSupportRepliesPage,
   type CreateSupportReply,
   type SupportReplyResult,
+  supportUpdatesQuerySchema,
+  supportUpdatesPageSchema,
+  markSupportRepliesReadSchema,
+  supportReadResultSchema,
+  type SupportUpdatesQuery,
+  type SupportUpdatesPage,
+  type MarkSupportRepliesRead,
+  type SupportReadResult,
 } from "@citygo/contracts";
 import { ApiError } from "./transport.js";
 
@@ -36,6 +44,12 @@ type Request = <T>(
   method?: "PATCH" | "DELETE",
 ) => Promise<T>;
 export type HumanSupportMethods = {
+  supportUpdates(query?: SupportUpdatesQuery): Promise<SupportUpdatesPage>;
+  supportRequest(id: string): Promise<SupportRequestResult>;
+  markSupportRepliesRead(
+    id: string,
+    command: MarkSupportRepliesRead,
+  ): Promise<SupportReadResult>;
   supportReplies(
     id: string,
     query?: SupportRepliesQuery,
@@ -122,6 +136,49 @@ export function createHumanSupportMethods(
   request: Request,
 ): HumanSupportMethods {
   return {
+    supportUpdates: async (query = {}) => {
+      const input = supportUpdatesQuerySchema.parse(query);
+      const value = await request<SupportUpdatesPage>(
+        "/v1/support-updates" + (input.before ? "?before=" + input.before : ""),
+        supportUpdatesPageSchema,
+      );
+      if (
+        value.requests.some(
+          (r, i, rows) =>
+            (input.before && BigInt(r.requestId) >= BigInt(input.before)) ||
+            (i > 0 && BigInt(r.requestId) >= BigInt(rows[i - 1]!.requestId)),
+        ) ||
+        (value.nextBefore !== null &&
+          (value.requests.length !== 20 ||
+            value.nextBefore !== value.requests.at(-1)?.requestId))
+      )
+        throw invalid();
+      return value;
+    },
+    supportRequest: async (raw) => {
+      const id = supportRequestIdSchema.parse(raw);
+      const value = await request<SupportRequestResult>(
+        "/v1/support-requests/" + id,
+        supportRequestResultSchema,
+      );
+      if (value.request.id !== id) throw invalid();
+      return value;
+    },
+    markSupportRepliesRead: async (raw, command) => {
+      const id = supportRequestIdSchema.parse(raw),
+        input = markSupportRepliesReadSchema.parse(command);
+      const value = await request<SupportReadResult>(
+        "/v1/support-requests/" + id + "/read",
+        supportReadResultSchema,
+        input,
+      );
+      if (
+        value.requestId !== id ||
+        BigInt(value.throughReplyId) < BigInt(input.throughReplyId)
+      )
+        throw invalid();
+      return value;
+    },
     supportReplies: async (raw, query = {}) => {
       const id = supportRequestIdSchema.parse(raw),
         input = supportRepliesQuerySchema.parse(query);

@@ -8,7 +8,8 @@ import {
 type Client = Pick<
   ReturnType<typeof createClient>,
   "supportRequests" | "createSupportRequest"
->;
+> &
+  Partial<Pick<ReturnType<typeof createClient>, "supportRequest">>;
 export type SupportState = {
   requests: SupportRequest[];
   nextBefore: string | null;
@@ -81,6 +82,30 @@ export function createHumanSupportResource(options: {
       throw new ApiError(401, "Аккаунт изменился", "invalid_response");
   };
   return {
+    async open(id: string) {
+      if (!active() || state.busy || !options.client.supportRequest)
+        return false;
+      const current = ++generation;
+      publish({ busy: true, error: "" });
+      try {
+        const result = await options.client.supportRequest(id);
+        if (!active() || current !== generation) return false;
+        owner(result.userId);
+        if (result.request.id !== id)
+          throw new Error("Invalid support request");
+        publish({
+          requests: [
+            ...state.requests.filter((r) => r.id !== id),
+            result.request,
+          ].sort((a, b) => (BigInt(a.id) > BigInt(b.id) ? -1 : 1)),
+          busy: false,
+        });
+        return true;
+      } catch (e) {
+        if (active() && current === generation) fail(e);
+        return false;
+      }
+    },
     async load(before?: string) {
       if (!active() || state.busy) return;
       const current = ++generation;

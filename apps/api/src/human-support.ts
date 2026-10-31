@@ -14,6 +14,10 @@ import {
   adminSupportRepliesPageSchema,
   createSupportReplySchema,
   supportReplyResultSchema,
+  supportUpdatesQuerySchema,
+  supportUpdatesPageSchema,
+  markSupportRepliesReadSchema,
+  supportReadResultSchema,
 } from "@citygo/contracts";
 import {
   HumanSupportRequests,
@@ -31,6 +35,38 @@ export function registerHumanSupportApi(
   const store = new HumanSupportRequests(options.db);
   const params = z.strictObject({ id: supportRequestIdSchema });
   const read = { config: { rateLimit: { max: 60, timeWindow: 60_000 } } };
+  app.get("/v1/support-updates", read, async (request) =>
+    supportUpdatesPageSchema.parse(
+      await store.updates(
+        await options.context(request),
+        supportUpdatesQuerySchema.parse(request.query),
+      ),
+    ),
+  );
+  app.get("/v1/support-requests/:id", read, async (request) => {
+    z.strictObject({}).parse(request.query);
+    return supportRequestResultSchema.parse(
+      await store.detail(
+        await options.context(request),
+        params.parse(request.params).id,
+        false,
+      ),
+    );
+  });
+  app.post(
+    "/v1/support-requests/:id/read",
+    { config: { rateLimit: { max: 30, timeWindow: 60_000 } } },
+    async (request) => {
+      z.strictObject({}).parse(request.query);
+      return supportReadResultSchema.parse(
+        await store.markRead(
+          await options.context(request),
+          params.parse(request.params).id,
+          markSupportRepliesReadSchema.parse(request.body),
+        ),
+      );
+    },
+  );
   app.get("/v1/support-requests/:id/replies", read, async (request) =>
     supportRepliesPageSchema.parse(
       await store.replies(

@@ -120,6 +120,33 @@ test("a human owner reply reaches only its requesting account and survives reloa
   } finally {
     await adminContext.close();
   }
+  await page.goto("/");
+  const notice = page.getByRole("complementary", {
+    name: "Новые ответы команды CityGo",
+    exact: true,
+  });
+  await expect(notice).toBeVisible();
+  await expect(notice).toHaveClass(/ym-hide-content/);
+  await notice
+    .getByRole("button", {
+      name: `Открыть обращение №${request.id} · новых ответов: 1`,
+      exact: true,
+    })
+    .click();
+  const direct = page.getByRole("region", {
+    name: `Ответы на обращение №${request.id}`,
+    exact: true,
+  });
+  await expect(direct.getByText(reply, { exact: true })).toBeVisible();
+  await expect(
+    page.locator(`#human-support-thread-${request.id}`),
+  ).toBeFocused();
+  const unread = await context.request.get("/api/v1/support-updates");
+  expect(
+    (await unread.json()).requests.some(
+      (r: { requestId: string }) => r.requestId === request.id,
+    ),
+  ).toBe(true);
   const openOwnReply = async () => {
     await page.goto("/");
     await page.getByRole("button", { name: "Профиль", exact: true }).click();
@@ -147,6 +174,20 @@ test("a human owner reply reaches only its requesting account and survives reloa
   await replies.screenshot({
     path: info.outputPath("human-support-own-reply.png"),
   });
+  await replies
+    .getByRole("button", { name: "Отметить ответы прочитанными", exact: true })
+    .click();
+  await expect(
+    replies.getByRole("button", { name: "Ответы прочитаны", exact: true }),
+  ).toBeDisabled();
+  await expect(notice).toHaveCount(0);
+  await page.reload();
+  const afterRead = await context.request.get("/api/v1/support-updates");
+  expect(
+    (await afterRead.json()).requests.some(
+      (r: { requestId: string }) => r.requestId === request.id,
+    ),
+  ).toBe(false);
   const stranger = await browser.newContext({
     baseURL: info.project.use.baseURL,
     extraHTTPHeaders: { "X-Forwarded-For": anonymousIp },

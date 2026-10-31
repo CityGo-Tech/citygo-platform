@@ -6,6 +6,7 @@ import {
   type SupportRepliesPage,
   type AdminSupportRepliesPage,
   type SupportReplyResult,
+  type SupportReadResult,
 } from "@citygo/contracts";
 
 export type SupportRepliesState = {
@@ -17,6 +18,7 @@ export type SupportRepliesState = {
   pending: CreateSupportReply | null;
   draft: string;
   closed: boolean;
+  readThrough: string | null;
 };
 export function createSupportRepliesResource(o: {
   viewerId: string;
@@ -31,6 +33,8 @@ export function createSupportRepliesResource(o: {
   publish: (state: SupportRepliesState) => void;
   onAccessDenied: () => void;
   onReplied?: (result: SupportReplyResult) => void;
+  markRead?: (throughReplyId: string) => Promise<SupportReadResult>;
+  onRead?: () => void;
 }) {
   let state: SupportRepliesState = {
     replies: [],
@@ -41,6 +45,7 @@ export function createSupportRepliesResource(o: {
     pending: null,
     draft: "",
     closed: false,
+    readThrough: null,
   };
   let live = true,
     generation = 0;
@@ -66,6 +71,7 @@ export function createSupportRepliesResource(o: {
       pending: null,
       draft: "",
       closed: true,
+      readThrough: null,
     };
     generation++;
     o.publish({ ...state });
@@ -141,6 +147,49 @@ export function createSupportRepliesResource(o: {
         publish({ draft: "", pending: null, error: "" });
     },
     load,
+    async acknowledgeDisplayed() {
+      // Explicit click after rendering, never a list fetch or notice opening.
+      // With newest-first pagination, wait for the whole prefix to be rendered:
+      // a cursor must not silently mark unloaded older replies as seen.
+      if (
+        !active() ||
+        state.busy ||
+        o.admin ||
+        !o.markRead ||
+        !state.loaded ||
+        state.nextBefore ||
+        !state.replies.length
+      )
+        return;
+      const through = state.replies[0]!.id;
+      if (state.readThrough && BigInt(state.readThrough) >= BigInt(through))
+        return;
+      const ticket = ++generation;
+      publish({ busy: true, error: "" });
+      try {
+        const result = await o.markRead(through);
+        if (!active() || ticket !== generation) return;
+        if (result.userId !== o.viewerId || result.requestId !== o.requestId) {
+          close(true);
+          return;
+        }
+        if (BigInt(result.throughReplyId) < BigInt(through))
+          throw new Error("Cursor moved backwards");
+        // The server can retain a later cursor acknowledged by another tab.
+        // This view claims only the cursor actually displayed here.
+        publish({ readThrough: through, busy: false });
+        o.onRead?.();
+      } catch (e) {
+        if (!active() || ticket !== generation) return;
+        if (e instanceof ApiError && [401, 403].includes(e.status)) close(true);
+        else
+          publish({
+            busy: false,
+            error:
+              "Не удалось отметить ответы прочитанными. Попробуйте ещё раз.",
+          });
+      }
+    },
     async send(expectedRevision: number) {
       if (!active() || state.busy || !o.admin || !o.send) return;
       const parsed = createSupportReplySchema.safeParse(
