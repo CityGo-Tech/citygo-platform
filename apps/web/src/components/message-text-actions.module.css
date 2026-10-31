@@ -1,0 +1,31 @@
+.container {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--cg-space-sm);
+  max-width: 100%;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--cg-space-sm);
+  max-width: 100%;
+}
+.feedback:empty {
+  display: none;
+}
+.feedback {
+  font-size: 0.875rem;
+}
+.manual {
+  display: grid;
+  gap: var(--cg-space-sm);
+  width: 100%;
+}
+.manual textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  overflow-wrap: anywhere;
+  font: inherit;
+}
