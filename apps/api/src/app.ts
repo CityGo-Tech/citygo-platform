@@ -1,5 +1,6 @@
 import { registerBalanceHistoryApi } from "./balance-history.js";
 import Fastify from "fastify";
+import { registerResultDiscussionApi } from "./result-discussion.js";
 import { registerConversationMessageSearch } from "./conversation-message-search.js";
 import cookie from "@fastify/cookie";
 import cors from "@fastify/cors";
@@ -936,6 +937,7 @@ export async function buildApp(options: {
     return { user: await accounts.setRole(actor.id, input.userId, input.role) };
   });
   registerConversationMessageSearch(app, options.db, authenticate);
+  registerResultDiscussionApi(app, options.db, authenticate);
   app.post("/v1/conversations/start", async (request) => {
     const user = await authenticate(request);
     const input = conversationStartSchema.parse(request.body ?? {});

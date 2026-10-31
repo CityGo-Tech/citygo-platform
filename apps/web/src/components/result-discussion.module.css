@@ -1,0 +1,7 @@
+.source {
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin-top: var(--cg-space-sm);
+}

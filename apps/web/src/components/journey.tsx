@@ -17,6 +17,7 @@ import {
   Progress,
 } from "@citygo/ui-web";
 import { questChecklist } from "@citygo/content";
+import type { ResultDiscussionInput } from "./result-discussion-state";
 import type { AssistantHandoffInput } from "./assistant-handoff-state";
 import type { TopupActions } from "./test-topup";
 import { FavoriteButton } from "./message-favorites";
@@ -59,6 +60,7 @@ export type JourneyProps = {
   onComplete: (id: string) => Promise<boolean>;
   onBegin?: (agentKey?: AgentKey) => Promise<boolean>;
   onHandoff?: (input: AssistantHandoffInput) => Promise<boolean>;
+  onDiscussResult?: (input: ResultDiscussionInput) => Promise<boolean>;
   conversations?: ConversationSummary[] | null;
   conversationNextCursor?: string | null;
   conversationFilters?: ConversationFilters;
