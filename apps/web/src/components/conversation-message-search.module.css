@@ -1,0 +1,53 @@
+.dialog {
+  width: min(816px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  margin: auto;
+  padding: 0;
+  overflow: auto;
+  border: 0;
+  border-radius: var(--cg-radius-card);
+  background: var(--cg-color-surface);
+  color: var(--cg-color-foreground);
+}
+.dialog::backdrop {
+  background: #17192b66;
+}
+.card {
+  display: grid;
+  gap: var(--cg-space-md);
+  padding: var(--cg-space-lg);
+  margin: 0;
+  min-width: 0;
+}
+.card h2 {
+  margin: 0;
+  font-size: 32px;
+  line-height: 1.2;
+}
+.card p {
+  margin: 0;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--cg-space-sm);
+}
+.matches {
+  display: grid;
+  gap: var(--cg-space-md);
+}
+.match {
+  display: grid;
+  gap: var(--cg-space-sm);
+  padding: var(--cg-space-md);
+  border-radius: var(--cg-radius-card);
+  background: var(--cg-color-background);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.match p {
+  white-space: pre-wrap;
+}
+.context {
+  min-width: 0;
+}
