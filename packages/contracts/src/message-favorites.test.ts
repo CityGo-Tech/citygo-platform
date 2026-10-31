@@ -41,3 +41,32 @@ test("favorite commands accept explicit booleans only, not owner/content/toggle"
     false,
   );
 });
+
+test("favorite search accepts bounded literal terms and only known assistant/role filters", () => {
+  assert.deepEqual(
+    favoriteMessagesQuerySchema.parse({
+      search: "  50%_\\place  ",
+      assistantKey: "support",
+      role: "user",
+      before: "9007199254740993",
+    }),
+    {
+      search: "50%_\\place",
+      assistantKey: "support",
+      role: "user",
+      before: "9007199254740993",
+    },
+  );
+  for (const input of [
+    { search: " " },
+    { search: "x".repeat(161) },
+    { search: "a\0b" },
+    { search: "\uD800" },
+    { role: "system" },
+    { assistantKey: "unknown" },
+    { before: "1\n" },
+    { search: ["a", "b"] },
+    { search: "x", userId: "2" },
+  ])
+    assert.equal(favoriteMessagesQuerySchema.safeParse(input).success, false);
+});

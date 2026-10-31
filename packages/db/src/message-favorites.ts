@@ -2,6 +2,7 @@ import {
   favoriteMessagesQuerySchema,
   messageIdSchema,
   setMessageFavoriteSchema,
+  type FavoriteMessageFilters,
   type FavoriteMessage,
   type FavoriteMessagesPage,
 } from "@citygo/contracts";
@@ -31,9 +32,13 @@ export class MessageFavorites {
     return { messageId, saved };
   }
 
-  async list(userId: string, before?: string): Promise<FavoriteMessagesPage> {
+  async list(
+    userId: string,
+    before?: string,
+    filters: FavoriteMessageFilters = {},
+  ): Promise<FavoriteMessagesPage> {
     messageIdSchema.parse(userId);
-    favoriteMessagesQuerySchema.parse({ before });
+    const query = favoriteMessagesQuerySchema.parse({ ...filters, before });
     // Keyset by original message ID, not floating-point JS IDs or OFFSET.
     // Existing owner/thread and message indexes bound this pilot-sized query;
     // no schema upgrade is needed. Sort is message order, NOT
@@ -46,8 +51,17 @@ export class MessageFavorites {
        where t.user_id=$1 and m.role in ('user','assistant')
        and m.metadata->'citygoFavorite'='true'::jsonb
        and ($2::bigint is null or m.id<$2::bigint)
+       and ($3::text is null or position(lower($3::text) in lower(m.content))>0)
+       and ($4::text is null or coalesce(m.metadata->>'agentKey','housing')=$4)
+       and ($5::text is null or m.role=$5)
        order by m.id desc limit 21`,
-      [userId, before ?? null],
+      [
+        userId,
+        query.before ?? null,
+        query.search ?? null,
+        query.assistantKey ?? null,
+        query.role ?? null,
+      ],
     );
     const messages: FavoriteMessage[] = [];
     let bytes = 0;

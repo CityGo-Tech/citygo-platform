@@ -974,7 +974,8 @@ export async function buildApp(options: {
   app.get("/v1/messages/favorites", async (request) => {
     const user = await authenticate(request);
     const query = favoriteMessagesQuerySchema.parse(request.query);
-    return favorites.list(user.id, query.before);
+    const { before, ...filters } = query;
+    return favorites.list(user.id, before, filters);
   });
   app.post("/v1/messages/:id/favorite", async (request) => {
     const user = await authenticate(request);

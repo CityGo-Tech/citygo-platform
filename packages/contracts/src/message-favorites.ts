@@ -14,11 +14,29 @@ export const messageFavoriteResultSchema = z.object({
   messageId: messageIdSchema,
   saved: z.boolean(),
 });
-export const favoriteMessagesQuerySchema = z
-  .object({
-    before: messageIdSchema.optional(),
-  })
-  .strict();
+export const favoriteMessageFiltersSchema = z.strictObject({
+  search: z
+    .string()
+    .trim()
+    .min(1)
+    .max(160)
+    .refine(
+      (value) =>
+        !value.includes("\0") &&
+        !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(
+          value,
+        ),
+    )
+    .optional(),
+  assistantKey: agentKeySchema.optional(),
+  role: z.enum(["user", "assistant"]).optional(),
+});
+export type FavoriteMessageFilters = z.infer<
+  typeof favoriteMessageFiltersSchema
+>;
+export const favoriteMessagesQuerySchema = favoriteMessageFiltersSchema.extend({
+  before: messageIdSchema.refine((value) => value === value.trim()).optional(),
+});
 export const favoriteMessageSchema = z.object({
   id: messageIdSchema,
   threadId: messageIdSchema,
