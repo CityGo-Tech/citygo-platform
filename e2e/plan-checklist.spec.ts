@@ -238,3 +238,143 @@ test("uncertain checklist save requires an explicit refresh and cannot silently 
   expect(state.writes).toHaveLength(1);
   expect(state.unexpected).toEqual([]);
 });
+
+test("unfinished checklist editors and removal decisions block unrelated row writes without losing the draft", async ({
+  page,
+  context,
+}, info) => {
+  const { state, item } = await fixture(context);
+  await page.goto("/");
+  await open(page);
+  const list = panel(page);
+  await list
+    .getByRole("button", { name: "Добавить пункт", exact: true })
+    .click();
+  await list.getByLabel("Название пункта", { exact: true }).fill("Платежи");
+  await list
+    .getByLabel("Подробности пункта", { exact: true })
+    .fill("Исходные подробности");
+  await list
+    .getByRole("button", { name: "Сохранить пункт", exact: true })
+    .click();
+  await expect(
+    list.getByRole("checkbox", { name: "Платежи", exact: true }),
+  ).toBeEnabled();
+  expect(state.writes).toHaveLength(1);
+  await list
+    .getByRole("button", { name: "Изменить пункт", exact: true })
+    .click();
+  const title = list.getByLabel("Название пункта", { exact: true }),
+    details = list.getByRole("textbox", {
+      name: "Подробности пункта",
+      exact: true,
+    });
+  await title.fill("Мой несохранённый заголовок");
+  await details.fill("Мои несохранённые подробности 🧳");
+  await expect(
+    list.getByRole("checkbox", { name: "Платежи", exact: true }),
+  ).toBeDisabled();
+  await expect(
+    list.getByRole("button", { name: "Изменить пункт", exact: true }),
+  ).toBeDisabled();
+  await expect(
+    list.getByRole("button", { name: "Удалить пункт", exact: true }),
+  ).toBeDisabled();
+  await expect(title).toHaveValue("Мой несохранённый заголовок");
+  await expect(details).toHaveValue("Мои несохранённые подробности 🧳");
+  expect(state.writes).toHaveLength(1);
+  await expect(
+    list.getByRole("button", { name: "Сохранить пункт", exact: true }),
+  ).toBeEnabled();
+  await expect(
+    list.getByRole("button", { name: "Отмена пункта", exact: true }),
+  ).toBeEnabled();
+  await page.screenshot({
+    path: info.outputPath("checklist-editor-draft-guard.png"),
+    fullPage: true,
+  });
+  await list
+    .getByRole("button", { name: "Сохранить пункт", exact: true })
+    .click();
+  await expect(
+    list.getByRole("checkbox", {
+      name: "Мой несохранённый заголовок",
+      exact: true,
+    }),
+  ).toBeEnabled();
+  expect(state.writes).toHaveLength(2);
+  expect(state.entries[0]).toMatchObject({
+    title: "Мой несохранённый заголовок",
+    details: "Мои несохранённые подробности 🧳",
+    completed: false,
+  });
+  await list
+    .getByRole("button", { name: "Добавить пункт", exact: true })
+    .click();
+  await title.fill("Новый несохранённый пункт");
+  await details.fill("Останется до отмены");
+  await expect(
+    list.getByRole("checkbox", {
+      name: "Мой несохранённый заголовок",
+      exact: true,
+    }),
+  ).toBeDisabled();
+  expect(state.writes).toHaveLength(2);
+  await list
+    .getByRole("button", { name: "Отмена пункта", exact: true })
+    .click();
+  await list
+    .getByRole("checkbox", { name: "Мой несохранённый заголовок", exact: true })
+    .click();
+  await expect(
+    list.getByRole("checkbox", {
+      name: "Мой несохранённый заголовок",
+      exact: true,
+    }),
+  ).toBeChecked();
+  expect(state.writes).toHaveLength(3);
+  await list
+    .getByRole("button", { name: "Удалить пункт", exact: true })
+    .click();
+  await expect(
+    list.getByRole("checkbox", {
+      name: "Мой несохранённый заголовок",
+      exact: true,
+    }),
+  ).toBeDisabled();
+  await expect(
+    list.getByRole("button", { name: "Изменить пункт", exact: true }),
+  ).toBeDisabled();
+  await expect(
+    list.getByRole("button", { name: "Удалить пункт", exact: true }),
+  ).toBeDisabled();
+  await expect(
+    list.getByRole("button", { name: "Добавить пункт", exact: true }),
+  ).toBeDisabled();
+  await expect(
+    list.getByRole("button", {
+      name: "Подтвердить удаление пункта",
+      exact: true,
+    }),
+  ).toBeEnabled();
+  await expect(
+    list.getByRole("button", { name: "Оставить пункт", exact: true }),
+  ).toBeEnabled();
+  expect(state.writes).toHaveLength(3);
+  await page.screenshot({
+    path: info.outputPath("checklist-removal-decision-guard.png"),
+    fullPage: true,
+  });
+  await list
+    .getByRole("button", { name: "Оставить пункт", exact: true })
+    .click();
+  await expect(
+    list.getByRole("checkbox", {
+      name: "Мой несохранённый заголовок",
+      exact: true,
+    }),
+  ).toBeEnabled();
+  expect(item.status).toBe("pending");
+  expect(state.unexpected).toEqual([]);
+  expect(state.external).toBe(0);
+});

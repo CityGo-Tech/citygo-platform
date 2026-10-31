@@ -89,6 +89,7 @@ export function PlanItemChecklist({
   const entries = current?.value?.entries ?? [];
   const blocked =
     disabled || !current?.value || current.busy || current.needsRefresh;
+  const rowBlocked = blocked || editor !== null || removing !== null;
   if (sessionSignal.aborted || current?.closed) return null;
   async function save(items: PlanChecklistEntry[]) {
     if (blocked) return;
@@ -159,7 +160,7 @@ export function PlanItemChecklist({
                       <input
                         type="checkbox"
                         checked={entry.completed}
-                        disabled={blocked}
+                        disabled={rowBlocked}
                         onChange={() =>
                           void save(
                             entries.map((value) =>
@@ -179,7 +180,7 @@ export function PlanItemChecklist({
                       <Button
                         type="button"
                         variant="ghost"
-                        disabled={blocked || !!editor}
+                        disabled={rowBlocked}
                         onClick={() => {
                           setEditor({
                             id: entry.id,
@@ -194,7 +195,7 @@ export function PlanItemChecklist({
                       <Button
                         type="button"
                         variant="ghost"
-                        disabled={blocked || !!editor}
+                        disabled={rowBlocked}
                         onClick={() => setRemoving(entry.id)}
                       >
                         Удалить пункт
@@ -276,7 +277,7 @@ export function PlanItemChecklist({
                 <Button
                   type="button"
                   variant="secondary"
-                  disabled={blocked || entries.length >= 20}
+                  disabled={rowBlocked || entries.length >= 20}
                   onClick={() => {
                     setRemoving(null);
                     setEditor({
