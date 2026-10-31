@@ -322,3 +322,29 @@ test("personal plan search is normalized and encoded once with status/cursor; in
     await assert.rejects(client.personalPlan(undefined, undefined, search));
   assert.equal(urls.length, 1);
 });
+
+test("whole plan export uses one GET and honors cancellation without accepting malformed snapshots", async () => {
+  const controller = new AbortController();
+  const calls: string[] = [];
+  const client = createClient("http://synthetic", {
+    signal: () => controller.signal,
+    fetch: async (url, init) => {
+      calls.push(String(url));
+      assert.equal(init?.method, "GET");
+      return Response.json({
+        userId: "1",
+        generatedAt: "2026-10-31T12:00:00Z",
+        items: [],
+      });
+    },
+  });
+  assert.deepEqual((await client.exportPersonalPlan()).items, []);
+  assert.deepEqual(calls, ["http://synthetic/v1/personal-plan/export"]);
+  controller.abort();
+  await assert.rejects(client.exportPersonalPlan());
+  assert.equal(calls.length, 1);
+  const malformed = createClient("http://synthetic", {
+    fetch: async () => Response.json({ userId: "1", items: [] }),
+  });
+  await assert.rejects(malformed.exportPersonalPlan(), invalid);
+});
