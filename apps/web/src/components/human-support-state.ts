@@ -1,6 +1,7 @@
 import { ApiError, type createClient } from "@citygo/api-client";
 import {
   createSupportRequestSchema,
+  supportRequestsPageSchema,
   type CreateSupportRequest,
   type SupportRequest,
 } from "@citygo/contracts";
@@ -111,15 +112,42 @@ export function createHumanSupportResource(options: {
       const current = ++generation;
       publish({ busy: true, error: "" });
       try {
-        const page = await options.client.supportRequests(
+        const response = await options.client.supportRequests(
           before ? { before } : {},
         );
         if (!active() || current !== generation) return;
-        owner(page.userId);
+        owner(response.userId);
+        const page = supportRequestsPageSchema.parse(response);
+        // Validate the server's page before merging. A duplicate already
+        // opened outside the loaded range is legitimate; duplicate/unordered
+        // IDs inside a response or outside its keyset are not.
+        if (
+          page.requests.some(
+            (request, index, rows) =>
+              (before !== undefined && BigInt(request.id) >= BigInt(before)) ||
+              (index > 0 && BigInt(request.id) >= BigInt(rows[index - 1]!.id)),
+          ) ||
+          (page.nextBefore !== null &&
+            (page.requests.length !== 20 ||
+              page.nextBefore !== page.requests.at(-1)?.id))
+        )
+          throw new ApiError(
+            200,
+            "Некорректная страница обращений",
+            "invalid_response",
+          );
+        const requests = before
+          ? new Map(state.requests.map((request) => [request.id, request]))
+          : new Map<string, SupportRequest>();
+        for (const request of page.requests) requests.set(request.id, request);
         publish({
-          requests: before
-            ? [...state.requests, ...page.requests]
-            : page.requests,
+          requests: [...requests.values()].sort((a, b) =>
+            BigInt(a.id) === BigInt(b.id)
+              ? 0
+              : BigInt(a.id) > BigInt(b.id)
+                ? -1
+                : 1,
+          ),
           nextBefore: page.nextBefore,
           receipt: state.receipt
             ? (page.requests.find((item) => item.id === state.receipt?.id) ??

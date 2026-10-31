@@ -207,3 +207,131 @@ test("a late direct-open result after cancellation never restores the previous a
   assert.deepEqual(states.at(-1)!.requests, []);
   resource.dispose();
 });
+
+test("opening an older notice before loading its keyset page keeps one exact bigint row and adopts the newly fetched state", async () => {
+  const base = 9007199254740993n,
+    states: SupportState[] = [],
+    reads: unknown[] = [];
+  const row = (id: bigint, revision = 1): SupportRequest => ({
+    ...item,
+    id: String(id),
+    revision,
+    status: revision > 1 ? "closed" : "open",
+    closedAt: revision > 1 ? "2026-11-01T00:00:00Z" : null,
+  });
+  const resource = createHumanSupportResource({
+    userId: "1",
+    signal: new AbortController().signal,
+    operationId: () => item.operationId,
+    publish: (state) => states.push(state),
+    onAccessDenied: () => assert.fail(),
+    client: {
+      supportRequests: async (query) => {
+        reads.push(query);
+        return {
+          userId: "1",
+          requests: query?.before
+            ? [row(base, 2)]
+            : Array.from({ length: 20 }, (_, index) =>
+                row(base + 20n - BigInt(index)),
+              ),
+          nextBefore: query?.before ? null : String(base + 1n),
+        };
+      },
+      supportRequest: async (id) => {
+        assert.equal(id, String(base));
+        return { userId: "1", request: row(base) };
+      },
+      createSupportRequest: async () => {
+        throw new Error(
+          "No support creation or read acknowledgement is expected",
+        );
+      },
+    },
+  });
+  await resource.load();
+  assert.equal(await resource.open(String(base)), true);
+  assert.equal(states.at(-1)!.requests.length, 21);
+  assert.equal(states.at(-1)!.nextBefore, String(base + 1n));
+  await resource.load(states.at(-1)!.nextBefore!);
+  const latest = states.at(-1)!;
+  assert.equal(latest.error, "");
+  assert.equal(latest.requests.length, 21);
+  assert.equal(new Set(latest.requests.map((request) => request.id)).size, 21);
+  assert.deepEqual(
+    latest.requests.map((request) => request.id),
+    Array.from({ length: 21 }, (_, index) =>
+      String(base + 20n - BigInt(index)),
+    ),
+  );
+  assert.equal(latest.requests.at(-1)!.revision, 2);
+  assert.equal(latest.requests.at(-1)!.status, "closed");
+  assert.equal(latest.nextBefore, null);
+  assert.deepEqual(reads, [{}, { before: String(base + 1n) }]);
+  resource.dispose();
+});
+
+test("merging an opened older request does not conceal malformed server pages or a foreign owner", async () => {
+  const base = 9007199254740993n;
+  const row = (id: bigint): SupportRequest => ({ ...item, id: String(id) });
+  for (const scenario of [
+    "duplicate",
+    "unordered",
+    "outside-keyset",
+    "bad-next-cursor",
+    "foreign-owner",
+  ] as const) {
+    const states: SupportState[] = [];
+    let denied = 0;
+    const resource = createHumanSupportResource({
+      userId: "1",
+      signal: new AbortController().signal,
+      operationId: () => item.operationId,
+      publish: (state) => states.push(state),
+      onAccessDenied: () => {
+        denied++;
+      },
+      client: {
+        supportRequests: async (query) => {
+          if (!query?.before)
+            return {
+              userId: "1",
+              requests: Array.from({ length: 20 }, (_, index) =>
+                row(base + 20n - BigInt(index)),
+              ),
+              nextBefore: String(base + 1n),
+            };
+          return {
+            userId: scenario === "foreign-owner" ? "2" : "1",
+            requests:
+              scenario === "duplicate"
+                ? [row(base), row(base)]
+                : scenario === "unordered"
+                  ? [row(base - 1n), row(base)]
+                  : scenario === "outside-keyset"
+                    ? [row(base + 1n)]
+                    : [row(base)],
+            nextBefore: scenario === "bad-next-cursor" ? String(base) : null,
+          };
+        },
+        supportRequest: async () => ({ userId: "1", request: row(base) }),
+        createSupportRequest: async () => {
+          throw new Error("No mutation expected");
+        },
+      },
+    });
+    await resource.load();
+    await resource.open(String(base));
+    const prior = states.at(-1)!.requests;
+    await resource.load(String(base + 1n));
+    if (scenario === "foreign-owner") {
+      assert.equal(denied, 1);
+      assert.deepEqual(states.at(-1)!.requests, []);
+    } else {
+      assert.equal(denied, 0);
+      assert.deepEqual(states.at(-1)!.requests, prior);
+      assert.match(states.at(-1)!.error, /Не удалось загрузить/);
+    }
+    resource.dispose();
+  }
+});
