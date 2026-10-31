@@ -1,8 +1,12 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { createClient } from "@citygo/api-client";
-import type { FavoriteMessage, PersonalPlanItem } from "@citygo/contracts";
-import { Button, Card } from "@citygo/ui-web";
+import type {
+  FavoriteMessage,
+  FavoriteMessageFilters,
+  PersonalPlanItem,
+} from "@citygo/contracts";
+import { Button, Card, Field, SelectField } from "@citygo/ui-web";
 import { agentNames } from "./agent-names";
 import { FavoriteMessageContext } from "./favorite-message-context";
 import {
@@ -10,6 +14,8 @@ import {
   resultMessageTitle,
   resultPreview,
   type ResultsState,
+  type ResultsPlanFilters,
+  type ResultsCategory,
 } from "./results-library-state";
 import styles from "./results-library.module.css";
 
@@ -29,6 +35,136 @@ function downloadText(text: string, name: string) {
   link.download = name;
   link.click();
   setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+function ResultFilters({
+  category,
+  plan,
+  favorites,
+  disabled,
+  error,
+  onApply,
+}: {
+  category: ResultsCategory;
+  plan: ResultsPlanFilters;
+  favorites: FavoriteMessageFilters;
+  disabled: boolean;
+  error: string;
+  onApply: (filters: ResultsPlanFilters | FavoriteMessageFilters) => void;
+}) {
+  const applied = category === "plan" ? plan : favorites;
+  const [search, setSearch] = useState(applied.search ?? "");
+  const [status, setStatus] = useState(plan.status ?? "");
+  const [assistant, setAssistant] = useState(favorites.assistantKey ?? "");
+  const [role, setRole] = useState(favorites.role ?? "");
+  return (
+    <form
+      className={styles.search + " ym-hide-content"}
+      aria-label="Поиск результатов"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (disabled) return;
+        const query = search.trim();
+        onApply({
+          ...(query ? { search: query } : {}),
+          ...(category === "plan"
+            ? status
+              ? { status: status as ResultsPlanFilters["status"] }
+              : {}
+            : {
+                ...(assistant
+                  ? {
+                      assistantKey:
+                        assistant as FavoriteMessageFilters["assistantKey"],
+                    }
+                  : {}),
+                ...(role
+                  ? { role: role as FavoriteMessageFilters["role"] }
+                  : {}),
+              }),
+        });
+      }}
+    >
+      <Field
+        label="Поиск в результатах"
+        className="ym-disable-keys"
+        type="search"
+        value={search}
+        maxLength={160}
+        autoComplete="off"
+        disabled={disabled}
+        onChange={(event) => setSearch(event.target.value)}
+        placeholder={
+          category === "plan"
+            ? "Название или текст шага"
+            : "Текст сохранённого сообщения"
+        }
+      />
+      {category === "plan" ? (
+        <SelectField
+          label="Статус шага"
+          value={status}
+          disabled={disabled}
+          onChange={(event) => setStatus(event.target.value as typeof status)}
+        >
+          <option value="">Все шаги</option>
+          <option value="pending">Запланировано</option>
+          <option value="completed">Выполнено</option>
+        </SelectField>
+      ) : (
+        <>
+          <SelectField
+            label="Помощник"
+            value={assistant}
+            disabled={disabled}
+            onChange={(event) =>
+              setAssistant(event.target.value as typeof assistant)
+            }
+          >
+            <option value="">Все помощники</option>
+            {Object.entries(agentNames).map(([key, name]) => (
+              <option key={key} value={key}>
+                {name}
+              </option>
+            ))}
+          </SelectField>
+          <SelectField
+            label="Автор сообщения"
+            value={role}
+            disabled={disabled}
+            onChange={(event) => setRole(event.target.value as typeof role)}
+          >
+            <option value="">Все сообщения</option>
+            <option value="user">Вы</option>
+            <option value="assistant">Помощник</option>
+          </SelectField>
+        </>
+      )}
+      <div className={styles.actions}>
+        <Button type="submit" disabled={disabled}>
+          Найти
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          disabled={disabled}
+          onClick={() => {
+            setSearch("");
+            setStatus("");
+            setAssistant("");
+            setRole("");
+            onApply({});
+          }}
+        >
+          Сбросить фильтры
+        </Button>
+      </div>
+      {error && (
+        <p role="alert" className={styles.filterError}>
+          {error}
+        </p>
+      )}
+    </form>
+  );
 }
 export function ResultsLibrary({
   userId,
@@ -55,6 +191,12 @@ export function ResultsLibrary({
     state: ResultsState;
   } | null>(null);
   const [source, setSource] = useState<Source | null>(null);
+  const [detail, setDetail] = useState<{
+    owner: string;
+    signal: AbortSignal;
+    category: ResultsCategory;
+    id: string;
+  } | null>(null);
   const resource = useRef<ReturnType<typeof createResultsResource> | null>(
     null,
   );
@@ -62,6 +204,7 @@ export function ResultsLibrary({
   denied.current = onAccessDenied;
   const sourceButton = useRef<HTMLButtonElement | null>(null);
   const listScroll = useRef(0);
+  const previewTitle = useRef<HTMLHeadingElement | null>(null);
   useEffect(() => {
     const controller = new AbortController();
     const signal = AbortSignal.any([controller.signal, sessionSignal]);
@@ -71,11 +214,15 @@ export function ResultsLibrary({
       userId,
       sessionSignal: signal,
       client: {
-        plan: (before, requestSignal) =>
-          api(requestSignal).personalPlan(before),
+        plan: (before, requestSignal, filters) =>
+          api(requestSignal).personalPlan(
+            before,
+            filters.status,
+            filters.search,
+          ),
         summary: (requestSignal) => api(requestSignal).personalPlanSummary(),
-        favorites: (before, requestSignal) =>
-          api(requestSignal).favoriteMessages(before),
+        favorites: (before, requestSignal, filters) =>
+          api(requestSignal).favoriteMessages(before, filters),
       },
       publish: (state) =>
         setSnapshot({ owner: userId, signal: sessionSignal, state }),
@@ -102,7 +249,50 @@ export function ResultsLibrary({
     current && source?.owner === userId && source.signal === sessionSignal
       ? source
       : null;
+  const expanded =
+    current &&
+    detail?.owner === userId &&
+    detail.signal === sessionSignal &&
+    detail.category === category
+      ? category === "plan"
+        ? current.plan.items.find((item) => item.id === detail.id)
+        : current.favorites.items.find((item) => item.id === detail.id)
+      : null;
+  useEffect(() => {
+    if (expanded && !sessionSignal.aborted) previewTitle.current?.focus();
+  }, [expanded?.id, category, userId, sessionSignal]);
   if (sessionSignal.aborted || current?.closed) return null;
+  const returnToList = () => {
+    setSource(null);
+    setDetail(null);
+    requestAnimationFrame(() => {
+      if (sessionSignal.aborted) return;
+      sourceButton.current?.focus({ preventScroll: true });
+      window.scrollTo({ top: listScroll.current, behavior: "instant" });
+    });
+  };
+  const previewAction = (id: string) => (
+    <Button
+      variant="secondary"
+      disabled={busy || navigationBusy}
+      onClick={(event) => {
+        if (
+          sessionSignal.aborted ||
+          !current ||
+          current.closed ||
+          busy ||
+          navigationBusy
+        )
+          return;
+        sourceButton.current = event.currentTarget;
+        listScroll.current = window.scrollY;
+        setSource(null);
+        setDetail({ id, category, owner: userId, signal: sessionSignal });
+      }}
+    >
+      Открыть полностью
+    </Button>
+  );
   const openSource = (
     event: React.MouseEvent<HTMLButtonElement>,
     value: Pick<Source, "id" | "threadId" | "kind">,
@@ -117,6 +307,7 @@ export function ResultsLibrary({
       return;
     sourceButton.current = event.currentTarget;
     listScroll.current = window.scrollY;
+    setDetail(null);
     setSource({ ...value, owner: userId, signal: sessionSignal });
   };
   const sourceAction = (value: Pick<Source, "id" | "threadId" | "kind">) => (
@@ -148,6 +339,7 @@ export function ResultsLibrary({
         Сохранён {new Date(item.createdAt).toLocaleDateString("ru-RU")}
       </small>
       <div className={styles.actions}>
+        {previewAction(item.id)}
         {item.source &&
           sourceAction({
             id: item.source.messageId,
@@ -189,6 +381,7 @@ export function ResultsLibrary({
       <p className={styles.preview}>{resultPreview(item.content)}</p>
       {item.status === "interrupted" && <small>Ответ прерван</small>}
       <div className={styles.actions}>
+        {previewAction(item.id)}
         {sourceAction({
           id: item.id,
           threadId: item.threadId,
@@ -235,21 +428,43 @@ export function ResultsLibrary({
               unavailable:
                 "Исходное сообщение недоступно. Вернитесь к результатам.",
             }}
-            onBack={() => {
-              setSource(null);
-              requestAnimationFrame(() => {
-                if (sessionSignal.aborted) return;
-                sourceButton.current?.focus({ preventScroll: true });
-                window.scrollTo({
-                  top: listScroll.current,
-                  behavior: "instant",
-                });
-              });
-            }}
+            onBack={returnToList}
           />
         </div>
       )}
-      <div hidden={selected !== null}>
+      {expanded && (
+        <Card
+          className={styles.panel + " ym-hide-content"}
+          aria-label="Полный результат"
+        >
+          <Button
+            variant="ghost"
+            disabled={navigationBusy}
+            onClick={returnToList}
+          >
+            ← В результаты
+          </Button>
+          <span className={styles.meta}>
+            {category === "plan" ? "ШАГ ПЛАНА" : "ИЗБРАННОЕ СООБЩЕНИЕ"}
+          </span>
+          <h1 ref={previewTitle} tabIndex={-1}>
+            {"title" in expanded
+              ? expanded.title
+              : resultMessageTitle(expanded.content)}
+          </h1>
+          <div
+            className={styles.fullText}
+            tabIndex={0}
+            role="region"
+            aria-label="Полный текст результата"
+          >
+            {"details" in expanded
+              ? expanded.details || "Подробности пока не добавлены."
+              : expanded.content}
+          </div>
+        </Card>
+      )}
+      <div hidden={selected !== null || Boolean(expanded)}>
         <Card
           className={styles.panel}
           aria-label="Полезное из разговоров"
@@ -278,6 +493,28 @@ export function ResultsLibrary({
               Избранные сообщения
             </Button>
           </nav>
+          {current && (
+            <ResultFilters
+              key={category}
+              category={category}
+              plan={current.planFilters}
+              favorites={current.favoriteFilters}
+              disabled={navigationBusy}
+              error={current.filterError}
+              onApply={(filters) => {
+                setDetail(null);
+                setSource(null);
+                if (category === "plan")
+                  void resource.current?.filterPlan(
+                    filters as ResultsPlanFilters,
+                  );
+                else
+                  void resource.current?.filterFavorites(
+                    filters as FavoriteMessageFilters,
+                  );
+              }}
+            />
+          )}
           {category === "plan" && current?.summary && (
             <p className={styles.summary}>
               Выполнено {current.summary.completed} из {current.summary.total}.
@@ -300,14 +537,26 @@ export function ResultsLibrary({
           {!busy && !page?.error && !page?.items.length && (
             <div className={styles.empty}>
               <h2>
-                {category === "plan"
-                  ? "Сохраните первый шаг"
-                  : "Сохраните важное сообщение"}
+                {Object.keys(
+                  category === "plan"
+                    ? (current?.planFilters ?? {})
+                    : (current?.favoriteFilters ?? {}),
+                ).length
+                  ? "Ничего не найдено"
+                  : category === "plan"
+                    ? "Сохраните первый шаг"
+                    : "Сохраните важное сообщение"}
               </h2>
               <p>
-                {category === "plan"
-                  ? "Добавьте шаг из сообщения в диалоге. Сохранённые шаги появятся здесь и в «Моём плане»."
-                  : "Нажмите «В избранное» под сообщением или ответом помощника. Здесь появятся ваши сохранённые сообщения."}
+                {Object.keys(
+                  category === "plan"
+                    ? (current?.planFilters ?? {})
+                    : (current?.favoriteFilters ?? {}),
+                ).length
+                  ? "Измените запрос или сбросьте фильтры."
+                  : category === "plan"
+                    ? "Добавьте шаг из сообщения в диалоге. Сохранённые шаги появятся здесь и в «Моём плане»."
+                    : "Нажмите «В избранное» под сообщением или ответом помощника. Здесь появятся ваши сохранённые сообщения."}
               </p>
               <Button disabled={navigationBusy} onClick={onContinue}>
                 Открыть диалоги

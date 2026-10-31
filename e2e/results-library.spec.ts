@@ -177,7 +177,16 @@ async function fixture(
       const rows =
         owner === "101"
           ? state.plan.filter(
-              (item) => !before || BigInt(item.id) < BigInt(before),
+              (item) =>
+                (!before || BigInt(item.id) < BigInt(before)) &&
+                (!url.searchParams.get("search") ||
+                  (item.title + "\n" + item.details)
+                    .toLocaleLowerCase()
+                    .includes(
+                      url.searchParams.get("search")!.toLocaleLowerCase(),
+                    )) &&
+                (!url.searchParams.get("status") ||
+                  item.status === url.searchParams.get("status")),
             )
           : [];
       const json = {
@@ -206,7 +215,18 @@ async function fixture(
       const rows =
         state.owner === "101"
           ? state.favorites.filter(
-              (item) => !before || BigInt(item.id) < BigInt(before),
+              (item) =>
+                (!before || BigInt(item.id) < BigInt(before)) &&
+                (!url.searchParams.get("search") ||
+                  item.content
+                    .toLocaleLowerCase()
+                    .includes(
+                      url.searchParams.get("search")!.toLocaleLowerCase(),
+                    )) &&
+                (!url.searchParams.get("role") ||
+                  item.role === url.searchParams.get("role")) &&
+                (!url.searchParams.get("assistantKey") ||
+                  item.agentKey === url.searchParams.get("assistantKey")),
             )
           : [];
       await pageGates.get(path + url.search);
@@ -285,7 +305,7 @@ test("results match the three-column shell and expose only actual saved plan ste
   await expect(results(page)).toContainText("Выполнено 1 из 3");
   await expect(results(page)).not.toContainText("Первый маршрут переезда");
   await expect(results(page)).not.toContainText("Bubble");
-  await expect(results(page).locator(".ym-hide-content")).toHaveCount(3);
+  await expect(results(page).locator("article.ym-hide-content")).toHaveCount(3);
   const geometry = await results(page).evaluate((element) => {
     const card = element.querySelector("article")!,
       title = element.querySelector("h1")!;
@@ -663,5 +683,185 @@ test("a late previous-owner page cannot reappear after focus changes the account
     await expect(page.getByText("LATE_PRIVATE_OWNER_A")).toHaveCount(0);
   } finally {
     state.releasePlan();
+  }
+});
+
+test("results search finds older server pages, preserves category filters and resets without writes", async ({
+  page,
+  context,
+}, info) => {
+  const plan = steps(45),
+    saved = messages(29);
+  plan[44]!.title = "Район %_\\ — дальний шаг";
+  plan[44]!.status = "completed";
+  saved[28]!.content = "КОНТРОЛЬ_РЕЗУЛЬТАТА %_\\";
+  const state = await fixture(context, plan, saved);
+  await page.goto("/");
+  await openResults(page);
+  const form = results(page).getByRole("form", { name: "Поиск результатов" });
+  await form.getByLabel("Поиск в результатах").fill("Район %_\\");
+  await form.getByLabel("Статус шага").selectOption("completed");
+  await form.getByRole("button", { name: "Найти", exact: true }).click();
+  await expect(results(page).getByRole("article")).toHaveCount(1);
+  await expect(results(page).getByRole("article")).toContainText(
+    plan[44]!.title,
+  );
+  await results(page).screenshot({
+    path: info.outputPath("results-search-filtered.png"),
+  });
+  const query = new URL("http://local" + state.reads.at(-1)!);
+  expect(query.searchParams.get("search")).toBe("Район %_\\");
+  expect(query.searchParams.get("status")).toBe("completed");
+  expect(query.searchParams.has("before")).toBe(false);
+  await categories(page)
+    .getByRole("button", { name: "Избранные сообщения", exact: true })
+    .click();
+  await form.getByLabel("Поиск в результатах").fill("КОНТРОЛЬ_РЕЗУЛЬТАТА %_\\");
+  await form.getByLabel("Автор сообщения").selectOption("assistant");
+  await form.getByLabel("Помощник", { exact: true }).selectOption("support");
+  await form.getByRole("button", { name: "Найти", exact: true }).click();
+  await expect(results(page).getByRole("article")).toHaveCount(1);
+  await expect(results(page)).toContainText(saved[28]!.content);
+  await categories(page)
+    .getByRole("button", { name: /^Шаги плана/ })
+    .click();
+  await expect(form.getByLabel("Поиск в результатах")).toHaveValue(
+    "Район %_\\",
+  );
+  await expect(form.getByLabel("Статус шага")).toHaveValue("completed");
+  await expect(results(page).getByRole("article")).toHaveCount(1);
+  await form.getByLabel("Поиск в результатах").fill("НЕСУЩЕСТВУЮЩИЙ_ШАГ");
+  await form.getByRole("button", { name: "Найти", exact: true }).click();
+  await expect(results(page)).toContainText("Ничего не найдено");
+  await form
+    .getByRole("button", { name: "Сбросить фильтры", exact: true })
+    .click();
+  await expect(results(page).getByRole("article")).toHaveCount(20);
+  expect(new URL("http://local" + state.reads.at(-1)!).search).toBe("");
+  expect(
+    await form.evaluate((element) =>
+      element.classList.contains("ym-hide-content"),
+    ),
+  ).toBe(true);
+  await expect(form.getByLabel("Поиск в результатах")).toHaveClass(
+    /ym-disable-keys/,
+  );
+  expect(await page.evaluate(() => location.search)).toBe("");
+  const storage = await page.evaluate(() =>
+    JSON.stringify({ ...localStorage, ...sessionStorage }),
+  );
+  expect(storage).not.toContain("КОНТРОЛЬ_РЕЗУЛЬТАТА");
+  expect(storage).not.toContain("НЕСУЩЕСТВУЮЩИЙ_ШАГ");
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth > innerWidth,
+    ),
+  ).toBe(false);
+  await page.screenshot({
+    path: info.outputPath("results-search.png"),
+    fullPage: false,
+  });
+  expect(state.writes).toEqual([]);
+  expect(state.unexpected).toEqual([]);
+  expect(state.external).toBe(0);
+});
+
+test("full result preview renders exact manual steps and long favorites safely, then restores list focus", async ({
+  page,
+  context,
+}, info) => {
+  const plan = [
+    {
+      ...steps(1)[0]!,
+      source: null,
+      details: "ПОЛНЫЙ_РУЧНОЙ_ШАГ\n" + "Подробности. ".repeat(280),
+    },
+  ];
+  const saved = messages(1);
+  saved[0]!.content =
+    "<img src=x onerror=window.XSS=true>\n" +
+    "я".repeat(16000) +
+    "\nКОНЕЦ_ПОЛНОГО_РЕЗУЛЬТАТА";
+  const state = await fixture(context, plan, saved);
+  await page.goto("/");
+  await openResults(page);
+  let open = results(page).getByRole("button", {
+    name: "Открыть полностью",
+    exact: true,
+  });
+  await open.click();
+  const full = page.getByRole("region", {
+    name: "Полный результат",
+    exact: true,
+  });
+  await expect(full.getByRole("heading", { level: 1 })).toBeFocused();
+  await expect(
+    full.getByRole("region", { name: "Полный текст результата", exact: true }),
+  ).toHaveText(plan[0]!.details);
+  await full
+    .getByRole("button", { name: "← В результаты", exact: true })
+    .click();
+  await expect(open).toBeFocused();
+  await categories(page)
+    .getByRole("button", { name: "Избранные сообщения", exact: true })
+    .click();
+  open = results(page).getByRole("button", {
+    name: "Открыть полностью",
+    exact: true,
+  });
+  await open.click();
+  await expect(
+    full.getByRole("region", { name: "Полный текст результата", exact: true }),
+  ).toHaveText(saved[0]!.content);
+  expect(await full.locator("img").count()).toBe(0);
+  expect(await page.evaluate(() => "XSS" in window)).toBe(false);
+  expect(
+    await full.evaluate((element) =>
+      element.classList.contains("ym-hide-content"),
+    ),
+  ).toBe(true);
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth > innerWidth,
+    ),
+  ).toBe(false);
+  await full.screenshot({ path: info.outputPath("results-full-text.png") });
+  await full
+    .getByRole("button", { name: "← В результаты", exact: true })
+    .click();
+  await expect(open).toBeFocused();
+  expect(state.reads.filter((path) => path.includes("/context"))).toEqual([]);
+  expect(state.writes).toEqual([]);
+  expect(state.unexpected).toEqual([]);
+  expect(state.external).toBe(0);
+});
+
+test("changing result filters aborts an earlier query and never repaints its late private data", async ({
+  page,
+  context,
+}) => {
+  const state = await fixture(context, steps(1));
+  await page.goto("/");
+  await openResults(page);
+  const form = results(page).getByRole("form", { name: "Поиск результатов" });
+  const held = "/api/v1/personal-plan?search=OLDER_PRIVATE_QUERY";
+  const release = state.holdPage(held);
+  try {
+    await form.getByLabel("Поиск в результатах").fill("OLDER_PRIVATE_QUERY");
+    await form.getByRole("button", { name: "Найти", exact: true }).click();
+    await expect.poll(() => state.reads.includes(held)).toBe(true);
+    await form.getByLabel("Поиск в результатах").fill("Подготовить");
+    await form.getByRole("button", { name: "Найти", exact: true }).click();
+    await expect(results(page).getByRole("article")).toHaveCount(1);
+    release();
+    await expect.poll(() => state.pageReplies.includes(held)).toBe(true);
+    await expect(results(page).getByRole("article")).toHaveCount(1);
+    await expect(form.getByLabel("Поиск в результатах")).toHaveValue(
+      "Подготовить",
+    );
+    expect(state.writes).toEqual([]);
+    expect(state.unexpected).toEqual([]);
+  } finally {
+    release();
   }
 });
