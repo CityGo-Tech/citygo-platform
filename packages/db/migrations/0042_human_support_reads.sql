@@ -1,3 +1,5 @@
+begin;
+
 -- Existing replies have no read evidence. No backfill silently marks them seen.
 create table human_support_reads (
   request_id bigint primary key references human_support_requests(id),
@@ -33,3 +35,5 @@ begin
 end $$;
 create trigger human_support_reads_guard before insert or update or delete on human_support_reads
   for each row execute function citygo_guard_support_read();
+
+commit;

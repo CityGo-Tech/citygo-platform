@@ -259,7 +259,7 @@ test("24→25 preserves legacy rows, leases, all financial tables and original m
     .sort();
   assert.equal(names.length, 43);
   assert.equal(names[24], "0025_assistant_conversations.sql");
-  assert.equal(names.at(-1), "0040_human_support_replies.sql");
+  assert.equal(names.at(-1), "0043_balance_history.sql");
   await db.exec(
     "create table citygo_migration_lock(id integer primary key); insert into citygo_migration_lock values(1); create table citygo_migrations(name text primary key,checksum text not null,applied_at timestamptz not null default now())",
   );

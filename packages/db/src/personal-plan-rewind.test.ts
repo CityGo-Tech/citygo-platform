@@ -15,6 +15,7 @@ async function snapshot(db: Database) {
     await db.query<{ snapshot: unknown }>(`select jsonb_build_object(
       'journal',(select jsonb_agg(to_jsonb(t) order by name) from citygo_migrations t),
       'plan',(select jsonb_agg(to_jsonb(t) order by id) from personal_plan_items t),
+      'revisions',(select jsonb_agg(to_jsonb(t) order by item_id,revision) from personal_plan_item_history t),
       'users',(select jsonb_agg(to_jsonb(t) order by id) from users t),
       'threads',(select jsonb_agg(to_jsonb(t) order by id) from agent_threads t),
       'messages',(select jsonb_agg(to_jsonb(t) order by id) from messages t),
@@ -32,7 +33,7 @@ test("exact disposable rewinds reject populated personal-plan history and tombst
   await migrate(db);
   assert.equal(
     (await db.query("select name from citygo_migrations")).rows.length,
-    40,
+    43,
   );
   const owner = await new Repository(db).register(
     "plan-rewind@example.test",

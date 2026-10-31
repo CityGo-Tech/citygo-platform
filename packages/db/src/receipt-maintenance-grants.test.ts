@@ -23,7 +23,7 @@ const tables = [
   "credit_debt_repayments",
 ];
 
-test("the disposable release fixture rewinds only reviewed empty new schema and reapplies all forty migrations", async (t) => {
+test("the disposable release fixture rewinds only reviewed empty new schema and reapplies all forty-three migrations", async (t) => {
   const db = await connectDatabase("pglite://:memory:");
   t.after(() => db.close());
   await migrate(db);
@@ -47,6 +47,8 @@ test("the disposable release fixture rewinds only reviewed empty new schema and 
   );
   for (const table of [
     "human_support_requests",
+    "human_support_reads",
+    "personal_plan_item_history",
     "service_consent_events",
     "password_recovery_challenges",
     "account_email_verifications",
@@ -75,6 +77,8 @@ test("the disposable release fixture rewinds only reviewed empty new schema and 
     );
   for (const name of [
     "citygo_guard_human_support_request",
+    "citygo_guard_support_read",
+    "citygo_guard_personal_plan_history",
     "citygo_guard_password_recovery",
     "citygo_guard_account_email_confirmation",
     "citygo_guard_account_email_verification_proof",
@@ -113,7 +117,7 @@ test("the disposable release fixture rewinds only reviewed empty new schema and 
   await migrate(db);
   assert.equal(
     (await db.query("select 1 from citygo_migrations")).rows.length,
-    40,
+    43,
   );
 });
 
