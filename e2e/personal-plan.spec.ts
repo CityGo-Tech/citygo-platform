@@ -24,6 +24,154 @@ const item = (
   createdAt: stamp,
   updatedAt: stamp,
 });
+
+test("saved step history compares exact versions and checklist, pages without writes, restores focus and hides private text", async ({
+  page,
+  context,
+}, info) => {
+  const row = { ...item(), source: null, revision: 7 };
+  const state = await fixture(context, [row]);
+  const reads: (string | null)[] = [];
+  await page.route("**/api/v1/personal-plan/*/history*", async (route) => {
+    expect(route.request().method()).toBe("GET");
+    const before = new URL(route.request().url()).searchParams.get("before");
+    reads.push(before);
+    const versions = before ? [2, 1] : [7, 6, 5, 4, 3];
+    await route.fulfill({
+      json: {
+        userId: "101",
+        itemId: row.id,
+        currentRevision: 7,
+        entries: versions.map((revision) => ({
+          revision,
+          title: "ЛИЧНАЯ_ВЕРСИЯ_" + revision,
+          details: "ЛИЧНЫЕ_ПОДРОБНОСТИ_" + revision,
+          status: revision === 7 ? "completed" : "pending",
+          checklist: [
+            {
+              id: "11111111-1111-4111-8111-111111111111",
+              title: "ЛИЧНЫЙ_ПУНКТ_" + revision,
+              details: "Сохранённая деталь",
+              completed: revision === 7,
+            },
+          ],
+          initialSnapshot: revision === 1,
+          recordedAt: stamp,
+        })),
+        nextBefore: before ? null : 3,
+      },
+    });
+  });
+  await page.goto("/");
+  await openPlan(page);
+  const trigger = page.getByRole("button", {
+    name: "Что изменилось",
+    exact: true,
+  });
+  await trigger.click();
+  const history = page.getByRole("region", {
+    name: "История изменений шага",
+    exact: true,
+  });
+  await expect(
+    history.getByRole("heading", { name: "Что изменилось", exact: true }),
+  ).toBeFocused();
+  const current = history.getByRole("region", {
+    name: "Текущая версия",
+    exact: true,
+  });
+  const prior = history.getByRole("region", {
+    name: "Выбранная версия",
+    exact: true,
+  });
+  await expect(current).toContainText("ЛИЧНАЯ_ВЕРСИЯ_7");
+  await expect(current).toContainText("ЛИЧНЫЙ_ПУНКТ_7");
+  await expect(prior).toContainText("ЛИЧНАЯ_ВЕРСИЯ_6");
+  await history.getByRole("button", { name: "Версия 4", exact: true }).click();
+  await expect(prior).toContainText("ЛИЧНЫЕ_ПОДРОБНОСТИ_4");
+  await history
+    .getByRole("button", { name: "Более ранние версии", exact: true })
+    .click();
+  await expect(prior).toContainText("ЛИЧНАЯ_ВЕРСИЯ_2");
+  await expect(current).toContainText("ЛИЧНАЯ_ВЕРСИЯ_7");
+  await expect(history).toContainText(
+    "Более ранние изменения не восстанавливались",
+  );
+  expect(
+    await history.evaluate((element) =>
+      element.classList.contains("ym-hide-content"),
+    ),
+  ).toBe(true);
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  expect(
+    await page.evaluate(() =>
+      JSON.stringify({
+        local: { ...localStorage },
+        session: { ...sessionStorage },
+      }),
+    ),
+  ).not.toContain("ЛИЧНАЯ");
+  expect(page.url()).not.toContain(row.id);
+  expect(page.url()).not.toContain("ЛИЧНАЯ");
+  await history.screenshot({
+    path: info.outputPath("plan-history-comparison.png"),
+  });
+  await history
+    .getByRole("button", { name: "← В мой план", exact: true })
+    .click();
+  await expect(trigger).toBeFocused();
+  expect(reads[0]).toBe(null);
+  expect(reads.filter((value) => value !== null)).toEqual(["3"]);
+  expect(state.posts).toEqual([]);
+  expect(state.updates).toEqual([]);
+  expect(state.removes).toEqual([]);
+  expect(state.external).toBe(0);
+  expect(state.forbidden).toEqual([]);
+});
+
+test("a foreign history receipt clears the private view instead of showing another account's versions", async ({
+  page,
+  context,
+}) => {
+  const row = { ...item(), source: null };
+  await fixture(context, [row]);
+  await page.route("**/api/v1/personal-plan/*/history*", async (route) =>
+    route.fulfill({
+      json: {
+        userId: "202",
+        itemId: row.id,
+        currentRevision: 1,
+        entries: [
+          {
+            revision: 1,
+            title: "FOREIGN_PRIVATE_HISTORY",
+            details: "",
+            status: "pending",
+            checklist: [],
+            initialSnapshot: false,
+            recordedAt: stamp,
+          },
+        ],
+        nextBefore: null,
+      },
+    }),
+  );
+  await page.goto("/");
+  await openPlan(page);
+  await page
+    .getByRole("button", { name: "Что изменилось", exact: true })
+    .click();
+  await expect(
+    page.getByRole("region", { name: "История изменений шага", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByText("FOREIGN_PRIVATE_HISTORY", { exact: true }),
+  ).toHaveCount(0);
+});
 const planPanel = (page: Page) =>
   page.getByRole("region", { name: "Мой план переезда", exact: true });
 async function openPlan(page: Page) {

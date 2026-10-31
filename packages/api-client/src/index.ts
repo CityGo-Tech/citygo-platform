@@ -1,4 +1,12 @@
 import { personalPlanExportSchema } from "@citygo/contracts";
+export {
+  createPersonalPlanHistoryResource,
+  type PlanHistoryState,
+} from "./personal-plan-history-resource.js";
+import {
+  personalPlanHistoryPageSchema,
+  personalPlanHistoryQuerySchema,
+} from "@citygo/contracts";
 import {
   personalPlanIdSchema as checklistItemIdSchema,
   planChecklistSchema,
@@ -846,6 +854,29 @@ export function createClient(
       request("/v1/personal-plan/export", personalPlanExportSchema),
     personalPlanSummary: () =>
       request("/v1/personal-plan/summary", personalPlanSummarySchema),
+    personalPlanHistory: async (itemId: string, before?: number) => {
+      const id = personalPlanIdSchema.parse(itemId);
+      const query = personalPlanHistoryQuerySchema.parse({
+        before: before === undefined ? undefined : String(before),
+      });
+      const search =
+        query.before === undefined ? "" : "?before=" + query.before;
+      const value = await request(
+        "/v1/personal-plan/" + id + "/history" + search,
+        personalPlanHistoryPageSchema,
+      );
+      if (
+        value.itemId !== id ||
+        (query.before !== undefined &&
+          value.entries.some((entry) => entry.revision >= query.before!))
+      )
+        throw new ApiError(
+          0,
+          "История шага не соответствует запросу",
+          "invalid_response",
+        );
+      return value;
+    },
     createPersonalPlanItem: async (input: CreatePersonalPlanItem) => {
       const body = createPersonalPlanItemSchema.parse(input);
       const result = await request(

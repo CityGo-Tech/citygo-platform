@@ -76,6 +76,9 @@ grant update (code_hash,delivery,attempts,consumed_at,invalidated_at)
 -- Runtime may edit content/state or tombstone, never delete or rewrite identity.
 grant select, insert on personal_plan_items to citygo_api;
 grant select, insert on personal_plan_checklists to citygo_api;
+-- Saved states may only be appended to a private live step, never rewritten.
+grant select on personal_plan_item_history to citygo_api;
+grant insert(item_id,revision,title,details,status,checklist) on personal_plan_item_history to citygo_api;
 grant update (parent_revision,entries) on personal_plan_checklists to citygo_api;
 grant execute on function citygo_valid_plan_checklist(jsonb) to citygo_api;
 -- Human requests have immutable owner/body/replay identity; Worker has no access.

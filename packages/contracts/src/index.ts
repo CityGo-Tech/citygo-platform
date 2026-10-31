@@ -60,3 +60,4 @@ export type HealthResponse = z.infer<typeof healthResponseSchema>;
 export type RelocationStage = z.infer<typeof relocationStageSchema>;
 export * from "./plan-checklist.js";
 export * from "./personal-plan-export.js";
+export * from "./personal-plan-history.js";

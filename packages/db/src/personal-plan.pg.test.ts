@@ -8,6 +8,7 @@ import {
   connectDatabase,
   migrate,
   PersonalPlan,
+  PersonalPlanHistory,
   Repository,
   DomainError,
   type Database,
@@ -156,6 +157,30 @@ test(
         loser.reason.currentVersion === 2,
     );
     assert.equal((await store.create(owner, input)).item.revision, 2);
+    assert.deepEqual(
+      (await new PersonalPlanHistory(runtime).page(owner, id)).entries.map(
+        (entry) => entry.revision,
+      ),
+      [2, 1],
+    );
+    for (const statement of [
+      "update personal_plan_item_history set title=title",
+      "delete from personal_plan_item_history",
+      "insert into personal_plan_item_history(item_id,revision,title,details,status,checklist,initial_snapshot) values(" +
+        id +
+        ",3,'x','','pending','[]',true)",
+      "insert into personal_plan_item_history(item_id,revision,title,details,status,checklist,recorded_at) values(" +
+        id +
+        ",3,'x','','pending','[]',now())",
+    ])
+      await assert.rejects(runtime.query(statement), { code: "42501" });
+    await backend.transaction(async (tx) => {
+      await tx.exec(`set local role ${roles.citygo_worker}`);
+      await assert.rejects(
+        tx.query("select title from personal_plan_item_history"),
+        { code: "42501" },
+      );
+    });
     assert.deepEqual((await store.list(other)).items, []);
     const state = (await store.list(owner)).items[0]!;
     assert.deepEqual(await store.summary(owner), {
@@ -210,6 +235,10 @@ test(
       waiting,
       (error) => error instanceof DomainError && error.statusCode === 401,
     );
+    const historyRejected = assert.rejects(
+      new PersonalPlanHistory(runtime).page(owner, id),
+      (error) => error instanceof DomainError && error.statusCode === 401,
+    );
     try {
       const deadline = Date.now() + 5000;
       let sawWait = false;
@@ -232,6 +261,7 @@ test(
       release();
       await blocker;
       await rejected;
+      await historyRejected;
     }
     assert.equal((await store.list(owner)).items.length, 0);
     await backend.query("update users set status='active' where id=$1", [
@@ -380,7 +410,23 @@ test(
     assert.equal(exported.items.length, 1);
     assert.equal(exported.items[0]!.checklist[0]!.completed, true);
     assert.equal(exported.items[0]!.title, "Собственный шаг");
+    const history = await new PersonalPlanHistory(runtime).page(
+      other,
+      exportedItem.id,
+    );
+    assert.equal(history.entries[0]!.checklist[0]!.completed, true);
+    assert.equal(history.entries[1]!.checklist.length, 0);
+    assert.equal(history.entries[2]!.revision, 1);
     await backend.query("delete from messages where id=$1", [source]);
+    assert.equal(
+      (
+        await backend.query(
+          "select * from personal_plan_item_history where item_id=$1",
+          [id],
+        )
+      ).rows.length,
+      0,
+    );
     assert.equal(
       (await backend.query("select id from personal_plan_items")).rows.length,
       1,

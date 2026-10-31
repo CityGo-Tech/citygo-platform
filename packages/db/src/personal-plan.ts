@@ -16,6 +16,7 @@ import {
 } from "@citygo/contracts";
 import type { Database, Sql } from "./index.js";
 import { DomainError } from "./errors.js";
+import { recordPersonalPlanRevision } from "./personal-plan-history.js";
 
 const MAX_ACTIVE_ITEMS = 200;
 const fields = `p.id::text,p.title,p.details,p.status,p.revision::text,
@@ -198,6 +199,7 @@ export class PersonalPlan {
           ],
         )
       ).rows[0]!;
+      await recordPersonalPlanRevision(tx, created.id);
       const row = (
         await tx.query<Stored>(`select ${fields} ${ownedSource} and p.id=$2`, [
           userId,
@@ -233,6 +235,7 @@ export class PersonalPlan {
          where user_id=$1 and id=$2 and revision=$6 and deleted_at is null`,
         [userId, itemId, input.title, input.details, input.status, revision],
       );
+      await recordPersonalPlanRevision(tx, itemId);
       const row = (
         await tx.query<Stored>(`select ${fields} ${ownedSource} and p.id=$2`, [
           userId,

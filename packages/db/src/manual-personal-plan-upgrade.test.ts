@@ -4,11 +4,14 @@ import test from "node:test";
 import { randomUUID } from "node:crypto";
 import { connectDatabase, PersonalPlan, Repository } from "./index.js";
 import { applyFixtureMigration } from "./test-service-consents.js";
+import { seedLegacyPlan } from "./test-legacy-personal-plan.js";
 
 test("schema37 to38 retains sourced plan rows and all other data while allowing an explicit source-less step", async (t) => {
   const db = await connectDatabase("pglite://:memory:");
   t.after(() => db.close());
-  await db.exec("create table citygo_migrations(name text primary key,checksum text not null,applied_at timestamptz not null default now())");
+  await db.exec(
+    "create table citygo_migrations(name text primary key,checksum text not null,applied_at timestamptz not null default now())",
+  );
   const directory = new URL("../migrations/", import.meta.url);
   for (const name of (await readdir(directory))
     .filter(
@@ -33,7 +36,7 @@ test("schema37 to38 retains sourced plan rows and all other data while allowing 
     )
   ).rows[0]!.id;
   const store = new PersonalPlan(db);
-  const created = await store.create(userId, {
+  const created = await seedLegacyPlan(db, userId, {
     operationId: randomUUID(),
     sourceMessageId: messageId,
     title: "Исходный шаг",
@@ -49,7 +52,7 @@ test("schema37 to38 retains sourced plan rows and all other data while allowing 
   await applyFixtureMigration(db, "0038_manual_personal_plan.sql");
   assert.deepEqual(await rows(), before);
   assert.deepEqual((await store.list(userId)).items, [created.item]);
-  const manual = await store.create(userId, {
+  const manual = await seedLegacyPlan(db, userId, {
     operationId: randomUUID(),
     sourceMessageId: null,
     title: "Свой шаг",

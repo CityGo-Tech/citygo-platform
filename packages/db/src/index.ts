@@ -8,6 +8,7 @@ export {
   type CustomerObservabilityContext,
 } from "./customer-observability.js";
 export { PersonalPlan } from "./personal-plan.js";
+export { PersonalPlanHistory } from "./personal-plan-history.js";
 export { exportPersonalPlan } from "./personal-plan-export.js";
 export {
   HumanSupportRequests,

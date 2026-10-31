@@ -15,6 +15,7 @@ import {
   personalPlanItemResultSchema,
   personalPlanRemoveResultSchema,
   personalPlanSummarySchema,
+  personalPlanHistoryPageSchema,
 } from "@citygo/contracts";
 import { readConfig } from "@citygo/config";
 import type { StreamingProvider } from "@citygo/llm";
@@ -31,7 +32,10 @@ async function fixture(t: TestContext) {
       exec: (text) => sql.exec(text),
       query: async <T>(text: string, values?: unknown[]) => {
         const result = await sql.query<T>(text, values);
-        if (corruptStoredOutput && /from personal_plan_items\b/.test(text))
+        if (
+          corruptStoredOutput &&
+          /from personal_plan_(items|item_history)\b/.test(text)
+        )
           return {
             rows: result.rows.map((row) => ({ ...row, title: "" })) as T[],
           };
@@ -154,7 +158,7 @@ async function fixture(t: TestContext) {
   const legacySnapshot = async () => {
     const names = (
       await db.query<{ table_name: string }>(
-        "select table_name from information_schema.tables where table_schema='public' and table_type='BASE TABLE' and table_name<>'personal_plan_items' order by table_name",
+        "select table_name from information_schema.tables where table_schema='public' and table_type='BASE TABLE' and table_name not in ('personal_plan_items','personal_plan_item_history') order by table_name",
       )
     ).rows;
     const tables: Record<string, string[]> = {};
@@ -275,6 +279,59 @@ test("HTTP filtered plan and all-page summary require current ownership and excl
     401,
   );
   assert.equal(f.modelCalls(), 0);
+});
+
+test("HTTP saved history is owner-bound, strict, no-store and has no AI or financial side effects", async (t) => {
+  const f = await fixture(t);
+  const created = await f.call("POST", "/v1/personal-plan", f.create());
+  const item = personalPlanItemResultSchema.parse(created.json()).item;
+  await f.call("PATCH", "/v1/personal-plan/" + item.id, {
+    expectedRevision: 1,
+    title: "Обновлено",
+    details: "Точная запись",
+    status: "completed",
+  });
+  const path = "/v1/personal-plan/" + item.id + "/history";
+  const response = await f.call("GET", path);
+  assert.equal(response.statusCode, 200, response.body);
+  assert.equal(response.headers["cache-control"], "no-store");
+  const page = personalPlanHistoryPageSchema.parse(response.json());
+  assert.deepEqual(
+    page.entries.map((entry) => [entry.revision, entry.title, entry.status]),
+    [
+      [2, "Обновлено", "completed"],
+      [1, item.title, "pending"],
+    ],
+  );
+  assert.deepEqual(
+    (await f.call("GET", path + "?before=2"))
+      .json()
+      .entries.map((row: { revision: number }) => row.revision),
+    [1],
+  );
+  for (const query of [
+    "?before=01",
+    "?before=9007199254740992",
+    "?search=private",
+    "?before=2&before=1",
+  ])
+    assert.equal((await f.call("GET", path + query)).statusCode, 400);
+  assert.equal(
+    (await f.call("GET", path, undefined, f.otherToken)).statusCode,
+    404,
+  );
+  assert.equal((await f.call("GET", path, undefined, "")).statusCode, 401);
+  await f.call("DELETE", "/v1/personal-plan/" + item.id, {
+    expectedRevision: 2,
+  });
+  assert.equal((await f.call("GET", path)).statusCode, 404);
+  assert.equal(f.modelCalls(), 0);
+  for (const table of [
+    "ai_model_attempts",
+    "ai_credit_entries",
+    "payment_topup_orders",
+  ])
+    assert.equal((await f.db.query("select * from " + table)).rows.length, 0);
 });
 
 test("personal plan HTTP CRUD persists a private action and preserves all legacy, money and AI state", async (t) => {
@@ -609,10 +666,9 @@ test("personal plan HTTP enforces cookie origin and account/password/session gat
 
 test("personal plan corrupt stored output is a bounded generic server failure, not user validation", async (t) => {
   const f = await fixture(t);
-  assert.equal(
-    (await f.call("POST", "/v1/personal-plan", f.create())).statusCode,
-    200,
-  );
+  const created = await f.call("POST", "/v1/personal-plan", f.create());
+  assert.equal(created.statusCode, 200);
+  const id = created.json().item.id;
   f.corrupt();
   const reply = await f.call("GET", "/v1/personal-plan");
   assert.equal(reply.statusCode, 500, reply.body);
@@ -623,6 +679,12 @@ test("personal plan corrupt stored output is a bounded generic server failure, n
     /Zod|password|synthetic-hash|personal_plan_items/,
   );
   assert.equal(f.modelCalls(), 0);
+  const history = await f.call("GET", "/v1/personal-plan/" + id + "/history");
+  assert.equal(history.statusCode, 500, history.body);
+  assert.doesNotMatch(
+    history.body,
+    /Zod|password|synthetic|personal_plan|Сравнить/,
+  );
 });
 
 test("HTTP manual plan steps need an active owner, preserve null source and never call a model or alter money", async (t) => {
