@@ -3094,6 +3094,45 @@ test("trusted proxy clients have independent global, auth and chat rate limits",
   assert.equal((await request(chat, "198.51.100.6")).statusCode, 401);
 });
 
+test("IPv6 rotation cannot reset auth limits through trusted or direct ingress", async (t) => {
+  const f = await fixture(false, { TRUSTED_PROXY_CIDRS: "10.0.0.8/32" });
+  t.after(f.close);
+  let spoofedAddress = 0;
+  for (const viaProxy of [true, false]) {
+    const network = viaProxy ? 1 : 2;
+    const request = (client: string) =>
+      f.app.inject({
+        method: "POST",
+        url: "/v1/auth/login",
+        remoteAddress: viaProxy ? "10.0.0.8" : client,
+        headers: {
+          origin: "http://localhost:3000",
+          "x-forwarded-for": viaProxy
+            ? client
+            : `198.51.100.${++spoofedAddress}`,
+        },
+        payload: {},
+      });
+    for (let i = 1; i <= 10; i++) {
+      const reply = await request(`2001:db8:55:${network}::${i.toString(16)}`);
+      assert.equal(reply.statusCode, 400);
+    }
+    const limited = await request(`2001:db8:55:${network}::ff`);
+    assert.equal(limited.statusCode, 429);
+    assert.equal(limited.json().code, "RATE_LIMITED");
+    assert.ok(Number(limited.headers["retry-after"]) > 0);
+    assert.equal(
+      (await request(`2001:0db8:0055:000${network}:0000:0000:0000:00FF`))
+        .statusCode,
+      429,
+    );
+    assert.equal(
+      (await request(`2001:db8:55:${network + 10}::1`)).statusCode,
+      400,
+    );
+  }
+});
+
 test("untrusted direct clients cannot evade rate limits with forwarded headers", async (t) => {
   const f = await fixture(false, { TRUSTED_PROXY_CIDRS: "10.0.0.8/32" });
   t.after(f.close);
