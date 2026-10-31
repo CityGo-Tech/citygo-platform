@@ -300,11 +300,23 @@ test("an active favorite panel rejects another owner's page without rendering it
   });
   await page.goto("/");
   await page.getByRole("button", { name: "Избранное", exact: true }).click();
+  // A mismatched owner invalidates the private session rather than leaving
+  // another account's response in a recoverable panel.
   await expect(
-    page
-      .getByRole("region", { name: "Избранные сообщения", exact: true })
-      .getByRole("alert"),
-  ).toContainText("Не удалось обновить избранное");
+    page.getByRole("region", { name: "Избранные сообщения", exact: true }),
+  ).toHaveCount(0);
   await expect(page.getByText("FOREIGN PRIVATE MESSAGE")).toHaveCount(0);
+  await expect(page.getByRole("status")).toHaveText(
+    "Сессия завершилась. Войдите снова.",
+  );
+  await expect(
+    page.getByRole("button", { name: "Войти", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Создать аккаунт", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Избранное", exact: true }),
+  ).toHaveCount(0);
   expect(reads).toBe(1);
 });
