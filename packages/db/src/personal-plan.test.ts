@@ -513,3 +513,73 @@ test("manual steps persist without a message, replay independently, retain null 
   ])
     assert.equal(await count(f.db, table), 0, table);
 });
+
+test("personal plan search is literal across title/details before owner/status/keyset pagination and excludes tombstones", async (t) => {
+  const f = await fixture(t);
+  const found = [];
+  for (let n = 0; n < 46; n++) {
+    const created = (
+      await f.store.create(f.owner, {
+        ...f.input(),
+        title: n < 25 ? `Квартира %_\\ ${n}` : `Другое ${n}`,
+        details: n === 3 ? "Искомая Деталь" : "",
+      })
+    ).item;
+    found.push(created);
+  }
+  await f.store.update(f.owner, found[0]!.id, {
+    expectedRevision: 1,
+    title: found[0]!.title,
+    details: "",
+    status: "completed",
+  });
+  await f.store.remove(f.owner, found[1]!.id, 1);
+  await f.store.create(f.other, {
+    ...f.input(),
+    sourceMessageId: null,
+    title: "Квартира %_\\ чужая",
+  });
+  for (const search of ["%", "_", "\\", "квартира %_\\"]) {
+    const first = await f.store.list(f.owner, undefined, "pending", search);
+    assert.equal(first.items.length, 20, search);
+    assert.ok(first.nextBefore);
+    const second = await f.store.list(
+      f.owner,
+      first.nextBefore!,
+      "pending",
+      search,
+    );
+    assert.equal(second.items.length, 3, search);
+    assert.equal(second.nextBefore, null);
+    assert.equal(
+      new Set([...first.items, ...second.items].map((x) => x.id)).size,
+      23,
+    );
+    assert.ok(
+      [...first.items, ...second.items].every((x) =>
+        x.title.startsWith("Квартира"),
+      ),
+    );
+  }
+  assert.deepEqual(
+    (
+      await f.store.list(f.owner, undefined, undefined, "  искомая деталь  ")
+    ).items.map((x) => x.id),
+    [found[3]!.id],
+  );
+  assert.equal(
+    (await f.store.list(f.other, undefined, undefined, "квартира")).items
+      .length,
+    1,
+  );
+  assert.deepEqual(
+    (await f.store.list(f.owner, undefined, undefined, "%_не найдено")).items,
+    [],
+  );
+  assert.deepEqual(await f.store.summary(f.owner), {
+    userId: f.owner,
+    total: 45,
+    pending: 44,
+    completed: 1,
+  });
+});

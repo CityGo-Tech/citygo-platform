@@ -1,4 +1,5 @@
 import { ApiError } from "./transport.js";
+import { personalPlanSearchSchema } from "@citygo/contracts";
 import type {
   PersonalPlanItem,
   PersonalPlanItemResult,
@@ -13,6 +14,7 @@ export type PersonalPlanFilter = "all" | PersonalPlanStatus;
 export type PersonalPlanState = {
   phase: "loading" | "ready" | "error" | "closed";
   filter: PersonalPlanFilter;
+  search: string;
   items: readonly PersonalPlanItem[];
   nextBefore: string | null;
   summary: PersonalPlanSummary | null;
@@ -25,6 +27,7 @@ type Client = {
     before: string | undefined,
     status: PersonalPlanStatus | undefined,
     signal: AbortSignal,
+    search?: string,
   ) => Promise<PersonalPlanPage>;
   summary: (signal: AbortSignal) => Promise<PersonalPlanSummary>;
   update: (
@@ -55,6 +58,7 @@ export function createPersonalPlanResource({
   let state: PersonalPlanState = {
     phase: "loading",
     filter: "all",
+    search: "",
     items: [],
     nextBefore: null,
     summary: null,
@@ -86,6 +90,7 @@ export function createPersonalPlanResource({
     state = {
       ...state,
       phase: "closed",
+      search: "",
       items: [],
       nextBefore: null,
       summary: null,
@@ -149,7 +154,12 @@ export function createPersonalPlanResource({
     commit({ ...state, phase: "loading", error: "" });
     try {
       const [page, summary] = await Promise.all([
-        client.page(before, filter === "all" ? undefined : filter, signal),
+        client.page(
+          before,
+          filter === "all" ? undefined : filter,
+          signal,
+          state.search || undefined,
+        ),
         client.summary(signal),
       ]);
       if (!current() || !owner(page) || !owner(summary)) return;
@@ -206,7 +216,12 @@ export function createPersonalPlanResource({
       )
         throw new Error("Plan source changed");
       const [page, summary] = await Promise.all([
-        client.page(undefined, filter === "all" ? undefined : filter, signal),
+        client.page(
+          undefined,
+          filter === "all" ? undefined : filter,
+          signal,
+          state.search || undefined,
+        ),
         client.summary(signal),
       ]);
       if (!current() || !owner(page) || !owner(summary)) return false;
@@ -238,13 +253,27 @@ export function createPersonalPlanResource({
     load: () => read(),
     loadMore: () =>
       state.nextBefore ? read(state.nextBefore) : Promise.resolve(),
-    select(filter: PersonalPlanFilter) {
-      if (!active() || mutation || filter === state.filter)
+    select(filter: PersonalPlanFilter, rawSearch = state.search) {
+      if (!active() || mutation) return Promise.resolve();
+      const parsed = rawSearch.trim()
+        ? personalPlanSearchSchema.safeParse(rawSearch)
+        : null;
+      if (parsed && !parsed.success) {
+        commit({
+          ...state,
+          phase: "error",
+          error: "Поиск: до 160 символов, без управляющих знаков.",
+        });
+        return Promise.resolve();
+      }
+      const search = parsed?.data ?? "";
+      if (filter === state.filter && search === state.search)
         return Promise.resolve();
       request?.abort();
       commit({
         ...state,
         filter,
+        search,
         items: [],
         nextBefore: null,
         phase: "loading",

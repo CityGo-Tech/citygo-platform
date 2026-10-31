@@ -314,3 +314,34 @@ test("manual plan creation explicitly chooses no source and null receipts cannot
     false,
   );
 });
+
+test("personal plan search trims a bounded literal string without arrays, controls or malformed Unicode", () => {
+  assert.deepEqual(
+    personalPlanQuerySchema.parse({
+      search: "  Квартира %_\\  ",
+      status: "pending",
+    }),
+    { search: "Квартира %_\\", status: "pending" },
+  );
+  assert.equal(
+    personalPlanQuerySchema.safeParse({ search: "Я".repeat(160) }).success,
+    true,
+  );
+  for (const search of [
+    "",
+    "  ",
+    "x".repeat(161),
+    "x\0y",
+    "x\ny",
+    "x\u007fy",
+    "\ud800",
+    ["x"],
+    null,
+    3,
+  ])
+    assert.equal(
+      personalPlanQuerySchema.safeParse({ search }).success,
+      false,
+      String(search),
+    );
+});

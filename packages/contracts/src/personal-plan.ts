@@ -41,7 +41,23 @@ export const updatePersonalPlanItemSchema = z.strictObject({
 export const removePersonalPlanItemSchema = z.strictObject({
   expectedRevision: revision,
 });
+export const personalPlanSearchSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(160)
+  .refine(
+    (value) =>
+      Array.from(value).every((point) => {
+        const code = point.codePointAt(0)!;
+        return (
+          code >= 32 && code !== 127 && !(code >= 0xd800 && code <= 0xdfff)
+        );
+      }),
+    { message: "Проверьте поисковую строку" },
+  );
 export const personalPlanQuerySchema = z.strictObject({
+  search: personalPlanSearchSchema.optional(),
   before: personalPlanIdSchema.optional(),
   status: personalPlanStatusSchema.optional(),
 });

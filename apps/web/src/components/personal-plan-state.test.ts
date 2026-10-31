@@ -27,16 +27,25 @@ function setup() {
     before?: string;
     status?: PersonalPlanStatus;
     signal: AbortSignal;
+    search?: string;
   }[] = [];
   let denied = 0,
     changes = 0,
     responseOwner = "1",
     failMutation = false;
-  const page = (before?: string, status?: PersonalPlanStatus) => {
+  const page = (
+    before?: string,
+    status?: PersonalPlanStatus,
+    search?: string,
+  ) => {
     const matching = rows.filter(
       (item) =>
         (!before || BigInt(item.id) < BigInt(before)) &&
-        (!status || item.status === status),
+        (!status || item.status === status) &&
+        (!search ||
+          (item.title + "\n" + item.details)
+            .toLowerCase()
+            .includes(search.toLowerCase())),
     );
     return {
       userId: "1",
@@ -49,9 +58,10 @@ function setup() {
       before: string | undefined,
       status: PersonalPlanStatus | undefined,
       signal: AbortSignal,
+      search?: string,
     ) => {
-      reads.push({ before, status, signal });
-      return page(before, status);
+      reads.push({ before, status, signal, search });
+      return page(before, status, search);
     },
     summary: async () => ({
       userId: responseOwner,
@@ -207,4 +217,54 @@ test("owner session abort clears counts and a late page cannot repaint the previ
   assert.equal(s.resource.snapshot().phase, "closed");
   assert.equal(s.resource.snapshot().summary, null);
   assert.deepEqual(s.resource.snapshot().items, []);
+});
+
+test("plan search replaces old pagination, ignores a late result, survives status selection and resets both conditions", async () => {
+  const s = setup();
+  await s.resource.load();
+  const old = deferred<ReturnType<typeof s.page>>();
+  const original = s.client.page;
+  s.client.page = async (before, status, signal, search) =>
+    before
+      ? (s.reads.push({ before, status, signal, search }), old.promise)
+      : original(before, status, signal, search);
+  const loading = s.resource.loadMore();
+  const signal = s.reads.at(-1)!.signal;
+  await s.resource.select("all", "  Шаг 2  ");
+  assert.equal(signal.aborted, true);
+  assert.equal(s.reads.at(-1)!.search, "Шаг 2");
+  assert.equal(s.resource.snapshot().search, "Шаг 2");
+  assert.equal(s.resource.snapshot().nextBefore, null);
+  const matching = s.resource.snapshot().items.map((x) => x.id);
+  old.resolve(s.page());
+  await loading;
+  assert.deepEqual(
+    s.resource.snapshot().items.map((x) => x.id),
+    matching,
+  );
+  await s.resource.select("pending");
+  assert.equal(s.reads.at(-1)!.search, "Шаг 2");
+  assert.ok(s.resource.snapshot().items.every((x) => x.status === "pending"));
+  const first = s.resource.snapshot().items[0]!;
+  await s.resource.update(first, {
+    expectedRevision: 1,
+    title: first.title,
+    details: "",
+    status: "completed",
+  });
+  assert.equal(s.reads.at(-1)!.search, "Шаг 2");
+  await s.resource.select("all", "");
+  assert.equal(s.reads.at(-1)!.search, undefined);
+  assert.equal(s.resource.snapshot().search, "");
+  assert.equal(s.resource.snapshot().items.length, 20);
+  s.session.abort();
+  assert.equal(s.resource.snapshot().search, "");
+});
+test("invalid plan search is a local validation failure and cannot issue a request", async () => {
+  const s = setup();
+  await s.resource.load();
+  const reads = s.reads.length;
+  await s.resource.select("all", "x\0y");
+  assert.equal(s.reads.length, reads);
+  assert.match(s.resource.snapshot().error, /160/);
 });

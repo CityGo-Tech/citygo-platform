@@ -246,6 +246,17 @@ export function PersonalPlanPanel({
     state: PersonalPlanState;
   } | null>(null);
   const [creating, setCreating] = useState(false);
+  const [searchInput, setSearchInput] = useState({
+    owner: userId,
+    signal: sessionSignal,
+    value: "",
+  });
+  const searchDraft =
+    searchInput.owner === userId && searchInput.signal === sessionSignal
+      ? searchInput.value
+      : "";
+  const setSearchDraft = (value: string) =>
+    setSearchInput({ owner: userId, signal: sessionSignal, value });
   const [editing, setEditing] = useState<PersonalPlanItem | null>(null);
   const [fields, setFields] = useState<StepFields>({ title: "", details: "" });
   const [removing, setRemoving] = useState<PersonalPlanItem | null>(null);
@@ -260,6 +271,7 @@ export function PersonalPlanPanel({
 
   useEffect(() => {
     setCreating(false);
+    setSearchDraft("");
     setEditing(null);
     setRemoving(null);
     setSource(null);
@@ -272,8 +284,8 @@ export function PersonalPlanPanel({
       userId,
       sessionSignal: signal,
       client: {
-        page: (before, status, requestSignal) =>
-          api(requestSignal).personalPlan(before, status),
+        page: (before, status, requestSignal, search) =>
+          api(requestSignal).personalPlan(before, status, search),
         summary: (requestSignal) => api(requestSignal).personalPlanSummary(),
         update: (item, value, requestSignal) =>
           api(requestSignal).updatePersonalPlanItem(item.id, value),
@@ -303,6 +315,7 @@ export function PersonalPlanPanel({
   const summary = current?.summary ?? null;
   const nextBefore = current?.nextBefore ?? null;
   const filter = current?.filter ?? "all";
+  const search = current?.search ?? "";
   const busy = !current || current.phase === "loading" || current.mutating;
   const error = current?.error ?? "";
   const needsRefresh = current?.needsRefresh ?? false;
@@ -389,8 +402,11 @@ export function PersonalPlanPanel({
           source={null}
           onSaved={() => {
             setCreating(false);
-            if (filter === "all") void actions?.load();
-            else void actions?.select("all");
+            if (filter === "all" && !search) void actions?.load();
+            else {
+              setSearchDraft("");
+              void actions?.select("all", "");
+            }
           }}
           onCancel={(checkPlan) => {
             setCreating(false);
@@ -434,6 +450,49 @@ export function PersonalPlanPanel({
           />
         </div>
       )}
+      <form
+        className={styles.search + " ym-hide-content"}
+        role="search"
+        aria-label="Поиск в моём плане"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (current?.mutating || navigationBusy || !actions) return;
+          setEditing(null);
+          setRemoving(null);
+          void actions.select(filter, searchDraft);
+        }}
+      >
+        <Field
+          label="Найти шаг"
+          className="ym-disable-keys"
+          type="search"
+          maxLength={160}
+          value={searchDraft}
+          disabled={navigationBusy || current?.mutating || !actions}
+          onChange={(event) => setSearchDraft(event.target.value)}
+        />
+        <div className={styles.actions}>
+          <Button
+            type="submit"
+            disabled={navigationBusy || current?.mutating || !actions}
+          >
+            Найти
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            disabled={navigationBusy || current?.mutating || !actions}
+            onClick={() => {
+              setSearchDraft("");
+              setEditing(null);
+              setRemoving(null);
+              void actions?.select("all", "");
+            }}
+          >
+            Сбросить
+          </Button>
+        </div>
+      </form>
       <nav className={styles.filters} aria-label="Статус шагов плана">
         {(
           [
@@ -486,16 +545,26 @@ export function PersonalPlanPanel({
         summary.total > 0 && (
           <div className={styles.empty}>
             <h2>
-              {filter === "completed"
-                ? "Выполненных шагов пока нет"
-                : "Нет шагов в работе"}
+              {search
+                ? "Шаги не найдены"
+                : filter === "completed"
+                  ? "Выполненных шагов пока нет"
+                  : "Нет шагов в работе"}
             </h2>
             <p>
-              {filter === "completed"
-                ? "Отметьте готовый шаг — он появится здесь."
-                : "Вы завершили все сохранённые шаги."}
+              {search
+                ? "Измените поиск или сбросьте условия."
+                : filter === "completed"
+                  ? "Отметьте готовый шаг — он появится здесь."
+                  : "Вы завершили все сохранённые шаги."}
             </p>
-            <Button variant="secondary" onClick={() => selectFilter("all")}>
+            <Button
+              variant="secondary"
+              onClick={() => {
+                setSearchDraft("");
+                void actions?.select("all", "");
+              }}
+            >
               Показать все шаги
             </Button>
           </div>
