@@ -443,6 +443,21 @@ export function ConversationHome(props: JourneyProps) {
                   <label htmlFor="conversation-message">
                     Сообщение помощнику
                   </label>
+                  {props.draftRecovered && (
+                    <div className="conversation-notice" role="status">
+                      <p>
+                        Восстановлен неотправленный текст. Проверьте его перед
+                        отправкой.
+                      </p>
+                      <Button
+                        variant="ghost"
+                        type="button"
+                        onClick={props.onDiscardDraft}
+                      >
+                        Удалить черновик
+                      </Button>
+                    </div>
+                  )}
                   <textarea
                     className="ym-disable-keys ym-hide-content"
                     id="conversation-message"

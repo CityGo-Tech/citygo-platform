@@ -47,6 +47,8 @@ export type JourneyProps = {
   pending: string;
   streamAgent: AgentKey | null;
   text: string;
+  draftRecovered?: boolean;
+  onDiscardDraft?: () => void;
   onText: (value: string) => void;
   onChat: (event: FormEvent) => void;
   onStop: () => void;
@@ -517,6 +519,21 @@ export function Journey(props: JourneyProps) {
               <label className="sr-only" htmlFor="journey-message">
                 Сообщение помощнику
               </label>
+              {props.draftRecovered && (
+                <div role="status">
+                  <p>
+                    Восстановлен неотправленный текст. Проверьте его перед
+                    отправкой.
+                  </p>
+                  <Button
+                    variant="ghost"
+                    type="button"
+                    onClick={props.onDiscardDraft}
+                  >
+                    Удалить черновик
+                  </Button>
+                </div>
+              )}
               <textarea
                 ref={composer}
                 id="journey-message"
