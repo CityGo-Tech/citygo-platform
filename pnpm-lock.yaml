@@ -7,7 +7,7 @@ settings:
 overrides:
   fast-uri@3: 3.1.9
   fast-uri@4: 4.2.3
-  postcss@8: 8.5.23
+  postcss@>=8.0.0 <8.5.23: 8.5.23
   shell-quote@1: 1.12.0
 
 importers:
