@@ -8,6 +8,7 @@ import type { AccountResetBlocker } from "./account-reset.js";
 const tables = [
   "human_support_requests",
   "human_support_replies",
+  "human_support_reads",
   "service_consent_events",
   "personal_plan_checklists",
   "personal_plan_item_history",
@@ -85,6 +86,7 @@ const tables = [
 const retainedTables = [
   "human_support_requests",
   "human_support_replies",
+  "human_support_reads",
   "service_consent_events",
   "personal_plan_checklists",
   "personal_plan_item_history",

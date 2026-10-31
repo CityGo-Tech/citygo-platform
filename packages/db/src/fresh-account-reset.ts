@@ -8,6 +8,7 @@ import { DomainError } from "./errors.js";
 const tables = [
   "human_support_requests",
   "human_support_replies",
+  "human_support_reads",
   "service_consent_events",
   "personal_plan_checklists",
   "personal_plan_item_history",
@@ -114,6 +115,7 @@ const protectedAdmission = [
 const protectedEmpty = [
   "human_support_requests",
   "human_support_replies",
+  "human_support_reads",
   // User-chosen steps and their tombstones need a separate erasure review.
   "personal_plan_checklists",
   "personal_plan_item_history",

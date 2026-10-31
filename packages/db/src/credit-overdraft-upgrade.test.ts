@@ -74,7 +74,7 @@ async function fixture(t: TestContext) {
   const names = (await readdir(directory))
     .filter((n) => n.endsWith(".sql"))
     .sort();
-  assert.equal(names.length, 41, "Update the literal schema23 upgrade fixture");
+  assert.equal(names.length, 42, "Update the literal schema23 upgrade fixture");
   assert.equal(names[22], "0023_payment_receipt_snapshots.sql");
   assert.equal(names[23], "0024_ai_credit_overdraft.sql");
   assert.equal(names[24], "0025_assistant_conversations.sql");
