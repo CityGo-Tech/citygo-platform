@@ -12,7 +12,7 @@ const composer = (page: Page) =>
 const sourceArticle = (page: Page) =>
   page.getByRole("log").locator("article").filter({ hasText: sourceText });
 
-async function fixture(context: BrowserContext) {
+async function fixture(context: BrowserContext, paginated = false) {
   let releaseStart!: () => void;
   const gate = new Promise<void>((resolve) => {
     releaseStart = resolve;
@@ -20,6 +20,7 @@ async function fixture(context: BrowserContext) {
   const state = {
     owner: "101",
     starts: [] as AgentKey[],
+    historyReads: [] as string[],
     sends: 0,
     external: 0,
     failingRead: false,
@@ -27,7 +28,7 @@ async function fixture(context: BrowserContext) {
     releaseStart,
     unexpected: [] as string[],
   };
-  const messages: Message[] = [
+  const recentMessages: Message[] = [
     {
       id: "200",
       role: "user",
@@ -50,6 +51,22 @@ async function fixture(context: BrowserContext) {
       content: "ПРЕРВАННЫЙ_ОТВЕТ",
     },
   ];
+  const messages: Message[] = paginated
+    ? Array.from({ length: 100 }, (_, index) => ({
+        id: String(200 + index),
+        role: index % 2 ? "assistant" : "user",
+        agentKey: "housing",
+        status: "complete",
+        content: `Последняя страница: сообщение ${200 + index}`,
+      }))
+    : recentMessages;
+  const olderMessage: Message = {
+    id: "199",
+    role: "assistant",
+    agentKey: "housing",
+    status: "complete",
+    content: sourceText,
+  };
   const thread = (id: string): NonNullable<Dashboard["thread"]> =>
     id === "21"
       ? {
@@ -190,6 +207,23 @@ async function fixture(context: BrowserContext) {
         },
       });
     }
+    if (
+      path === "/api/v1/conversations/20/messages" &&
+      request.method() === "GET" &&
+      paginated
+    ) {
+      const before = url.searchParams.get("before");
+      state.historyReads.push("20:" + before);
+      expect(before).toBe("200");
+      return route.fulfill({
+        json: {
+          userId: state.owner,
+          threadId: "20",
+          messages: [olderMessage],
+          nextCursor: null,
+        },
+      });
+    }
     const read = path.match(/^\/api\/v1\/conversations\/(20|21|30)$/);
     if (read) {
       if (read[1] === "21" && state.failingRead)
@@ -302,6 +336,57 @@ test("reviewed handoff appends to target draft, preserves both histories and ori
   expect(state.unexpected).toEqual([]);
 });
 
+test("handoff from a loaded older page keeps the authorized source and appends to the target draft without sending", async ({
+  page,
+  context,
+}) => {
+  const state = await fixture(context, true);
+  await page.addInitScript(
+    (text) =>
+      sessionStorage.getItem("citygo:chat-draft:v1:101:21") === null &&
+      sessionStorage.setItem(
+        "citygo:chat-draft:v1:101:21",
+        JSON.stringify({ text, savedAt: Date.now() }),
+      ),
+    targetDraft,
+  );
+  await page.goto("/");
+  await composer(page).fill(sourceDraft);
+  await expect(sourceArticle(page)).toHaveCount(0);
+  await page
+    .getByRole("button", { name: "Загрузить ранние сообщения", exact: true })
+    .click();
+  await expect(sourceArticle(page)).toHaveCount(1);
+  expect(state.historyReads).toEqual(["20:200"]);
+  await openReview(page);
+  await expect(page.getByLabel("Что передаём", { exact: true })).toHaveValue(
+    sourceText,
+  );
+  await page.getByLabel("Что передаём", { exact: true }).fill(reviewed);
+  await page
+    .getByRole("button", { name: "Подготовить разговор", exact: true })
+    .click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(composer(page)).toHaveValue(targetDraft + "\n\n" + reviewed);
+  await expect(page.getByRole("log")).toContainText(
+    "ПРЕЖНИЙ_РАЗГОВОР_ПО_РЕЗЮМЕ",
+  );
+  await expect(page.getByRole("log")).not.toContainText(sourceText);
+  expect(
+    await page.evaluate(
+      () =>
+        JSON.parse(sessionStorage.getItem("citygo:chat-draft:v1:101:20")!)
+          .text as string,
+    ),
+  ).toBe(sourceDraft);
+  await page.reload();
+  await expect(composer(page)).toHaveValue(targetDraft + "\n\n" + reviewed);
+  expect(state.starts).toEqual(["resume-builder"]);
+  expect(state.sends).toBe(0);
+  expect(state.external).toBe(0);
+  expect(state.unexpected).toEqual([]);
+});
+
 test("cancel keeps source and draft; interrupted replies have no transfer action", async ({
   page,
   context,
@@ -389,12 +474,16 @@ test("one pending preparation freezes review and blocks cancellation or duplicat
   expect(state.unexpected).toEqual([]);
 });
 
-test("owner change clears review and never routes old personal text to another account", async ({
+test("owner change clears an older-page review and never routes old personal text to another account", async ({
   page,
   context,
 }) => {
-  const state = await fixture(context);
+  const state = await fixture(context, true);
   await page.goto("/");
+  await page
+    .getByRole("button", { name: "Загрузить ранние сообщения", exact: true })
+    .click();
+  await expect(sourceArticle(page)).toHaveCount(1);
   await openReview(page);
   await page
     .getByLabel("Что передаём", { exact: true })

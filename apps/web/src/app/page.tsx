@@ -420,7 +420,9 @@ export default function Home() {
         !assistantHandoffTarget(handoff.source, handoff.target) ||
         !currentAssistantHandoffSource(
           handoff.source,
-          board,
+          // The displayed history includes authorized older pages. The hook
+          // binds this projection to the current owner, thread and session.
+          history.board ?? board,
           session.capture().signal,
         ))
     )
