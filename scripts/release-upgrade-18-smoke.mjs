@@ -1,4 +1,4 @@
-// Synthetic-only 18→40 rehearsal for the disposable pilot harness, while its
+// Synthetic-only 18→41 rehearsal for the disposable pilot harness, while its
 // PostgreSQL container is the sole project member. Never a production rollback
 // or migration tool; a successful receipt cannot authorize public traffic.
 import assert from "node:assert/strict";
@@ -142,6 +142,13 @@ export function upgrade18RewindSql() {
     drop function citygo_guard_human_support_reply();
     drop table human_support_requests;
     drop function citygo_guard_human_support_request();
+    do $$ begin
+      if exists(select 1 from personal_plan_item_history) then
+        raise exception 'Personal plan snapshots cannot be rewound';
+      end if;
+    end $$;
+    drop table personal_plan_item_history;
+    drop function citygo_guard_personal_plan_history();
     drop table personal_plan_checklists;
     drop function citygo_guard_plan_checklist();
     drop function citygo_valid_plan_checklist(jsonb);
@@ -223,7 +230,7 @@ export function upgrade18RewindSql() {
     alter table payment_topup_orders add constraint payment_topup_orders_test_check check(test);
     ${legacyFunction}
     delete from citygo_migrations where name in (
-      '0019_yookassa_live_orders.sql','0020_ai_budget_provider_balance.sql','0021_payment_notifications.sql','0022_payment_admission.sql','0023_payment_receipt_snapshots.sql','0024_ai_credit_overdraft.sql','0025_assistant_conversations.sql','0026_email_registration.sql','0027_phone_verification.sql','0028_password_recovery.sql','0029_personal_plan.sql','0030_service_consents.sql','0031_account_email_confirmation.sql','0032_phone_contact_bindings.sql','0033_ai_request_modes.sql','0034_gigachat_request_fees.sql','0035_ai_request_consent_bases.sql','0036_protected_phone_contacts.sql','0037_human_support_requests.sql','0038_manual_personal_plan.sql','0039_plan_checklists.sql','0040_human_support_replies.sql');
+      '0019_yookassa_live_orders.sql','0020_ai_budget_provider_balance.sql','0021_payment_notifications.sql','0022_payment_admission.sql','0023_payment_receipt_snapshots.sql','0024_ai_credit_overdraft.sql','0025_assistant_conversations.sql','0026_email_registration.sql','0027_phone_verification.sql','0028_password_recovery.sql','0029_personal_plan.sql','0030_service_consents.sql','0031_account_email_confirmation.sql','0032_phone_contact_bindings.sql','0033_ai_request_modes.sql','0034_gigachat_request_fees.sql','0035_ai_request_consent_bases.sql','0036_protected_phone_contacts.sql','0037_human_support_requests.sql','0038_manual_personal_plan.sql','0039_plan_checklists.sql','0040_human_support_replies.sql','0041_personal_plan_history.sql');
     commit`;
 }
 
@@ -421,6 +428,7 @@ export async function releaseUpgrade18Smoke({
       "0038_manual_personal_plan.sql",
       "0039_plan_checklists.sql",
       "0040_human_support_replies.sql",
+      "0041_personal_plan_history.sql",
     ],
   );
   const expectedJournal = migrations.map(({ name }) => ({
@@ -609,6 +617,6 @@ export async function releaseUpgrade18Smoke({
   );
   assert.deepEqual(journal(), expectedJournal);
   console.log(
-    "Exact synthetic 18→40 rehearsal passed: twenty-two migrations + ACLs, late-ACL transactional rollback, preserved legacy conversation/fixed budget/counters/test order/source hold and receipt-free v1 identity; empty pending-email/contact schema and unbound phone policy, least-privilege runtime, closed checkout, no production authorization or provider calls",
+    "Exact synthetic 18→41 rehearsal passed: current migrations + ACLs, late-ACL transactional rollback, preserved legacy conversation/fixed budget/counters/test order/source hold and receipt-free v1 identity; empty pending-email/contact schema and unbound phone policy, least-privilege runtime, closed checkout, no production authorization or provider calls",
   );
 }
