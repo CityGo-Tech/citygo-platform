@@ -17,7 +17,7 @@
   },
   "dependencies": {
     "@citygo/contracts": "workspace:*",
-    "@fastify/cors": "^11.1.0",
+    "@fastify/cors": "^11.3.1",
     "fastify": "^5.12.7",
     "zod": "^4.6.7",
     "@citygo/db": "workspace:*",
@@ -25,7 +25,7 @@
     "@citygo/agents": "workspace:*",
     "@citygo/llm": "workspace:*",
     "@citygo/observability": "workspace:*",
-    "@fastify/cookie": "^11.0.2",
+    "@fastify/cookie": "^11.1.5",
     "@fastify/rate-limit": "^10.3.0"
   },
   "devDependencies": {
