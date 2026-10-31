@@ -206,3 +206,96 @@ test("favorite byte pagination preserves full escaped Unicode text without skipp
     assert.ok(page.messages.every((message) => message.content === content));
   }
 });
+
+test("favorite literal text and assistant/role filters apply before keyset pagination without source or money writes", async (t) => {
+  const db = await connectDatabase("pglite://:memory:");
+  t.after(() => db.close());
+  await migrate(db);
+  const repo = new Repository(db);
+  const owner = await repo.register("filtered@example.test", "synthetic");
+  const other = await repo.register("filtered-other@example.test", "synthetic");
+  const thread = (
+    await db.query<{ id: string }>(
+      "insert into agent_threads(user_id,agent_key) values($1,'support') returning id::text",
+      [owner],
+    )
+  ).rows[0]!.id;
+  const foreign = (
+    await db.query<{ id: string }>(
+      "insert into agent_threads(user_id,agent_key) values($1,'support') returning id::text",
+      [other],
+    )
+  ).rows[0]!.id;
+  const metadata = JSON.stringify({
+    citygoFavorite: true,
+    agentKey: "support",
+    status: "complete",
+  });
+  for (let n = 0; n < 25; n++)
+    await db.query(
+      "insert into messages(thread_id,role,content,metadata) values($1,'assistant',$2,$3)",
+      [thread, "Москва 50%_\\path " + n, metadata],
+    );
+  for (let n = 0; n < 25; n++)
+    await db.query(
+      "insert into messages(thread_id,role,content,metadata) values($1,'user','unrelated',$2)",
+      [thread, metadata],
+    );
+  await db.query(
+    "insert into messages(thread_id,role,content,metadata) values($1,'assistant','Москва 50%_\\path FOREIGN',$2)",
+    [foreign, metadata],
+  );
+  await db.query(
+    "insert into messages(thread_id,role,content,metadata) values($1,'assistant','Москва 50%_\\path OTHER AGENT',$2)",
+    [
+      thread,
+      JSON.stringify({
+        citygoFavorite: true,
+        agentKey: "housing",
+        status: "complete",
+      }),
+    ],
+  );
+  const store = new MessageFavorites(db);
+  const filters = {
+    search: "МОСКВА 50%_\\path",
+    assistantKey: "support" as const,
+    role: "assistant" as const,
+  };
+  const first = await store.list(owner, undefined, filters);
+  assert.equal(first.messages.length, 20);
+  const second = await store.list(owner, first.nextBefore!, filters);
+  assert.equal(second.messages.length, 5);
+  assert.equal(second.nextBefore, null);
+  assert.equal(
+    new Set([...first.messages, ...second.messages].map((m) => m.id)).size,
+    25,
+  );
+  assert.ok(
+    [...first.messages, ...second.messages].every(
+      (m) =>
+        m.role === "assistant" &&
+        m.agentKey === "support" &&
+        !m.content.includes("FOREIGN"),
+    ),
+  );
+  assert.equal(
+    (await store.list(owner, undefined, { search: "%_\\" })).messages.length,
+    20,
+  );
+  assert.equal(
+    (await store.list(owner, undefined, { search: "NOT PRESENT%" })).messages
+      .length,
+    0,
+  );
+  assert.equal(
+    (await store.list(owner, undefined, { role: "user" })).messages.length,
+    20,
+  );
+  for (const table of [
+    "ai_model_attempts",
+    "ai_credit_entries",
+    "payment_topup_orders",
+  ])
+    assert.equal((await db.query("select 1 from " + table)).rows.length, 0);
+});

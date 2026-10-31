@@ -74,6 +74,8 @@ import {
   setMessageFavoriteSchema,
   messageFavoriteResultSchema,
   favoriteMessagesPageSchema,
+  favoriteMessagesQuerySchema,
+  type FavoriteMessageFilters,
   personalPlanIdSchema,
   personalPlanQuerySchema,
   createPersonalPlanItemSchema,
@@ -902,14 +904,22 @@ export function createClient(
         );
       return result;
     },
-    favoriteMessages: async (before?: string) =>
-      request(
-        "/v1/messages/favorites" +
-          (before !== undefined
-            ? "?before=" + messageIdSchema.parse(before)
-            : ""),
+    favoriteMessages: async (
+      before?: string,
+      filters: FavoriteMessageFilters = {},
+    ) => {
+      const value = favoriteMessagesQuerySchema.parse({ ...filters, before });
+      const query = new URLSearchParams();
+      if (value.before !== undefined) query.set("before", value.before);
+      if (value.search !== undefined) query.set("search", value.search);
+      if (value.assistantKey !== undefined)
+        query.set("assistantKey", value.assistantKey);
+      if (value.role !== undefined) query.set("role", value.role);
+      return request(
+        "/v1/messages/favorites" + (query.size ? "?" + query.toString() : ""),
         favoriteMessagesPageSchema,
-      ),
+      );
+    },
     setMessageFavorite: async (messageId: string, saved: boolean) => {
       messageIdSchema.parse(messageId);
       setMessageFavoriteSchema.parse({ saved });

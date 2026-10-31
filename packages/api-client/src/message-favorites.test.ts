@@ -58,3 +58,33 @@ test("favorite pages validate schema and use exact keyset IDs without retries", 
   await assert.rejects(client.favoriteMessages(""));
   assert.equal(calls.length, 1);
 });
+
+test("favorite client encodes literal search and validates filters before a single read", async () => {
+  const calls: string[] = [];
+  const client = createClient("http://synthetic", {
+    fetch: async (url) => {
+      calls.push(String(url));
+      return Response.json(
+        { userId: "1", messages: [], nextBefore: null },
+        { headers: { [CONTRACT_VERSION_HEADER]: "1" } },
+      );
+    },
+  });
+  await client.favoriteMessages("9007199254740993", {
+    search: "50%_\\path & Москва",
+    assistantKey: "support",
+    role: "assistant",
+  });
+  const url = new URL(calls[0]!);
+  assert.deepEqual(Object.fromEntries(url.searchParams), {
+    before: "9007199254740993",
+    search: "50%_\\path & Москва",
+    assistantKey: "support",
+    role: "assistant",
+  });
+  await assert.rejects(client.favoriteMessages(undefined, { search: " " }));
+  await assert.rejects(
+    client.favoriteMessages(undefined, { role: "system" } as never),
+  );
+  assert.equal(calls.length, 1);
+});

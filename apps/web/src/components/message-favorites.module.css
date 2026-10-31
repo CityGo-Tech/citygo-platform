@@ -1,0 +1,19 @@
+.filters {
+  display: grid;
+  gap: var(--cg-space-md);
+  min-width: 0;
+}
+.actions {
+  display: flex;
+  gap: var(--cg-space-compact);
+  flex-wrap: wrap;
+}
+@media (min-width: 720px) {
+  .filters {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .filters > :first-child,
+  .actions {
+    grid-column: 1 / -1;
+  }
+}

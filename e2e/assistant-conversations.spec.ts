@@ -299,11 +299,15 @@ async function install(context: BrowserContext, withProfile = false) {
       return;
     }
     if (path === "/api/v1/messages/favorites" && request.method() === "GET") {
-      const saved = [...threads.values()].flatMap((thread) =>
-        thread.messages
-          .filter((message) => message.favorite)
-          .map((message) => ({ ...message, threadId: thread.id })),
-      );
+      // Match the real MessageFavorites query: original numeric message ID
+      // descending across every thread, never thread insertion order.
+      const saved = [...threads.values()]
+        .flatMap((thread) =>
+          thread.messages
+            .filter((message) => message.favorite)
+            .map((message) => ({ ...message, threadId: thread.id })),
+        )
+        .sort((a, b) => (BigInt(a.id) > BigInt(b.id) ? -1 : 1));
       return route.fulfill({
         json: {
           userId: state.owner,
@@ -412,6 +416,15 @@ test("each helper opens an independent conversation without auto-send; history a
   });
   await expect(favorites).toContainText("ТОЛЬКО_ЖИЛЬЁ");
   await expect(favorites).toContainText("ТОЛЬКО_РАБОТА");
+  await expect(favorites.getByRole("article")).toHaveCount(2);
+  await expect(favorites.getByRole("article").first()).toHaveAttribute(
+    "aria-label",
+    "Сохранённое сообщение 301",
+  );
+  await expect(favorites.getByRole("article").last()).toHaveAttribute(
+    "aria-label",
+    "Сохранённое сообщение 201",
+  );
   await favorites
     .getByRole("button", { name: "← В приложение", exact: true })
     .click();

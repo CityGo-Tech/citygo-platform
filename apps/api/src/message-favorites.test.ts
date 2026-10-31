@@ -141,6 +141,45 @@ test("favorite HTTP endpoints use only the current owner, reject forgery and nev
       .statusCode,
     400,
   );
+  for (const query of [
+    "search=Keep&assistantKey=support&role=user",
+    "search=keep",
+  ]) {
+    const response = await call(
+      "GET",
+      "/v1/messages/favorites?" + query,
+      tokens[0],
+    );
+    assert.equal(response.statusCode, 200, response.body);
+    assert.equal(response.json().messages[0]?.id, id);
+  }
+  for (const query of [
+    "search=absent",
+    "assistantKey=housing",
+    "role=assistant",
+  ]) {
+    const response = await call(
+      "GET",
+      "/v1/messages/favorites?" + query,
+      tokens[0],
+    );
+    assert.equal(response.statusCode, 200, response.body);
+    assert.deepEqual(response.json().messages, []);
+  }
+  for (const query of [
+    "search=%20",
+    "search=a&search=b",
+    "role=system",
+    "assistantKey=nope",
+    "search=%00",
+    "before=1%0A",
+  ])
+    assert.equal(
+      (await call("GET", "/v1/messages/favorites?" + query, tokens[0]))
+        .statusCode,
+      400,
+      query,
+    );
   const csrf = await app.inject({
     method: "POST",
     url: path,
