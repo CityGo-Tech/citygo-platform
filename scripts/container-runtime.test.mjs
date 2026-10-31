@@ -26,6 +26,30 @@ test("production container smoke expects the complete checked-in migration inven
   const expected = /assert\.equal\(migrations, "(\d+)"\)/.exec(smoke);
   assert.ok(expected, "Keep the smoke migration target explicit and reviewed");
   assert.equal(Number(expected[1]), count);
+  // Fail before the expensive container rehearsal when its explicit boundary
+  // still points at an older schema or immutable last SQL asset.
+  const rehearsal = readFileSync(
+    join(root, "scripts/release-migration-smoke.mjs"),
+    "utf8",
+  );
+  const rehearsalCount = /assert\.equal\(\s*migrations\.length,\s*(\d+),/.exec(
+    rehearsal,
+  );
+  const rehearsalLast = /assert\.equal\(last\.name,\s*"([^"]+)"\)/.exec(
+    rehearsal,
+  );
+  assert.ok(
+    rehearsalCount && rehearsalLast,
+    "Keep the release rehearsal target explicit",
+  );
+  assert.equal(Number(rehearsalCount[1]), count);
+  assert.equal(
+    rehearsalLast[1],
+    readdirSync(join(root, "packages/db/migrations"))
+      .filter((name) => /^\d{4}_[a-z0-9_]+\.sql$/.test(name))
+      .sort()
+      .at(-1),
+  );
 });
 
 test("release jobs include only the reviewed PostgreSQL grants build input", () => {

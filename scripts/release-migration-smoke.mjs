@@ -28,11 +28,11 @@ export async function releaseMigrationSmoke({
     }));
   assert.equal(
     migrations.length,
-    40,
+    43,
     "Update the disposable upgrade fixture when migrations change",
   );
   const last = migrations.at(-1);
-  assert.equal(last.name, "0040_human_support_replies.sql");
+  assert.equal(last.name, "0043_balance_history.sql");
   const plan = {
     version: 1,
     kind: "citygo-release-migration",
