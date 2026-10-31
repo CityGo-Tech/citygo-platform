@@ -26,6 +26,8 @@ async function fixture(context: BrowserContext) {
     external: 0,
     lostReceipt: false,
     planReads: 0,
+    checklistReads: 0,
+    missingParent: false,
   };
   const board = (): Dashboard => ({
     user: {
@@ -72,7 +74,7 @@ async function fixture(context: BrowserContext) {
       return route.fulfill({
         json: {
           userId: state.owner,
-          items: state.owner === "101" ? [item] : [],
+          items: state.owner === "101" && !state.missingParent ? [item] : [],
           nextBefore: null,
         },
       });
@@ -81,8 +83,8 @@ async function fixture(context: BrowserContext) {
       return route.fulfill({
         json: {
           userId: state.owner,
-          total: state.owner === "101" ? 1 : 0,
-          pending: state.owner === "101" ? 1 : 0,
+          total: state.owner === "101" && !state.missingParent ? 1 : 0,
+          pending: state.owner === "101" && !state.missingParent ? 1 : 0,
           completed: 0,
         },
       });
@@ -90,6 +92,11 @@ async function fixture(context: BrowserContext) {
       if (method === "PUT") {
         const input = route.request().postDataJSON() as SavePlanChecklist;
         state.writes.push(input);
+        if (state.missingParent)
+          return route.fulfill({
+            status: 404,
+            json: { error: "Parent removed" },
+          });
         if (input.expectedRevision !== item.revision)
           return route.fulfill({ status: 409, json: { error: "Conflict" } });
         state.entries = structuredClone(input.entries);
@@ -102,6 +109,12 @@ async function fixture(context: BrowserContext) {
           });
         }
       }
+      if (method === "GET") state.checklistReads++;
+      if (state.missingParent)
+        return route.fulfill({
+          status: 404,
+          json: { error: "Parent removed" },
+        });
       return route.fulfill({
         json: {
           userId: state.owner,
@@ -525,6 +538,193 @@ test("uncertain checklist result blocks parent search even after editor cancella
     search.getByRole("button", { name: "Найти", exact: true }),
   ).toBeEnabled();
   expect(state.writes).toHaveLength(1);
+  expect(state.unexpected).toEqual([]);
+  expect(state.external).toBe(0);
+});
+
+test("missing checklist parent releases plan refresh and search without leaving the plan", async ({
+  page,
+  context,
+}) => {
+  const { state, item } = await fixture(context);
+  await page.goto("/");
+  await page.getByRole("button", { name: "Мой план", exact: true }).click();
+  state.missingParent = true;
+  await page.getByRole("button", { name: "Чек-лист", exact: true }).click();
+  await expect(panel(page).getByRole("alert")).toContainText(
+    "Шаг больше недоступен",
+  );
+  await expect(
+    panel(page).getByRole("button", { name: "Скрыть чек-лист", exact: true }),
+  ).toBeEnabled();
+  await expect(
+    page
+      .getByRole("search", { name: "Поиск в моём плане" })
+      .getByRole("button", { name: "Найти", exact: true }),
+  ).toBeEnabled();
+  const before = state.planReads;
+  await page
+    .getByRole("button", { name: "Обновить план", exact: true })
+    .click();
+  await expect.poll(() => state.planReads).toBeGreaterThan(before);
+  await expect(page.locator(`[data-plan-id="${item.id}"]`)).toHaveCount(0);
+  await expect(
+    page.getByRole("heading", { name: "Начнём с того, что важно вам" }),
+  ).toBeVisible();
+  expect(state.checklistReads).toBe(1);
+  expect(state.writes).toHaveLength(0);
+  expect(state.unexpected).toEqual([]);
+  expect(state.external).toBe(0);
+});
+
+test("checklist save 404 preserves the visible draft until explicit cancellation then allows parent refresh", async ({
+  page,
+  context,
+}) => {
+  const { state, item } = await fixture(context);
+  await page.goto("/");
+  await open(page);
+  const list = panel(page);
+  await list
+    .getByRole("button", { name: "Добавить пункт", exact: true })
+    .click();
+  await list
+    .getByLabel("Название пункта", { exact: true })
+    .fill("Несохранённый пункт 🧳");
+  await list
+    .getByLabel("Подробности пункта", { exact: true })
+    .fill("Скопировать перед отменой");
+  state.missingParent = true;
+  const before = state.planReads;
+  await list
+    .getByRole("button", { name: "Сохранить пункт", exact: true })
+    .click();
+  await expect(list.getByRole("alert")).toContainText("Шаг больше недоступен");
+  await expect(list.getByLabel("Название пункта", { exact: true })).toHaveValue(
+    "Несохранённый пункт 🧳",
+  );
+  await expect(
+    list.getByRole("textbox", { name: "Подробности пункта", exact: true }),
+  ).toHaveValue("Скопировать перед отменой");
+  await expect(
+    list.getByLabel("Название пункта", { exact: true }),
+  ).toHaveAttribute("readonly", "");
+  await expect(
+    list.getByRole("button", { name: "Сохранить пункт", exact: true }),
+  ).toBeDisabled();
+  await expect(
+    list.getByRole("button", { name: "Скрыть чек-лист", exact: true }),
+  ).toBeDisabled();
+  await expect(
+    page.getByRole("button", { name: "Обновить план", exact: true }),
+  ).toBeDisabled();
+  expect(state.planReads).toBe(before);
+  expect(state.writes).toHaveLength(1);
+  await list
+    .getByRole("button", { name: "Отмена пункта", exact: true })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "Обновить план", exact: true }),
+  ).toBeEnabled();
+  await page
+    .getByRole("button", { name: "Обновить план", exact: true })
+    .click();
+  await expect(page.locator(`[data-plan-id="${item.id}"]`)).toHaveCount(0);
+  expect(state.writes).toHaveLength(1);
+  expect(state.entries).toEqual([]);
+  expect(state.unexpected).toEqual([]);
+  expect(state.external).toBe(0);
+});
+
+test("authorized missing readback releases an uncertain checklist lock without repeating its write", async ({
+  page,
+  context,
+}) => {
+  const { state, item } = await fixture(context);
+  await page.goto("/");
+  await open(page);
+  const list = panel(page);
+  await list
+    .getByRole("button", { name: "Добавить пункт", exact: true })
+    .click();
+  await list
+    .getByLabel("Название пункта", { exact: true })
+    .fill("Возможно сохранённый пункт");
+  state.lostReceipt = true;
+  await list
+    .getByRole("button", { name: "Сохранить пункт", exact: true })
+    .click();
+  await expect(list.getByRole("alert")).toContainText("уже могло сохраниться");
+  await list
+    .getByRole("button", { name: "Отмена пункта", exact: true })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "Обновить план", exact: true }),
+  ).toBeDisabled();
+  state.missingParent = true;
+  await list
+    .getByRole("button", { name: "Обновить чек-лист", exact: true })
+    .click();
+  await expect(list.getByRole("alert")).toContainText("Шаг больше недоступен");
+  await expect(
+    page.getByRole("button", { name: "Обновить план", exact: true }),
+  ).toBeEnabled();
+  await page
+    .getByRole("button", { name: "Обновить план", exact: true })
+    .click();
+  await expect(page.locator(`[data-plan-id="${item.id}"]`)).toHaveCount(0);
+  expect(state.writes).toHaveLength(1);
+  expect(state.checklistReads).toBe(2);
+  expect(state.unexpected).toEqual([]);
+  expect(state.external).toBe(0);
+});
+
+test("missing parent keeps the checklist removal decision cancellable before refreshing the plan", async ({
+  page,
+  context,
+}) => {
+  const { state, item } = await fixture(context);
+  state.entries = [
+    {
+      id: "726b704a-3ce0-40c0-b935-edff98b63dad",
+      title: "Существующий пункт",
+      details: "",
+      completed: false,
+    },
+  ];
+  await page.goto("/");
+  await page.getByRole("button", { name: "Мой план", exact: true }).click();
+  await page.getByRole("button", { name: "Чек-лист", exact: true }).click();
+  const list = panel(page);
+  await expect(
+    list.getByRole("checkbox", { name: "Существующий пункт", exact: true }),
+  ).toBeVisible();
+  await list
+    .getByRole("button", { name: "Удалить пункт", exact: true })
+    .click();
+  state.missingParent = true;
+  await list
+    .getByRole("button", { name: "Подтвердить удаление пункта", exact: true })
+    .click();
+  await expect(list.getByRole("alert")).toContainText("Шаг больше недоступен");
+  await expect(
+    list.getByRole("button", { name: "Оставить пункт", exact: true }),
+  ).toBeEnabled();
+  await expect(
+    page.getByRole("button", { name: "Обновить план", exact: true }),
+  ).toBeDisabled();
+  await list
+    .getByRole("button", { name: "Оставить пункт", exact: true })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "Обновить план", exact: true }),
+  ).toBeEnabled();
+  await page
+    .getByRole("button", { name: "Обновить план", exact: true })
+    .click();
+  await expect(page.locator(`[data-plan-id="${item.id}"]`)).toHaveCount(0);
+  expect(state.writes).toHaveLength(1);
+  expect(state.entries).toHaveLength(1);
   expect(state.unexpected).toEqual([]);
   expect(state.external).toBe(0);
 });

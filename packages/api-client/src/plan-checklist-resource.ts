@@ -10,6 +10,7 @@ export type PlanChecklistState = {
   busy: boolean;
   error: string;
   needsRefresh: boolean;
+  missing: boolean;
   closed: boolean;
 };
 /** One authorized step and one session lifetime; uncertain writes require a read. */
@@ -34,6 +35,7 @@ export function createPlanChecklistResource(options: {
     busy: false,
     error: "",
     needsRefresh: false,
+    missing: false,
     closed: false,
   };
   let disposed = false,
@@ -63,6 +65,7 @@ export function createPlanChecklistResource(options: {
       busy: false,
       error: "",
       needsRefresh: false,
+      missing: false,
       closed: true,
     };
     options.publish(snapshot());
@@ -84,7 +87,7 @@ export function createPlanChecklistResource(options: {
       !active() ||
       state.closed ||
       state.busy ||
-      (entries && (!state.value || state.needsRefresh))
+      (entries && (!state.value || state.needsRefresh || state.missing))
     )
       return false;
     const previous = state.value,
@@ -128,6 +131,7 @@ export function createPlanChecklistResource(options: {
         busy: false,
         error: "",
         needsRefresh: false,
+        missing: false,
         closed: false,
       });
       if (write) options.onSaved();
@@ -138,16 +142,18 @@ export function createPlanChecklistResource(options: {
         close(true);
         return false;
       }
+      // A 404 is the owner's definitive answer that the parent is unavailable,
+      // unlike a conflict or a lost write receipt that still requires readback.
+      const missing = cause instanceof ApiError && cause.status === 404;
       emit({
         ...state,
         busy: false,
-        value:
-          cause instanceof ApiError && cause.status === 404
-            ? null
-            : state.value,
-        needsRefresh: true,
-        error:
-          cause instanceof ApiError && cause.status === 409
+        value: missing ? null : state.value,
+        needsRefresh: !missing,
+        missing,
+        error: missing
+          ? "Шаг больше недоступен. Обновите план, чтобы увидеть актуальные шаги."
+          : cause instanceof ApiError && cause.status === 409
             ? "Шаг изменился. Обновите чек-лист перед следующим действием."
             : write
               ? "Не удалось подтвердить сохранение. Обновите чек-лист: изменение уже могло сохраниться."

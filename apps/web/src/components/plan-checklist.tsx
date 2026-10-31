@@ -123,7 +123,11 @@ export function PlanItemChecklist({
       : null;
   const entries = current?.value?.entries ?? [];
   const blocked =
-    disabled || !current?.value || current.busy || current.needsRefresh;
+    disabled ||
+    !current?.value ||
+    current.busy ||
+    current.needsRefresh ||
+    current.missing;
   const rowBlocked = blocked || editor !== null || removing !== null;
   if (sessionSignal.aborted || current?.closed) return null;
   async function save(items: PlanChecklistEntry[]) {
@@ -171,20 +175,21 @@ export function PlanItemChecklist({
           {current?.busy && (
             <p role="status">Сохраняем и обновляем чек-лист…</p>
           )}
-          {(!current?.value || current?.needsRefresh || current?.error) && (
-            <Button
-              type="button"
-              variant="secondary"
-              disabled={disabled || !!current?.busy}
-              onClick={() => {
-                setEditor(null);
-                setRemoving(null);
-                void resource.current?.load();
-              }}
-            >
-              Обновить чек-лист
-            </Button>
-          )}
+          {!current?.missing &&
+            (!current?.value || current?.needsRefresh || current?.error) && (
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={disabled || !!current?.busy}
+                onClick={() => {
+                  setEditor(null);
+                  setRemoving(null);
+                  void resource.current?.load();
+                }}
+              >
+                Обновить чек-лист
+              </Button>
+            )}
           {current?.value && (
             <>
               <p className={styles.count}>
@@ -269,65 +274,6 @@ export function PlanItemChecklist({
               {!entries.length && (
                 <p>Пунктов пока нет. Добавьте первое действие.</p>
               )}
-              {editor ? (
-                <form className={styles.editor} onSubmit={submit}>
-                  <Field
-                    className="ym-disable-keys ym-hide-content"
-                    label="Название пункта"
-                    maxLength={120}
-                    required
-                    value={editor.title}
-                    disabled={blocked}
-                    onChange={(event) =>
-                      setEditor({ ...editor, title: event.target.value })
-                    }
-                  />
-                  <label>
-                    Подробности пункта
-                    <textarea
-                      className="ym-disable-keys ym-hide-content"
-                      maxLength={1000}
-                      value={editor.details}
-                      disabled={blocked}
-                      onChange={(event) =>
-                        setEditor({ ...editor, details: event.target.value })
-                      }
-                    />
-                  </label>
-                  <div className={styles.actions}>
-                    <Button
-                      type="submit"
-                      disabled={blocked || !editor.title.trim()}
-                    >
-                      Сохранить пункт
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      disabled={!!current.busy}
-                      onClick={() => setEditor(null)}
-                    >
-                      Отмена пункта
-                    </Button>
-                  </div>
-                </form>
-              ) : (
-                <Button
-                  type="button"
-                  variant="secondary"
-                  disabled={rowBlocked || entries.length >= 20}
-                  onClick={() => {
-                    setRemoving(null);
-                    setEditor({
-                      id: crypto.randomUUID(),
-                      title: "",
-                      details: "",
-                    });
-                  }}
-                >
-                  Добавить пункт
-                </Button>
-              )}
               {entries.length >= 20 && (
                 <p>В одном шаге можно сохранить до 20 пунктов.</p>
               )}
@@ -336,6 +282,87 @@ export function PlanItemChecklist({
                 «Отметить выполненным».
               </p>
             </>
+          )}
+          {current?.missing && editor && (
+            <p>
+              Черновик пункта остался в форме. Скопируйте нужное или отмените
+              его перед обновлением плана.
+            </p>
+          )}
+          {(current?.value || editor) &&
+            (editor ? (
+              <form className={styles.editor} onSubmit={submit}>
+                <Field
+                  className="ym-disable-keys ym-hide-content"
+                  label="Название пункта"
+                  maxLength={120}
+                  required
+                  value={editor.title}
+                  disabled={blocked && !current?.missing}
+                  readOnly={current?.missing}
+                  onChange={(event) =>
+                    setEditor({ ...editor, title: event.target.value })
+                  }
+                />
+                <label>
+                  Подробности пункта
+                  <textarea
+                    className="ym-disable-keys ym-hide-content"
+                    maxLength={1000}
+                    value={editor.details}
+                    disabled={blocked && !current?.missing}
+                    readOnly={current?.missing}
+                    onChange={(event) =>
+                      setEditor({ ...editor, details: event.target.value })
+                    }
+                  />
+                </label>
+                <div className={styles.actions}>
+                  <Button
+                    type="submit"
+                    disabled={blocked || !editor.title.trim()}
+                  >
+                    Сохранить пункт
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    disabled={!!current?.busy}
+                    onClick={() => setEditor(null)}
+                  >
+                    Отмена пункта
+                  </Button>
+                </div>
+              </form>
+            ) : (
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={rowBlocked || entries.length >= 20}
+                onClick={() => {
+                  setRemoving(null);
+                  setEditor({
+                    id: crypto.randomUUID(),
+                    title: "",
+                    details: "",
+                  });
+                }}
+              >
+                Добавить пункт
+              </Button>
+            ))}
+          {current?.missing && removing && (
+            <div className={styles.actions}>
+              <p>Шаг недоступен. Отмените удаление пункта и обновите план.</p>
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={!!current.busy}
+                onClick={() => setRemoving(null)}
+              >
+                Оставить пункт
+              </Button>
+            </div>
           )}
         </div>
       )}

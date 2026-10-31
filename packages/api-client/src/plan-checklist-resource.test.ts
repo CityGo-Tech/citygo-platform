@@ -9,7 +9,8 @@ function fixture() {
   let denied = 0,
     saved = 0,
     calls = 0,
-    writeError: Error | null = null;
+    writeError: Error | null = null,
+    readError: Error | null = null;
   let value: PlanChecklist = {
     userId: "101",
     itemId: "20",
@@ -24,7 +25,10 @@ function fixture() {
     onAccessDenied: () => denied++,
     onSaved: () => saved++,
     client: {
-      get: async () => value,
+      get: async () => {
+        if (readError) throw readError;
+        return value;
+      },
       save: async (revision, entries) => {
         calls++;
         if (writeError) throw writeError;
@@ -42,7 +46,10 @@ function fixture() {
     setValue: (next: PlanChecklist) => {
       value = next;
     },
-    setError: (error: Error) => {
+    setReadError: (error: Error | null) => {
+      readError = error;
+    },
+    setError: (error: Error | null) => {
       writeError = error;
     },
   };
@@ -167,7 +174,87 @@ test("invalid checklist edits never reach transport and an inaccessible step cle
   assert.equal(writes, 0);
   await resource.load();
   assert.equal(resource.snapshot().value, null);
-  assert.equal(resource.snapshot().needsRefresh, true);
+  assert.equal(resource.snapshot().needsRefresh, false);
+  assert.equal(resource.snapshot().missing, true);
   assert.equal(denied, 0);
   resource.dispose();
+});
+
+test("definitive checklist 404 releases readback lock without claiming a save and a later authorized read resets missing", async () => {
+  const f = fixture();
+  f.setReadError(new ApiError(404, "Missing"));
+  assert.equal(await f.resource.load(), false);
+  assert.deepEqual(f.resource.snapshot(), {
+    value: null,
+    busy: false,
+    error:
+      "Шаг больше недоступен. Обновите план, чтобы увидеть актуальные шаги.",
+    needsRefresh: false,
+    missing: true,
+    closed: false,
+  });
+  assert.equal(await f.resource.save([]), false);
+  assert.equal(f.calls(), 0);
+  assert.equal(f.saved(), 0);
+  assert.equal(f.denied(), 0);
+  f.setReadError(null);
+  assert.equal(await f.resource.load(), true);
+  assert.equal(f.resource.snapshot().missing, false);
+  assert.equal(f.resource.snapshot().needsRefresh, false);
+  assert.equal(await f.resource.save([]), true);
+  assert.equal(f.calls(), 1);
+  assert.equal(f.saved(), 1);
+  f.resource.dispose();
+});
+
+test("checklist save 404 clears stale private entries and forbids a duplicate write without firing onSaved", async () => {
+  const f = fixture();
+  await f.resource.load();
+  f.setError(new ApiError(404, "Parent removed"));
+  const entry = {
+    id: randomUUID(),
+    title: "Мой черновик",
+    details: "Не терять",
+    completed: false,
+  };
+  assert.equal(await f.resource.save([entry]), false);
+  assert.equal(f.resource.snapshot().missing, true);
+  assert.equal(f.resource.snapshot().value, null);
+  assert.equal(f.resource.snapshot().needsRefresh, false);
+  assert.equal(await f.resource.save([entry]), false);
+  assert.equal(f.calls(), 1);
+  assert.equal(f.saved(), 0);
+  assert.equal(f.denied(), 0);
+  f.resource.dispose();
+});
+
+test("uncertain checklist writes stay locked across failed readback until authorized 404 or successful read", async () => {
+  for (const writeError of [
+    new ApiError(409, "Conflict"),
+    new ApiError(503, "Lost receipt"),
+    new Error("Network failed"),
+  ]) {
+    for (const terminalMissing of [false, true]) {
+      const f = fixture();
+      await f.resource.load();
+      f.setError(writeError);
+      assert.equal(await f.resource.save([]), false);
+      assert.equal(f.resource.snapshot().needsRefresh, true);
+      assert.equal(f.resource.snapshot().missing, false);
+      f.setReadError(new ApiError(503, "Read failed"));
+      assert.equal(await f.resource.load(), false);
+      assert.equal(f.resource.snapshot().needsRefresh, true);
+      assert.equal(f.resource.snapshot().missing, false);
+      assert.equal(await f.resource.save([]), false);
+      assert.equal(f.calls(), 1);
+      assert.equal(f.saved(), 0);
+      f.setReadError(terminalMissing ? new ApiError(404, "Missing") : null);
+      assert.equal(await f.resource.load(), !terminalMissing);
+      assert.equal(f.resource.snapshot().needsRefresh, false);
+      assert.equal(f.resource.snapshot().missing, terminalMissing);
+      assert.equal(f.saved(), 0);
+      if (terminalMissing) assert.equal(f.resource.snapshot().value, null);
+      f.resource.dispose();
+    }
+  }
 });
