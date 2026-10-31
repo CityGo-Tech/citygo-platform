@@ -80,6 +80,9 @@ grant update (parent_revision,entries) on personal_plan_checklists to citygo_api
 grant execute on function citygo_valid_plan_checklist(jsonb) to citygo_api;
 -- Human requests have immutable owner/body/replay identity; Worker has no access.
 grant select, insert on human_support_requests to citygo_api;
+-- Replies are append-only; no UPDATE/DELETE and no Worker access.
+grant select, insert on human_support_replies to citygo_api;
+grant usage, select on sequence human_support_replies_id_seq to citygo_api;
 grant update (status,revision,updated_at,closed_at) on human_support_requests to citygo_api;
 -- Each admitted request retains one server-selected public mode profile.
 -- API can append/read it; neither API nor Worker may rewrite or delete it.

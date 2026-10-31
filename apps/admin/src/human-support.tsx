@@ -7,6 +7,7 @@ import {
 } from "@citygo/api-client";
 import type { AdminSupportRequest } from "@citygo/contracts";
 import { Button, Card } from "@citygo/ui-web";
+import { SupportReplies } from "./support-replies.js";
 
 export function HumanSupportInbox({
   viewerId,
@@ -215,6 +216,33 @@ export function HumanSupportInbox({
             Статус: {selected.status === "closed" ? "Закрыто" : "Открыто"} ·
             Версия {selected.revision}
           </p>
+          <SupportReplies
+            key={viewerId + ":" + selected.id}
+            viewerId={viewerId}
+            requestId={selected.id}
+            sessionSignal={sessionSignal}
+            onAccessDenied={() => {
+              clear();
+              denied.current();
+            }}
+            admin
+            revision={selected.revision}
+            requestClosed={selected.status === "closed"}
+            onReplied={(result) => {
+              check(result.actorId);
+              setSelected(result.request);
+              setData((current) =>
+                current
+                  ? {
+                      ...current,
+                      items: current.items.map((item) =>
+                        item.id === result.request.id ? result.request : item,
+                      ),
+                    }
+                  : null,
+              );
+            }}
+          />
           <Button
             disabled={busy}
             onClick={() =>

@@ -274,3 +274,68 @@
     transition: none;
   }
 }
+/* Shared human-support correspondence uses the existing CityGo tokens. */
+.cg-support-replies,
+.cg-support-reply-form {
+  display: grid;
+  gap: var(--cg-space-md);
+  min-width: 0;
+}
+.cg-support-replies h3,
+.cg-support-replies p {
+  margin: 0;
+}
+.cg-support-reply-list {
+  display: grid;
+  gap: var(--cg-space-sm);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.cg-support-reply-list li,
+.cg-support-reply-notice {
+  padding: var(--cg-space-md);
+  border: 1px solid var(--cg-color-border);
+  border-radius: var(--cg-radius-card);
+  overflow-wrap: anywhere;
+}
+.cg-support-reply-notice {
+  background: var(--cg-color-primary-soft);
+}
+.cg-support-reply-body {
+  white-space: pre-wrap;
+}
+.cg-support-reply-question {
+  display: grid;
+  gap: var(--cg-space-sm);
+  font-weight: 600;
+}
+.cg-support-reply-question textarea {
+  width: 100%;
+  min-height: 128px;
+  resize: vertical;
+  box-sizing: border-box;
+  font: inherit;
+  padding: var(--cg-space-sm);
+  border: 1px solid var(--cg-color-border);
+  border-radius: var(--cg-radius-control);
+  color: inherit;
+  background: var(--cg-color-surface);
+}
+.cg-support-reply-question textarea:focus-visible {
+  outline: 2px solid var(--cg-color-primary-strong);
+  outline-offset: 2px;
+}
+.cg-support-reply-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--cg-space-sm);
+}
+@media (max-width: 600px) {
+  .cg-support-reply-actions {
+    flex-direction: column;
+  }
+  .cg-support-reply-actions button {
+    width: 100%;
+  }
+}

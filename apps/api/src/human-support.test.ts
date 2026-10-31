@@ -104,11 +104,54 @@ test("HTTP support service is independently saved, owner-scoped and admin CAS co
   });
   assert.equal(detail.statusCode, 200, detail.body);
   assert.equal(detail.json().request.owner.userId, owner.id);
+  const answerInput = {
+    operationId: randomUUID(),
+    expectedRevision: 1,
+    body: "Начните с удобных для вас районов.",
+  };
+  const answerUrl =
+    "/v1/admin/support-requests/" + receipt.request.id + "/replies";
+  assert.equal(
+    (
+      await app.inject({
+        method: "POST",
+        url: answerUrl,
+        headers: owner.headers,
+        payload: answerInput,
+      })
+    ).statusCode,
+    403,
+  );
+  const answer = await app.inject({
+    method: "POST",
+    url: answerUrl,
+    headers: admin.headers,
+    payload: answerInput,
+  });
+  assert.equal(answer.statusCode, 200, answer.body);
+  assert.equal(
+    (
+      await app.inject({
+        url: "/v1/support-requests/" + receipt.request.id + "/replies",
+        headers: owner.headers,
+      })
+    ).json().replies[0].body,
+    answerInput.body,
+  );
+  assert.equal(
+    (
+      await app.inject({
+        url: "/v1/support-requests/" + receipt.request.id + "/replies",
+        headers: other.headers,
+      })
+    ).statusCode,
+    404,
+  );
   const closed = await app.inject({
     method: "PATCH",
     url: "/v1/admin/support-requests/" + receipt.request.id,
     headers: admin.headers,
-    payload: { expectedRevision: 1, status: "closed" },
+    payload: { expectedRevision: 2, status: "closed" },
   });
   assert.equal(closed.statusCode, 200, closed.body);
   assert.equal(closed.json().request.status, "closed");

@@ -22,6 +22,7 @@ export type AccountResetPlan = {
 // erase priced-attempt snapshots and can break credit/accounting foreign keys.
 const ownedTables = [
   "human_support_requests",
+  "human_support_replies",
   "personal_plan_items",
   "user_credentials",
   "sessions",
@@ -133,11 +134,17 @@ export class AccountReset {
         counts[name] = value;
         return value;
       };
-      for (const table of ownedTables)
+      for (const table of ownedTables.filter(
+        (table) => table !== "human_support_replies",
+      ))
         await count(
           table,
           `select count(*)::int as count from ${table} where user_id=any($1::bigint[])`,
         );
+      await count(
+        "human_support_replies",
+        "select count(*)::int as count from human_support_replies r join human_support_requests q on q.id=r.request_id where q.user_id=any($1::bigint[]) or r.author_user_id=any($1::bigint[])",
+      );
       for (const table of ["messages", "agent_handoffs", "chat_requests"])
         await count(
           table,
@@ -187,10 +194,12 @@ export class AccountReset {
       const blockers: AccountResetBlocker[] = [
         { code: "RESET_APPLY_NOT_IMPLEMENTED", count: 1 },
       ];
-      if (counts.human_support_requests)
+      if (counts.human_support_requests || counts.human_support_replies)
         blockers.push({
           code: "HUMAN_SUPPORT_HISTORY_REQUIRES_REVIEW",
-          count: counts.human_support_requests,
+          count:
+            (counts.human_support_requests ?? 0) +
+            (counts.human_support_replies ?? 0),
         });
       if (expected === undefined)
         blockers.push({ code: "EXPECTED_USER_COUNT_NOT_PINNED", count: 1 });

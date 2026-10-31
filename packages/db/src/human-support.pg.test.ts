@@ -136,6 +136,33 @@ test(
     ]);
     assert.equal(race.filter((r) => r.status === "fulfilled").length, 1);
     assert.equal(race.filter((r) => r.status === "rejected").length, 1);
+    const opened = await store.setStatus(operator, id, {
+      expectedRevision: 2,
+      status: "open",
+    });
+    const replyCommand = {
+      operationId: randomUUID(),
+      expectedRevision: opened.request.revision,
+      body: "Проверьте варианты по вашему списку районов.",
+    };
+    const replied = await Promise.all([
+      store.reply(operator, id, replyCommand),
+      store.reply(operator, id, replyCommand),
+    ]);
+    assert.deepEqual(replied[0], replied[1]);
+    assert.equal((await store.replies(owner, id)).replies.length, 1);
+    for (const sql of [
+      "update human_support_replies set body=body",
+      "delete from human_support_replies",
+    ])
+      await assert.rejects(runtime.query(sql), { code: "42501" });
+    await assert.rejects(
+      database.transaction(async (tx) => {
+        await tx.exec(`set local role ${roles.citygo_worker}`);
+        return tx.query("select body from human_support_replies");
+      }),
+      { code: "42501" },
+    );
     for (const col of [
       "body",
       "user_id",
