@@ -6,10 +6,35 @@ updates:
       interval: weekly
     open-pull-requests-limit: 5
     groups:
-      production-dependencies:
+      # React and Expo must be reviewed together, including Web/Mobile peer ranges.
+      mobile-react-compatible:
         dependency-type: production
-      development-dependencies:
+        patterns:
+          - expo
+          - expo-*
+          - "@expo/*"
+          - react
+          - react-dom
+          - react-native
+          - react-native-*
+          - "@react-native/*"
+        update-types: [minor, patch]
+      production-compatible:
+        dependency-type: production
+        exclude-patterns:
+          - expo
+          - expo-*
+          - "@expo/*"
+          - react
+          - react-dom
+          - react-native
+          - react-native-*
+          - "@react-native/*"
+        update-types: [minor, patch]
+      development-compatible:
         dependency-type: development
+        update-types: [minor, patch]
+    # Major updates remain separate PRs; they are not silently ignored.
 
   - package-ecosystem: github-actions
     directory: /
