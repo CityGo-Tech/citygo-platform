@@ -1,4 +1,5 @@
 "use client";
+import { BalanceHistoryPanel } from "../components/balance-history";
 import Image from "next/image";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
@@ -1432,6 +1433,14 @@ export default function Home() {
               <AiAccessPanel
                 key={board.user.id + ":balance:" + formVersion}
                 access={board.aiAccess}
+                renderHistory={(onClose) => (
+                  <BalanceHistoryPanel
+                    userId={board.user.id}
+                    sessionSignal={session.capture().signal}
+                    onAccessDenied={requireLogin}
+                    onClose={onClose}
+                  />
+                )}
                 userId={board.user.id}
                 busy={busy || sending}
                 topups={topups}

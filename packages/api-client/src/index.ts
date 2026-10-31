@@ -1,3 +1,8 @@
+import {
+  balanceHistoryQuerySchema,
+  balanceHistoryPageSchema,
+  type BalanceHistoryQuery,
+} from "@citygo/contracts";
 import { personalPlanExportSchema } from "@citygo/contracts";
 export {
   createPersonalPlanHistoryResource,
@@ -1126,6 +1131,26 @@ export function createClient(
       request("/v1/ai/consent", okResponseSchema, input),
     aiControl: () => request("/v1/admin/ai", aiControlResponseSchema),
     aiCredit: () => request("/v1/ai/credit", aiCreditResponseSchema),
+    balanceHistory: async (input: BalanceHistoryQuery = {}) => {
+      const parsed = balanceHistoryQuerySchema.parse(input),
+        query = new URLSearchParams();
+      if (parsed.filter) query.set("filter", parsed.filter);
+      if (parsed.cursor) query.set("cursor", parsed.cursor);
+      const page = await request(
+        "/v1/ai/credit/history" + (query.size ? "?" + query : ""),
+        balanceHistoryPageSchema,
+      );
+      if (
+        page.filter !== (parsed.filter ?? "all") ||
+        (parsed.cursor && page.nextCursor === parsed.cursor)
+      )
+        throw new ApiError(
+          200,
+          "Ответ сервера не соответствует истории баланса",
+          "invalid_response",
+        );
+      return page;
+    },
     createTopup: (input: CreateTopupInput) => {
       const parsed = createTopupSchema.parse(input);
       return paymentRequest(

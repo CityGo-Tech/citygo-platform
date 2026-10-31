@@ -279,3 +279,8 @@ export async function migrate(db: Database) {
   });
 }
 export { PlanChecklists } from "./plan-checklist.js";
+
+export {
+  BalanceHistory,
+  type BalanceHistoryContext,
+} from "./balance-history.js";

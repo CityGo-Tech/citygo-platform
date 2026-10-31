@@ -106,7 +106,7 @@ test("wallet is independent of AI consent and never includes the removed pre-cha
   );
 });
 
-test("wallet history keeps customer operations and hides temporary holds and releases", () => {
+test("wallet links to full read-only history instead of projecting the last operational rows", () => {
   const access = balance(12_345_678);
   access.credit!.history = ["bonus", "topup", "settle", "hold", "release"].map(
     (kind, index) => ({
@@ -116,12 +116,17 @@ test("wallet history keeps customer operations and hides temporary holds and rel
       createdAt: "2026-10-25T10:00:00.000Z",
     }),
   );
-  const html = render(access);
-  assert.match(html, /Подарок: 1 ₽/);
-  assert.match(html, /Пополнение: 1\.000001 ₽/);
-  assert.match(html, /Общение с помощником: 1\.000002 ₽/);
+  const html = renderToStaticMarkup(
+    createElement(AiAccessPanel, {
+      access,
+      busy: false,
+      userId: "1",
+      renderHistory: () => null,
+    }),
+  );
+  assert.match(html, /История баланса/);
   assert.doesNotMatch(
     html,
-    /1\.000003|1\.000004|synthetic-operation|hold|release/,
+    /Последние операции|Общение с помощником|1\.00000|synthetic-operation|hold|release/,
   );
 });
