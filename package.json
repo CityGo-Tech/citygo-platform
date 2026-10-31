@@ -34,7 +34,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.34.0",
-    "@next/eslint-plugin-next": "^15.5.2",
+    "@next/eslint-plugin-next": "^15.5.28",
     "@types/node": "^22.17.2",
     "eslint": "^9.34.0",
     "globals": "^16.3.0",
@@ -42,8 +42,16 @@
     "typescript": "^5.9.2",
     "typescript-eslint": "^8.41.0",
     "@playwright/test": "^1.55.0",
-    "sharp": "^0.34.3",
+    "sharp": "^0.35.5",
     "tsx": "^4.20.5",
     "prettier": "^3.6.2"
+  },
+  "pnpm": {
+    "overrides": {
+      "fast-uri@3": "3.1.9",
+      "fast-uri@4": "4.2.3",
+      "postcss@8": "8.5.23",
+      "shell-quote@1": "1.12.0"
+    }
   }
 }

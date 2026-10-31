@@ -18,8 +18,8 @@
   "dependencies": {
     "@citygo/contracts": "workspace:*",
     "@fastify/cors": "^11.1.0",
-    "fastify": "^5.5.0",
-    "zod": "^4.1.1",
+    "fastify": "^5.12.7",
+    "zod": "^4.6.7",
     "@citygo/db": "workspace:*",
     "@citygo/config": "workspace:*",
     "@citygo/agents": "workspace:*",
