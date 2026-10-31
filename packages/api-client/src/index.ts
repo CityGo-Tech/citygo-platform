@@ -1,4 +1,10 @@
 import {
+  personalPlanIdSchema as checklistItemIdSchema,
+  planChecklistSchema,
+  savePlanChecklistSchema,
+  type SavePlanChecklist,
+} from "@citygo/contracts";
+import {
   accountUserResponseSchema,
   adminOverviewResponseSchema,
   adminUsersResponseSchema,
@@ -192,7 +198,7 @@ export function createClient(
     op: Operation,
     body?: unknown,
     streaming = false,
-    method?: "PATCH" | "DELETE",
+    method?: "PATCH" | "DELETE" | "PUT",
   ) {
     op.check();
     const pending = (options.fetch ?? globalThis.fetch)(base + path, {
@@ -249,7 +255,7 @@ export function createClient(
     path: string,
     schema: ResponseSchema<T>,
     body?: unknown,
-    method?: "PATCH" | "DELETE",
+    method?: "PATCH" | "DELETE" | "PUT",
   ): Promise<T> {
     const op = operation(limits.requestTimeoutMs, [options.signal?.()]);
     let response: Response | undefined;
@@ -791,6 +797,41 @@ export function createClient(
         );
       return result;
     },
+    planChecklist: async (itemId: string) => {
+      const id = checklistItemIdSchema.parse(itemId);
+      const value = await request(
+        "/v1/personal-plan/" + id + "/checklist",
+        planChecklistSchema,
+      );
+      if (value.itemId !== id)
+        throw new ApiError(
+          0,
+          "Ответ чек-листа не соответствует запросу",
+          "invalid_response",
+        );
+      return value;
+    },
+    savePlanChecklist: async (itemId: string, input: SavePlanChecklist) => {
+      const id = checklistItemIdSchema.parse(itemId),
+        body = savePlanChecklistSchema.parse(input);
+      const value = await request(
+        "/v1/personal-plan/" + id + "/checklist",
+        planChecklistSchema,
+        body,
+        "PUT",
+      );
+      if (
+        value.itemId !== id ||
+        value.revision !== body.expectedRevision + 1 ||
+        JSON.stringify(value.entries) !== JSON.stringify(body.entries)
+      )
+        throw new ApiError(
+          0,
+          "Сохранённый чек-лист не соответствует запросу",
+          "invalid_response",
+        );
+      return value;
+    },
     personalPlanSummary: () =>
       request("/v1/personal-plan/summary", personalPlanSummarySchema),
     createPersonalPlanItem: async (input: CreatePersonalPlanItem) => {
@@ -1100,3 +1141,8 @@ export function createClient(
     },
   };
 }
+
+export {
+  createPlanChecklistResource,
+  type PlanChecklistState,
+} from "./plan-checklist-resource.js";

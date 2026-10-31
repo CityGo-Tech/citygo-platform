@@ -75,6 +75,8 @@ grant update (code_hash,delivery,attempts,consumed_at,invalidated_at)
 -- Private user-chosen steps have immutable owner/source/create identity.
 -- Runtime may edit content/state or tombstone, never delete or rewrite identity.
 grant select, insert on personal_plan_items to citygo_api;
+grant select, insert on personal_plan_checklists to citygo_api;
+grant update (parent_revision,entries) on personal_plan_checklists to citygo_api;
 -- Human requests have immutable owner/body/replay identity; Worker has no access.
 grant select, insert on human_support_requests to citygo_api;
 grant update (status,revision,updated_at,closed_at) on human_support_requests to citygo_api;

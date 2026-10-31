@@ -25,7 +25,7 @@ test("maintenance retains even unleased GigaChat account identity and literal re
     (select count(*)::int from pg_sequences where schemaname='public') as sequences,
     (select count(*)::int from citygo_migrations) as migrations`)
     ).rows,
-    [{ tables: 71, sequences: 22, migrations: 38 }],
+    [{ tables: 72, sequences: 22, migrations: 39 }],
   );
   // A genuine capacity identity needs no invented model request, fee, provider
   // receipt or user. Even after use it remains a retained account configuration.

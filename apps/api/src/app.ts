@@ -87,6 +87,7 @@ import {
 } from "./ai-credit-recovery.js";
 import { registerSyntheticHousingApi } from "./housing.js";
 import { registerPersonalPlanApi } from "./personal-plan.js";
+import { registerPlanChecklistApi } from "./plan-checklist.js";
 import { registerHumanSupportApi } from "./human-support.js";
 import {
   preparePayments,
@@ -982,6 +983,7 @@ export async function buildApp(options: {
     return favorites.set(user.id, id, input.saved);
   });
   registerPersonalPlanApi(app, { db: options.db, authenticate });
+  registerPlanChecklistApi(app, { db: options.db, authenticate });
   registerHumanSupportApi(app, {
     db: options.db,
     context: async (request) => {

@@ -113,7 +113,7 @@ test("the disposable release fixture rewinds only reviewed empty new schema and 
   await migrate(db);
   assert.equal(
     (await db.query("select 1 from citygo_migrations")).rows.length,
-    38,
+    39,
   );
 });
 
