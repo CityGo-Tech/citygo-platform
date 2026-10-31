@@ -1,12 +1,22 @@
 import { ApiError } from "@citygo/api-client";
 import {
   favoriteMessagesPageSchema,
+  favoriteMessageFiltersSchema,
+  personalPlanQuerySchema,
+  type FavoriteMessageFilters,
+  type PersonalPlanStatus,
   personalPlanPageSchema,
   personalPlanSummarySchema,
   type FavoriteMessage,
   type PersonalPlanItem,
   type PersonalPlanSummary,
 } from "@citygo/contracts";
+
+export type ResultsPlanFilters = {
+  search?: string;
+  status?: PersonalPlanStatus;
+};
+const planFiltersSchema = personalPlanQuerySchema.omit({ before: true });
 
 export type ResultsCategory = "plan" | "favorites";
 type ResultsPage<T> = {
@@ -18,6 +28,9 @@ type ResultsPage<T> = {
 export type ResultsState = {
   category: ResultsCategory;
   closed: boolean;
+  planFilters: ResultsPlanFilters;
+  favoriteFilters: FavoriteMessageFilters;
+  filterError: string;
   plan: ResultsPage<PersonalPlanItem>;
   favorites: ResultsPage<FavoriteMessage>;
   summary: PersonalPlanSummary | null;
@@ -40,11 +53,16 @@ export function createResultsResource({
   userId: string;
   sessionSignal: AbortSignal;
   client: {
-    plan: (before: string | undefined, signal: AbortSignal) => Promise<unknown>;
+    plan: (
+      before: string | undefined,
+      signal: AbortSignal,
+      filters: ResultsPlanFilters,
+    ) => Promise<unknown>;
     summary: (signal: AbortSignal) => Promise<unknown>;
     favorites: (
       before: string | undefined,
       signal: AbortSignal,
+      filters: FavoriteMessageFilters,
     ) => Promise<unknown>;
   };
   publish: (state: ResultsState) => void;
@@ -53,6 +71,9 @@ export function createResultsResource({
   let state: ResultsState = {
     category: "plan",
     closed: false,
+    planFilters: {},
+    favoriteFilters: {},
+    filterError: "",
     plan: emptyPage(),
     favorites: emptyPage(),
     summary: null,
@@ -63,6 +84,8 @@ export function createResultsResource({
   const active = () => !disposed && !state.closed && !sessionSignal.aborted;
   const snapshot = (): ResultsState => ({
     ...state,
+    planFilters: { ...state.planFilters },
+    favoriteFilters: { ...state.favoriteFilters },
     plan: {
       ...state.plan,
       items: state.plan.items.map((item) => ({
@@ -91,6 +114,9 @@ export function createResultsResource({
       plan: emptyPage(),
       favorites: emptyPage(),
       summary: null,
+      planFilters: {},
+      favoriteFilters: {},
+      filterError: "",
     };
     publish(snapshot());
     if (denied) onAccessDenied();
@@ -116,7 +142,10 @@ export function createResultsResource({
             state[state.category].items.some((old) => old.id === item.id)),
       ) ||
       (nextBefore !== null &&
-        (items.length !== 20 || nextBefore !== items.at(-1)?.id))
+        ((state.category === "plan"
+          ? items.length !== 20
+          : items.length === 0) ||
+          nextBefore !== items.at(-1)?.id))
     )
       throw new Error("Invalid results page");
   }
@@ -135,13 +164,18 @@ export function createResultsResource({
     try {
       if (category === "plan") {
         const [raw, rawSummary] = await Promise.all([
-          client.plan(before, signal),
+          client.plan(before, signal, { ...state.planFilters }),
           client.summary(signal),
         ]);
         if (!current()) return;
         const result = personalPlanPageSchema.parse(raw);
         const summary = personalPlanSummarySchema.parse(rawSummary);
         if (!owner(result) || !owner(summary)) return;
+        if (
+          state.planFilters.status &&
+          result.items.some((item) => item.status !== state.planFilters.status)
+        )
+          throw new Error("Invalid filtered page");
         validatePage(result.items, result.nextBefore, before);
         commit({
           ...state,
@@ -156,10 +190,22 @@ export function createResultsResource({
           },
         });
       } else {
-        const raw = await client.favorites(before, signal);
+        const raw = await client.favorites(before, signal, {
+          ...state.favoriteFilters,
+        });
         if (!current()) return;
         const result = favoriteMessagesPageSchema.parse(raw);
         if (!owner(result)) return;
+        if (
+          result.messages.some(
+            (item) =>
+              (state.favoriteFilters.role &&
+                item.role !== state.favoriteFilters.role) ||
+              (state.favoriteFilters.assistantKey &&
+                item.agentKey !== state.favoriteFilters.assistantKey),
+          )
+        )
+          throw new Error("Invalid filtered page");
         validatePage(result.messages, result.nextBefore, before);
         commit({
           ...state,
@@ -188,8 +234,40 @@ export function createResultsResource({
         });
     }
   }
+  async function applyFilters(category: ResultsCategory, raw: unknown) {
+    if (!active() || category !== state.category) return;
+    const parsed =
+      category === "plan"
+        ? planFiltersSchema.safeParse(raw)
+        : favoriteMessageFiltersSchema.safeParse(raw);
+    if (!parsed.success) {
+      commit({
+        ...state,
+        filterError: "Проверьте фильтры. Поисковый запрос — до 160 символов.",
+      });
+      return;
+    }
+    const key = category === "plan" ? "planFilters" : "favoriteFilters";
+    // Canonical schema output keeps category caches and cursors bound to one query.
+    if (JSON.stringify(state[key]) === JSON.stringify(parsed.data)) {
+      commit({ ...state, filterError: "" });
+      return;
+    }
+    request?.abort();
+    generation++;
+    commit({
+      ...state,
+      [key]: parsed.data,
+      [category]: emptyPage(),
+      filterError: "",
+    });
+    await read();
+  }
   return {
     snapshot,
+    filterPlan: (filters: ResultsPlanFilters) => applyFilters("plan", filters),
+    filterFavorites: (filters: FavoriteMessageFilters) =>
+      applyFilters("favorites", filters),
     load: () => read(),
     loadMore: () =>
       state[state.category].nextBefore
@@ -203,6 +281,7 @@ export function createResultsResource({
       commit({
         ...state,
         category,
+        filterError: "",
         [previous]: {
           ...state[previous],
           phase:
@@ -224,6 +303,9 @@ export function createResultsResource({
         plan: emptyPage(),
         favorites: emptyPage(),
         summary: null,
+        planFilters: {},
+        favoriteFilters: {},
+        filterError: "",
       };
       sessionSignal.removeEventListener("abort", onAbort);
     },

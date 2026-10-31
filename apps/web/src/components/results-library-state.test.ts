@@ -348,3 +348,155 @@ test("previews bound one-megabyte saved content while the original remains exact
   assert.equal(resultMessageTitle("x".repeat(1000)).length, 81);
   assert(text.endsWith("я"));
 });
+
+test("result filters search the server, reset loaded cursors and discard a late unfiltered page", async () => {
+  const s = setup();
+  await s.resource.load();
+  const gate = deferred<unknown>();
+  let pendingSignal!: AbortSignal;
+  s.client.plan = (_, signal) => {
+    pendingSignal = signal;
+    return gate.promise;
+  };
+  const pending = s.resource.loadMore();
+  const filtered = {
+    ...s.planPage(),
+    items: [s.planPage().items[0]!],
+    nextBefore: null,
+  };
+  let seen: unknown;
+  // The transport receives normalized filters, rather than filtering only cached items.
+  Object.assign(s.client, {
+    plan: async (
+      before: string | undefined,
+      _signal: AbortSignal,
+      filters: unknown,
+    ) => {
+      seen = { before, filters };
+      return filtered;
+    },
+  });
+  await s.resource.filterPlan({
+    search: "  Район %_\\  ",
+    status: "completed",
+  });
+  assert.equal(pendingSignal.aborted, true);
+  assert.deepEqual(seen, {
+    before: undefined,
+    filters: { search: "Район %_\\", status: "completed" },
+  });
+  assert.equal(s.resource.snapshot().plan.items.length, 1);
+  assert.equal(s.resource.snapshot().plan.nextBefore, null);
+  gate.resolve(s.planPage("9007199254741081"));
+  await pending;
+  assert.equal(s.resource.snapshot().plan.items.length, 1);
+});
+
+test("result category filters are separate, defensively copied and kept on pagination", async () => {
+  const s = setup();
+  await s.resource.load();
+  await s.resource.filterPlan({ search: "Шаг" });
+  await s.resource.select("favorites");
+  let seen: unknown;
+  Object.assign(s.client, {
+    favorites: async (
+      before: string | undefined,
+      _signal: AbortSignal,
+      filters: unknown,
+    ) => {
+      seen = { before, filters };
+      return s.favoritePage(before);
+    },
+  });
+  await s.resource.filterFavorites({
+    search: "Ответ",
+    role: "assistant",
+    assistantKey: "support",
+  });
+  await s.resource.loadMore();
+  assert.deepEqual(seen, {
+    before: "9007199254741281",
+    filters: { search: "Ответ", role: "assistant", assistantKey: "support" },
+  });
+  const copy = s.resource.snapshot();
+  copy.favoriteFilters.search = "MUTATED";
+  await s.resource.select("plan");
+  assert.deepEqual(s.resource.snapshot().planFilters, { search: "Шаг" });
+  assert.equal(s.resource.snapshot().favoriteFilters.search, "Ответ");
+  assert.equal(s.resource.snapshot().favorites.items.length, 29);
+});
+
+test("invalid result filters never reach transport and clearing filters restores the first server page", async () => {
+  const s = setup();
+  await s.resource.load();
+  for (const invalid of [
+    { search: "\0" },
+    { search: "x".repeat(161) },
+    { status: "forged" },
+    { before: "1" },
+  ]) {
+    const count = s.reads.length;
+    await s.resource.filterPlan(invalid as never);
+    assert.equal(s.reads.length, count);
+    assert.match(s.resource.snapshot().filterError, /Проверьте/);
+  }
+  await s.resource.filterPlan({ search: "Шаг" });
+  await s.resource.loadMore();
+  await s.resource.filterPlan({});
+  assert.equal(s.resource.snapshot().filterError, "");
+  assert.equal(s.resource.snapshot().plan.items.length, 20);
+  assert.equal(s.reads.at(-1)!.before, undefined);
+});
+
+test("byte-bounded favorite pages retain a valid short cursor and continue under the same filters", async () => {
+  const s = setup();
+  const all = s.favoritePage();
+  s.client.favorites = async (before) =>
+    before
+      ? { userId: "1", messages: all.messages.slice(5, 9), nextBefore: null }
+      : {
+          userId: "1",
+          messages: all.messages.slice(0, 5),
+          nextBefore: all.messages[4]!.id,
+        };
+  await s.resource.select("favorites");
+  assert.equal(s.resource.snapshot().favorites.phase, "ready");
+  assert.equal(s.resource.snapshot().favorites.items.length, 5);
+  await s.resource.loadMore();
+  assert.equal(s.resource.snapshot().favorites.items.length, 9);
+});
+
+for (const action of ["abort", "dispose"] as const) {
+  test(
+    "result private filters clear on " +
+      action +
+      " and cannot start another read",
+    async () => {
+      const s = setup();
+      await s.resource.load();
+      await s.resource.filterPlan({ search: "PRIVATE_FILTER" });
+      if (action === "abort") s.session.abort();
+      else s.resource.dispose();
+      assert.deepEqual(s.resource.snapshot().planFilters, {});
+      const count = s.reads.length;
+      await s.resource.filterPlan({ search: "MORE_PRIVATE" });
+      assert.equal(s.reads.length, count);
+      assert.equal(
+        JSON.stringify(s.resource.snapshot()).includes("PRIVATE"),
+        false,
+      );
+    },
+  );
+}
+
+test("filtered result receipts cannot silently change the requested status or author", async () => {
+  const s = setup();
+  await s.resource.load();
+  await s.resource.filterPlan({ status: "pending" });
+  assert.equal(s.resource.snapshot().plan.phase, "error");
+  assert.deepEqual(s.resource.snapshot().plan.items, []);
+  await s.resource.select("favorites");
+  await s.resource.filterFavorites({ role: "user" });
+  assert.equal(s.resource.snapshot().favorites.phase, "error");
+  assert.deepEqual(s.resource.snapshot().favorites.items, []);
+});
