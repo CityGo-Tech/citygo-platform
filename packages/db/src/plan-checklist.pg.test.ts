@@ -81,7 +81,9 @@ test(
         (name) => roles[name as keyof typeof roles],
       );
     await backend.exec(grants);
-    const [functionAccess] = await backend.query<{
+    const {
+      rows: [functionAccess],
+    } = await backend.query<{
       api: boolean;
       worker: boolean;
     }>(
