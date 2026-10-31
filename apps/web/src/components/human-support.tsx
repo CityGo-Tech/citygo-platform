@@ -1,4 +1,5 @@
 "use client";
+import { SupportReplies } from "@citygo/admin";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { createClient } from "@citygo/api-client";
 import {
@@ -37,6 +38,7 @@ export function HumanSupportPanel({
     signal: AbortSignal;
     value: SupportState;
   } | null>(null);
+  const [replyRequest, setReplyRequest] = useState<string | null>(null);
   const resource = useRef<ReturnType<typeof createHumanSupportResource> | null>(
     null,
   );
@@ -48,6 +50,7 @@ export function HumanSupportPanel({
     const controller = new AbortController(),
       signal = AbortSignal.any([controller.signal, sessionSignal]);
     setBody("");
+    setReplyRequest(null);
     const current = createHumanSupportResource({
       userId,
       signal,
@@ -200,6 +203,22 @@ export function HumanSupportPanel({
                   {new Date(item.createdAt).toLocaleString("ru-RU")}
                 </time>
               </small>
+              <Button
+                variant="secondary"
+                disabled={!!state.busy}
+                onClick={() => setReplyRequest(item.id)}
+              >
+                Ответы на обращение №{item.id}
+              </Button>
+              {replyRequest === item.id && (
+                <SupportReplies
+                  key={userId + ":" + item.id}
+                  viewerId={userId}
+                  requestId={item.id}
+                  sessionSignal={sessionSignal}
+                  onAccessDenied={onAccessDenied}
+                />
+              )}
             </li>
           ))}
         </ul>

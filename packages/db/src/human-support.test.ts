@@ -45,6 +45,77 @@ const command = () => ({
 });
 const status = (n: number) => (e: unknown) =>
   e instanceof DomainError && e.statusCode === n;
+test("human replies are append-only, owner-private, exact-replayed and revision-bound without money or model writes", async (t) => {
+  const f = await fixture(t),
+    request = (await f.store.create(f.owner, command())).request;
+  const input = {
+    operationId: randomUUID(),
+    expectedRevision: request.revision,
+    body: "Начните со списка важных для вас районов. 😀",
+  };
+  await assert.rejects(f.store.reply(f.owner, request.id, input), status(403));
+  const reply = await f.store.reply(f.admin, request.id, input);
+  assert.equal(reply.request.revision, 2);
+  assert.equal(reply.reply.body, input.body);
+  assert.deepEqual(await f.store.reply(f.admin, request.id, input), reply);
+  await assert.rejects(
+    f.store.reply(f.admin, request.id, { ...input, body: "Другой текст" }),
+    status(409),
+  );
+  await assert.rejects(
+    f.store.reply(f.admin, request.id, { ...input, operationId: randomUUID() }),
+    status(409),
+  );
+  assert.deepEqual((await f.store.replies(f.owner, request.id)).replies, [
+    reply.reply,
+  ]);
+  await assert.rejects(f.store.replies(f.other, request.id), status(404));
+  await f.store.setStatus(f.admin, request.id, {
+    expectedRevision: 2,
+    status: "closed",
+  });
+  assert.equal(
+    (await f.store.reply(f.admin, request.id, input)).reply.id,
+    reply.reply.id,
+  );
+  await assert.rejects(
+    f.store.reply(f.admin, request.id, {
+      ...input,
+      expectedRevision: 3,
+      operationId: randomUUID(),
+    }),
+    status(409),
+  );
+  await assert.rejects(
+    f.db.query("update human_support_replies set body=body where id=$1", [
+      reply.reply.id,
+    ]),
+  );
+  await assert.rejects(
+    f.db.query("delete from human_support_replies where id=$1", [
+      reply.reply.id,
+    ]),
+  );
+  const audit = JSON.stringify(
+    (
+      await f.db.query(
+        "select payload from audit_log where action='human-support-replied'",
+      )
+    ).rows,
+  );
+  assert.doesNotMatch(audit, /Начните|районов/);
+  for (const table of [
+    "messages",
+    "chat_requests",
+    "payment_topup_orders",
+    "ai_credit_entries",
+  ])
+    assert.equal((await f.db.query(`select * from ${table}`)).rows.length, 0);
+  await f.db.query("update users set role='user' where id=$1", [
+    f.admin.userId,
+  ]);
+  await assert.rejects(f.store.reply(f.admin, request.id, input), status(403));
+});
 test("astral support text survives storage exactly and invalid point count/NUL is rejected before insert", async (t) => {
   const f = await fixture(t);
   const value = "😀".repeat(20),

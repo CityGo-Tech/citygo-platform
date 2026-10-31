@@ -7,6 +7,7 @@ import { DomainError } from "./errors.js";
 // This inventory is deliberately not discovered into a deletion list.
 const tables = [
   "human_support_requests",
+  "human_support_replies",
   "service_consent_events",
   "personal_plan_checklists",
   "personal_plan_items",
@@ -111,6 +112,7 @@ const protectedAdmission = [
 ] as const;
 const protectedEmpty = [
   "human_support_requests",
+  "human_support_replies",
   // User-chosen steps and their tombstones need a separate erasure review.
   "personal_plan_checklists",
   "personal_plan_items",
@@ -397,10 +399,15 @@ async function lockedSnapshot(
 async function inspect(tx: Sql, options: Options) {
   const { snapshot, bootstrapCompleted } = await lockedSnapshot(tx);
   const blockers: FreshAccountResetPlan["blockers"] = [];
-  if (snapshot.counts.human_support_requests)
+  if (
+    snapshot.counts.human_support_requests ||
+    snapshot.counts.human_support_replies
+  )
     blockers.push({
       code: "HUMAN_SUPPORT_HISTORY_REQUIRES_REVIEW",
-      count: snapshot.counts.human_support_requests,
+      count:
+        (snapshot.counts.human_support_requests ?? 0) +
+        (snapshot.counts.human_support_replies ?? 0),
     });
   if (options.expectedUserCount === undefined)
     blockers.push({ code: "EXPECTED_USER_COUNT_NOT_PINNED", count: 1 });

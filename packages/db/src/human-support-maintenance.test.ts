@@ -26,14 +26,23 @@ test("support history blocks every existing account-maintenance transition witho
     personalData: true,
     marketing: false,
   });
-  await new HumanSupportRequests(db).create(
+  const support = new HumanSupportRequests(db);
+  const created = await support.create(
     { userId, sessionTokenHash },
     {
       operationId: randomUUID(),
       body: "PRIVATE_SUPPORT_Нужна помощь с первым шагом переезда.",
     },
   );
+  await db.query("update users set role='admin' where id=$1", [userId]);
+  await support.reply({ userId, sessionTokenHash }, created.request.id, {
+    operationId: randomUUID(),
+    expectedRevision: 1,
+    body: "PRIVATE_REPLY_Начните с выбора районов.",
+  });
   const before = (await db.query("select * from human_support_requests")).rows;
+  const beforeReplies = (await db.query("select * from human_support_replies"))
+    .rows;
   for (const reset of [
     new AccountReset(db),
     new ClosedAccountRestart(db),
@@ -44,6 +53,7 @@ test("support history blocks every existing account-maintenance transition witho
       maintenanceConfirmed: true,
     });
     assert.equal(plan.counts.human_support_requests, 1);
+    assert.equal(plan.counts.human_support_replies, 1);
     assert.ok(
       plan.blockers.some(
         (b) => b.code === "HUMAN_SUPPORT_HISTORY_REQUIRES_REVIEW",
@@ -51,11 +61,15 @@ test("support history blocks every existing account-maintenance transition witho
     );
     assert.doesNotMatch(
       JSON.stringify(plan),
-      /PRIVATE_SUPPORT|support-preserve/,
+      /PRIVATE_SUPPORT|PRIVATE_REPLY|support-preserve/,
     );
   }
   assert.deepEqual(
     (await db.query("select * from human_support_requests")).rows,
     before,
+  );
+  assert.deepEqual(
+    (await db.query("select * from human_support_replies")).rows,
+    beforeReplies,
   );
 });

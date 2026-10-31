@@ -18,6 +18,7 @@ import { NpdReceiptsControl } from "./npd-receipts.js";
 import { PaymentRefundsControl } from "./payment-refunds.js";
 import { PaymentAdmissionControl } from "./payment-admission.js";
 import { HumanSupportInbox } from "./human-support.js";
+export { SupportReplies } from "./support-replies.js";
 export function AdminOverview({
   metrikaCounterId,
 }: { metrikaCounterId?: number | null } = {}) {
