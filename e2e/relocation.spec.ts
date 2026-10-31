@@ -181,6 +181,10 @@ test("profile changes password to six arbitrary characters; old login fails and 
   await expect(page.getByRole("status")).toContainText("Пароль изменён");
   await page.getByRole("button", { name: "Выйти", exact: true }).click();
   await page
+    .getByRole("dialog", { name: "Выйти из аккаунта?", exact: true })
+    .getByRole("button", { name: "Выйти", exact: true })
+    .click();
+  await page
     .getByRole("button", { name: "Уже есть аккаунт? Войти", exact: true })
     .click();
   await page

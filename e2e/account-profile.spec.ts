@@ -438,6 +438,10 @@ test("late profile read cannot expose old contacts after logout or overwrite ano
   await expect.poll(() => state.reads).toBe(1);
   await page.getByRole("button", { name: "Выйти", exact: true }).click();
   await page
+    .getByRole("dialog", { name: "Выйти из аккаунта?", exact: true })
+    .getByRole("button", { name: "Выйти", exact: true })
+    .click();
+  await page
     .getByRole("button", { name: "Уже есть аккаунт? Войти", exact: true })
     .click();
   await page
@@ -471,6 +475,10 @@ test("late confirmation is discarded after logout and never creates an authentic
     .click();
   await expect.poll(() => state.confirmations.length).toBe(1);
   await page.getByRole("button", { name: "Выйти", exact: true }).click();
+  await page
+    .getByRole("dialog", { name: "Выйти из аккаунта?", exact: true })
+    .getByRole("button", { name: "Выйти", exact: true })
+    .click();
   state.releaseConfirm();
   await expect(panel(page)).toHaveCount(0);
   await expect(

@@ -107,6 +107,10 @@ test("logout A → login B clears chat drafts and allows a fresh B draft", async
   await page.goto("/#chat");
   await page.getByLabel("Сообщение помощнику").fill("Черновик пользователя A");
   await page.getByRole("button", { name: "Выйти", exact: true }).click();
+  await page
+    .getByRole("dialog", { name: "Выйти из аккаунта?", exact: true })
+    .getByRole("button", { name: "Выйти", exact: true })
+    .click();
   await signInB(page);
   await openChat(page);
   await expect(page.getByLabel("Сообщение помощнику")).toHaveValue("");
@@ -234,6 +238,10 @@ test("logout remains available during a delayed response and late A never enters
     page.getByRole("button", { name: "Выйти", exact: true }),
   ).toBeEnabled();
   await page.getByRole("button", { name: "Выйти", exact: true }).click();
+  await page
+    .getByRole("dialog", { name: "Выйти из аккаунта?", exact: true })
+    .getByRole("button", { name: "Выйти", exact: true })
+    .click();
   await signInB(page);
   await openChat(page);
   release();
@@ -250,6 +258,10 @@ test("failed Web logout clears local data but does not claim server revocation",
   await page.goto("/#chat");
   await page.getByLabel("Сообщение помощнику").fill("Черновик A");
   await page.getByRole("button", { name: "Выйти", exact: true }).click();
+  await page
+    .getByRole("dialog", { name: "Выйти из аккаунта?", exact: true })
+    .getByRole("button", { name: "Выйти", exact: true })
+    .click();
   await expect(page.locator(".alert[role=alert]")).toContainText(
     "Не удалось завершить выход",
   );
@@ -275,6 +287,10 @@ test("cross-tab invalidation clears a no-profile conversation draft before anoth
   await install(second);
   await second.goto("/");
   await second.getByRole("button", { name: "Выйти", exact: true }).click();
+  await second
+    .getByRole("dialog", { name: "Выйти из аккаунта?", exact: true })
+    .getByRole("button", { name: "Выйти", exact: true })
+    .click();
   await expect(
     page.getByLabel("Электронная почта", { exact: true }),
   ).toBeVisible();
@@ -289,4 +305,150 @@ test("cross-tab invalidation clears a no-profile conversation draft before anoth
   await expect(page.getByLabel("Сообщение помощнику")).toHaveValue("");
   await expect(page.getByLabel("Откуда переезжаете")).toHaveCount(0);
   await second.close();
+});
+
+test("logout choice preserves the draft and browser storage on Stay and Escape without a revoke", async ({
+  page,
+}, info) => {
+  await install(page, false);
+  let revokes = 0;
+  page.on("request", (req) => {
+    if (req.url().endsWith("/v1/auth/logout")) revokes++;
+  });
+  await page.goto("/#chat");
+  await page.getByLabel("Сообщение помощнику").fill("НЕСОХРАНЁННЫЙ_ЧЕРНОВИК");
+  const before = await page.evaluate(() => ({
+    local: { ...localStorage },
+    session: { ...sessionStorage },
+  }));
+  const trigger = page.getByRole("button", { name: "Выйти", exact: true });
+  await trigger.click();
+  const dialog = page.getByRole("dialog", {
+    name: "Выйти из аккаунта?",
+    exact: true,
+  });
+  await expect(dialog).toBeVisible();
+  await expect(
+    dialog.getByRole("button", { name: "Остаться", exact: true }),
+  ).toBeFocused();
+  await expect(dialog).toHaveClass(/ym-hide-content/);
+  expect(
+    await dialog.evaluate((e) => ({
+      overflow: document.documentElement.scrollWidth > innerWidth,
+      radius: getComputedStyle(e).borderRadius,
+    })),
+  ).toEqual({ overflow: false, radius: "24px" });
+  await dialog.screenshot({ path: info.outputPath("logout-choice.png") });
+  await dialog.getByRole("button", { name: "Остаться", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+  await expect(page.getByLabel("Сообщение помощнику")).toHaveValue(
+    "НЕСОХРАНЁННЫЙ_ЧЕРНОВИК",
+  );
+  await trigger.click();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByLabel("Сообщение помощнику")).toHaveValue(
+    "НЕСОХРАНЁННЫЙ_ЧЕРНОВИК",
+  );
+  expect(
+    await page.evaluate(() => ({
+      local: { ...localStorage },
+      session: { ...sessionStorage },
+    })),
+  ).toEqual(before);
+  expect(revokes).toBe(0);
+});
+test("logout confirmation clears private data before delayed revocation and dispatches only once", async ({
+  page,
+}) => {
+  await install(page, false);
+  let revokes = 0,
+    release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  await page.route("**/api/v1/auth/logout", async (route) => {
+    revokes++;
+    await gate;
+    await route.fulfill({ json: { ok: true } });
+  });
+  await page.goto("/#chat");
+  await page.getByLabel("Сообщение помощнику").fill("СЕКРЕТНЫЙ_ЧЕРНОВИК");
+  await page.getByRole("button", { name: "Выйти", exact: true }).click();
+  const confirm = page
+    .getByRole("dialog", { name: "Выйти из аккаунта?", exact: true })
+    .getByRole("button", { name: "Выйти", exact: true });
+  await confirm.evaluate((button) => {
+    (button as HTMLButtonElement).click();
+    (button as HTMLButtonElement).click();
+  });
+  await expect.poll(() => revokes).toBe(1);
+  await expect(page.getByLabel("Сообщение помощнику")).toHaveCount(0);
+  await expect(page.locator("body")).not.toContainText("СЕКРЕТНЫЙ_ЧЕРНОВИК");
+  release();
+  await expect(
+    page.getByRole("status").filter({ hasText: "Вы вышли из аккаунта" }),
+  ).toBeVisible();
+  expect(revokes).toBe(1);
+});
+test("cross-tab invalidation dismisses an old logout choice without logging out the next account", async ({
+  page,
+}) => {
+  await install(page, false);
+  let revokes = 0;
+  page.on("request", (req) => {
+    if (req.url().endsWith("/v1/auth/logout")) revokes++;
+  });
+  await page.goto("/#chat");
+  await page.getByRole("button", { name: "Выйти", exact: true }).click();
+  const dialog = page.getByRole("dialog", {
+    name: "Выйти из аккаунта?",
+    exact: true,
+  });
+  await expect(dialog).toBeVisible();
+  await page.evaluate(() =>
+    window.dispatchEvent(
+      new StorageEvent("storage", {
+        key: "citygo-session-changed",
+        newValue: "synthetic-external-invalidation",
+      }),
+    ),
+  );
+  await expect(dialog).toHaveCount(0);
+  await signInB(page);
+  await expect(page.getByLabel("Сообщение помощнику")).toBeVisible();
+  expect(revokes).toBe(0);
+});
+
+test("failed confirmed logout retains the retry gate and retry does not reopen the choice", async ({
+  page,
+}) => {
+  await install(page, false);
+  let revokes = 0;
+  await page.route("**/api/v1/auth/logout", async (route) => {
+    revokes++;
+    if (revokes === 1) return route.abort("failed");
+    return route.fulfill({ json: { ok: true } });
+  });
+  await page.goto("/#chat");
+  await page.getByRole("button", { name: "Выйти", exact: true }).click();
+  await page
+    .getByRole("dialog", { name: "Выйти из аккаунта?", exact: true })
+    .getByRole("button", { name: "Выйти", exact: true })
+    .click();
+  await expect(page.locator(".alert[role=alert]")).toContainText(
+    "Не удалось завершить выход",
+  );
+  await expect(
+    page.getByRole("button", { name: "Создать аккаунт", exact: true }),
+  ).toBeDisabled();
+  await page
+    .getByRole("button", { name: "Повторить выход", exact: true })
+    .click();
+  await expect(
+    page.getByRole("dialog", { name: "Выйти из аккаунта?", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("status").filter({ hasText: "Вы вышли из аккаунта" }),
+  ).toBeVisible();
+  expect(revokes).toBe(2);
 });

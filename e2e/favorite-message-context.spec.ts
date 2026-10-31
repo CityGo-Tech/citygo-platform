@@ -243,6 +243,10 @@ test("late source data cannot reappear after logout", async ({ page }) => {
   await open(page);
   await expect.poll(() => state.reads.length).toBe(1);
   await page.getByRole("button", { name: "Выйти", exact: true }).click();
+  await page
+    .getByRole("dialog", { name: "Выйти из аккаунта?", exact: true })
+    .getByRole("button", { name: "Выйти", exact: true })
+    .click();
   state.release();
   await expect(source(page)).toHaveCount(0);
   await expect(

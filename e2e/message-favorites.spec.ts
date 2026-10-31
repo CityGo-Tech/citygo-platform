@@ -137,6 +137,10 @@ test("late valid favorite response cannot reappear after logout", async ({
   await page.getByRole("button", { name: "Избранное", exact: true }).click();
   await expect.poll(() => reads).toBe(1);
   await page.getByRole("button", { name: "Выйти", exact: true }).click();
+  await page
+    .getByRole("dialog", { name: "Выйти из аккаунта?", exact: true })
+    .getByRole("button", { name: "Выйти", exact: true })
+    .click();
   release();
   await expect(page.getByText("LATE PRIVATE MESSAGE")).toHaveCount(0);
   await expect(

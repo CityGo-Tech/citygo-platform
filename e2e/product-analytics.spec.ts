@@ -493,6 +493,10 @@ test("trusted-origin collector respects build flags, masks, late identity, opt-o
     .toBe(2);
   const beforeLogout = (await commands()).length;
   await page.getByRole("button", { name: "Выйти", exact: true }).click();
+  await page
+    .getByRole("dialog", { name: "Выйти из аккаунта?", exact: true })
+    .getByRole("button", { name: "Выйти", exact: true })
+    .click();
   await expect(
     page.getByRole("button", { name: "Создать аккаунт", exact: true }),
   ).toBeVisible();

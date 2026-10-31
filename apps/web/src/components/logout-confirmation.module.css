@@ -1,0 +1,5 @@
+.notice {
+  background: var(--cg-color-primary-soft);
+  font-size: 14px;
+  line-height: 1.45;
+}
