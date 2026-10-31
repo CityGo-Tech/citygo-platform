@@ -203,6 +203,7 @@ export function ResultsLibrary({
   denied.current = onAccessDenied;
   const sourceButton = useRef<HTMLButtonElement | null>(null);
   const listScroll = useRef(0);
+  const previewTitle = useRef<HTMLHeadingElement | null>(null);
   useEffect(() => {
     const controller = new AbortController();
     const signal = AbortSignal.any([controller.signal, sessionSignal]);
@@ -256,6 +257,9 @@ export function ResultsLibrary({
         ? current.plan.items.find((item) => item.id === detail.id)
         : current.favorites.items.find((item) => item.id === detail.id)
       : null;
+  useEffect(() => {
+    if (expanded && !sessionSignal.aborted) previewTitle.current?.focus();
+  }, [expanded?.id, category, userId, sessionSignal]);
   if (sessionSignal.aborted || current?.closed) return null;
   const returnToList = () => {
     setSource(null);
@@ -442,7 +446,7 @@ export function ResultsLibrary({
           <span className={styles.meta}>
             {category === "plan" ? "ШАГ ПЛАНА" : "ИЗБРАННОЕ СООБЩЕНИЕ"}
           </span>
-          <h1>
+          <h1 ref={previewTitle} tabIndex={-1}>
             {"title" in expanded
               ? expanded.title
               : resultMessageTitle(expanded.content)}

@@ -791,6 +791,7 @@ test("full result preview renders exact manual steps and long favorites safely, 
     name: "Полный результат",
     exact: true,
   });
+  await expect(full.getByRole("heading", { level: 1 })).toBeFocused();
   await expect(
     full.getByRole("region", { name: "Полный текст результата", exact: true }),
   ).toHaveText(plan[0]!.details);
