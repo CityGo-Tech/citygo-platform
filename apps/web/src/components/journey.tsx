@@ -30,6 +30,7 @@ import {
 import type { ConversationHistoryState } from "./conversation-history-state";
 import { AiModeSelector } from "./ai-mode-selector";
 import { isAiModeAvailable } from "@citygo/api-client";
+import { ConversationExportAction } from "./conversation-export";
 
 import { agentNames } from "./agent-names";
 export { agentNames } from "./agent-names";
@@ -398,6 +399,16 @@ export function Journey(props: JourneyProps) {
                 </small>
               </div>
               <Badge>КВЕСТ: ЖИЛЬЁ</Badge>
+              {board.thread && (
+                <ConversationExportAction
+                  key={board.user.id + ":" + board.thread.id + ":export"}
+                  userId={board.user.id}
+                  threadId={board.thread.id}
+                  sessionSignal={props.sessionSignal}
+                  disabled={busy || sending}
+                  onAccessDenied={props.onAccessDenied}
+                />
+              )}
             </header>
             {!isAiModeAvailable(
               board.aiAccess.modes,

@@ -1,0 +1,14 @@
+.controls {
+  display: grid;
+  gap: var(--cg-space-sm);
+  min-width: 0;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--cg-space-sm);
+}
+.controls p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}

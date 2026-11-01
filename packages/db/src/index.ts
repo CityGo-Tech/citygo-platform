@@ -11,6 +11,7 @@ export {
 export { PersonalPlan } from "./personal-plan.js";
 export { PersonalPlanHistory } from "./personal-plan-history.js";
 export { exportPersonalPlan } from "./personal-plan-export.js";
+export { exportConversation } from "./conversation-export.js";
 export {
   HumanSupportRequests,
   type HumanSupportContext,
