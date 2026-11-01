@@ -74,9 +74,13 @@ test("owner closes/reopens own support, filters preserve the draft and persisted
   );
   await panel.getByLabel("Показать обращения").selectOption("closed");
   await expect(row).toContainText("Закрыто");
+  const privateHistory = panel.locator(
+    'section[aria-labelledby="support-history-heading"][data-citygo-private]',
+  );
+  await expect(privateHistory).toHaveClass(/ym-hide-content/);
   await expect(
-    panel.locator("[data-citygo-private]").filter({ has: row }),
-  ).toHaveCount(1);
+    privateHistory.locator("#human-support-thread-" + id),
+  ).toContainText(question);
   await panel.screenshot({ path: info.outputPath("support-owner-closed.png") });
   const fresh = await enter(page, context);
   await fresh.getByLabel("Показать обращения").selectOption("closed");
