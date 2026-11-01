@@ -1,5 +1,35 @@
-import { expect, test, type BrowserContext, type Page } from "@playwright/test";
+import {
+  expect,
+  test,
+  type BrowserContext,
+  type Page,
+  type TestInfo,
+} from "@playwright/test";
 import { createHash, randomUUID } from "node:crypto";
+
+// Independent real-HTTP fixtures keep the ordinary per-client limiter. Only
+// the NODE_ENV=test in-memory server trusts this local Next.js test proxy.
+async function syntheticClient(
+  context: BrowserContext,
+  info: TestInfo,
+  slot: 1 | 2,
+) {
+  const projectIndex = info.config.projects.findIndex(
+    (project) => project.name === info.project.name,
+  );
+  expect(projectIndex).toBeGreaterThanOrEqual(0);
+  expect(projectIndex).toBeLessThan(55);
+  const host = info.retry * 16 + slot;
+  expect(host).toBeLessThan(255);
+  // A distinct benchmark subnet from human-support-replies' 198.18.1..2.
+  const headers = { "X-Forwarded-For": `198.18.${200 + projectIndex}.${host}` };
+  await context.setExtraHTTPHeaders(headers);
+  const health = await context.request.get("/api/health", { headers });
+  expect(health.status()).toBe(200);
+  expect(health.headers()["x-ratelimit-limit"]).toBe("120");
+  expect(health.headers()["x-ratelimit-remaining"]).toBe("119");
+  return headers;
+}
 
 async function enter(page: Page, context: BrowserContext) {
   await context.addCookies([
@@ -25,7 +55,12 @@ async function enter(page: Page, context: BrowserContext) {
     .click();
   return page.locator("[aria-labelledby=human-support-heading]");
 }
-async function create(page: Page, context: BrowserContext, question: string) {
+async function create(
+  page: Page,
+  context: BrowserContext,
+  question: string,
+  headers: Record<string, string>,
+) {
   const panel = await enter(page, context);
   await panel.getByRole("textbox", { name: "Ваш вопрос" }).fill(question);
   await panel
@@ -35,7 +70,7 @@ async function create(page: Page, context: BrowserContext, question: string) {
     "Обращение сохранено",
   );
   const list = await (
-    await context.request.get("/api/v1/support-requests")
+    await context.request.get("/api/v1/support-requests", { headers })
   ).json();
   const row = list.requests.find((r: { body: string }) => r.body === question);
   expect(row).toBeTruthy();
@@ -46,6 +81,7 @@ test("owner closes/reopens own support, filters preserve the draft and persisted
   page,
   context,
 }, info) => {
+  const headers = await syntheticClient(context, info, 1);
   const forbidden: string[] = [];
   page.on("request", (r) => {
     if (
@@ -56,7 +92,7 @@ test("owner closes/reopens own support, filters preserve the draft and persisted
   });
   const question =
     "Проверьте, пожалуйста, мой первый шаг переезда. " + randomUUID();
-  const { panel, id } = await create(page, context, question);
+  const { panel, id } = await create(page, context, question, headers);
   await panel
     .getByRole("button", { name: "Новый вопрос", exact: true })
     .click();
@@ -96,8 +132,11 @@ test("owner closes/reopens own support, filters preserve the draft and persisted
   await fresh.getByLabel("Показать обращения").selectOption("open");
   await expect(saved).toContainText("Открыто");
   expect(
-    (await (await context.request.get("/api/v1/support-requests/" + id)).json())
-      .request.status,
+    (
+      await (
+        await context.request.get("/api/v1/support-requests/" + id, { headers })
+      ).json()
+    ).request.status,
   ).toBe("open");
   expect(forbidden).toEqual([]);
   expect(
@@ -114,10 +153,12 @@ test("a lost owner status receipt never silently retries and an explicit read re
   page,
   context,
 }, info) => {
+  const headers = await syntheticClient(context, info, 2);
   const { panel, id } = await create(
     page,
     context,
     "Нужно разобраться с обращением после изменения статуса. " + randomUUID(),
+    headers,
   );
   let patches = 0;
   await page.route("**/api/v1/support-requests/" + id, async (route) => {
