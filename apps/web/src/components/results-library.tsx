@@ -7,6 +7,9 @@ import type {
   PersonalPlanItem,
 } from "@citygo/contracts";
 import { Button, Card, Field, SelectField } from "@citygo/ui-web";
+import type { ResultDiscussionParams } from "@citygo/contracts";
+import type { ResultDiscussionInput } from "./result-discussion-state";
+import { ResultDiscussionDialog } from "./result-discussion";
 import { agentNames } from "./agent-names";
 import { FavoriteMessageContext } from "./favorite-message-context";
 import {
@@ -175,6 +178,7 @@ export function ResultsLibrary({
   onFavorites,
   onContinue,
   navigationBusy = false,
+  onDiscuss,
 }: {
   userId: string;
   sessionSignal: AbortSignal;
@@ -184,6 +188,7 @@ export function ResultsLibrary({
   onFavorites?: () => void;
   onContinue: () => void;
   navigationBusy?: boolean;
+  onDiscuss?: (input: ResultDiscussionInput) => Promise<boolean>;
 }) {
   const [snapshot, setSnapshot] = useState<{
     owner: string;
@@ -191,6 +196,32 @@ export function ResultsLibrary({
     state: ResultsState;
   } | null>(null);
   const [source, setSource] = useState<Source | null>(null);
+  const [discussion, setDiscussion] = useState<{
+    owner: string;
+    signal: AbortSignal;
+    selection: ResultDiscussionParams;
+  } | null>(null);
+  const discussButton = useRef<HTMLButtonElement | null>(null);
+  const closeDiscussion = () => {
+    setDiscussion(null);
+    requestAnimationFrame(() => {
+      if (!sessionSignal.aborted) discussButton.current?.focus();
+    });
+  };
+  const discussAction = (selection: ResultDiscussionParams) =>
+    onDiscuss && (
+      <Button
+        variant="secondary"
+        disabled={navigationBusy}
+        onClick={(event) => {
+          if (sessionSignal.aborted || navigationBusy) return;
+          discussButton.current = event.currentTarget;
+          setDiscussion({ owner: userId, signal: sessionSignal, selection });
+        }}
+      >
+        Обсудить
+      </Button>
+    );
   const [detail, setDetail] = useState<{
     owner: string;
     signal: AbortSignal;
@@ -340,6 +371,7 @@ export function ResultsLibrary({
       </small>
       <div className={styles.actions}>
         {previewAction(item.id)}
+        {discussAction({ kind: "plan", id: item.id })}
         {item.source &&
           sourceAction({
             id: item.source.messageId,
@@ -382,6 +414,7 @@ export function ResultsLibrary({
       {item.status === "interrupted" && <small>Ответ прерван</small>}
       <div className={styles.actions}>
         {previewAction(item.id)}
+        {discussAction({ kind: "favorites", id: item.id })}
         {sourceAction({
           id: item.id,
           threadId: item.threadId,
@@ -408,6 +441,26 @@ export function ResultsLibrary({
   );
   return (
     <>
+      {onDiscuss &&
+        discussion?.owner === userId &&
+        discussion.signal === sessionSignal && (
+          <ResultDiscussionDialog
+            key={
+              userId +
+              ":" +
+              discussion.selection.kind +
+              ":" +
+              discussion.selection.id
+            }
+            owner={userId}
+            selection={discussion.selection}
+            sessionSignal={sessionSignal}
+            disabled={navigationBusy}
+            onPrepare={onDiscuss}
+            onClose={closeDiscussion}
+            onAccessDenied={onAccessDenied}
+          />
+        )}
       {selected && (
         <div className="ym-hide-content">
           <FavoriteMessageContext
@@ -447,6 +500,7 @@ export function ResultsLibrary({
           <span className={styles.meta}>
             {category === "plan" ? "ШАГ ПЛАНА" : "ИЗБРАННОЕ СООБЩЕНИЕ"}
           </span>
+          {discussAction({ kind: category, id: expanded.id })}
           <h1 ref={previewTitle} tabIndex={-1}>
             {"title" in expanded
               ? expanded.title
@@ -579,7 +633,7 @@ export function ResultsLibrary({
           )}
           <div className={styles.bottomActions}>
             <Button disabled={navigationBusy} onClick={onContinue}>
-              Обсудить результаты
+              Открыть диалоги
             </Button>
             {category === "plan" ? (
               <Button

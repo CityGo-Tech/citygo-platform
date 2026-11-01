@@ -309,6 +309,18 @@ export function ConversationHome(props: JourneyProps) {
               onOpenConversation={open}
               onPlan={() => setTab("Мой план")}
               onFavorites={props.onFavorites}
+              onDiscuss={
+                props.onDiscussResult
+                  ? async (input) => {
+                      const prepared = await props.onDiscussResult!(input);
+                      if (prepared && !props.sessionSignal.aborted) {
+                        setTab("Диалоги");
+                        setShowList(false);
+                      }
+                      return prepared;
+                    }
+                  : undefined
+              }
               onContinue={() => {
                 setTab("Диалоги");
                 setShowList(false);

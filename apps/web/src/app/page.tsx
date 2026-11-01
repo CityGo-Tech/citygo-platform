@@ -22,6 +22,11 @@ import type {
   AiModeId,
 } from "@citygo/contracts";
 import { Button, Card, Field, Badge } from "@citygo/ui-web";
+import {
+  currentResultDiscussionInput,
+  resultDiscussionDraft,
+  type ResultDiscussionInput,
+} from "../components/result-discussion-state";
 import { Journey } from "../components/journey";
 import { createConversationListRequests } from "../components/conversation-list-requests";
 import { ConversationHome } from "../components/conversation-home";
@@ -405,6 +410,7 @@ export default function Home() {
   async function beginConversation(
     agentKey?: AgentKey,
     handoff?: AssistantHandoffInput,
+    discussion?: ResultDiscussionInput,
   ) {
     if (
       !board ||
@@ -428,6 +434,24 @@ export default function Home() {
         ))
     )
       return false;
+    if (
+      discussion &&
+      (handoff ||
+        agentKey !== discussion.target ||
+        !currentResultDiscussionInput(
+          discussion,
+          board.user.id,
+          session.capture().signal,
+        ))
+    )
+      return false;
+    if (discussion) {
+      try {
+        resultDiscussionDraft(discussion.text);
+      } catch {
+        return false;
+      }
+    }
     if (handoff) {
       try {
         assistantHandoffDraft(handoff.text);
@@ -477,6 +501,18 @@ export default function Home() {
             conversationDrafts.current.get(detail.thread.id) ??
             readChatDraft(board.user.id, detail.thread.id, draftStorage());
           preparedDraft = assistantHandoffDraft(handoff.text, existing);
+        }
+        if (discussion) {
+          if (
+            detail.thread.closed ||
+            (detail.thread.assistantKey ?? detail.thread.agentKey) !==
+              discussion.target
+          )
+            throw new Error("Result discussion target mismatch");
+          const existing =
+            conversationDrafts.current.get(detail.thread.id) ??
+            readChatDraft(board.user.id, detail.thread.id, draftStorage());
+          preparedDraft = resultDiscussionDraft(discussion.text, existing);
         }
         rememberConversation(board.user.id, detail.thread.id);
         visibleThread.current = detail.thread.id;
@@ -1556,6 +1592,9 @@ export default function Home() {
                 topups={topups}
                 onBegin={beginConversation}
                 onHandoff={(input) => beginConversation(input.target, input)}
+                onDiscussResult={(input) =>
+                  beginConversation(input.target, undefined, input)
+                }
                 conversations={conversations}
                 conversationNextCursor={conversationNextCursor}
                 onConversations={loadConversations}

@@ -2,6 +2,9 @@ import {
   balanceHistoryQuerySchema,
   balanceHistoryPageSchema,
   type BalanceHistoryQuery,
+  resultDiscussionParamsSchema,
+  resultDiscussionSourceSchema,
+  type ResultDiscussionParams,
 } from "@citygo/contracts";
 import { personalPlanExportSchema } from "@citygo/contracts";
 export {
@@ -941,6 +944,20 @@ export function createClient(
         throw new ApiError(
           200,
           "Ответ сервера не подтверждает удаление шага",
+          "invalid_response",
+        );
+      return result;
+    },
+    resultDiscussionSource: async (input: ResultDiscussionParams) => {
+      const value = resultDiscussionParamsSchema.parse(input);
+      const result = await request(
+        "/v1/results/" + value.kind + "/" + value.id + "/discussion-source",
+        resultDiscussionSourceSchema,
+      );
+      if (result.kind !== value.kind || result.id !== value.id)
+        throw new ApiError(
+          200,
+          "Ответ сервера не соответствует выбранному результату",
           "invalid_response",
         );
       return result;
