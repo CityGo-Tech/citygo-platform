@@ -28,6 +28,11 @@ import {
   type ResultDiscussionInput,
 } from "../components/result-discussion-state";
 import { Journey } from "../components/journey";
+import { LogoutConfirmation } from "../components/logout-confirmation";
+import {
+  currentLogoutConfirmation,
+  type LogoutConfirmationIntent,
+} from "../components/logout-confirmation-state";
 import { createConversationListRequests } from "../components/conversation-list-requests";
 import { ConversationHome } from "../components/conversation-home";
 import {
@@ -89,6 +94,8 @@ export default function Home() {
   const [session] = useState(createSessionGuard);
   const [formVersion, setFormVersion] = useState(0);
   const [logoutUnconfirmed, setLogoutUnconfirmed] = useState(false);
+  const [logoutIntent, setLogoutIntent] =
+    useState<LogoutConfirmationIntent | null>(null);
   const refreshVersion = useRef(0);
   const [board, setBoard] = useState<Dashboard | null>(null);
   const chatSubmitting = useRef(false);
@@ -216,6 +223,7 @@ export default function Home() {
     setNotice("");
     setLoading(false);
     setLogoutUnconfirmed(false);
+    setLogoutIntent(null);
     setPasswordOpen(false);
     setRegistration(null);
     registrationAnalytics.current = null;
@@ -859,6 +867,12 @@ export default function Home() {
       }
     });
   }
+  function requestLogout(trigger: HTMLButtonElement) {
+    if (!board) return;
+    const ticket = session.capture();
+    if (ticket.active())
+      setLogoutIntent({ owner: board.user.id, ticket, trigger });
+  }
   async function logout() {
     notifyBrowserSessionChange();
     clearUserState();
@@ -1218,7 +1232,10 @@ export default function Home() {
             <Button variant="ghost" onClick={() => setPasswordOpen(true)}>
               Пароль
             </Button>
-            <Button variant="ghost" onClick={() => void logout()}>
+            <Button
+              variant="ghost"
+              onClick={(event) => requestLogout(event.currentTarget)}
+            >
               Выйти
             </Button>
           </div>
@@ -1235,6 +1252,34 @@ export default function Home() {
           <Badge>Личный помощник по переезду</Badge>
         )}
       </header>
+      {board &&
+        logoutIntent &&
+        currentLogoutConfirmation(
+          logoutIntent,
+          board.user.id,
+          session.capture().signal,
+        ) && (
+          <LogoutConfirmation
+            intent={logoutIntent}
+            owner={board.user.id}
+            sessionSignal={session.capture().signal}
+            onClose={() =>
+              setLogoutIntent((current) =>
+                current === logoutIntent ? null : current,
+              )
+            }
+            onConfirm={() => {
+              if (
+                currentLogoutConfirmation(
+                  logoutIntent,
+                  board.user.id,
+                  session.capture().signal,
+                )
+              )
+                void logout();
+            }}
+          />
+        )}
       <main className="ym-hide-content" data-citygo-analytics-private>
         {error && (
           <div className="alert" role="alert">

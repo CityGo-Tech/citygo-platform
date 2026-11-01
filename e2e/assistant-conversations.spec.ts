@@ -485,6 +485,10 @@ test("a pending stream cannot switch threads or leak late content after multi-ta
     await second.goto("/");
     await begin(second, "job-search");
     await second.getByRole("button", { name: "Выйти", exact: true }).click();
+    await second
+      .getByRole("dialog", { name: "Выйти из аккаунта?", exact: true })
+      .getByRole("button", { name: "Выйти", exact: true })
+      .click();
     await expect(
       page.getByRole("button", { name: "Создать аккаунт", exact: true }),
     ).toBeVisible();

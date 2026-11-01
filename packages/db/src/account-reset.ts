@@ -23,6 +23,7 @@ export type AccountResetPlan = {
 const ownedTables = [
   "human_support_requests",
   "human_support_replies",
+  "human_support_reads",
   "personal_plan_items",
   "user_credentials",
   "sessions",
@@ -45,6 +46,8 @@ const ownedTables = [
   "ai_credit_charges",
 ] as const;
 const retained = [
+  "human_support_reads",
+  "personal_plan_item_history",
   "personal_plan_checklists",
   "service_consent_events",
   "phone_verification_control",
@@ -145,6 +148,10 @@ export class AccountReset {
         "human_support_replies",
         "select count(*)::int as count from human_support_replies r join human_support_requests q on q.id=r.request_id where q.user_id=any($1::bigint[]) or r.author_user_id=any($1::bigint[])",
       );
+      await count(
+        "personal_plan_item_history",
+        "select count(*)::int as count from personal_plan_item_history h join personal_plan_items p on p.id=h.item_id where p.user_id=any($1::bigint[])",
+      );
       for (const table of ["messages", "agent_handoffs", "chat_requests"])
         await count(
           table,
@@ -200,6 +207,18 @@ export class AccountReset {
           count:
             (counts.human_support_requests ?? 0) +
             (counts.human_support_replies ?? 0),
+        });
+      if (
+        counts.personal_plan_items ||
+        counts.personal_plan_checklists ||
+        counts.personal_plan_item_history
+      )
+        blockers.push({
+          code: "PERSONAL_PLAN_HISTORY_REQUIRES_REVIEW",
+          count:
+            (counts.personal_plan_items ?? 0) +
+            (counts.personal_plan_checklists ?? 0) +
+            (counts.personal_plan_item_history ?? 0),
         });
       if (expected === undefined)
         blockers.push({ code: "EXPECTED_USER_COUNT_NOT_PINNED", count: 1 });

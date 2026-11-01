@@ -429,7 +429,7 @@ test("each category pages beyond twenty, opens the exact source and returns to i
     .getByRole("button", { name: "← В результаты", exact: true })
     .click();
   await results(page)
-    .getByRole("button", { name: "Обсудить результаты", exact: true })
+    .getByRole("button", { name: "Открыть диалоги", exact: true })
     .click();
   await expect(page.getByLabel("Сообщение помощнику")).toHaveValue(
     "Несохранённый вопрос",

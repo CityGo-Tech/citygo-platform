@@ -438,6 +438,10 @@ test("unavailable modes and a failed request never fall back, retry or carry sel
   expect(state.sends[0]!.aiMode).toBe("maximum");
   await page.getByRole("button", { name: "Выйти", exact: true }).click();
   await page
+    .getByRole("dialog", { name: "Выйти из аккаунта?", exact: true })
+    .getByRole("button", { name: "Выйти", exact: true })
+    .click();
+  await page
     .getByRole("button", { name: "Уже есть аккаунт? Войти", exact: true })
     .click();
   await page

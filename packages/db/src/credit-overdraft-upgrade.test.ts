@@ -373,7 +373,7 @@ test("23→24 preserves paid money, exact historical receipts, pending full hold
   );
   assert.equal(upgradedJournal[23]!.name, "0024_ai_credit_overdraft.sql");
   assert.equal(upgradedJournal[24]!.name, "0025_assistant_conversations.sql");
-  assert.equal(upgradedJournal.at(-1)!.name, "0040_human_support_replies.sql");
+  assert.equal(upgradedJournal.at(-1)!.name, "0043_balance_history.sql");
   assert.deepEqual(
     (await db.query("select distinct reservation_mode from ai_credit_charges"))
       .rows,
