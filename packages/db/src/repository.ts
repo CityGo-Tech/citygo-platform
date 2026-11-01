@@ -672,6 +672,8 @@ export class Repository {
       await this.db.query<ConversationSummary>(
         `select t.id::text,t.agent_key as "agentKey",t.conversation_agent_key as "assistantKey",
           (t.status='closed') as closed,
+          (select c.title from conversation_titles c where c.thread_id=t.id and c.user_id=t.user_id) as "customTitle",
+          coalesce((select c.revision::text from conversation_titles c where c.thread_id=t.id and c.user_id=t.user_id),'0') as "titleRevision",
           to_char(t.updated_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "updatedAt",
           coalesce((select left(m.content,240) from messages m where m.thread_id=t.id
             and m.role in ('user','assistant') order by m.id desc limit 1),'') as preview

@@ -1,0 +1,30 @@
+.dialog {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--cg-color-foreground);
+  width: min(560px, calc(100% - 32px));
+  max-height: calc(100dvh - 32px);
+  overflow: auto;
+}
+.dialog::backdrop {
+  background: rgb(23 25 43 / 38%);
+}
+.card {
+  display: grid;
+  gap: var(--cg-space-md);
+  padding: var(--cg-space-lg);
+}
+.card h2 {
+  margin: 0;
+  font-size: 24px;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--cg-space-compact);
+  margin-top: var(--cg-space-md);
+}
+.card p {
+  overflow-wrap: anywhere;
+}

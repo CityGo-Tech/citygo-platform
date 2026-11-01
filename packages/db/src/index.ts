@@ -3,6 +3,7 @@ import pg from "pg";
 export { Repository, DomainError } from "./repository.js";
 export { MessageFavorites } from "./message-favorites.js";
 export { ConversationMessageSearch } from "./conversation-message-search.js";
+export { ConversationTitles } from "./conversation-titles.js";
 export {
   CustomerObservability,
   type CustomerObservabilityContext,

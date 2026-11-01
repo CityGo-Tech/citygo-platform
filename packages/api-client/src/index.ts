@@ -1,4 +1,9 @@
 import {
+  conversationTitleSchema,
+  updateConversationTitleSchema,
+  type UpdateConversationTitle,
+} from "@citygo/contracts";
+import {
   balanceHistoryQuerySchema,
   balanceHistoryPageSchema,
   type BalanceHistoryQuery,
@@ -1045,6 +1050,47 @@ export function createClient(
         throw new ApiError(
           200,
           "Ответ сервера не соответствует странице диалогов",
+          "invalid_response",
+        );
+      return result;
+    },
+    conversationTitle: async (conversationId: string) => {
+      const id = conversationIdSchema.parse(conversationId);
+      const result = await request(
+        "/v1/conversations/" + id + "/title",
+        conversationTitleSchema,
+      );
+      if (result.threadId !== id)
+        throw new ApiError(
+          200,
+          "Ответ сервера не соответствует выбранному разговору",
+          "invalid_response",
+        );
+      return result;
+    },
+    updateConversationTitle: async (
+      conversationId: string,
+      input: UpdateConversationTitle,
+    ) => {
+      const id = conversationIdSchema.parse(conversationId);
+      const body = updateConversationTitleSchema.parse(input);
+      const result = await request(
+        "/v1/conversations/" + id + "/title",
+        conversationTitleSchema,
+        body,
+        "PATCH",
+      );
+      if (
+        result.threadId !== id ||
+        result.title !== body.title ||
+        ![
+          BigInt(body.expectedRevision),
+          BigInt(body.expectedRevision) + 1n,
+        ].includes(BigInt(result.revision))
+      )
+        throw new ApiError(
+          200,
+          "Ответ сервера не соответствует изменению названия",
           "invalid_response",
         );
       return result;

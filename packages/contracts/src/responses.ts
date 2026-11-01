@@ -1,4 +1,8 @@
 import { z } from "zod";
+import {
+  conversationCustomTitleSchema,
+  conversationTitleRevisionSchema,
+} from "./conversation-titles.js";
 import { aiCreditResponseSchema } from "./ai-credit.js";
 import { aiModesSchema } from "./ai-modes.js";
 import { errorMetadataSchema } from "./protocol.js";
@@ -302,11 +306,15 @@ export const conversationListResponseSchema = z.object({
           closed: z.boolean(),
           updatedAt: dateTime,
           preview: z.string().max(240),
+          customTitle: conversationCustomTitleSchema.nullable().optional(),
+          titleRevision: conversationTitleRevisionSchema.optional(),
         })
         .refine(
           (value) =>
-            value.assistantKey === null ||
-            value.agentKey === value.assistantKey,
+            (value.customTitle === undefined) ===
+              (value.titleRevision === undefined) &&
+            (value.assistantKey === null ||
+              value.agentKey === value.assistantKey),
         ),
     )
     .max(20),

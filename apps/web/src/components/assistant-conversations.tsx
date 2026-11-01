@@ -1,6 +1,11 @@
 "use client";
 import Image from "next/image";
 import { useEffect, useState, type FormEvent } from "react";
+import {
+  ConversationTitleEditor,
+  type TitleEditorSource,
+} from "./conversation-title-editor";
+import type { ConversationTitle } from "@citygo/contracts";
 import type {
   AgentKey,
   ConversationSummary,
@@ -133,7 +138,13 @@ export function ConversationList({
   filters,
   onHelpers,
   onFavorites,
+  userId,
+  sessionSignal,
+  onAccessDenied,
 }: {
+  userId: string;
+  sessionSignal: AbortSignal;
+  onAccessDenied: () => void;
   conversations: ConversationSummary[] | null;
   nextCursor: string | null;
   busy: boolean;
@@ -143,6 +154,19 @@ export function ConversationList({
   onHelpers: () => void;
   onFavorites?: () => void;
 }) {
+  const [rename, setRename] = useState<TitleEditorSource | null>(null);
+  const [titleState, setTitleState] = useState(() => ({
+    userId,
+    signal: sessionSignal,
+    values: new Map<string, ConversationTitle>(),
+  }));
+  const titles =
+    titleState.userId === userId && titleState.signal === sessionSignal
+      ? titleState.values
+      : new Map<string, ConversationTitle>();
+  useEffect(() => {
+    setRename(null);
+  }, [userId, sessionSignal]);
   const [search, setSearch] = useState(filters.search ?? "");
   const [assistant, setAssistant] = useState(filters.assistantKey ?? "");
   const [status, setStatus] = useState(filters.status ?? "");
@@ -236,21 +260,30 @@ export function ConversationList({
           const title = item.assistantKey
             ? assistantTitle(item.assistantKey)
             : "Общий диалог";
+          const updated = titles.get(item.id);
+          const customTitle =
+            updated &&
+            BigInt(updated.revision) >= BigInt(item.titleRevision ?? "0")
+              ? updated.title
+              : item.customTitle;
           return (
             <article
-              className="conversation-directory-card"
-              aria-label={item.assistantKey ? `Диалог: ${title}` : title}
+              className="conversation-directory-card ym-hide-content"
+              aria-label={
+                customTitle ?? (item.assistantKey ? `Диалог: ${title}` : title)
+              }
               key={item.id}
             >
               <span className="eyebrow">
                 {item.closed ? "ИСТОРИЯ" : "ПРОДОЛЖИТЬ"}
               </span>
               <h2>
-                {item.assistantKey
-                  ? assistantCatalog.find(
-                      (agent) => agent.key === item.assistantKey,
-                    )!.name
-                  : title}
+                {customTitle ??
+                  (item.assistantKey
+                    ? assistantCatalog.find(
+                        (agent) => agent.key === item.assistantKey,
+                      )!.name
+                    : title)}
               </h2>
               <p>
                 {item.preview ||
@@ -264,10 +297,50 @@ export function ConversationList({
               >
                 Открыть разговор
               </Button>
+              {item.titleRevision !== undefined && (
+                <Button
+                  variant="ghost"
+                  disabled={busy || sessionSignal.aborted}
+                  onClick={(event) =>
+                    setRename({
+                      userId,
+                      threadId: item.id,
+                      signal: sessionSignal,
+                      opener: event.currentTarget,
+                    })
+                  }
+                >
+                  Изменить название
+                </Button>
+              )}
             </article>
           );
         })
       )}
+      {rename &&
+        rename.userId === userId &&
+        rename.signal === sessionSignal &&
+        !sessionSignal.aborted && (
+          <ConversationTitleEditor
+            key={rename.userId + ":" + rename.threadId}
+            source={rename}
+            busy={busy}
+            onAccessDenied={onAccessDenied}
+            onClose={() => setRename(null)}
+            onSaved={(value) =>
+              setTitleState((previous) => ({
+                userId,
+                signal: sessionSignal,
+                values: new Map(
+                  previous.userId === userId &&
+                    previous.signal === sessionSignal
+                    ? previous.values
+                    : [],
+                ).set(value.threadId, value),
+              }))
+            }
+          />
+        )}
       {nextCursor && (
         <Button
           variant="secondary"

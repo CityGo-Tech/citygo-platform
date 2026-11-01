@@ -358,6 +358,9 @@ export function ConversationHome(props: JourneyProps) {
               <AssistantCatalog busy={busy || sending} onBegin={begin} />
             ) : (
               <ConversationList
+                userId={board.user.id}
+                sessionSignal={props.sessionSignal}
+                onAccessDenied={props.onAccessDenied}
                 conversations={props.conversations ?? null}
                 nextCursor={props.conversationNextCursor ?? null}
                 busy={busy || sending}

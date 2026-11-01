@@ -9,6 +9,7 @@ const tables = [
   "human_support_requests",
   "human_support_replies",
   "human_support_reads",
+  "conversation_titles",
   "service_consent_events",
   "personal_plan_checklists",
   "personal_plan_item_history",
@@ -87,6 +88,7 @@ const retainedTables = [
   "human_support_requests",
   "human_support_replies",
   "human_support_reads",
+  "conversation_titles",
   "service_consent_events",
   "personal_plan_checklists",
   "personal_plan_item_history",
@@ -327,6 +329,13 @@ async function takeSnapshot(tx: Sql): Promise<Snapshot> {
 async function inspect(tx: Sql, options: Options) {
   const { snapshot, bootstrapCompleted } = await lockedSnapshot(tx);
   const blockers: AccountResetBlocker[] = [];
+  // Private display metadata has no erasure authorization in these legacy tools.
+  // A cleared title still retains its CAS evidence and needs separate review.
+  if (snapshot.counts.conversation_titles)
+    blockers.push({
+      code: "CONVERSATION_TITLES_REQUIRE_REVIEW",
+      count: snapshot.counts.conversation_titles,
+    });
   if (
     snapshot.counts.human_support_requests ||
     snapshot.counts.human_support_replies
