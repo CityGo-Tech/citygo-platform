@@ -220,6 +220,7 @@ export const aiControlResponseSchema = z.object({
 
 export const dashboardResponseSchema = z.object({
   supportUpdatesAvailable: z.boolean().optional(),
+  supportManagementAvailable: z.boolean().optional(),
   user,
   profile: profileSchema.nullable(),
   xp: count,

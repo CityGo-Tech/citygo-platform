@@ -67,6 +67,20 @@ export function registerHumanSupportApi(
       );
     },
   );
+  app.patch(
+    "/v1/support-requests/:id",
+    { config: { rateLimit: { max: 30, timeWindow: 60_000 } } },
+    async (request) => {
+      z.strictObject({}).parse(request.query);
+      return supportRequestResultSchema.parse(
+        await store.setOwnStatus(
+          await options.context(request),
+          params.parse(request.params).id,
+          updateSupportRequestStatusSchema.parse(request.body),
+        ),
+      );
+    },
+  );
   app.get("/v1/support-requests/:id/replies", read, async (request) =>
     supportRepliesPageSchema.parse(
       await store.replies(

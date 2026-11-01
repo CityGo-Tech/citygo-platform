@@ -2,6 +2,8 @@ import { ApiError, type createClient } from "@citygo/api-client";
 import {
   createSupportRequestSchema,
   supportRequestsPageSchema,
+  supportRequestResultSchema,
+  supportRequestStatusSchema,
   type CreateSupportRequest,
   type SupportRequest,
 } from "@citygo/contracts";
@@ -10,7 +12,13 @@ type Client = Pick<
   ReturnType<typeof createClient>,
   "supportRequests" | "createSupportRequest"
 > &
-  Partial<Pick<ReturnType<typeof createClient>, "supportRequest">>;
+  Partial<
+    Pick<
+      ReturnType<typeof createClient>,
+      "supportRequest" | "setOwnSupportRequestStatus"
+    >
+  >;
+export type SupportFilter = "all" | "open" | "closed";
 export type SupportState = {
   requests: SupportRequest[];
   nextBefore: string | null;
@@ -19,6 +27,10 @@ export type SupportState = {
   error: string;
   pending: CreateSupportRequest | null;
   loaded: boolean;
+  statusFilter: SupportFilter;
+  changingId: string | null;
+  uncertainRequestId: string | null;
+  statusMessage: string;
 };
 export function createHumanSupportResource(options: {
   userId: string;
@@ -36,6 +48,10 @@ export function createHumanSupportResource(options: {
     error: "",
     pending: null,
     loaded: false,
+    statusFilter: "all",
+    changingId: null,
+    uncertainRequestId: null,
+    statusMessage: "",
   };
   let live = true,
     generation = 0;
@@ -51,6 +67,9 @@ export function createHumanSupportResource(options: {
       publish({
         requests: [],
         receipt: null,
+        changingId: null,
+        uncertainRequestId: null,
+        statusMessage: "",
         pending: null,
         busy: false,
         error: "",
@@ -82,7 +101,115 @@ export function createHumanSupportResource(options: {
     if (userId !== options.userId)
       throw new ApiError(401, "Аккаунт изменился", "invalid_response");
   };
+  const matches = (request: SupportRequest) =>
+    state.statusFilter === "all" || request.status === state.statusFilter;
   return {
+    async setFilter(filter: SupportFilter): Promise<void> {
+      if (filter !== "all") supportRequestStatusSchema.parse(filter);
+      if (
+        !active() ||
+        state.pending ||
+        state.changingId ||
+        filter === state.statusFilter
+      )
+        return;
+      // A new generation supersedes an older page, even if fetch ignores abort.
+      generation++;
+      publish({
+        statusFilter: filter,
+        requests: [],
+        nextBefore: null,
+        loaded: false,
+        busy: false,
+        error: "",
+        statusMessage: "",
+      });
+      await this.load();
+    },
+    async changeStatus(
+      id: string,
+      status: "open" | "closed",
+      expectedRevision?: number,
+    ) {
+      supportRequestStatusSchema.parse(status);
+      if (
+        !active() ||
+        state.busy ||
+        state.pending ||
+        state.uncertainRequestId === id ||
+        !options.client.setOwnSupportRequestStatus
+      )
+        return false;
+      const prior =
+        state.requests.find((request) => request.id === id) ??
+        (state.receipt?.id === id ? state.receipt : null);
+      if (!prior) return false;
+      if (
+        expectedRevision !== undefined &&
+        expectedRevision !== prior.revision
+      ) {
+        publish({
+          error: "Обращение изменилось. Обновите его перед новым действием.",
+          uncertainRequestId: id,
+        });
+        return false;
+      }
+      const current = ++generation;
+      publish({ busy: true, changingId: id, error: "", statusMessage: "" });
+      try {
+        const response = await options.client.setOwnSupportRequestStatus(id, {
+          expectedRevision: prior.revision,
+          status,
+        });
+        if (!active() || current !== generation) return false;
+        owner(response.userId);
+        const result = supportRequestResultSchema.parse(response),
+          item = result.request;
+        if (
+          item.id !== id ||
+          item.status !== status ||
+          item.body !== prior.body ||
+          item.operationId !== prior.operationId ||
+          item.createdAt !== prior.createdAt ||
+          item.revision !== prior.revision + (prior.status === status ? 0 : 1)
+        )
+          throw new ApiError(
+            200,
+            "Некорректный статус обращения",
+            "invalid_response",
+          );
+        publish({
+          requests: state.requests
+            .map((request) => (request.id === id ? item : request))
+            .filter(matches),
+          receipt: state.receipt?.id === id ? item : state.receipt,
+          busy: false,
+          changingId: null,
+          uncertainRequestId: null,
+          statusMessage:
+            status === "closed"
+              ? "Обращение закрыто. Переписка сохранена."
+              : "Обращение снова открыто.",
+        });
+        return true;
+      } catch (error) {
+        if (active() && current === generation) {
+          if (error instanceof ApiError && [401, 403].includes(error.status))
+            fail(error);
+          else
+            publish({
+              busy: false,
+              changingId: null,
+              uncertainRequestId: id,
+              error:
+                error instanceof ApiError && error.status === 409
+                  ? "Обращение изменилось. Обновите его перед новым действием."
+                  : "Изменение статуса не подтверждено. Обновите обращение перед новым действием.",
+            });
+        }
+        return false;
+      }
+    },
     async open(id: string) {
       if (!active() || state.busy || !options.client.supportRequest)
         return false;
@@ -98,7 +225,12 @@ export function createHumanSupportResource(options: {
           requests: [
             ...state.requests.filter((r) => r.id !== id),
             result.request,
-          ].sort((a, b) => (BigInt(a.id) > BigInt(b.id) ? -1 : 1)),
+          ]
+            .filter(matches)
+            .sort((a, b) => (BigInt(a.id) > BigInt(b.id) ? -1 : 1)),
+          receipt: state.receipt?.id === id ? result.request : state.receipt,
+          uncertainRequestId:
+            state.uncertainRequestId === id ? null : state.uncertainRequestId,
           busy: false,
         });
         return true;
@@ -112,9 +244,12 @@ export function createHumanSupportResource(options: {
       const current = ++generation;
       publish({ busy: true, error: "" });
       try {
-        const response = await options.client.supportRequests(
-          before ? { before } : {},
-        );
+        const response = await options.client.supportRequests({
+          ...(before ? { before } : {}),
+          ...(state.statusFilter === "all"
+            ? {}
+            : { status: state.statusFilter }),
+        });
         if (!active() || current !== generation) return;
         owner(response.userId);
         const page = supportRequestsPageSchema.parse(response);
@@ -124,6 +259,7 @@ export function createHumanSupportResource(options: {
         if (
           page.requests.some(
             (request, index, rows) =>
+              !matches(request) ||
               (before !== undefined && BigInt(request.id) >= BigInt(before)) ||
               (index > 0 && BigInt(request.id) >= BigInt(rows[index - 1]!.id)),
           ) ||
@@ -149,6 +285,11 @@ export function createHumanSupportResource(options: {
                 : 1,
           ),
           nextBefore: page.nextBefore,
+          uncertainRequestId: page.requests.some(
+            (request) => request.id === state.uncertainRequestId,
+          )
+            ? null
+            : state.uncertainRequestId,
           receipt: state.receipt
             ? (page.requests.find((item) => item.id === state.receipt?.id) ??
               state.receipt)
@@ -179,7 +320,7 @@ export function createHumanSupportResource(options: {
           requests: [
             result.request,
             ...state.requests.filter((r) => r.id !== result.request.id),
-          ],
+          ].filter(matches),
           pending: null,
           busy: false,
         });

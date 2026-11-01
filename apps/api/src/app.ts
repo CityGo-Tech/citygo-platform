@@ -1063,6 +1063,7 @@ export async function buildApp(options: {
     const result = {
       ...dashboard,
       supportUpdatesAvailable: true,
+      supportManagementAvailable: true,
       aiAccess: {
         ...dashboard.aiAccess,
         ...modeCapabilities,

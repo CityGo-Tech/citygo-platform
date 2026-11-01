@@ -288,6 +288,7 @@ export function ConversationHome(props: JourneyProps) {
             <HumanSupportPanel
               key={board.user.id + ":" + (supportRequestId ?? "list")}
               initialRequestId={supportRequestId}
+              canManageStatus={board.supportManagementAvailable === true}
               userId={board.user.id}
               sessionSignal={props.sessionSignal}
               onAccessDenied={props.onAccessDenied}

@@ -461,6 +461,64 @@ export class HumanSupportRequests {
       };
     });
   }
+  async setOwnStatus(
+    raw: HumanSupportContext,
+    id: string,
+    command: UpdateSupportRequestStatus,
+  ) {
+    supportRequestIdSchema.parse(id);
+    const input = updateSupportRequestStatusSchema.parse(command);
+    return this.db.transaction(async (tx) => {
+      // Same security -> owner/session -> request order as creation and replies.
+      // Administrator privileges never widen this owner route.
+      const ctx = await authorize(tx, raw, false);
+      const old = (
+        await tx.query<{ revision: string; status: string }>(
+          "select revision::text,status from human_support_requests where id=$1 and user_id=$2 for update",
+          [id, ctx.userId],
+        )
+      ).rows[0];
+      if (!old) throw missing();
+      const revision = Number(old.revision);
+      if (revision !== input.expectedRevision)
+        throw new DomainError(
+          409,
+          "Обращение изменилось. Обновите его.",
+          "REVISION_CONFLICT",
+          revision,
+        );
+      if (old.status !== input.status) {
+        if (revision === Number.MAX_SAFE_INTEGER)
+          throw new DomainError(409, "Достигнут предел версий обращения.");
+        const updated = await tx.query(
+          `update human_support_requests set status=$3,revision=revision+1,
+           updated_at=greatest(statement_timestamp(),updated_at+interval '1 microsecond'),
+           closed_at=case when $3='closed' then greatest(statement_timestamp(),updated_at+interval '1 microsecond') else null end
+           where id=$1 and user_id=$2 and revision=$4 returning id`,
+          [id, ctx.userId, input.status, input.expectedRevision],
+        );
+        if (updated.rows.length !== 1)
+          throw new DomainError(
+            409,
+            "Обращение изменилось.",
+            "REVISION_CONFLICT",
+          );
+        await audit(tx, ctx.userId, "human-support-owner-status-changed", id, {
+          from: old.status,
+          to: input.status,
+          revision: revision + 1,
+        });
+      }
+      const row = (
+        await tx.query<Record<string, unknown>>(
+          `select ${fields} from human_support_requests r where r.id=$1 and r.user_id=$2`,
+          [id, ctx.userId],
+        )
+      ).rows[0];
+      if (!row) throw missing();
+      return { userId: ctx.userId, request: parsed(row) };
+    });
+  }
   async setStatus(
     raw: HumanSupportContext,
     id: string,
