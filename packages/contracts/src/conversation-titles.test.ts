@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   conversationCustomTitleSchema,
+  conversationTitleRevisionSchema,
   conversationTitleSchema,
   updateConversationTitleSchema,
 } from "./conversation-titles.js";
@@ -96,6 +97,52 @@ test("old conversation pages remain accepted and title fields must arrive togeth
     conversationListResponseSchema.safeParse(
       page({ ...item, customTitle: "Название" }),
     ).success,
+    false,
+  );
+});
+
+test("malformed title revisions fail validation without throwing from either BigInt refinement", () => {
+  for (const value of [
+    "garbage",
+    "1.5",
+    " ",
+    "",
+    " 1",
+    "1 ",
+    "1\n",
+    "1\r\n",
+    "1e2",
+    "0x10",
+    "-1",
+    "01",
+    "9223372036854775808",
+    "9".repeat(1000),
+  ]) {
+    assert.doesNotThrow(() => {
+      assert.equal(
+        conversationTitleRevisionSchema.safeParse(value).success,
+        false,
+        JSON.stringify(value),
+      );
+      assert.equal(
+        updateConversationTitleSchema.safeParse({
+          title: "Название",
+          expectedRevision: value,
+        }).success,
+        false,
+        JSON.stringify(value),
+      );
+    });
+  }
+  assert.equal(
+    conversationTitleRevisionSchema.parse("9223372036854775807"),
+    "9223372036854775807",
+  );
+  assert.equal(
+    updateConversationTitleSchema.safeParse({
+      title: "Название",
+      expectedRevision: "9223372036854775807",
+    }).success,
     false,
   );
 });

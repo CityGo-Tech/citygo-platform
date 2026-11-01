@@ -87,6 +87,22 @@ test("HTTP title changes require the current owner and CAS; they never enter mes
   assert.equal(initial.statusCode, 200);
   assert.equal(initial.headers["cache-control"], "no-store");
   assert.equal(initial.json().revision, "0");
+  for (const expectedRevision of [
+    "garbage",
+    "1.5",
+    " ",
+    " 1",
+    "1 ",
+    "1\n",
+    "0x10",
+  ]) {
+    const invalid = await call("PATCH", thread, token, {
+      title: "Must not persist",
+      expectedRevision,
+    });
+    assert.equal(invalid.statusCode, 400, JSON.stringify(expectedRevision));
+  }
+  assert.equal((await call("GET")).json().revision, "0");
   const saved = await call("PATCH", thread, token, {
     title: "Мой план жилья",
     expectedRevision: "0",
