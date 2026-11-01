@@ -405,6 +405,13 @@ async function lockedSnapshot(
 async function inspect(tx: Sql, options: Options) {
   const { snapshot, bootstrapCompleted } = await lockedSnapshot(tx);
   const blockers: FreshAccountResetPlan["blockers"] = [];
+  // Private display metadata has no erasure authorization in these legacy tools.
+  // A cleared title still retains its CAS evidence and needs separate review.
+  if (snapshot.counts.conversation_titles)
+    blockers.push({
+      code: "CONVERSATION_TITLES_REQUIRE_REVIEW",
+      count: snapshot.counts.conversation_titles,
+    });
   if (
     snapshot.counts.human_support_requests ||
     snapshot.counts.human_support_replies
@@ -614,6 +621,16 @@ export class FreshAccountReset {
         refuse("Данные изменились после dry-run; нужен новый снимок");
       if (plan.blockers.length)
         refuse("Полный тестовый сброс заблокирован; проверьте dry-run");
+      // The empty FK child must join the old parent TRUNCATE for PostgreSQL,
+      // but this grants no erasure of live titles or their retained revisions.
+      if (
+        snapshot.counts.conversation_titles !== 0 ||
+        (await tx.query("select 1 from conversation_titles limit 1")).rows
+          .length
+      )
+        refuse(
+          "История названий разговоров требует отдельного сохранения и ревью",
+        );
       // This retained FK child may join the old parent TRUNCATE only while
       // provably empty. The locked snapshot and this immediate recheck both
       // reject ANY accepted mode evidence; no new parent deletion is added.
