@@ -652,9 +652,28 @@
   }
 }
 
-/* Keep the composer inside its viewport even with the mobile navigation. */
+/* Let the desktop history shrink within its fixed-height chat panel. */
 .prototype-shell .conversation-messages {
   min-height: 0;
+}
+@media (max-width: 900px) {
+  html:has(.prototype-shell) {
+    scroll-padding-top: 80px;
+    scroll-padding-bottom: 100px;
+  }
+  /* On short screens, controls must not collapse or overlap the history. */
+  .prototype-shell .conversation-chat-card {
+    height: auto;
+  }
+  .prototype-shell .conversation-messages {
+    flex: none;
+    height: clamp(160px, 30dvh, 320px);
+    min-height: 160px;
+    max-height: 320px;
+  }
+  .prototype-shell .conversation-composer {
+    position: static;
+  }
 }
 .conversation-heading > .cg-badge {
   justify-self: start;

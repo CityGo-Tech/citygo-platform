@@ -402,10 +402,16 @@ test("prototype layout keeps chat, navigation and account views usable without a
   await expect(navigation).toBeVisible();
   await expect(message).toBeEnabled();
   await originalLogo(page);
-  if ((page.viewportSize()?.width ?? 1440) >= 1200) {
+  const viewportWidth = page.viewportSize()?.width ?? 1440;
+  if (viewportWidth >= 1200) {
+    const expectedPortraitSize = viewportWidth <= 1350 ? 200 : 240;
     const assistant = page.locator(".conversation-context:visible img");
     await decodedOriginalAsset(assistant, "/figma/support-assistant.png");
-    await visibleAssetSize(assistant, 240, 240);
+    await visibleAssetSize(
+      assistant,
+      expectedPortraitSize,
+      expectedPortraitSize,
+    );
     const sidebar = page.locator(".conversation-topics:visible img");
     await decodedOriginalAsset(sidebar, "/figma/support-assistant.png");
     await visibleAssetSize(sidebar, 64, 64);

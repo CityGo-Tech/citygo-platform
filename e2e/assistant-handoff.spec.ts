@@ -261,6 +261,34 @@ async function fixture(context: BrowserContext, paginated = false) {
   return state;
 }
 
+async function expectScrollableMobileHistory(page: Page) {
+  if (!(await page.evaluate(() => matchMedia("(max-width: 900px)").matches))) {
+    return;
+  }
+  const log = page.getByRole("log");
+  await expect(log.locator("article")).toHaveCount(101);
+  await expect(log).toHaveCSS("overflow-y", "auto");
+  const geometry = await log.evaluate((history) => {
+    const form = history
+      .closest(".conversation-chat-card")
+      ?.querySelector("form.conversation-composer");
+    if (!(form instanceof HTMLElement)) {
+      throw new Error(
+        "The history must share its chat panel with the composer",
+      );
+    }
+    return {
+      height: history.clientHeight,
+      scrollHeight: history.scrollHeight,
+      bottom: history.getBoundingClientRect().bottom,
+      composerTop: form.getBoundingClientRect().top,
+    };
+  });
+  expect(geometry.height).toBeGreaterThanOrEqual(160);
+  expect(geometry.scrollHeight).toBeGreaterThan(geometry.height);
+  expect(geometry.bottom).toBeLessThanOrEqual(geometry.composerTop + 1);
+}
+
 async function openReview(page: Page) {
   await openMessageActions(sourceArticle(page));
   await sourceArticle(page)
@@ -360,6 +388,7 @@ test("handoff from a loaded older page keeps the authorized source and appends t
     .click();
   await expect(sourceArticle(page)).toHaveCount(1);
   expect(state.historyReads).toEqual(["20:200"]);
+  await expectScrollableMobileHistory(page);
   await openReview(page);
   await expect(page.getByLabel("Что передаём", { exact: true })).toHaveValue(
     sourceText,
@@ -486,6 +515,7 @@ test("owner change clears an older-page review and never routes old personal tex
     .getByRole("button", { name: "Загрузить ранние сообщения", exact: true })
     .click();
   await expect(sourceArticle(page)).toHaveCount(1);
+  await expectScrollableMobileHistory(page);
   await openReview(page);
   await page
     .getByLabel("Что передаём", { exact: true })
