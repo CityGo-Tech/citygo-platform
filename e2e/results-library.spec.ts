@@ -633,12 +633,31 @@ test("a foreign owner response never renders saved titles", async ({
   ]);
   state.responseOwner = "202";
   await page.goto("/");
-  await openResults(page);
+  // This receipt must close the session before a successful results heading can appear.
+  await openResultsView(page);
   await expect(
     page.getByRole("button", { name: "Создать аккаунт", exact: true }),
   ).toBeVisible();
   await expect(page.getByText("FOREIGN_PRIVATE_RESULT")).toHaveCount(0);
   await expect(results(page)).toHaveCount(0);
+  await expect(page.locator(".notice[role=status]")).toHaveText(
+    "Сессия завершилась. Войдите снова.",
+  );
+  await expect(
+    page.getByRole("navigation", {
+      name: "Личный кабинет CityGo",
+      exact: true,
+    }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("textbox", { name: "Сообщение помощнику", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Войти", exact: true }),
+  ).toBeVisible();
+  expect(state.writes).toEqual([]);
+  expect(state.unexpected).toEqual([]);
+  expect(state.external).toBe(0);
 });
 
 test("switching category aborts a late read and never mixes it with favorites", async ({
