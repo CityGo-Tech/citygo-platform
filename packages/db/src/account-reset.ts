@@ -203,6 +203,11 @@ export class AccountReset {
       const blockers: AccountResetBlocker[] = [
         { code: "RESET_APPLY_NOT_IMPLEMENTED", count: 1 },
       ];
+      if (counts.conversation_titles)
+        blockers.push({
+          code: "CONVERSATION_TITLES_REQUIRE_REVIEW",
+          count: counts.conversation_titles,
+        });
       if (counts.human_support_requests || counts.human_support_replies)
         blockers.push({
           code: "HUMAN_SUPPORT_HISTORY_REQUIRES_REVIEW",
