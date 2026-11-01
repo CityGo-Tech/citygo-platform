@@ -116,3 +116,114 @@ test("history abort clears private state and ignores late responses even when tr
   assert.equal(resource.snapshot().current, null);
   resource.dispose();
 });
+
+test("restore client binds method, item and new revision; state sends once, refreshes only after a valid receipt and ignores revoked late replies", async () => {
+  const calls: { url: string; method: string; body: unknown }[] = [];
+  let result = {
+    userId: "1",
+    itemId: page().itemId,
+    restoredRevision: 2,
+    entry: entry(4),
+  };
+  const client = createClient("http://synthetic", {
+    fetch: async (input, init) => {
+      calls.push({
+        url: String(input),
+        method: init?.method ?? "GET",
+        body: JSON.parse(String(init?.body)),
+      });
+      return Response.json(result);
+    },
+  });
+  await client.restorePersonalPlanRevision(result.itemId, {
+    expectedRevision: 3,
+    revision: 2,
+  });
+  assert.deepEqual(calls, [
+    {
+      url:
+        "http://synthetic/v1/personal-plan/" +
+        result.itemId +
+        "/history/restore",
+      method: "POST",
+      body: { expectedRevision: 3, revision: 2 },
+    },
+  ]);
+  result = { ...result, itemId: "2" };
+  await assert.rejects(
+    client.restorePersonalPlanRevision(page().itemId, {
+      expectedRevision: 3,
+      revision: 2,
+    }),
+  );
+  const controller = new AbortController();
+  let writes = 0,
+    reads = 0,
+    resolve!: (x: typeof result) => void;
+  const pending = new Promise<typeof result>((r) => (resolve = r));
+  const resource = createPersonalPlanHistoryResource({
+    userId: "1",
+    itemId: page().itemId,
+    signal: controller.signal,
+    read: async () => {
+      reads++;
+      return page();
+    },
+    restore: async () => {
+      writes++;
+      return pending;
+    },
+    publish: () => {},
+    onAccessDenied: () => {},
+  });
+  await resource.load();
+  const work = resource.restore(2, 3);
+  assert.equal(resource.snapshot().phase, "restoring");
+  assert.equal(await resource.restore(2, 3), false);
+  assert.equal(writes, 1);
+  controller.abort();
+  resolve({
+    userId: "1",
+    itemId: page().itemId,
+    restoredRevision: 2,
+    entry: entry(4),
+  });
+  assert.equal(await work, false);
+  assert.equal(resource.snapshot().phase, "closed");
+  assert.equal(resource.snapshot().current, null);
+  assert.equal(reads, 1);
+});
+test("restore state rejects mismatched contents and lost/CAS receipts without automatically repeating a command", async () => {
+  for (const failure of [
+    new ApiError(409, "changed"),
+    new ApiError(0, "lost"),
+    null,
+  ]) {
+    let writes = 0;
+    const resource = createPersonalPlanHistoryResource({
+      userId: "1",
+      itemId: page().itemId,
+      signal: new AbortController().signal,
+      read: async () => page(),
+      restore: async () => {
+        writes++;
+        if (failure) throw failure;
+        return {
+          userId: "1",
+          itemId: page().itemId,
+          restoredRevision: 2,
+          entry: entry(4),
+        };
+      },
+      publish: () => {},
+      onAccessDenied: () => {},
+    });
+    await resource.load();
+    assert.equal(await resource.restore(2, 3), false);
+    assert.equal(resource.snapshot().phase, "error");
+    assert.equal(resource.snapshot().current, null);
+    assert.equal(await resource.restore(2, 3), false);
+    assert.equal(writes, 1);
+    resource.dispose();
+  }
+});

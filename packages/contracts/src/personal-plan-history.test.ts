@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   personalPlanHistoryPageSchema,
+  restorePersonalPlanRevisionSchema,
+  personalPlanRestoreResultSchema,
   personalPlanHistoryQuerySchema,
 } from "./personal-plan-history.js";
 const entry = {
@@ -45,6 +47,42 @@ test("history contracts preserve bigint identities and bound descending revision
     );
   assert.equal(
     personalPlanHistoryQuerySchema.safeParse({ search: "private" }).success,
+    false,
+  );
+});
+
+test("restore accepts only an older exact revision and a new noninitial saved entry", () => {
+  assert.deepEqual(
+    restorePersonalPlanRevisionSchema.parse({
+      expectedRevision: 3,
+      revision: 1,
+    }),
+    { expectedRevision: 3, revision: 1 },
+  );
+  for (const bad of [
+    { expectedRevision: 3, revision: 3 },
+    { expectedRevision: 3, revision: 4 },
+    { expectedRevision: 0, revision: 1 },
+    { expectedRevision: 3, revision: "1" },
+    { expectedRevision: 3, revision: 1, title: "forged" },
+    { expectedRevision: Number.MAX_SAFE_INTEGER + 1, revision: 1 },
+  ])
+    assert.equal(
+      restorePersonalPlanRevisionSchema.safeParse(bad).success,
+      false,
+    );
+  const result = {
+    userId: "1",
+    itemId: "9007199254741000",
+    restoredRevision: 1,
+    entry,
+  };
+  assert.equal(personalPlanRestoreResultSchema.safeParse(result).success, true);
+  assert.equal(
+    personalPlanRestoreResultSchema.safeParse({
+      ...result,
+      entry: { ...entry, initialSnapshot: true },
+    }).success,
     false,
   );
 });

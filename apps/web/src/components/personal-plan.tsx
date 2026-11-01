@@ -455,7 +455,13 @@ export function PersonalPlanPanel({
         userId={userId}
         itemId={history.id}
         sessionSignal={sessionSignal}
-        onBack={() => setHistory(null)}
+        onBack={() => {
+          setHistory(null);
+          void actions?.load();
+        }}
+        onRestored={() => {
+          void actions?.load();
+        }}
         onAccessDenied={onAccessDenied}
       />
     );

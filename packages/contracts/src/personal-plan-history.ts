@@ -54,6 +54,32 @@ export const personalPlanHistoryPageSchema = z
         message: "History cursor must match its last revision",
       });
   });
+export const restorePersonalPlanRevisionSchema = z
+  .strictObject({
+    expectedRevision: revision,
+    revision,
+  })
+  .refine((value) => value.revision < value.expectedRevision, {
+    message: "Выберите предыдущую сохранённую версию",
+  });
+export const personalPlanRestoreResultSchema = z
+  .strictObject({
+    userId: personalPlanIdSchema,
+    itemId: personalPlanIdSchema,
+    restoredRevision: revision,
+    entry: personalPlanHistoryEntrySchema,
+  })
+  .refine(
+    (value) =>
+      value.entry.revision > value.restoredRevision &&
+      !value.entry.initialSnapshot,
+  );
+export type RestorePersonalPlanRevision = z.infer<
+  typeof restorePersonalPlanRevisionSchema
+>;
+export type PersonalPlanRestoreResult = z.infer<
+  typeof personalPlanRestoreResultSchema
+>;
 export type PersonalPlanHistoryEntry = z.infer<
   typeof personalPlanHistoryEntrySchema
 >;

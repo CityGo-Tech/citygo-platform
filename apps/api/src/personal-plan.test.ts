@@ -822,3 +822,84 @@ test("HTTP full plan export returns the complete private snapshot and rejects qu
     403,
   );
 });
+
+test("HTTP restore binds an older owned version with CAS, preserves protected data and denies anonymous/foreign/revoked sessions", async (t) => {
+  const f = await fixture(t);
+  const item = (await f.call("POST", "/v1/personal-plan", f.create())).json()
+    .item;
+  const original = item.title;
+  assert.equal(
+    (
+      await f.call("PATCH", "/v1/personal-plan/" + item.id, {
+        expectedRevision: 1,
+        title: "Новая версия",
+        details: "Изменено",
+        status: "completed",
+      })
+    ).statusCode,
+    200,
+  );
+  const protectedSnapshot = async () => {
+    const value = await f.legacySnapshot();
+    delete value.tables.personal_plan_checklists;
+    return value;
+  };
+  const before = await protectedSnapshot();
+  const url = "/v1/personal-plan/" + item.id + "/history/restore";
+  assert.equal(
+    (await f.call("POST", url, { expectedRevision: 2, revision: 1 }, ""))
+      .statusCode,
+    401,
+  );
+  assert.equal(
+    (
+      await f.call(
+        "POST",
+        url,
+        { expectedRevision: 2, revision: 1 },
+        f.otherToken,
+      )
+    ).statusCode,
+    404,
+  );
+  assert.equal(
+    (
+      await f.call("POST", url + "?search=x", {
+        expectedRevision: 2,
+        revision: 1,
+      })
+    ).statusCode,
+    400,
+  );
+  assert.equal(
+    (
+      await f.call("POST", url, {
+        expectedRevision: 2,
+        revision: 1,
+        title: "forged",
+      })
+    ).statusCode,
+    400,
+  );
+  const restored = await f.call("POST", url, {
+    expectedRevision: 2,
+    revision: 1,
+  });
+  assert.equal(restored.statusCode, 200, restored.body);
+  assert.equal(restored.json().entry.title, original);
+  assert.equal(restored.json().entry.revision, 3);
+  assert.equal(restored.headers["cache-control"], "no-store");
+  assert.equal(
+    (await f.call("POST", url, { expectedRevision: 2, revision: 1 }))
+      .statusCode,
+    409,
+  );
+  assert.deepEqual(await protectedSnapshot(), before);
+  assert.equal(f.modelCalls(), 0);
+  await f.db.query("delete from sessions where user_id=$1", [f.owner]);
+  assert.equal(
+    (await f.call("POST", url, { expectedRevision: 3, revision: 1 }))
+      .statusCode,
+    401,
+  );
+});

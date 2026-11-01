@@ -4,6 +4,8 @@ import {
   personalPlanIdSchema,
   personalPlanHistoryQuerySchema,
   personalPlanHistoryPageSchema,
+  restorePersonalPlanRevisionSchema,
+  personalPlanRestoreResultSchema,
   personalPlanQuerySchema,
   createPersonalPlanItemSchema,
   updatePersonalPlanItemSchema,
@@ -80,6 +82,29 @@ export function registerPersonalPlanApi(
       if (current.id !== user.id)
         throw new Error("Personal plan owner changed");
       return output(personalPlanHistoryPageSchema, result, user.id);
+    },
+  );
+  app.post(
+    "/v1/personal-plan/:id/history/restore",
+    writeLimit,
+    async (request, reply) => {
+      const user = await options.authenticate(request);
+      const { id } = input(params, request.params);
+      input(emptyQuery, request.query);
+      const command = input(restorePersonalPlanRevisionSchema, request.body);
+      reply.header("cache-control", "no-store");
+      const result = output(
+        personalPlanRestoreResultSchema,
+        await stored(history.restore(user.id, id, command)),
+        user.id,
+      );
+      if (
+        result.itemId !== id ||
+        result.restoredRevision !== command.revision ||
+        result.entry.revision !== command.expectedRevision + 1
+      )
+        throw new Error("Invalid personal plan restoration response");
+      return result;
     },
   );
   app.get("/v1/personal-plan", readLimit, async (request) => {

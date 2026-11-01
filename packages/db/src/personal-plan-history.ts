@@ -1,5 +1,9 @@
 import {
   personalPlanHistoryPageSchema,
+  personalPlanHistoryEntrySchema,
+  restorePersonalPlanRevisionSchema,
+  personalPlanRestoreResultSchema,
+  type RestorePersonalPlanRevision,
   personalPlanIdSchema,
   type PersonalPlanHistoryEntry,
   type PersonalPlanHistoryPage,
@@ -20,6 +24,104 @@ export async function recordPersonalPlanRevision(tx: Sql, itemId: string) {
 
 export class PersonalPlanHistory {
   constructor(private readonly db: Database) {}
+  /** A saved version becomes a new revision; history/source/creation are never rewritten. */
+  async restore(
+    userId: string,
+    itemId: string,
+    raw: RestorePersonalPlanRevision,
+  ) {
+    personalPlanIdSchema.parse(userId);
+    personalPlanIdSchema.parse(itemId);
+    const input = restorePersonalPlanRevisionSchema.parse(raw);
+    return this.db.transaction(async (tx) => {
+      const owner = (
+        await tx.query<{ status: string; must_change_password: boolean }>(
+          "select status,must_change_password from users where id=$1 for update",
+          [userId],
+        )
+      ).rows[0];
+      if (!owner || owner.status !== "active")
+        throw new DomainError(401, "Войдите в аккаунт");
+      if (owner.must_change_password)
+        throw new DomainError(403, "Сначала смените временный пароль");
+      const current = (
+        await tx.query<{ revision: string }>(
+          `select p.revision::text from personal_plan_items p
+         left join messages m on m.id=p.source_message_id left join agent_threads t on t.id=m.thread_id
+         where p.id=$1 and p.user_id=$2 and p.deleted_at is null
+         and (p.source_message_id is null or (t.user_id=$2 and m.role in ('user','assistant')))
+         for update of p`,
+          [itemId, userId],
+        )
+      ).rows[0];
+      if (!current) throw new DomainError(404, "История шага не найдена");
+      const currentRevision = Number(current.revision);
+      if (currentRevision !== input.expectedRevision)
+        throw new DomainError(
+          409,
+          "Шаг изменился. Обновите историю и выберите версию заново.",
+          "REVISION_CONFLICT",
+          currentRevision,
+        );
+      if (currentRevision === Number.MAX_SAFE_INTEGER)
+        throw new DomainError(409, "Достигнут предел версий шага");
+      const saved = (
+        await tx.query<Record<string, unknown>>(
+          `select revision::text,title,details,status,checklist,initial_snapshot as "initialSnapshot",
+         to_char(recorded_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "recordedAt"
+         from personal_plan_item_history where item_id=$1 and revision=$2`,
+          [itemId, input.revision],
+        )
+      ).rows[0];
+      if (!saved) throw new DomainError(404, "Сохранённая версия не найдена");
+      const parsed = personalPlanHistoryEntrySchema.safeParse({
+        ...saved,
+        revision: Number(saved.revision),
+      });
+      if (!parsed.success)
+        throw new DomainError(500, "Не удалось прочитать сохранённую версию");
+      const entry = parsed.data;
+      await tx.query(
+        `update personal_plan_items set title=$3,details=$4,status=$5,revision=revision+1,
+        updated_at=greatest(clock_timestamp(),updated_at+interval '1 microsecond')
+        where id=$1 and user_id=$2 and revision=$6 and deleted_at is null`,
+        [
+          itemId,
+          userId,
+          entry.title,
+          entry.details,
+          entry.status,
+          currentRevision,
+        ],
+      );
+      await tx.query(
+        `insert into personal_plan_checklists(item_id,parent_revision,entries) values($1,$2,$3::jsonb)
+        on conflict(item_id) do update set parent_revision=excluded.parent_revision,entries=excluded.entries`,
+        [itemId, currentRevision + 1, JSON.stringify(entry.checklist)],
+      );
+      await recordPersonalPlanRevision(tx, itemId);
+      const actual = (
+        await tx.query<Record<string, unknown>>(
+          `select revision::text,title,details,status,checklist,
+        initial_snapshot as "initialSnapshot",to_char(recorded_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "recordedAt"
+        from personal_plan_item_history where item_id=$1 and revision=$2`,
+          [itemId, currentRevision + 1],
+        )
+      ).rows[0];
+      const result = personalPlanRestoreResultSchema.safeParse({
+        userId,
+        itemId,
+        restoredRevision: input.revision,
+        entry: { ...actual, revision: Number(actual?.revision) },
+      });
+      if (!result.success)
+        throw new DomainError(
+          500,
+          "Не удалось подтвердить восстановление шага",
+        );
+      return result.data;
+    });
+  }
   async page(
     userId: string,
     itemId: string,

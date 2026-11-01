@@ -8,6 +8,7 @@ import {
 import type { PersonalPlanHistoryEntry } from "@citygo/contracts";
 import { Button, Card } from "@citygo/ui-web";
 import styles from "./plan-history.module.css";
+import dialogStyles from "./assistant-handoff.module.css";
 
 function Version({
   entry,
@@ -47,18 +48,89 @@ function Version({
   );
 }
 
+function RestoreConfirmation({
+  entry,
+  revision,
+  busy,
+  signal,
+  trigger,
+  onConfirm,
+  onClose,
+}: {
+  entry: PersonalPlanHistoryEntry;
+  revision: number;
+  busy: boolean;
+  signal: AbortSignal;
+  trigger: HTMLButtonElement | null;
+  onConfirm: () => void;
+  onClose: () => void;
+}) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const element = dialog.current;
+    if (!signal.aborted) {
+      element?.showModal();
+      element
+        ?.querySelector<HTMLButtonElement>("[data-restore-cancel]")
+        ?.focus();
+    }
+    return () => {
+      element?.close();
+      if (!signal.aborted && trigger?.isConnected)
+        trigger.focus({ preventScroll: true });
+    };
+  }, [signal, trigger]);
+  return (
+    <dialog
+      ref={dialog}
+      className={dialogStyles.dialog + " ym-hide-content ym-disable-keys"}
+      aria-labelledby="plan-restore-title"
+      data-citygo-private
+      onCancel={(event) => {
+        event.preventDefault();
+        if (!busy) onClose();
+      }}
+    >
+      <Card className={dialogStyles.card}>
+        <h2 id="plan-restore-title">Восстановить версию {entry.revision}?</h2>
+        <p>
+          Она заменит название, описание, статус и чек-лист шага. Текущая версия{" "}
+          {revision} сохранится в истории.
+        </p>
+        <Version entry={entry} label="Будет восстановлено" />
+        {busy && <p role="status">Восстанавливаем версию…</p>}
+        <div className={dialogStyles.actions}>
+          <Button disabled={busy} onClick={onConfirm}>
+            Подтвердить восстановление
+          </Button>
+          <Button
+            data-restore-cancel
+            variant="secondary"
+            disabled={busy}
+            onClick={onClose}
+          >
+            Отмена
+          </Button>
+        </div>
+      </Card>
+    </dialog>
+  );
+}
+
 export function PlanItemHistory({
   userId,
   itemId,
   sessionSignal,
   onBack,
   onAccessDenied,
+  onRestored,
 }: {
   userId: string;
   itemId: string;
   sessionSignal: AbortSignal;
   onBack: () => void;
   onAccessDenied: () => void;
+  onRestored: () => void;
 }) {
   const [snapshot, setSnapshot] = useState<{
     owner: string;
@@ -67,6 +139,12 @@ export function PlanItemHistory({
     state: PlanHistoryState;
   } | null>(null);
   const [selected, setSelected] = useState<number | null>(null);
+  const [pending, setPending] = useState<{
+    entry: PersonalPlanHistoryEntry;
+    revision: number;
+    trigger: HTMLButtonElement;
+  } | null>(null);
+  const [notice, setNotice] = useState("");
   const resource = useRef<ReturnType<
     typeof createPersonalPlanHistoryResource
   > | null>(null);
@@ -75,6 +153,8 @@ export function PlanItemHistory({
   const heading = useRef<HTMLHeadingElement>(null);
   useEffect(() => {
     setSelected(null);
+    setPending(null);
+    setNotice("");
     heading.current?.focus({ preventScroll: true });
     const controller = new AbortController();
     const current = createPersonalPlanHistoryResource({
@@ -86,6 +166,10 @@ export function PlanItemHistory({
           itemId,
           before,
         ),
+      restore: (command, signal) =>
+        createClient("/api", {
+          signal: () => signal,
+        }).restorePersonalPlanRevision(itemId, command),
       publish: (state) =>
         setSnapshot({
           owner: userId,
@@ -111,7 +195,8 @@ export function PlanItemHistory({
       ? snapshot.state
       : null;
   if (sessionSignal.aborted || state?.phase === "closed") return null;
-  const busy = !state || state.phase === "loading";
+  const busy =
+    !state || state.phase === "loading" || state.phase === "restoring";
   const previous =
     state?.entries.find(
       (entry) =>
@@ -132,10 +217,17 @@ export function PlanItemHistory({
       <Button variant="secondary" onClick={onBack}>
         ← В мой план
       </Button>
-      {busy && <p role="status">Загружаем историю…</p>}
+      {state?.phase === "loading" && <p role="status">Загружаем историю…</p>}
+      {notice && <p role="status">{notice}</p>}
       {state?.error && <p role="alert">{state.error}</p>}
       {state?.phase === "error" && (
-        <Button onClick={() => void resource.current?.load()}>
+        <Button
+          onClick={() => {
+            setSelected(null);
+            setNotice("");
+            void resource.current?.load();
+          }}
+        >
           Обновить историю
         </Button>
       )}
@@ -171,6 +263,21 @@ export function PlanItemHistory({
               </section>
             )}
           </div>
+          {previous && (
+            <Button
+              disabled={busy}
+              onClick={(event) => {
+                setNotice("");
+                setPending({
+                  entry: previous,
+                  revision: state.current!.revision,
+                  trigger: event.currentTarget,
+                });
+              }}
+            >
+              Восстановить выбранную версию
+            </Button>
+          )}
           {(state.current.initialSnapshot ||
             state.entries.some((entry) => entry.initialSnapshot)) && (
             <p className={styles.hint}>
@@ -205,6 +312,36 @@ export function PlanItemHistory({
           </div>
         </>
       )}
+      {pending &&
+        state?.current &&
+        (state.phase === "ready" || state.phase === "restoring") && (
+          <RestoreConfirmation
+            entry={pending.entry}
+            revision={pending.revision}
+            busy={busy}
+            signal={sessionSignal}
+            trigger={pending.trigger}
+            onClose={() => setPending(null)}
+            onConfirm={() => {
+              const restoring = resource.current;
+              if (restoring?.snapshot().phase !== "ready") return;
+              void restoring
+                .restore(pending.entry.revision, pending.revision)
+                .then((restored) => {
+                  if (sessionSignal.aborted || resource.current !== restoring)
+                    return;
+                  setPending(null);
+                  if (restored) {
+                    setSelected(null);
+                    setNotice(
+                      "Версия восстановлена. Предыдущие изменения сохранены в истории.",
+                    );
+                    onRestored();
+                  }
+                });
+            }}
+          />
+        )}
     </Card>
   );
 }
