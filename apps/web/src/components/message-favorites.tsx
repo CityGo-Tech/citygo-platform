@@ -1,4 +1,5 @@
 "use client";
+import Image from "next/image";
 import { useEffect, useRef, useState } from "react";
 import { createClient } from "@citygo/api-client";
 import type {
@@ -38,6 +39,13 @@ export function FavoriteButton({
       disabled={disabled}
       onClick={onClick}
     >
+      <Image
+        src="/figma/bookmark.svg"
+        alt=""
+        width={20}
+        height={20}
+        aria-hidden="true"
+      />
       {saved ? "В избранном" : "В избранное"}
     </Button>
   );

@@ -230,7 +230,7 @@ test("switching to login cancels a delayed registration and cannot restore its p
   await expect.poll(() => state.begin.length).toBe(1);
   await page.getByRole("button", { name: "Войти", exact: true }).click();
   await expect(
-    page.getByRole("heading", { name: "С возвращением", exact: true }),
+    page.getByRole("heading", { name: "Рады видеть вас снова", exact: true }),
   ).toBeVisible();
   state.releaseBegin();
   await state.beginDelivered;

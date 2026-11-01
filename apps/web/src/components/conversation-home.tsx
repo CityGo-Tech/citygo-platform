@@ -1,6 +1,7 @@
 "use client";
-import { useRef, useState } from "react";
-import Image from "next/image";
+import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { JourneySidebar, AssistantContextRail } from "./workspace-frame";
 import { Button, Card, Badge, AssistantMessage } from "@citygo/ui-web";
 import { agentNames, type JourneyProps } from "./journey";
 import { FavoriteButton } from "./message-favorites";
@@ -39,23 +40,28 @@ import { MessageTextActions } from "./message-text-actions";
 import { ConversationMessageSearch } from "./conversation-message-search";
 import { ConversationExportAction } from "./conversation-export";
 
-const topics = [
-  ["Понять и спланировать", "Не понимаю, с чего начать переезд в Москву."],
-  ["Найти жильё", "Хочу обсудить поиск жилья в Москве."],
-  ["Работа и резюме", "Как подготовиться к поиску работы в Москве?"],
-  ["Переезд и вещи", "Как подготовить поездку и перевозку вещей?"],
-  [
-    "Освоиться в городе",
-    "Как разобраться в транспорте и городских сервисах Москвы?",
-  ],
-  ["Свои люди", "Как найти своё окружение после переезда?"],
-] as const;
 const greeting =
   "Здравствуйте! Я координатор CityGo. Помогу разложить переезд на понятные шаги. Можно просто рассказать, что сейчас волнует — даже если бюджет и дата ещё неизвестны.";
 
 /** Conversation home and user-selected plan, from Figma 6:14 / 6:24. */
 export function ConversationHome(props: JourneyProps) {
   const [tab, setTab] = useState("Диалоги");
+  const [navigationHost, setNavigationHost] = useState<HTMLElement | null>(
+    null,
+  );
+  useEffect(() => {
+    setNavigationHost(
+      props.headerNavigationId
+        ? document.getElementById(props.headerNavigationId)
+        : null,
+    );
+  }, [props.headerNavigationId]);
+  useEffect(() => {
+    if (!props.workspaceRequest) return;
+    setTab(props.workspaceRequest.tab);
+    setShowList(false);
+    props.onWorkspaceRequestHandled?.(props.workspaceRequest.sequence);
+  }, [props.workspaceRequest, props.onWorkspaceRequestHandled]);
   const [supportSelection, setSupportSelection] = useState<{
     owner: string;
     signal: AbortSignal;
@@ -124,95 +130,52 @@ export function ConversationHome(props: JourneyProps) {
     return !!opened;
   };
   const sidebar = (
-    <aside className="conversation-topics">
-      <Card>
-        <span className="eyebrow">ВАШ ПУТЬ В МОСКВУ</span>
-        {topics.map(([label, text]) => (
-          <Button
-            key={label}
-            variant="secondary"
-            disabled={busy || sending}
-            onClick={() => suggest(text)}
-          >
-            {label}
-          </Button>
-        ))}
-        <div className="conversation-note">
-          <strong>В вашем темпе</strong>
-          <p>Можно начать с любой задачи. Необязательно знать срок и бюджет.</p>
-        </div>
-        <Image
-          src="/figma/support-assistant.png"
-          width={64}
-          height={64}
-          alt="Координатор переезда CityGo"
-        />
-        <Button variant="secondary" onClick={() => setTab("Помощь человека")}>
-          Помощь человека
-        </Button>
-      </Card>
-    </aside>
+    <JourneySidebar
+      disabled={busy || sending}
+      onSuggest={suggest}
+      onSupport={() => setTab("Помощь человека")}
+    />
   );
   const rail = (
-    <aside className="conversation-context">
-      <Card>
-        <span className="eyebrow">ВАШ AI-ПОМОЩНИК</span>
-        <Image
-          src={
-            contextAgent === "support"
-              ? "/figma/support-assistant.png"
-              : `/characters/${contextAgent}-640.webp`
-          }
-          width={240}
-          height={240}
-          alt={agentNames[contextAgent]}
-        />
-        <h2>{agentNames[contextAgent]}</h2>
-        <p>{assistantTitle(contextAgent)}</p>
-        <p>
-          Начните с вопроса. Помощник уточнит только нужное по ходу разговора.
-        </p>
-        <Button
-          variant="secondary"
-          disabled={busy || sending}
-          onClick={() => setTab("Помощники")}
-        >
-          Сменить помощника
-        </Button>
-        <small>
-          Ответы AI — ориентир, не проверенная сделка и не бронирование.
-        </small>
-      </Card>
-    </aside>
+    <AssistantContextRail
+      agent={contextAgent}
+      disabled={busy || sending}
+      city={board.profile?.targetCity}
+      onHelpers={() => setTab("Помощники")}
+    />
+  );
+  const navigation = (
+    <nav aria-label="Личный кабинет CityGo" className="conversation-tabs">
+      {["Мой план", "Диалоги", "Помощники", "Результаты", "Профиль"].map(
+        (name) => (
+          <Button
+            key={name}
+            className="ym-show-content"
+            variant={tab === name ? "primary" : "secondary"}
+            aria-pressed={tab === name}
+            disabled={busy || sending}
+            onClick={() => {
+              props.onNavigateWorkspace?.();
+              setTab(name);
+              if (name === "Мой план")
+                trackProductEvent("plan_opened", { surface: "plan" });
+              if (name === "Профиль")
+                trackProductEvent("profile_opened", { surface: "profile" });
+              if (name === "Диалоги") {
+                setShowList(true);
+                props.onConversations?.();
+              }
+            }}
+          >
+            {name}
+          </Button>
+        ),
+      )}
+    </nav>
   );
   return (
     <section className="conversation-home">
-      <nav aria-label="Личный кабинет CityGo" className="conversation-tabs">
-        {["Мой план", "Диалоги", "Помощники", "Результаты", "Профиль"].map(
-          (name) => (
-            <Button
-              key={name}
-              className="ym-show-content"
-              variant={tab === name ? "primary" : "secondary"}
-              aria-pressed={tab === name}
-              disabled={busy || sending}
-              onClick={() => {
-                setTab(name);
-                if (name === "Мой план")
-                  trackProductEvent("plan_opened", { surface: "plan" });
-                if (name === "Профиль")
-                  trackProductEvent("profile_opened", { surface: "profile" });
-                if (name === "Диалоги") {
-                  setShowList(true);
-                  props.onConversations?.();
-                }
-              }}
-            >
-              {name}
-            </Button>
-          ),
-        )}
-      </nav>
+      {navigationHost ? createPortal(navigation, navigationHost) : navigation}
       {board.supportUpdatesAvailable === true && (
         <SupportUpdatesNotice
           userId={board.user.id}
@@ -378,67 +341,95 @@ export function ConversationHome(props: JourneyProps) {
           {rail}
         </div>
       ) : tab === "Профиль" ? (
-        <AccountProfile
-          key={board.user.id}
-          userId={board.user.id}
-          sessionSignal={props.sessionSignal}
-          onAccessDenied={props.onAccessDenied}
-          access={board.aiAccess}
-          disabled={busy || sending}
-          admin={["admin", "super_admin"].includes(board.user.role ?? "")}
-          onBalance={props.onBalance}
-          onPhone={props.onPhone}
-          onFavorites={props.onFavorites}
-          onPassword={props.onPassword}
-          onSupport={() => {
-            setSupportSelection(null);
-            setTab("Помощь человека");
-          }}
-        />
+        <div className="conversation-workspace">
+          {sidebar}
+          <div className="conversation-main">
+            <AccountProfile
+              key={board.user.id}
+              userId={board.user.id}
+              sessionSignal={props.sessionSignal}
+              onAccessDenied={props.onAccessDenied}
+              access={board.aiAccess}
+              disabled={busy || sending}
+              admin={["admin", "super_admin"].includes(board.user.role ?? "")}
+              onBalance={props.onBalance}
+              onPhone={props.onPhone}
+              onFavorites={props.onFavorites}
+              onResults={() => setTab("Результаты")}
+              onPassword={props.onPassword}
+              onSupport={() => {
+                setSupportSelection(null);
+                setTab("Помощь человека");
+              }}
+            />
+          </div>
+          {rail}
+        </div>
       ) : (
         <div className="conversation-workspace">
           {sidebar}
           <div className="conversation-main">
-            <Card>
-              <Badge>ДИАЛОГ С ПОМОЩНИКОМ</Badge>
-              <h1>
-                {board.thread?.assistantKey
-                  ? assistantTitle(board.thread.assistantKey)
-                  : "Давайте начнём с того, что волнует"}
-              </h1>
-              <p>
-                Можно начать с любого вопроса. Уточним нужное по ходу разговора.
-              </p>
-              <Button
-                variant="ghost"
-                disabled={busy || sending}
-                onClick={() => {
-                  setShowList(true);
-                  props.onConversations?.();
-                }}
-              >
-                Все диалоги
-              </Button>
+            <Card
+              className="conversation-chat-card"
+              data-has-messages={!!board.thread?.messages.length}
+            >
               {board.thread && (
-                <ConversationExportAction
-                  key={board.user.id + ":" + board.thread.id + ":export"}
-                  userId={board.user.id}
-                  threadId={board.thread.id}
-                  sessionSignal={props.sessionSignal}
-                  disabled={busy || sending}
-                  onAccessDenied={props.onAccessDenied}
-                />
+                <div className="conversation-mode-bar">
+                  <AiModeSelector
+                    modes={board.aiAccess.modes}
+                    selected={props.aiMode ?? "balanced"}
+                    disabled={busy || sending || !props.onAiMode}
+                    onSelect={(mode) => props.onAiMode?.(mode)}
+                  />
+                </div>
               )}
-              {board.thread && (
-                <ConversationMessageSearch
-                  key={board.user.id + ":" + board.thread.id}
-                  userId={board.user.id}
-                  threadId={board.thread.id}
-                  sessionSignal={props.sessionSignal}
-                  onAccessDenied={props.onAccessDenied}
-                  disabled={busy || sending}
-                />
-              )}
+              <div className="conversation-heading">
+                <Badge>ДИАЛОГ С ПОМОЩНИКОМ</Badge>
+                <h1>
+                  {board.thread?.assistantKey
+                    ? assistantTitle(board.thread.assistantKey)
+                    : "Давайте начнём с того, что волнует"}
+                </h1>
+                <p>
+                  Можно начать с любого вопроса. Уточним нужное по ходу
+                  разговора.
+                </p>
+                <div className="conversation-toolbar">
+                  <Button
+                    variant="ghost"
+                    disabled={busy || sending}
+                    onClick={() => {
+                      setShowList(true);
+                      props.onConversations?.();
+                    }}
+                  >
+                    Все диалоги
+                  </Button>
+                  <details className="conversation-tools">
+                    <summary>Действия с диалогом</summary>
+                    {board.thread && (
+                      <ConversationExportAction
+                        key={board.user.id + ":" + board.thread.id + ":export"}
+                        userId={board.user.id}
+                        threadId={board.thread.id}
+                        sessionSignal={props.sessionSignal}
+                        disabled={busy || sending}
+                        onAccessDenied={props.onAccessDenied}
+                      />
+                    )}
+                    {board.thread && (
+                      <ConversationMessageSearch
+                        key={board.user.id + ":" + board.thread.id}
+                        userId={board.user.id}
+                        threadId={board.thread.id}
+                        sessionSignal={props.sessionSignal}
+                        onAccessDenied={props.onAccessDenied}
+                        disabled={busy || sending}
+                      />
+                    )}
+                  </details>
+                </div>
+              </div>
               <ConversationHistoryControls
                 state={props.history}
                 disabled={busy || sending}
@@ -501,70 +492,73 @@ export function ConversationHome(props: JourneyProps) {
                         props.onFavorite?.(message.id, !message.favorite)
                       }
                     />
-                    {message.status === "complete" && props.onHandoff && (
-                      <Button
-                        variant="ghost"
-                        disabled={
-                          busy ||
-                          sending ||
-                          !!planSource ||
-                          !!handoffSource ||
-                          props.sessionSignal.aborted
-                        }
-                        onClick={() => {
-                          if (
+                    <details className="conversation-message-extras">
+                      <summary>Ещё</summary>
+                      {message.status === "complete" && props.onHandoff && (
+                        <Button
+                          variant="ghost"
+                          disabled={
                             busy ||
                             sending ||
-                            props.sessionSignal.aborted ||
-                            !board.thread
-                          )
-                            return;
-                          setHandoffSource({
-                            userId: board.user.id,
-                            threadId: board.thread.id,
+                            !!planSource ||
+                            !!handoffSource ||
+                            props.sessionSignal.aborted
+                          }
+                          onClick={() => {
+                            if (
+                              busy ||
+                              sending ||
+                              props.sessionSignal.aborted ||
+                              !board.thread
+                            )
+                              return;
+                            setHandoffSource({
+                              userId: board.user.id,
+                              threadId: board.thread.id,
+                              messageId: message.id,
+                              assistantKey:
+                                board.thread.assistantKey ??
+                                board.thread.agentKey,
+                              content: message.content,
+                              sessionSignal: props.sessionSignal,
+                            });
+                          }}
+                        >
+                          Другому помощнику
+                        </Button>
+                      )}
+                      <Button
+                        variant="ghost"
+                        disabled={busy || sending || !!planSource}
+                        onClick={() =>
+                          setPlanSource({
                             messageId: message.id,
-                            assistantKey:
-                              board.thread.assistantKey ??
-                              board.thread.agentKey,
+                            threadId: board.thread!.id,
+                            role: message.role,
                             content: message.content,
-                            sessionSignal: props.sessionSignal,
-                          });
-                        }}
-                      >
-                        Другому помощнику
-                      </Button>
-                    )}
-                    <Button
-                      variant="ghost"
-                      disabled={busy || sending || !!planSource}
-                      onClick={() =>
-                        setPlanSource({
-                          messageId: message.id,
-                          threadId: board.thread!.id,
-                          role: message.role,
-                          content: message.content,
-                        })
-                      }
-                    >
-                      Добавить шаг в план
-                    </Button>
-                    {message.status === "complete" && (
-                      <MessageTextActions
-                        key={
-                          board.user.id +
-                          ":" +
-                          board.thread!.id +
-                          ":" +
-                          message.id
+                          })
                         }
-                        userId={board.user.id}
-                        threadId={board.thread!.id}
-                        messageId={message.id}
-                        text={message.content}
-                        sessionSignal={props.sessionSignal}
-                        disabled={busy || sending}
-                      />
-                    )}
+                      >
+                        Добавить шаг в план
+                      </Button>
+                      {message.status === "complete" && (
+                        <MessageTextActions
+                          key={
+                            board.user.id +
+                            ":" +
+                            board.thread!.id +
+                            ":" +
+                            message.id
+                          }
+                          userId={board.user.id}
+                          threadId={board.thread!.id}
+                          messageId={message.id}
+                          text={message.content}
+                          sessionSignal={props.sessionSignal}
+                          disabled={busy || sending}
+                        />
+                      )}
+                    </details>
                   </article>
                 ))}
                 {props.pending && (
@@ -590,13 +584,7 @@ export function ConversationHome(props: JourneyProps) {
                   вопрос можно задать в открытом диалоге помощника.
                 </p>
               ) : (
-                <form onSubmit={props.onChat}>
-                  <AiModeSelector
-                    modes={board.aiAccess.modes}
-                    selected={props.aiMode ?? "balanced"}
-                    disabled={busy || sending || !props.onAiMode}
-                    onSelect={(mode) => props.onAiMode?.(mode)}
-                  />
+                <form className="conversation-composer" onSubmit={props.onChat}>
                   <EmptyAiCreditHint
                     access={board.aiAccess}
                     onBalance={props.onBalance}
@@ -625,8 +613,8 @@ export function ConversationHome(props: JourneyProps) {
                     value={props.text}
                     onChange={(e) => props.onText(e.target.value)}
                     maxLength={4000}
-                    rows={3}
-                    placeholder="Хочу переехать в Москву, но пока не понимаю, с чего начать"
+                    rows={2}
+                    placeholder="Напишите сообщение…"
                     disabled={!canSend || sending}
                   />
                   <TextMaterialPreview
@@ -637,23 +625,26 @@ export function ConversationHome(props: JourneyProps) {
                     disabled={!canSend || sending}
                     onDraft={props.onText}
                   />
-                  {sending ? (
-                    <Button
-                      className="ym-show-content"
-                      type="button"
-                      onClick={props.onStop}
-                    >
-                      Остановить ответ
-                    </Button>
-                  ) : (
-                    <Button
-                      className="ym-show-content"
-                      type="submit"
-                      disabled={!canSend || !props.text.trim()}
-                    >
-                      Отправить
-                    </Button>
-                  )}
+                  <div className="conversation-send-action">
+                    {sending ? (
+                      <Button
+                        className="ym-show-content"
+                        type="button"
+                        onClick={props.onStop}
+                      >
+                        Остановить ответ
+                      </Button>
+                    ) : (
+                      <Button
+                        className="ym-show-content"
+                        type="submit"
+                        aria-label="Отправить"
+                        disabled={!canSend || !props.text.trim()}
+                      >
+                        <span aria-hidden="true">↑</span>
+                      </Button>
+                    )}
+                  </div>
                 </form>
               )}
             </Card>

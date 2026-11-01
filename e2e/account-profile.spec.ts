@@ -1,3 +1,4 @@
+import { clickAccountAction } from "./navigation-helper";
 import { fulfillProductAnalytics } from "./product-analytics-fixture";
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
 import type { AccountProfile, Dashboard } from "@citygo/contracts";
@@ -436,7 +437,7 @@ test("late profile read cannot expose old contacts after logout or overwrite ano
   await page.goto("/");
   await openProfile(page);
   await expect.poll(() => state.reads).toBe(1);
-  await page.getByRole("button", { name: "Выйти", exact: true }).click();
+  await clickAccountAction(page, "Выйти");
   await page
     .getByRole("dialog", { name: "Выйти из аккаунта?", exact: true })
     .getByRole("button", { name: "Выйти", exact: true })
@@ -474,7 +475,7 @@ test("late confirmation is discarded after logout and never creates an authentic
     .getByRole("button", { name: "Подтвердить email", exact: true })
     .click();
   await expect.poll(() => state.confirmations.length).toBe(1);
-  await page.getByRole("button", { name: "Выйти", exact: true }).click();
+  await clickAccountAction(page, "Выйти");
   await page
     .getByRole("dialog", { name: "Выйти из аккаунта?", exact: true })
     .getByRole("button", { name: "Выйти", exact: true })

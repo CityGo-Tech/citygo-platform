@@ -1,3 +1,4 @@
+import { clickAccountAction } from "./navigation-helper";
 import { test, expect } from "@playwright/test";
 import type { Dashboard, FavoriteMessage } from "@citygo/contracts";
 import { fulfillProductAnalytics } from "./product-analytics-fixture";
@@ -69,7 +70,7 @@ test("favorite search combines literal text, assistant and author; reset clears 
     });
   });
   await page.goto("/");
-  await page.getByRole("button", { name: "Избранное", exact: true }).click();
+  await clickAccountAction(page, "Избранное");
   const panel = page.getByRole("region", {
     name: "Избранные сообщения",
     exact: true,

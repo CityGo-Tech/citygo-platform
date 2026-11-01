@@ -1,0 +1,788 @@
+/* Figma 6pAycf8MPlTyddwYPH6NEL: shared public and authenticated Web frame.
+   Scoped to Home: administrative and legacy document surfaces keep their UI. */
+.prototype-shell {
+  max-width: none;
+  --cg-color-background: #f6f7fb;
+  --cg-color-foreground: #17192b;
+  --cg-color-surface: #fff;
+  --cg-color-primary: #3f5bd8;
+  --cg-color-primary-strong: #3f5bd8;
+  --cg-color-primary-soft: #f3f5fd;
+  --cg-color-muted: #596174;
+  --cg-color-border: #e3e5ec;
+  line-height: 1.45;
+  min-height: 100dvh;
+  background: var(--cg-color-background);
+}
+.prototype-shell .topbar {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  height: 80px;
+  padding: 16px 24px;
+  gap: 16px;
+  border: 0;
+  background: var(--cg-color-surface);
+}
+.prototype-shell .wordmark {
+  gap: 8px;
+  flex: 0 0 192px;
+  height: 40px;
+}
+.prototype-shell:has(.workspace-navigation-slot) .header-caption {
+  display: none;
+}
+.prototype-shell .header-caption {
+  color: var(--cg-color-muted);
+  margin-right: auto;
+}
+.workspace-navigation-slot {
+  min-width: 0;
+  flex: 1;
+}
+.prototype-shell .conversation-tabs {
+  margin: 0;
+  gap: 12px;
+  flex-wrap: nowrap;
+}
+.prototype-shell .conversation-tabs .cg-button {
+  flex: 1;
+  min-width: 0;
+  min-height: 48px;
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid var(--cg-color-border);
+  color: var(--cg-color-foreground);
+  background: var(--cg-color-surface);
+}
+.prototype-shell .conversation-tabs .cg-button[aria-pressed="true"] {
+  border-color: var(--cg-color-primary);
+  background: var(--cg-color-primary-soft);
+}
+.prototype-shell .account {
+  flex: none;
+  gap: 12px;
+  min-width: 0;
+}
+.prototype-shell .account > .cg-badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 48px;
+  min-width: 76px;
+  border: 1px solid var(--cg-color-border);
+  border-radius: var(--cg-radius-control);
+  background: var(--cg-color-background);
+  font-size: 14px;
+  letter-spacing: normal;
+}
+.account-menu {
+  position: relative;
+}
+.account-menu > summary,
+.conversation-tools > summary {
+  cursor: pointer;
+  list-style: none;
+  min-height: 48px;
+  padding: 12px 16px;
+  border: 1px solid var(--cg-color-border);
+  border-radius: var(--cg-radius-control);
+  font-size: 14px;
+  font-weight: 600;
+}
+.account-menu > summary::-webkit-details-marker,
+.conversation-tools > summary::-webkit-details-marker {
+  display: none;
+}
+.account-menu > summary::after {
+  content: "";
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  margin-left: 8px;
+  vertical-align: middle;
+  background: url("/figma/mode-chevron.svg") center / 16px 16px no-repeat;
+}
+.account-menu[open] > summary {
+  border-color: var(--cg-color-primary);
+  background: var(--cg-color-primary-soft);
+}
+.account-menu > div {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  display: grid;
+  gap: 4px;
+  width: 240px;
+  max-width: calc(100vw - 32px);
+  padding: 8px;
+  border: 1px solid var(--cg-color-border);
+  border-radius: var(--cg-radius-card);
+  background: var(--cg-color-surface);
+  box-shadow: 0 12px 32px #17192b14;
+}
+.account-menu .cg-button {
+  justify-content: flex-start;
+  text-align: left;
+}
+.prototype-shell > main {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 32px;
+  min-height: calc(100dvh - 80px);
+}
+.prototype-shell > footer {
+  display: none;
+}
+.prototype-shell .conversation-workspace {
+  grid-template-columns: 232px minmax(0, 816px) 280px;
+  gap: 24px;
+  align-items: start;
+}
+.prototype-shell .conversation-main,
+.prototype-shell .conversation-home {
+  min-width: 0;
+}
+.prototype-shell .conversation-topics,
+.prototype-shell .conversation-context {
+  position: sticky;
+  top: 112px;
+}
+.prototype-shell .conversation-topics > .cg-card,
+.prototype-shell .conversation-context > .cg-card {
+  border: 0;
+  gap: 16px;
+  border-radius: 24px;
+}
+.prototype-shell .conversation-topics > .cg-card {
+  padding: 16px;
+}
+.prototype-shell .conversation-context > .cg-card {
+  padding: 20px;
+}
+.prototype-shell .conversation-topics .cg-button {
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--cg-color-surface);
+  border: 1px solid var(--cg-color-border);
+  color: var(--cg-color-foreground);
+}
+.prototype-shell .conversation-topics .eyebrow,
+.prototype-shell .conversation-context .eyebrow {
+  color: var(--cg-color-muted);
+  font-size: 11px;
+  letter-spacing: normal;
+}
+.prototype-shell .conversation-note {
+  padding: 16px;
+  border: 1px solid var(--cg-color-border);
+  background: var(--cg-color-primary-soft);
+  font-size: 14px;
+}
+.prototype-shell .conversation-note p {
+  margin: 8px 0 0;
+  color: var(--cg-color-foreground);
+}
+.prototype-shell .conversation-context h2,
+.prototype-shell .conversation-context p {
+  margin: 0;
+}
+.prototype-shell .conversation-context h2 {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: normal;
+}
+.prototype-shell .conversation-context p {
+  font-size: 13px;
+}
+.prototype-shell .conversation-context .assistant-specialty {
+  color: var(--cg-color-primary);
+  font-weight: 600;
+}
+.prototype-shell .conversation-context .cg-button-secondary {
+  font-size: 15px;
+  font-weight: 600;
+  background: var(--cg-color-surface);
+  border-color: var(--cg-color-border);
+  color: var(--cg-color-foreground);
+}
+.prototype-shell .conversation-main > .cg-card {
+  border: 0;
+  padding: 24px;
+}
+.prototype-shell .conversation-main h1,
+.prototype-shell .auth-card h1 {
+  font-size: 32px;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: normal;
+  margin: 0;
+}
+.prototype-shell .conversation-main .cg-badge,
+.prototype-shell .conversation-main .eyebrow {
+  padding: 0;
+  background: transparent;
+  border: 0;
+  color: var(--cg-color-primary);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: normal;
+}
+.prototype-shell .assistant-directory-card {
+  border: 0;
+  padding: 16px;
+  gap: 16px;
+  grid-template-columns: 88px minmax(0, 1fr);
+}
+.prototype-shell .assistant-directory-card .assistant-open {
+  width: 100%;
+  justify-self: stretch;
+}
+.prototype-shell .assistant-directory-card h2 {
+  font-size: 20px;
+}
+.prototype-shell .assistant-catalog-portrait {
+  border-radius: 8px;
+}
+.prototype-shell .conversation-directory-card {
+  padding: 24px;
+  gap: 8px;
+}
+.prototype-shell .conversation-chat-card {
+  display: flex;
+  flex-direction: column;
+  height: calc(100dvh - 144px);
+  min-height: 640px;
+  gap: 16px;
+}
+.conversation-heading {
+  display: grid;
+  gap: 12px;
+  flex: none;
+}
+.conversation-heading > p {
+  margin: 0;
+}
+.conversation-heading > .cg-button {
+  justify-self: start;
+  min-height: 32px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+.conversation-tools > summary {
+  display: inline-flex;
+  min-height: 32px;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: var(--cg-color-muted);
+}
+.conversation-tools[open] {
+  padding: 8px;
+  border: 1px solid var(--cg-color-border);
+  border-radius: 12px;
+}
+.conversation-tools > :not(summary) {
+  margin-top: 8px;
+}
+.prototype-shell .conversation-messages {
+  flex: 1 1 auto;
+  min-height: 160px;
+  max-height: none;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+.prototype-shell .conversation-message {
+  padding: 20px;
+  background: var(--cg-color-background);
+  margin: 0 0 16px;
+}
+.prototype-shell .conversation-message.user {
+  color: white;
+  background: var(--cg-color-primary);
+}
+.prototype-shell .conversation-message.user p,
+.prototype-shell .conversation-message.user strong,
+.prototype-shell .conversation-message.user small {
+  color: white;
+}
+.prototype-shell .conversation-message > strong {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.prototype-shell .conversation-message .cg-button {
+  min-height: 32px;
+  padding: 6px 12px;
+  margin: 8px 4px 0 0;
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--cg-color-primary-soft);
+  color: var(--cg-color-primary);
+  border: 0;
+}
+.prototype-shell .conversation-composer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 48px;
+  gap: 8px;
+  flex: none;
+  padding-top: 12px;
+  border-top: 1px solid var(--cg-color-border);
+  background: var(--cg-color-surface);
+}
+.conversation-composer > .cg-field,
+.conversation-composer > .conversation-notice,
+.conversation-composer > .conversation-notice + div,
+.conversation-composer > div:not(.conversation-send-action) {
+  grid-column: 1 / -1;
+}
+.conversation-composer > label:not(.cg-field) {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+.conversation-composer > textarea {
+  grid-column: 1;
+  grid-row: 2;
+  resize: vertical;
+  min-height: 56px;
+  max-height: 160px;
+  border-color: var(--cg-color-border);
+  padding: 12px;
+  font-size: 14px;
+}
+.conversation-send-action {
+  grid-column: 2;
+  grid-row: 2;
+  align-self: end;
+}
+.conversation-send-action .cg-button {
+  min-width: 48px;
+  min-height: 56px;
+  width: 48px;
+  padding: 8px;
+  font-size: 24px;
+}
+.conversation-send-action .cg-button[type="button"] {
+  width: auto;
+  min-width: 48px;
+  font-size: 12px;
+}
+.conversation-composer > span {
+  grid-column: 1 / -1;
+}
+.conversation-composer > span > .cg-button {
+  min-height: 32px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+.conversation-composer .cg-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  min-width: 0;
+}
+.conversation-composer .cg-field select {
+  min-height: 40px;
+  width: min(240px, 100%);
+  background: var(--cg-color-primary-soft);
+  border-color: transparent;
+  font-size: 14px;
+}
+.prototype-shell .welcome-grid {
+  display: block;
+  max-width: 816px;
+  margin: 0 auto;
+}
+.prototype-shell .auth-card {
+  display: grid;
+  gap: 16px;
+  padding: 24px;
+  border: 0;
+  box-shadow: none;
+}
+.prototype-shell .auth-card .eyebrow {
+  font-size: 11px;
+  color: var(--cg-color-primary);
+  letter-spacing: normal;
+}
+.prototype-shell .auth-card p {
+  margin: 0;
+  font-size: 15px;
+}
+.prototype-shell .auth-card > .cg-button {
+  margin: 0;
+  width: 100%;
+  padding: 12px;
+  background: var(--cg-color-surface);
+  color: var(--cg-color-foreground);
+  border: 1px solid var(--cg-color-border);
+}
+.prototype-shell .auth-card .cg-field {
+  display: grid;
+  gap: 8px;
+  min-height: 82px;
+  padding: 16px;
+  border: 1px solid var(--cg-color-border);
+  border-radius: 12px;
+}
+.prototype-shell .auth-card .cg-field > span {
+  font-size: 12px;
+  font-weight: 700;
+}
+.prototype-shell .auth-card .cg-field input {
+  min-height: 24px;
+  border: 0;
+  padding: 0;
+  font-size: 16px;
+  background: transparent;
+}
+.prototype-shell .auth-card form {
+  gap: 16px;
+}
+.prototype-shell summary:focus-visible {
+  outline: 3px solid var(--cg-color-focus);
+  outline-offset: 3px;
+}
+@media (max-width: 1350px) and (min-width: 1101px) {
+  .prototype-shell .conversation-workspace {
+    grid-template-columns: 200px minmax(0, 1fr) 240px;
+  }
+  .prototype-shell .conversation-tabs {
+    gap: 8px;
+  }
+  .prototype-shell .conversation-tabs .cg-button {
+    padding-inline: 8px;
+  }
+  .prototype-shell .account > .cg-badge {
+    min-width: 60px;
+  }
+  .prototype-shell .topbar {
+    gap: 12px;
+  }
+}
+@media (max-width: 1100px) {
+  .prototype-shell .conversation-workspace {
+    grid-template-columns: 200px minmax(0, 1fr);
+  }
+  .prototype-shell .conversation-context {
+    display: none;
+  }
+  .prototype-shell .account > .cg-badge {
+    display: none;
+  }
+}
+@media (max-width: 900px) {
+  .prototype-shell .topbar {
+    height: 80px;
+    padding: 16px;
+    gap: 8px;
+  }
+  .prototype-shell .wordmark {
+    flex-basis: 192px;
+  }
+  .prototype-shell .wordmark .citygo-brand-wordmark {
+    display: block;
+  }
+  .prototype-shell > main {
+    padding: 24px 16px 100px;
+  }
+  .prototype-shell .conversation-workspace {
+    display: block;
+  }
+  .prototype-shell .conversation-topics {
+    display: none;
+  }
+  .workspace-navigation-slot {
+    flex: 0;
+    width: 0;
+  }
+  .prototype-shell .conversation-tabs {
+    position: fixed;
+    z-index: 50;
+    inset: auto 0 0;
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 4px;
+    padding: 8px 8px max(20px, env(safe-area-inset-bottom));
+    background: var(--cg-color-surface);
+    border-top: 1px solid var(--cg-color-border);
+  }
+  .prototype-shell .conversation-tabs .cg-button {
+    font-size: 11px;
+    padding: 6px 3px;
+    min-height: 48px;
+  }
+  .prototype-shell .account {
+    margin-left: auto;
+    gap: 4px;
+  }
+  .prototype-shell #citygo-account-overview {
+    min-width: 0;
+  }
+  .prototype-shell #citygo-account-overview > button {
+    max-width: 120px;
+    padding: 6px 8px;
+    font-size: 12px;
+  }
+  .account-menu > summary {
+    width: 32px;
+    min-height: 48px;
+    padding: 8px;
+    font-size: 0;
+  }
+  .account-menu > summary::after {
+    content: "⋯";
+    width: auto;
+    height: auto;
+    margin: 0;
+    font-size: 20px;
+    background: none;
+  }
+  .prototype-shell .conversation-main > .cg-card {
+    padding: 16px;
+  }
+  .prototype-shell .conversation-main h1 {
+    font-size: 28px;
+    line-height: 1.45;
+  }
+  .prototype-shell .conversation-chat-card {
+    height: calc(100dvh - 196px);
+    min-height: 480px;
+    padding: 16px;
+  }
+  .prototype-shell .conversation-message {
+    padding: 16px;
+  }
+  .conversation-composer {
+    position: sticky;
+    bottom: 0;
+  }
+  .conversation-composer > textarea {
+    font-size: 16px;
+  }
+  .prototype-shell .auth-card {
+    padding: 0;
+    border-radius: 0;
+    background: transparent;
+  }
+  .prototype-shell .auth-card h1 {
+    font-size: 28px;
+    line-height: 1.45;
+  }
+  .prototype-shell .header-caption {
+    display: none;
+  }
+  .prototype-shell .assistant-directory-card {
+    grid-template-columns: 64px minmax(0, 1fr);
+    padding: 8px 0;
+  }
+  .prototype-shell .assistant-catalog-portrait {
+    width: 64px;
+    height: 64px;
+    border-radius: 8px;
+  }
+}
+@media (max-width: 600px) {
+  .prototype-shell:has(.workspace-navigation-slot) .wordmark {
+    flex-basis: 148px;
+    gap: 6px;
+  }
+  .prototype-shell:has(.workspace-navigation-slot) .citygo-brand-symbol {
+    width: 40px;
+    height: 28.18px;
+  }
+  .prototype-shell:has(.workspace-navigation-slot) .citygo-brand-wordmark {
+    width: 99px;
+    height: 30.78px;
+  }
+  .prototype-shell .conversation-main > .cg-card:not(.conversation-chat-card) {
+    background: transparent;
+    padding: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .prototype-shell * {
+    scroll-behavior: auto;
+  }
+}
+
+.prototype-shell
+  .conversation-message
+  .cg-button:has(img[src$="bookmark.svg"]) {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.prototype-shell #citygo-account-overview > button {
+  background: var(--cg-color-surface);
+  color: var(--cg-color-foreground);
+  border: 1px solid var(--cg-color-border);
+  font-weight: 600;
+}
+
+.conversation-mode-bar {
+  flex: none;
+}
+.conversation-mode-bar .cg-field {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+  font-size: 12px;
+}
+.conversation-mode-bar .cg-field select {
+  width: min(240px, 60%);
+  min-height: 48px;
+  background: var(--cg-color-primary-soft);
+  border-color: transparent;
+  font-size: 14px;
+}
+@media (max-width: 900px) {
+  .prototype-shell .conversation-tabs {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+  .prototype-shell .conversation-tabs button:nth-child(4) {
+    display: none;
+  }
+}
+
+/* Let the desktop history shrink within its fixed-height chat panel. */
+.prototype-shell .conversation-messages {
+  min-height: 0;
+}
+@media (max-width: 900px) {
+  html:has(.prototype-shell) {
+    scroll-padding-top: 80px;
+    scroll-padding-bottom: 100px;
+  }
+  /* On short screens, controls must not collapse or overlap the history. */
+  .prototype-shell .conversation-chat-card {
+    height: auto;
+  }
+  .prototype-shell .conversation-messages {
+    flex: none;
+    height: clamp(160px, 30dvh, 320px);
+    min-height: 160px;
+    max-height: 320px;
+  }
+  .prototype-shell .conversation-composer {
+    position: static;
+  }
+}
+.conversation-heading > .cg-badge {
+  justify-self: start;
+}
+.conversation-chat-card[data-has-messages="true"] .conversation-heading > p {
+  display: none;
+}
+.conversation-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: start;
+  gap: 8px;
+}
+.conversation-toolbar > .cg-button {
+  min-height: 32px;
+  padding: 6px 12px;
+  font-size: 12px;
+}
+.conversation-message-extras {
+  display: inline-block;
+  vertical-align: middle;
+}
+.conversation-message-extras > summary {
+  display: inline-flex;
+  cursor: pointer;
+  list-style: none;
+  min-height: 32px;
+  align-items: center;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--cg-color-primary);
+  background: var(--cg-color-primary-soft);
+  border-radius: var(--cg-radius-control);
+}
+.conversation-message-extras > summary::-webkit-details-marker {
+  display: none;
+}
+.conversation-message-extras[open] {
+  display: block;
+  margin-top: 8px;
+  padding: 8px;
+  border: 1px solid var(--cg-color-border);
+  border-radius: var(--cg-radius-control);
+  background: var(--cg-color-surface);
+}
+.conversation-message-extras[open] > summary {
+  margin-bottom: 4px;
+}
+
+@media (min-width: 380px) and (max-width: 600px) {
+  .prototype-shell:has(.workspace-navigation-slot) .wordmark {
+    flex-basis: 192px;
+    gap: 8px;
+  }
+  .prototype-shell:has(.workspace-navigation-slot) .citygo-brand-symbol {
+    width: 52px;
+    height: 36.63px;
+  }
+  .prototype-shell:has(.workspace-navigation-slot) .citygo-brand-wordmark {
+    width: 128.65px;
+    height: 40px;
+  }
+  .prototype-shell #citygo-account-overview > button {
+    min-width: 80px;
+    max-width: 88px;
+  }
+  .prototype-shell #citygo-account-overview details > summary {
+    min-width: 24px;
+    padding: 8px;
+    font-size: 0;
+  }
+  .prototype-shell #citygo-account-overview details > summary::after {
+    content: "⌄";
+    font-size: 16px;
+  }
+}
+
+.prototype-shell #citygo-wallet-view,
+.prototype-shell #citygo-balance,
+.prototype-shell #phone-gift-heading,
+.prototype-shell .conversation-main [tabindex="-1"] {
+  scroll-margin-top: 104px;
+}
+@media (min-width: 380px) and (max-width: 600px) {
+  .prototype-shell #citygo-account-overview details > summary::after {
+    content: "";
+    display: block;
+    width: 16px;
+    height: 16px;
+    background: url("/figma/mode-chevron.svg") center / 16px 16px no-repeat;
+  }
+}
+@media (max-width: 379px) {
+  .prototype-shell #citygo-account-overview > button {
+    min-width: 60px;
+    max-width: 60px;
+    padding-inline: 4px;
+  }
+  .prototype-shell #citygo-account-overview details > summary {
+    min-width: 24px;
+    padding: 8px;
+    font-size: 0;
+  }
+  .prototype-shell #citygo-account-overview details > summary::after {
+    content: "";
+    display: block;
+    width: 16px;
+    height: 16px;
+    background: url("/figma/mode-chevron.svg") center / 16px 16px no-repeat;
+  }
+}

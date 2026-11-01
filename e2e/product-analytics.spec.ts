@@ -1,3 +1,4 @@
+import { clickAccountAction, clickWalletAction } from "./navigation-helper";
 import { expect, test, type Page } from "@playwright/test";
 import {
   customerInteractionInputSchema,
@@ -235,9 +236,7 @@ test("SSR masks private app data while first-party milestones contain only an al
       .evaluate((element) => !!element.closest(".ym-hide-content")),
   ).toBe(true);
 
-  await toolbar(page)
-    .getByRole("button", { name: "Пополнить баланс", exact: true })
-    .click();
+  await clickWalletAction(page, "Пополнить баланс");
   await expect(page.getByLabel("Email для чека")).toHaveClass(
     "ym-disable-keys",
   );
@@ -248,9 +247,7 @@ test("SSR masks private app data while first-party milestones contain only an al
   await page
     .getByRole("button", { name: "Вернуться в приложение", exact: true })
     .click();
-  await toolbar(page)
-    .getByRole("button", { name: "Телефон и подарок", exact: true })
-    .click();
+  await clickWalletAction(page, "Телефон и подарок");
   await expect(page.getByLabel("Российский мобильный номер")).toHaveClass(
     "ym-disable-keys",
   );
@@ -281,9 +278,7 @@ test("a local opt-out stops optional UI events without blocking the phone form",
     await page.evaluate(() => localStorage.getItem("citygo.analytics.optout")),
   ).toBe("1");
   await page.goto("/");
-  await toolbar(page)
-    .getByRole("button", { name: "Телефон и подарок", exact: true })
-    .click();
+  await clickWalletAction(page, "Телефон и подарок");
   await expect(page.getByLabel("Российский мобильный номер")).toBeVisible();
   expect(state.events).toEqual([]);
   expect(state.outside).toEqual([]);
@@ -295,9 +290,7 @@ test("admin account activity never initializes a visitor recorder or emits user 
 }) => {
   const state = await install(page, "admin");
   await page.goto("/");
-  await toolbar(page)
-    .getByRole("button", { name: "Телефон и подарок", exact: true })
-    .click();
+  await clickWalletAction(page, "Телефон и подарок");
   await expect(page.getByLabel("Российский мобильный номер")).toBeVisible();
   expect(state.events).toEqual([]);
   expect(state.outside).toEqual([]);
@@ -417,9 +410,7 @@ test("trusted-origin collector respects build flags, masks, late identity, opt-o
     "setUserID",
     "cga_" + "a".repeat(64),
   ]);
-  await toolbar(page)
-    .getByRole("button", { name: "Телефон и подарок", exact: true })
-    .click();
+  await clickWalletAction(page, "Телефон и подарок");
   await page.getByLabel("Российский мобильный номер").fill("+7 999 000-00-00");
   await expect(page.getByLabel("Российский мобильный номер")).toHaveClass(
     "ym-disable-keys",
@@ -492,7 +483,7 @@ test("trusted-origin collector respects build flags, masks, late identity, opt-o
     )
     .toBe(2);
   const beforeLogout = (await commands()).length;
-  await page.getByRole("button", { name: "Выйти", exact: true }).click();
+  await clickAccountAction(page, "Выйти");
   await page
     .getByRole("dialog", { name: "Выйти из аккаунта?", exact: true })
     .getByRole("button", { name: "Выйти", exact: true })
@@ -530,91 +521,104 @@ test("late identity and SDK retain actual phone and gift UI outcomes from a publ
   const state = await install(page);
   state.holdIdentity = true;
   const collector = await delayedCollector(page);
-  await page.goto(analyticsOrigin + "/", { referer: "https://t.me/" });
-  await toolbar(page)
-    .getByRole("button", { name: "Телефон и подарок", exact: true })
-    .click();
-  await page.getByLabel("Российский мобильный номер").fill("+7 999 000-00-00");
-  await page
-    .getByRole("checkbox", { name: "Согласен на подтверждение номера по SMS." })
-    .check();
-  await page
-    .getByRole("button", { name: "Получить код по SMS", exact: true })
-    .click();
-  await page.getByLabel("Код из SMS", { exact: true }).fill("654321");
-  await page
-    .getByRole("button", {
-      name: "Подтвердить телефон и получить подарок",
-      exact: true,
-    })
-    .click();
-  await expect.poll(() => state.giftGranted).toBe(true);
-  await expect(
-    page.getByText("Телефон подтверждён. Начислено 500 ₽ CityGo.", {
-      exact: true,
-    }),
-  ).toBeVisible();
-  expect(state.phonePosts).toBe(1);
-  if (!enabledCollector()) {
-    expect(state.identityReads).toBe(0);
-    expect(collector.sdkRequests()).toBe(0);
+  try {
+    await page.goto(analyticsOrigin + "/", { referer: "https://t.me/" });
+    await clickWalletAction(page, "Телефон и подарок");
+    await page
+      .getByLabel("Российский мобильный номер")
+      .fill("+7 999 000-00-00");
+    await page
+      .getByRole("checkbox", {
+        name: "Согласен на подтверждение номера по SMS.",
+      })
+      .check();
+    await page
+      .getByRole("button", { name: "Получить код по SMS", exact: true })
+      .click();
+    await page.getByLabel("Код из SMS", { exact: true }).fill("654321");
+    await page
+      .getByRole("button", {
+        name: "Подтвердить телефон и получить подарок",
+        exact: true,
+      })
+      .click();
+    await expect.poll(() => state.giftGranted).toBe(true);
+    await expect(
+      page.getByText("Телефон подтверждён. Начислено 500 ₽ CityGo.", {
+        exact: true,
+      }),
+    ).toBeVisible();
+    expect(state.phonePosts).toBe(1);
+    if (!enabledCollector()) {
+      expect(state.identityReads).toBe(0);
+      expect(collector.sdkRequests()).toBe(0);
+      expect(await collector.commands()).toEqual([]);
+      expect(state.outside).toEqual([]);
+      expect(state.unexpected).toEqual([]);
+      return;
+    }
+    await expect.poll(() => state.identityReads).toBe(1);
+    state.holdIdentity = false;
+    state.releaseIdentity();
+    await expect.poll(() => collector.sdkRequests()).toBe(1);
     expect(await collector.commands()).toEqual([]);
+    await toolbar(page)
+      .getByRole("button", { name: "Баланс и пополнение", exact: true })
+      .click();
+    collector.release();
+    await expect
+      .poll(() => collector.goals())
+      .toEqual([
+        "citygo_phone_opened",
+        "citygo_phone_code_sent",
+        "citygo_phone_verified",
+        "citygo_gift_granted",
+        "citygo_wallet_opened",
+      ]);
+    const beforeRestore = state.dashboardReads,
+      beforeIdentity = state.identityReads;
+    await page.evaluate(() => {
+      window.dispatchEvent(
+        new PageTransitionEvent("pagehide", { persisted: true }),
+      );
+      window.dispatchEvent(
+        new PageTransitionEvent("pageshow", { persisted: true }),
+      );
+    });
+    await expect
+      .poll(() => state.dashboardReads)
+      .toBeGreaterThan(beforeRestore);
+    await expect.poll(() => state.identityReads).toBe(beforeIdentity + 1);
+    await expect
+      .poll(
+        async () =>
+          (await collector.commands()).filter((row) => row[1] === "init")
+            .length,
+      )
+      .toBe(2);
+    await clickWalletAction(page, "Телефон и подарок");
+    await expect
+      .poll(
+        async () =>
+          (await collector.goals()).filter(
+            (goal) => goal === "citygo_phone_opened",
+          ).length,
+      )
+      .toBe(2);
+    expect(JSON.stringify(await collector.commands())).not.toMatch(
+      /79990000000|654321|private-contact|private-receipt|"101"/,
+    );
     expect(state.outside).toEqual([]);
     expect(state.unexpected).toEqual([]);
-    return;
+  } finally {
+    state.holdIdentity = false;
+    state.releaseIdentity();
+    collector.release();
+    // Finish local origin/asset rewrites before Playwright closes their request
+    // context. This waits for errors instead of suppressing route callbacks.
+    await page.unrouteAll({ behavior: "wait" });
+    await page.context().unrouteAll({ behavior: "wait" });
   }
-  await expect.poll(() => state.identityReads).toBe(1);
-  state.holdIdentity = false;
-  state.releaseIdentity();
-  await expect.poll(() => collector.sdkRequests()).toBe(1);
-  expect(await collector.commands()).toEqual([]);
-  await toolbar(page)
-    .getByRole("button", { name: "Баланс и пополнение", exact: true })
-    .click();
-  collector.release();
-  await expect
-    .poll(() => collector.goals())
-    .toEqual([
-      "citygo_phone_opened",
-      "citygo_phone_code_sent",
-      "citygo_phone_verified",
-      "citygo_gift_granted",
-      "citygo_wallet_opened",
-    ]);
-  const beforeRestore = state.dashboardReads,
-    beforeIdentity = state.identityReads;
-  await page.evaluate(() => {
-    window.dispatchEvent(
-      new PageTransitionEvent("pagehide", { persisted: true }),
-    );
-    window.dispatchEvent(
-      new PageTransitionEvent("pageshow", { persisted: true }),
-    );
-  });
-  await expect.poll(() => state.dashboardReads).toBeGreaterThan(beforeRestore);
-  await expect.poll(() => state.identityReads).toBe(beforeIdentity + 1);
-  await expect
-    .poll(
-      async () =>
-        (await collector.commands()).filter((row) => row[1] === "init").length,
-    )
-    .toBe(2);
-  await toolbar(page)
-    .getByRole("button", { name: "Телефон и подарок", exact: true })
-    .click();
-  await expect
-    .poll(
-      async () =>
-        (await collector.goals()).filter(
-          (goal) => goal === "citygo_phone_opened",
-        ).length,
-    )
-    .toBe(2);
-  expect(JSON.stringify(await collector.commands())).not.toMatch(
-    /79990000000|654321|private-contact|private-receipt|"101"/,
-  );
-  expect(state.outside).toEqual([]);
-  expect(state.unexpected).toEqual([]);
 });
 
 for (const role of ["user", "admin"] as const) {

@@ -1,3 +1,4 @@
+import { openMessageActions } from "./navigation-helper";
 import { readFile } from "node:fs/promises";
 import { fulfillProductAnalytics } from "./product-analytics-fixture";
 import { syntheticConsentPolicy } from "./service-consent-fixture";
@@ -190,10 +191,13 @@ async function openPlan(page: Page) {
   );
 }
 async function chooseMessage(page: Page, index = 1) {
-  await page
+  const article = page
     .getByRole("log")
+    .locator("article[data-history-message]")
+    .nth(index);
+  await openMessageActions(article);
+  await article
     .getByRole("button", { name: "Добавить шаг в план", exact: true })
-    .nth(index)
     .click();
   return page.getByRole("region", {
     name: "Добавление шага в план",

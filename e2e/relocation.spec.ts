@@ -1,3 +1,4 @@
+import { clickAccountAction, clickWalletAction } from "./navigation-helper";
 import { test, expect, type Page } from "@playwright/test";
 import type { Dashboard } from "@citygo/contracts";
 
@@ -55,10 +56,7 @@ test("six-character registration → conversation without questionnaire → save
     page.getByRole("log", { name: "История диалога" }),
   ).toBeVisible();
   await expectNoInventedPlan(page);
-  await page
-    .getByRole("region", { name: "Баланс и телефон", exact: true })
-    .getByRole("button", { name: "Пополнить баланс", exact: true })
-    .click();
+  await clickWalletAction(page, "Пополнить баланс");
   const credit = page.getByRole("region", { name: "Бесплатный баланс AI" });
   await expect(
     credit.getByRole("button", { name: "Получить подарок 500 ₽" }),
@@ -179,7 +177,7 @@ test("profile changes password to six arbitrary characters; old login fails and 
     .getByRole("button", { name: "Сохранить новый пароль", exact: true })
     .click();
   await expect(page.getByRole("status")).toContainText("Пароль изменён");
-  await page.getByRole("button", { name: "Выйти", exact: true }).click();
+  await clickAccountAction(page, "Выйти");
   await page
     .getByRole("dialog", { name: "Выйти из аккаунта?", exact: true })
     .getByRole("button", { name: "Выйти", exact: true })

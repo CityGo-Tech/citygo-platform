@@ -222,7 +222,7 @@ test("Figma recovery uses generic confirmation,60s resend, opaque passwords and 
   });
   await page.getByRole("button", { name: "Сохранить новый пароль" }).click();
   await expect(
-    page.getByRole("heading", { name: "С возвращением", exact: true }),
+    page.getByRole("heading", { name: "Рады видеть вас снова", exact: true }),
   ).toBeVisible();
   await expect(page.getByRole("status")).toContainText(
     "Все прежние сессии завершены",
@@ -302,7 +302,7 @@ test("late begin cannot restore a proof after leaving recovery", async ({
   await page.getByRole("button", { name: "← Назад", exact: true }).click();
   state.release();
   await expect(
-    page.getByRole("heading", { name: "С возвращением", exact: true }),
+    page.getByRole("heading", { name: "Рады видеть вас снова", exact: true }),
   ).toBeVisible();
   await expect(page.getByLabel("Код из письма", { exact: true })).toHaveCount(
     0,

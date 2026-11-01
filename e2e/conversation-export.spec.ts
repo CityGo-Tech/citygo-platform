@@ -1,3 +1,4 @@
+import { openConversationTools } from "./navigation-helper";
 import { expect, test, type BrowserContext } from "@playwright/test";
 import { readFile } from "node:fs/promises";
 import type {
@@ -185,6 +186,7 @@ test("whole open/closed chat download includes old full texts and interrupted st
   const state = await fixture(context);
   state.closed = true;
   await page.goto("/");
+  await openConversationTools(page);
   await expect(downloadButton(page)).toBeVisible();
   expect(state.reads).toBe(0);
   await expect(page.getByText(first, { exact: true })).toHaveCount(0);
@@ -234,6 +236,7 @@ test("oversize/error responses remain generic and can be retried only by another
   const state = await fixture(context);
   state.fail = 413;
   await page.goto("/");
+  await openConversationTools(page);
   await downloadButton(page).click();
   await expect(
     page.locator('[aria-label="Скачивание диалога"]').getByRole("alert"),
@@ -257,6 +260,7 @@ test("cancellation or account replacement suppresses a late download and clears 
   let downloads = 0;
   page.on("download", () => downloads++);
   await page.goto("/");
+  await openConversationTools(page);
   await downloadButton(page).click();
   await expect.poll(() => state.reads).toBe(1);
   await page

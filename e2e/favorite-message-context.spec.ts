@@ -1,3 +1,4 @@
+import { clickAccountAction } from "./navigation-helper";
 import { fulfillProductAnalytics } from "./product-analytics-fixture";
 import { expect, test, type Page } from "@playwright/test";
 import type { Dashboard, Message } from "@citygo/contracts";
@@ -149,7 +150,7 @@ const source = (page: Page) =>
   page.getByRole("region", { name: "Исходный диалог", exact: true });
 async function open(page: Page) {
   await page.goto("/");
-  await page.getByRole("button", { name: "Избранное", exact: true }).click();
+  await clickAccountAction(page, "Избранное");
   await favorites(page)
     .getByRole("button", { name: "Открыть в диалоге", exact: true })
     .click();
@@ -163,7 +164,7 @@ test("old saved reply opens at its exact source, older history and return keep t
   await page
     .getByLabel("Сообщение помощнику")
     .fill("Мой несохранённый вопрос координатору");
-  await page.getByRole("button", { name: "Избранное", exact: true }).click();
+  await clickAccountAction(page, "Избранное");
   await favorites(page)
     .getByRole("button", { name: "Открыть в диалоге", exact: true })
     .click();
@@ -216,8 +217,7 @@ test("source can open the full original thread from Profile without sending a me
   await page.goto("/");
   await page.getByRole("button", { name: "Профиль", exact: true }).click();
   await page
-    .getByRole("button", { name: "Избранное", exact: true })
-    .first()
+    .getByRole("button", { name: "Избранные сообщения", exact: true })
     .click();
   await favorites(page)
     .getByRole("button", { name: "Открыть в диалоге", exact: true })
@@ -242,7 +242,7 @@ test("late source data cannot reappear after logout", async ({ page }) => {
   state.delay = true;
   await open(page);
   await expect.poll(() => state.reads.length).toBe(1);
-  await page.getByRole("button", { name: "Выйти", exact: true }).click();
+  await clickAccountAction(page, "Выйти");
   await page
     .getByRole("dialog", { name: "Выйти из аккаунта?", exact: true })
     .getByRole("button", { name: "Выйти", exact: true })

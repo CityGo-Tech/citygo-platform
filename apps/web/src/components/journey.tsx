@@ -41,6 +41,10 @@ const stateLabels: Record<Quest["state"], string> = {
   completed: "Завершено",
 };
 export type JourneyProps = {
+  headerNavigationId?: string;
+  workspaceRequest?: { tab: string; sequence: number } | null;
+  onWorkspaceRequestHandled?: (sequence: number) => void;
+  onNavigateWorkspace?: () => void;
   board: Dashboard;
   sessionSignal: AbortSignal;
   onAccessDenied: () => void;

@@ -1,3 +1,4 @@
+import { clickAccountAction } from "./navigation-helper";
 import { fulfillProductAnalytics } from "./product-analytics-fixture";
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
 import type {
@@ -436,7 +437,7 @@ test("unavailable modes and a failed request never fall back, retry or carry sel
   await expect(selector(page)).toHaveValue("maximum");
   expect(state.sends).toHaveLength(1);
   expect(state.sends[0]!.aiMode).toBe("maximum");
-  await page.getByRole("button", { name: "Выйти", exact: true }).click();
+  await clickAccountAction(page, "Выйти");
   await page
     .getByRole("dialog", { name: "Выйти из аккаунта?", exact: true })
     .getByRole("button", { name: "Выйти", exact: true })
@@ -512,8 +513,10 @@ test("legacy Balance keeps the chat; a cancelled first new-mode choice preserves
   await expect(selector(page)).toHaveValue("balanced");
   await expect(composer(page)).toHaveValue("ЧЕРНОВИК_БЕЗ_ОТПРАВКИ");
   await expect(
-    page.getByLabel("Баланс и телефон", { exact: true }),
-  ).toContainText("100 ₽ CityGo");
+    page
+      .getByLabel("Баланс и телефон", { exact: true })
+      .getByRole("button", { name: "Баланс и пополнение", exact: true }),
+  ).toHaveText("100 ₽");
   await expect(
     page.getByRole("log", { name: "История диалога" }),
   ).toContainText("СОХРАНЁННЫЙ_ОТВЕТ");

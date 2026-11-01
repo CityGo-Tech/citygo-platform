@@ -26,6 +26,7 @@ export function AccountProfile({
   onFavorites,
   onPassword,
   onSupport,
+  onResults,
 }: {
   userId: string;
   sessionSignal: AbortSignal;
@@ -38,6 +39,7 @@ export function AccountProfile({
   onFavorites?: () => void;
   onPassword?: () => void;
   onSupport?: () => void;
+  onResults?: () => void;
 }) {
   const [snapshot, setSnapshot] = useState<{
     owner: string;
@@ -315,6 +317,19 @@ export function AccountProfile({
           Избранные сообщения
         </Button>
       </section>
+      {onResults && (
+        <section
+          className={accountStyles.profileCard}
+          aria-labelledby="profile-results-heading"
+        >
+          <span className={accountStyles.eyebrow}>ВАШИ МАТЕРИАЛЫ</span>
+          <h2 id="profile-results-heading">Полезные результаты</h2>
+          <p>Планы, чек-листы и черновики из разговоров.</p>
+          <Button variant="secondary" disabled={disabled} onClick={onResults}>
+            Открыть результаты
+          </Button>
+        </section>
+      )}
       <div className="account-profile-actions">
         <Button variant="secondary" onClick={onSupport}>
           Помощь человека

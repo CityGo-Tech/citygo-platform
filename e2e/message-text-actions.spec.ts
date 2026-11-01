@@ -1,3 +1,4 @@
+import { openMessageActions } from "./navigation-helper";
 import { test, expect, type BrowserContext } from "@playwright/test";
 import { readFile } from "node:fs/promises";
 import type { Dashboard, Message } from "@citygo/contracts";
@@ -160,14 +161,27 @@ test("finished message copies and downloads exact full text locally on desktop/m
   await page.goto("/");
   const log = page.getByRole("log", { name: "История диалога", exact: true });
   const answer = log.locator('[data-history-message="12"]');
+  await openMessageActions(log.locator('[data-history-message="11"]'));
+  await openMessageActions(answer);
   const actions = answer.getByRole("group", {
     name: "Сохранить текст сообщения",
   });
   await expect(
     log.getByRole("group", { name: "Сохранить текст сообщения" }),
   ).toHaveCount(2);
+  const interrupted = log.locator('[data-history-message="13"]');
   await expect(
-    log.locator('[data-history-message="13"]').getByRole("group"),
+    interrupted.getByRole("group", {
+      name: "Сохранить текст сообщения",
+      exact: true,
+      includeHidden: true,
+    }),
+  ).toHaveCount(0);
+  await expect(
+    interrupted.getByRole("button", {
+      name: /^(Копировать текст|Скачать \.txt)$/,
+      includeHidden: true,
+    }),
   ).toHaveCount(0);
   await actions
     .getByRole("button", { name: "Копировать текст", exact: true })
@@ -208,6 +222,7 @@ test("clipboard denial offers selected readonly private text and still permits d
   const state = await fixture(context, true);
   await page.goto("/");
   const answer = page.locator('[data-history-message="12"]');
+  await openMessageActions(answer);
   await answer
     .getByRole("button", { name: "Копировать текст", exact: true })
     .click();
@@ -238,6 +253,7 @@ test("owner replacement clears old message text and its action feedback", async 
 }) => {
   const state = await fixture(context, true);
   await page.goto("/");
+  await openMessageActions(page.locator('[data-history-message="12"]'));
   await page
     .locator('[data-history-message="12"]')
     .getByRole("button", { name: "Копировать текст", exact: true })

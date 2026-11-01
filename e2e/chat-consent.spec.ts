@@ -280,7 +280,13 @@ async function assertNoConsentSurface(page: Page) {
   await expect(
     page.getByRole("heading", { name: "Обработка сообщений", exact: true }),
   ).toHaveCount(0);
-  await expect(page.locator(".conversation-main .ai-access")).toHaveCount(0);
+  const conversation = page.locator(".conversation-home");
+  await expect(conversation.locator(".conversation-chat-card")).toHaveCount(1);
+  // The sibling wallet remains mounted to preserve an unfinished top-up form.
+  // The chat itself must contain no permanent consent or financial access panel.
+  await expect(
+    conversation.locator(".conversation-main .ai-access"),
+  ).toHaveCount(0);
 }
 
 test("a server-bound registration allows direct first and later sends without a dialog, consent menu or client AI grant", async ({

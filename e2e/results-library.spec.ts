@@ -1,3 +1,4 @@
+import { openResults as openResultsView } from "./navigation-helper";
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
 import { readFile } from "node:fs/promises";
 import type {
@@ -47,7 +48,7 @@ const source = (page: Page) =>
 const categories = (page: Page) =>
   results(page).getByRole("navigation", { name: "Категории результатов" });
 async function openResults(page: Page) {
-  await page.getByRole("button", { name: "Результаты", exact: true }).click();
+  await openResultsView(page);
   await expect(results(page).getByRole("heading", { level: 1 })).toHaveText(
     "Полезное из разговоров",
   );
@@ -159,6 +160,17 @@ async function fixture(
     if (!state.authenticated)
       return route.fulfill({ status: 401, json: { error: "Signed out" } });
     if (path === "/api/v1/dashboard") return route.fulfill({ json: board() });
+    if (path === "/api/v1/account/profile")
+      return route.fulfill({
+        json: {
+          userId: state.owner,
+          email: board().user.email,
+          emailVerified: true,
+          phoneVerified: false,
+          giftStatus: "available",
+          emailConfirmation: "available",
+        },
+      });
     if (path === "/api/v1/personal-plan/summary") {
       const rows = state.owner === "101" ? state.plan : [];
       return route.fulfill({
@@ -621,12 +633,31 @@ test("a foreign owner response never renders saved titles", async ({
   ]);
   state.responseOwner = "202";
   await page.goto("/");
-  await page.getByRole("button", { name: "Результаты", exact: true }).click();
+  // This receipt must close the session before a successful results heading can appear.
+  await openResultsView(page);
   await expect(
     page.getByRole("button", { name: "Создать аккаунт", exact: true }),
   ).toBeVisible();
   await expect(page.getByText("FOREIGN_PRIVATE_RESULT")).toHaveCount(0);
   await expect(results(page)).toHaveCount(0);
+  await expect(page.locator(".notice[role=status]")).toHaveText(
+    "Сессия завершилась. Войдите снова.",
+  );
+  await expect(
+    page.getByRole("navigation", {
+      name: "Личный кабинет CityGo",
+      exact: true,
+    }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("textbox", { name: "Сообщение помощнику", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Войти", exact: true }),
+  ).toBeVisible();
+  expect(state.writes).toEqual([]);
+  expect(state.unexpected).toEqual([]);
+  expect(state.external).toBe(0);
 });
 
 test("switching category aborts a late read and never mixes it with favorites", async ({

@@ -121,7 +121,10 @@ try {
       "citygo-container-context-canary-20260923",
     );
   console.log("Building isolated production images (no publication)");
-  compose(["build"], { timeout: 30 * 60 * 1000 });
+  // Build jobs once: separate Compose builds of the same target can export
+  // different image metadata. Both service tags must name this exact artifact.
+  compose(["build", "api", "web", "migrator"], { timeout: 30 * 60 * 1000 });
+  docker(["image", "tag", `${project}-migrator`, `${project}-worker`]);
   const config = JSON.parse(compose(["config", "--format", "json"]));
   for (const name of ["api", "postgres", "migrator", "worker"])
     assert.equal(

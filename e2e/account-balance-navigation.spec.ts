@@ -1,3 +1,4 @@
+import { clickWalletAction, openWalletMenu } from "./navigation-helper";
 import { fulfillProductAnalytics } from "./product-analytics-fixture";
 import { syntheticConsentPolicy } from "./service-consent-fixture";
 import { expect, test, type Page } from "@playwright/test";
@@ -121,9 +122,7 @@ async function install(
 const toolbar = (page: Page) =>
   page.getByRole("region", { name: "Баланс и телефон", exact: true });
 async function openBalance(page: Page) {
-  await toolbar(page)
-    .getByRole("button", { name: "Пополнить баланс", exact: true })
-    .click();
+  await clickWalletAction(page, "Пополнить баланс");
   await expect(
     page.getByRole("heading", { name: "Баланс и пополнение", exact: true }),
   ).toBeVisible();
@@ -139,6 +138,7 @@ test("a new account with no dialogue can find zero balance, top up and bind a ph
   await page.goto("/");
   await expect(toolbar(page)).toBeVisible();
   await expect(toolbar(page)).toContainText("0 ₽");
+  await openWalletMenu(page);
   await expect(
     toolbar(page).getByRole("button", {
       name: "Телефон и подарок",
@@ -169,9 +169,7 @@ test("a new account with no dialogue can find zero balance, top up and bind a ph
     fullPage: true,
   });
   await back(page).click();
-  await toolbar(page)
-    .getByRole("button", { name: "Телефон и подарок", exact: true })
-    .click();
+  await clickWalletAction(page, "Телефон и подарок");
   await expect(page.getByLabel("Российский мобильный номер")).toBeVisible();
   await expect(
     page.getByRole("button", { name: "Получить код по SMS", exact: true }),
@@ -213,9 +211,7 @@ test("missing server credit is unavailable rather than a fabricated zero balance
   await expect(
     toolbar(page).getByText("0 ₽ CityGo", { exact: true }),
   ).toHaveCount(0);
-  await toolbar(page)
-    .getByRole("button", { name: "Пополнить баланс", exact: true })
-    .click();
+  await clickWalletAction(page, "Пополнить баланс");
   await expect(
     page.getByRole("heading", { name: "Баланс и пополнение", exact: true }),
   ).toBeVisible();
@@ -283,9 +279,7 @@ test("balance and phone navigation retain an unsent dialogue draft and refresh m
   await expect(composer).toHaveValue(
     "Черновик: хочу понять стоимость переезда.",
   );
-  await toolbar(page)
-    .getByRole("button", { name: "Телефон и подарок", exact: true })
-    .click();
+  await clickWalletAction(page, "Телефон и подарок");
   await expect(page.getByLabel("Российский мобильный номер")).toBeVisible();
   await back(page).click();
   await expect(composer).toHaveValue(
