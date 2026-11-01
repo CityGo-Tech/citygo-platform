@@ -120,10 +120,19 @@ test("saved step history compares exact versions and checklist, pages without wr
   await history.screenshot({
     path: info.outputPath("plan-history-comparison.png"),
   });
+  const previousCompletions = state.listCompletions;
+  state.holdList = true;
   await history
     .getByRole("button", { name: "← В мой план", exact: true })
     .click();
+  await expect(planPanel(page)).toHaveAttribute("aria-busy", "true");
+  await expect(trigger).toBeDisabled();
+  await expect(trigger).not.toBeFocused();
+  expect(state.listCompletions).toBe(previousCompletions);
+  state.releaseList();
+  await expect(trigger).toBeEnabled();
   await expect(trigger).toBeFocused();
+  expect(state.listCompletions).toBe(previousCompletions + 1);
   expect(reads[0]).toBe(null);
   expect(reads.filter((value) => value !== null)).toEqual(["3"]);
   expect(state.posts).toEqual([]);
