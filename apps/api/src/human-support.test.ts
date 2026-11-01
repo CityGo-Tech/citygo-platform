@@ -58,6 +58,12 @@ test("HTTP support service is independently saved, owner-scoped and admin CAS co
   const owner = await user("support-owner@example.test"),
     other = await user("support-other@example.test"),
     admin = await user("support-admin@example.test", "admin");
+  const dashboard = await app.inject({
+    url: "/v1/dashboard",
+    headers: owner.headers,
+  });
+  assert.equal(dashboard.statusCode, 200, dashboard.body);
+  assert.equal(dashboard.json().supportUpdatesAvailable, true);
   const input = {
     operationId: randomUUID(),
     body: "Не понимаю, с какого шага начать переезд. Нужна помощь человека.",
@@ -146,6 +152,83 @@ test("HTTP support service is independently saved, owner-scoped and admin CAS co
       })
     ).statusCode,
     404,
+  );
+  const ownUrl = "/v1/support-requests/" + receipt.request.id;
+  const summary = await app.inject({
+    url: "/v1/support-updates",
+    headers: owner.headers,
+  });
+  assert.equal(summary.statusCode, 200, summary.body);
+  assert.equal(summary.json().unreadReplies, 1);
+  assert.equal(summary.headers["cache-control"], "no-store");
+  assert.equal(
+    (await app.inject({ url: ownUrl, headers: owner.headers })).json().request
+      .id,
+    receipt.request.id,
+  );
+  assert.equal(
+    (await app.inject({ url: ownUrl, headers: other.headers })).statusCode,
+    404,
+  );
+  assert.equal(
+    (await db.query("select * from human_support_reads")).rows.length,
+    0,
+  );
+  const throughReplyId = answer.json().reply.id;
+  for (const [headers, payload, expected] of [
+    [other.headers, { throughReplyId }, 404],
+    [owner.headers, { throughReplyId: "9007199254740993" }, 404],
+    [owner.headers, { throughReplyId, userId: other.id }, 400],
+    [owner.headers, {}, 400],
+  ] as const)
+    assert.equal(
+      (
+        await app.inject({
+          method: "POST",
+          url: ownUrl + "/read",
+          headers,
+          payload,
+        })
+      ).statusCode,
+      expected,
+    );
+  const read = await app.inject({
+    method: "POST",
+    url: ownUrl + "/read",
+    headers: owner.headers,
+    payload: { throughReplyId },
+  });
+  assert.equal(read.statusCode, 200, read.body);
+  assert.equal(read.json().unreadReplies, 0);
+  assert.equal(
+    (
+      await app.inject({ url: "/v1/support-updates", headers: owner.headers })
+    ).json().unreadRequests,
+    0,
+  );
+  assert.equal(
+    (
+      await app.inject({
+        url: "/v1/support-updates?all=true",
+        headers: owner.headers,
+      })
+    ).statusCode,
+    400,
+  );
+  assert.equal(
+    (await app.inject({ url: "/v1/support-updates" })).statusCode,
+    401,
+  );
+  assert.equal(
+    (
+      await app.inject({
+        method: "POST",
+        url: ownUrl + "/read",
+        headers: { origin: "https://invalid.example" },
+        payload: { throughReplyId },
+      })
+    ).statusCode,
+    403,
   );
   const closed = await app.inject({
     method: "PATCH",

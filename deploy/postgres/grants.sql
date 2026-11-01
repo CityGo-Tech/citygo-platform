@@ -86,6 +86,9 @@ grant select, insert on human_support_requests to citygo_api;
 -- Replies are append-only; no UPDATE/DELETE and no Worker access.
 grant select, insert on human_support_replies to citygo_api;
 grant usage, select on sequence human_support_replies_id_seq to citygo_api;
+-- Owner/read identity is immutable; only an explicitly displayed reply advances.
+grant select, insert on human_support_reads to citygo_api;
+grant update (through_reply_id,read_at) on human_support_reads to citygo_api;
 grant update (status,revision,updated_at,closed_at) on human_support_requests to citygo_api;
 -- Each admitted request retains one server-selected public mode profile.
 -- API can append/read it; neither API nor Worker may rewrite or delete it.

@@ -219,6 +219,7 @@ export const aiControlResponseSchema = z.object({
 }) satisfies z.ZodType<AiControlStatus>;
 
 export const dashboardResponseSchema = z.object({
+  supportUpdatesAvailable: z.boolean().optional(),
   user,
   profile: profileSchema.nullable(),
   xp: count,

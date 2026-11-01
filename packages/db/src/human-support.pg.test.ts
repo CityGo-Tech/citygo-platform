@@ -151,6 +151,46 @@ test(
     ]);
     assert.deepEqual(replied[0], replied[1]);
     assert.equal((await store.replies(owner, id)).replies.length, 1);
+    const latest = await store.reply(operator, id, {
+      operationId: randomUUID(),
+      expectedRevision: replied[0]!.request.revision,
+      body: "Ещё один ответ поддержки",
+    });
+    assert.equal((await store.updates(owner)).unreadReplies, 2);
+    await Promise.all([
+      store.markRead(owner, id, { throughReplyId: latest.reply.id }),
+      store.markRead(owner, id, { throughReplyId: replied[0]!.reply.id }),
+    ]);
+    assert.equal((await store.updates(owner)).unreadReplies, 0);
+    assert.equal(
+      (
+        await database.query<{ through_reply_id: string }>(
+          "select through_reply_id::text from human_support_reads where request_id=$1",
+          [id],
+        )
+      ).rows[0]!.through_reply_id,
+      latest.reply.id,
+    );
+    for (const sql of [
+      "update human_support_reads set user_id=user_id",
+      "update human_support_reads set request_id=request_id",
+      "delete from human_support_reads",
+    ])
+      await assert.rejects(runtime.query(sql), { code: "42501" });
+    await assert.rejects(
+      database.transaction(async (tx) => {
+        await tx.exec(`set local role ${roles.citygo_worker}`);
+        return tx.query("select * from human_support_reads");
+      }),
+      { code: "42501" },
+    );
+    await database.transaction(async (tx) => {
+      await tx.exec(`set local role ${roles.citygo_backup}`);
+      assert.equal(
+        (await tx.query("select * from human_support_reads")).rows.length,
+        1,
+      );
+    });
     for (const sql of [
       "update human_support_replies set body=body",
       "delete from human_support_replies",
@@ -195,5 +235,36 @@ test(
         1,
       );
     });
+    // The queued cursor mutation must recheck account state after acquiring the
+    // same security lock as the blocker; a stale HTTP authentication is not enough.
+    let started!: () => void, release!: () => void;
+    const locked = new Promise<void>((resolve) => (started = resolve)),
+      gate = new Promise<void>((resolve) => (release = resolve));
+    const blocker = database.transaction(async (tx) => {
+      await tx.query(
+        "select id from account_security_state where id=1 for update",
+      );
+      started();
+      await gate;
+      await tx.query("update users set status='blocked' where id=$1", [
+        owner.userId,
+      ]);
+    });
+    await locked;
+    const waiting = store.markRead(owner, id, {
+      throughReplyId: latest.reply.id,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    release();
+    await blocker;
+    await assert.rejects(
+      waiting,
+      (e: unknown) =>
+        e instanceof Error && "statusCode" in e && e.statusCode === 401,
+    );
+    assert.equal(
+      (await database.query("select * from human_support_reads")).rows.length,
+      1,
+    );
   },
 );

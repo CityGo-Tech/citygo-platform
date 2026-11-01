@@ -268,3 +268,169 @@ test("support pagination and status filtering apply before exact bigint cursors"
   assert.equal(next.nextBefore, null);
   assert.ok(BigInt(next.requests[0]!.id) < BigInt(first.nextBefore!));
 });
+
+test("read evidence is explicit, owner/request scoped, monotonic and does not include later replies", async (t) => {
+  const f = await fixture(t);
+  const one = (await f.store.create(f.owner, command())).request;
+  const two = (await f.store.create(f.owner, command())).request;
+  const foreign = (await f.store.create(f.other, command())).request;
+  const reply = async (id: string, revision: number) =>
+    (
+      await f.store.reply(f.admin, id, {
+        operationId: randomUUID(),
+        expectedRevision: revision,
+        body: "Ответ владельца без внешней отправки.",
+      })
+    ).reply;
+  const first = await reply(one.id, 1),
+    second = await reply(one.id, 2),
+    other = await reply(two.id, 1),
+    foreignReply = await reply(foreign.id, 1);
+  const summary = await f.store.updates(f.owner);
+  assert.equal(summary.unreadRequests, 2);
+  assert.equal(summary.unreadReplies, 3);
+  assert.deepEqual(
+    summary.requests.map((r) => r.requestId),
+    [two.id, one.id],
+  );
+  assert.equal((await f.store.updates(f.other)).unreadReplies, 1);
+  await f.store.list(f.owner);
+  await f.store.replies(f.owner, one.id);
+  await f.store.detail(f.owner, one.id, false);
+  assert.equal(
+    (await f.db.query("select * from human_support_reads")).rows.length,
+    0,
+  );
+  await assert.rejects(f.store.detail(f.other, one.id, false), status(404));
+  for (const throughReplyId of [other.id, foreignReply.id, "9007199254740993"])
+    await assert.rejects(
+      f.store.markRead(f.owner, one.id, { throughReplyId }),
+      status(404),
+    );
+  await assert.rejects(
+    f.store.markRead(f.other, one.id, { throughReplyId: first.id }),
+    status(404),
+  );
+  const marked = await f.store.markRead(f.owner, one.id, {
+    throughReplyId: second.id,
+  });
+  assert.equal(marked.unreadReplies, 0);
+  const evidence = (
+    await f.db.query("select * from human_support_reads where request_id=$1", [
+      one.id,
+    ])
+  ).rows;
+  const replay = await f.store.markRead(f.owner, one.id, {
+    throughReplyId: first.id,
+  });
+  assert.equal(replay.throughReplyId, second.id);
+  assert.deepEqual(
+    (
+      await f.db.query(
+        "select * from human_support_reads where request_id=$1",
+        [one.id],
+      )
+    ).rows,
+    evidence,
+  );
+  const late = await reply(one.id, 3);
+  assert.equal(
+    (await f.store.markRead(f.owner, one.id, { throughReplyId: second.id }))
+      .unreadReplies,
+    1,
+  );
+  assert.deepEqual(
+    (await f.store.updates(f.owner)).requests.find(
+      (r) => r.requestId === one.id,
+    ),
+    { requestId: one.id, lastReplyId: late.id, unreadReplies: 1 },
+  );
+  for (const [sql, args] of [
+    [
+      "update human_support_reads set through_reply_id=$2 where request_id=$1",
+      [one.id, first.id],
+    ],
+    [
+      "update human_support_reads set user_id=$2 where request_id=$1",
+      [one.id, f.other.userId],
+    ],
+    [
+      "update human_support_reads set through_reply_id=$2 where request_id=$1",
+      [one.id, other.id],
+    ],
+    ["delete from human_support_reads where request_id=$1", [one.id]],
+  ] as [string, string[]][])
+    await assert.rejects(f.db.query(sql, args), { code: "23514" });
+  assert.equal(
+    (await f.store.updates(f.owner, { before: one.id })).unreadReplies,
+    2,
+  );
+  assert.deepEqual(
+    (await f.store.updates(f.owner, { before: one.id })).requests,
+    [],
+  );
+  await f.db.query("update users set must_change_password=true where id=$1", [
+    f.owner.userId,
+  ]);
+  await assert.rejects(
+    f.store.markRead(f.owner, one.id, { throughReplyId: late.id }),
+    status(403),
+  );
+  await f.db.query(
+    "update users set must_change_password=false,status='blocked' where id=$1",
+    [f.owner.userId],
+  );
+  await assert.rejects(f.store.updates(f.owner), status(401));
+  assert.deepEqual(
+    (
+      await f.db.query(
+        "select * from human_support_reads where request_id=$1",
+        [one.id],
+      )
+    ).rows,
+    evidence,
+  );
+});
+test("unread totals stay global across bigint keyset pages and seen requests leave only the unread page", async (t) => {
+  const f = await fixture(t);
+  await f.db.query(
+    "select setval('human_support_requests_id_seq',9007199254740992,true)",
+  );
+  const ids: string[] = [];
+  for (let i = 0; i < 21; i++) {
+    const r = (await f.store.create(f.owner, command())).request;
+    const p = await f.store.reply(f.admin, r.id, {
+      operationId: randomUUID(),
+      expectedRevision: 1,
+      body: "Ответ поддержки",
+    });
+    ids.push(r.id);
+    if (i === 0)
+      assert.equal(
+        (await f.store.markRead(f.owner, r.id, { throughReplyId: p.reply.id }))
+          .unreadReplies,
+        0,
+      );
+  }
+  const page = await f.store.updates(f.owner);
+  assert.equal(page.requests.length, 20);
+  assert.equal(page.nextBefore, null);
+  assert.equal(page.unreadRequests, 20);
+  assert.equal(page.unreadReplies, 20);
+  const extra = (await f.store.create(f.owner, command())).request;
+  await f.store.reply(f.admin, extra.id, {
+    operationId: randomUUID(),
+    expectedRevision: 1,
+    body: "Новый ответ",
+  });
+  const first = await f.store.updates(f.owner),
+    next = await f.store.updates(f.owner, { before: first.nextBefore! });
+  assert.equal(first.requests.length, 20);
+  assert.equal(next.requests.length, 1);
+  assert.equal(next.unreadReplies, 21);
+  assert.equal(next.requests[0]!.requestId, ids[1]);
+  assert.equal(
+    new Set([...first.requests, ...next.requests].map((r) => r.requestId)).size,
+    21,
+  );
+});

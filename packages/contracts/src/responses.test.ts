@@ -426,3 +426,27 @@ test("admin accepts existing PostgreSQL and ISO audit dates but rejects invalid 
     false,
   );
 });
+
+test("support update capability is additive and strictly boolean for mixed Web/API versions", () => {
+  assert.equal(
+    dashboardResponseSchema.parse(board).supportUpdatesAvailable,
+    undefined,
+  );
+  assert.equal(
+    dashboardResponseSchema.parse({ ...board, supportUpdatesAvailable: true })
+      .supportUpdatesAvailable,
+    true,
+  );
+  assert.equal(
+    dashboardResponseSchema.parse({ ...board, supportUpdatesAvailable: false })
+      .supportUpdatesAvailable,
+    false,
+  );
+  assert.equal(
+    dashboardResponseSchema.safeParse({
+      ...board,
+      supportUpdatesAvailable: "true",
+    }).success,
+    false,
+  );
+});

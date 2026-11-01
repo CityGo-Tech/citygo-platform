@@ -169,3 +169,70 @@ test("human reply client rejects foreign request, changed body, duplicate pages 
     invalid,
   );
 });
+
+test("support unread client validates cursor/page identity and never acknowledges a GET", async () => {
+  const calls: { url: string; method: string; body: unknown }[] = [];
+  let response: unknown = {
+    userId: "1",
+    unreadRequests: 1,
+    unreadReplies: 1,
+    requests: [
+      { requestId: item.id, lastReplyId: "9007199254740999", unreadReplies: 1 },
+    ],
+    nextBefore: null,
+  };
+  const client = createClient("http://synthetic", {
+    fetch: async (url, init) => {
+      calls.push({
+        url: String(url),
+        method: init!.method!,
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+      });
+      return Response.json(response);
+    },
+  });
+  await client.supportUpdates();
+  assert.equal(calls[0]!.method, "GET");
+  assert.equal(calls[0]!.body, null);
+  await assert.rejects(client.supportUpdates({ before: item.id }), invalid);
+  response = {
+    userId: "1",
+    unreadRequests: 2,
+    unreadReplies: 2,
+    requests: [
+      { requestId: item.id, lastReplyId: "2", unreadReplies: 1 },
+      { requestId: item.id, lastReplyId: "3", unreadReplies: 1 },
+    ],
+    nextBefore: null,
+  };
+  await assert.rejects(client.supportUpdates(), invalid);
+  response = { userId: "1", request: item };
+  await client.supportRequest(item.id);
+  await assert.rejects(client.supportRequest("2"), invalid);
+  response = {
+    userId: "1",
+    requestId: item.id,
+    throughReplyId: "9007199254740999",
+    unreadReplies: 0,
+  };
+  await client.markSupportRepliesRead(item.id, {
+    throughReplyId: "9007199254740998",
+  });
+  assert.equal(calls.at(-1)!.method, "POST");
+  assert.deepEqual(calls.at(-1)!.body, { throughReplyId: "9007199254740998" });
+  await assert.rejects(
+    client.markSupportRepliesRead("2", { throughReplyId: "3" }),
+    invalid,
+  );
+  await assert.rejects(
+    client.markSupportRepliesRead(item.id, {
+      throughReplyId: "9007199254741000",
+    }),
+    invalid,
+  );
+  const count = calls.length;
+  await assert.rejects(
+    client.markSupportRepliesRead(item.id, { throughReplyId: "0" }),
+  );
+  assert.equal(calls.length, count);
+});
