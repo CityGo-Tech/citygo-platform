@@ -9,6 +9,7 @@ const tables = [
   "human_support_requests",
   "human_support_replies",
   "human_support_reads",
+  "conversation_titles",
   "service_consent_events",
   "personal_plan_checklists",
   "personal_plan_item_history",
@@ -116,6 +117,7 @@ const protectedEmpty = [
   "human_support_requests",
   "human_support_replies",
   "human_support_reads",
+  "conversation_titles",
   // User-chosen steps and their tombstones need a separate erasure review.
   "personal_plan_checklists",
   "personal_plan_item_history",

@@ -100,6 +100,9 @@ export const conversationListQuerySchema = conversationFiltersSchema.extend({
   before: conversationIdSchema.optional(),
 });
 export type ConversationSummary = {
+  // Optional for old servers/clients; null means the assistant default is used.
+  customTitle?: string | null;
+  titleRevision?: string;
   id: string;
   agentKey: AgentKey;
   assistantKey: AgentKey | null;

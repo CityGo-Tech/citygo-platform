@@ -10,6 +10,7 @@ export * from "./admin-customer-observability.js";
 export * from "./message-favorites.js";
 export * from "./personal-plan.js";
 export * from "./conversation-history.js";
+export * from "./conversation-titles.js";
 export * from "./conversation-message-search.js";
 export * from "./llm.js";
 export * from "./ai-access.js";

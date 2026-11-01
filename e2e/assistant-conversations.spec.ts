@@ -38,7 +38,11 @@ const pair = (agentKey: AgentKey, base: number, marker: string): Message[] => [
   },
 ];
 
-async function install(context: BrowserContext, withProfile = false) {
+async function install(
+  context: BrowserContext,
+  withProfile = false,
+  withTitles = false,
+) {
   const threads = new Map<string, Thread>([
     [
       "10",
@@ -59,6 +63,8 @@ async function install(context: BrowserContext, withProfile = false) {
     messages: 0,
     paymentPosts: 0,
     external: 0,
+    titles: new Map<string, { title: string | null; revision: string }>(),
+    titlePatches: [] as { title: string | null; expectedRevision: string }[],
     starts: [] as (AgentKey | undefined)[],
     reads: [] as { owner: string; id: string }[],
     listQueries: [] as string[],
@@ -207,6 +213,12 @@ async function install(context: BrowserContext, withProfile = false) {
               closed,
               updatedAt: "2026-10-22T00:00:00.000Z",
               preview: messages.at(-1)?.content ?? "",
+              ...(withTitles
+                ? {
+                    customTitle: state.titles.get(id)?.title ?? null,
+                    titleRevision: state.titles.get(id)?.revision ?? "0",
+                  }
+                : {}),
             }),
           ),
           nextCursor: null,
@@ -231,6 +243,42 @@ async function install(context: BrowserContext, withProfile = false) {
           agentKey: threads.get(id)!.agentKey,
           assistantKey: threads.get(id)!.assistantKey,
           closed: false,
+        },
+      });
+    }
+    const title = path.match(/^\/api\/v1\/conversations\/(\d+)\/title$/);
+    if (title && withTitles) {
+      const id = title[1]!;
+      if (!threadFor(id))
+        return route.fulfill({ status: 404, json: { error: "Чат не найден" } });
+      let value = state.titles.get(id) ?? { title: null, revision: "0" };
+      if (request.method() === "PATCH") {
+        const input = request.postDataJSON() as {
+          title: string | null;
+          expectedRevision: string;
+        };
+        state.titlePatches.push(input);
+        if (input.expectedRevision !== value.revision)
+          return route.fulfill({
+            status: 409,
+            json: {
+              error: "Название уже изменилось. Обновите его перед сохранением.",
+            },
+          });
+        if (input.title !== value.title) {
+          value = {
+            title: input.title,
+            revision: String(BigInt(value.revision) + 1n),
+          };
+          state.titles.set(id, value);
+        }
+      } else expect(request.method()).toBe("GET");
+      return route.fulfill({
+        json: {
+          userId: state.owner,
+          threadId: id,
+          ...value,
+          updatedAt: value.revision === "0" ? null : "2026-11-01T00:00:00.000Z",
         },
       });
     }
@@ -837,5 +885,153 @@ test("conversation search filters owned history, resets to all and never sends a
   expect(f.state.messages).toBe(0);
   expect(f.state.paymentPosts).toBe(0);
   expect(f.state.external).toBe(0);
+  expect(f.state.unexpected).toEqual([]);
+});
+
+test("conversation title can be edited and cleared, survives reload, and rejects stale tabs without sending messages", async ({
+  page,
+  context,
+}) => {
+  const f = await install(context, false, true);
+  const original = JSON.stringify([...f.threads.values()]);
+  await page.goto("/");
+  await allConversations(page);
+  const card = page.locator("article.conversation-directory-card").first();
+  await card
+    .getByRole("button", { name: "Изменить название", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog", {
+    name: "Название разговора",
+    exact: true,
+  });
+  await expect(dialog.getByLabel("Название", { exact: true })).toHaveValue("");
+  await dialog
+    .getByLabel("Название", { exact: true })
+    .fill("Квартира в Москве 🏡");
+  await dialog.getByRole("button", { name: "Сохранить", exact: true }).click();
+  await expect(dialog).not.toBeVisible();
+  await expect(
+    card.getByRole("heading", { name: "Квартира в Москве 🏡", exact: true }),
+  ).toBeVisible();
+  await page.reload();
+  await allConversations(page);
+  await expect(
+    card.getByRole("heading", { name: "Квартира в Москве 🏡", exact: true }),
+  ).toBeVisible();
+  await card
+    .getByRole("button", { name: "Изменить название", exact: true })
+    .click();
+  await expect(dialog.getByLabel("Название", { exact: true })).toHaveValue(
+    "Квартира в Москве 🏡",
+  );
+  f.state.titles.set("10", {
+    title: "Изменено в другой вкладке",
+    revision: "2",
+  });
+  await dialog.getByLabel("Название", { exact: true }).fill("Мой вариант");
+  await dialog.getByRole("button", { name: "Сохранить", exact: true }).click();
+  await expect(dialog.getByRole("alert")).toContainText("изменилось");
+  await expect(
+    dialog.getByRole("button", { name: "Сохранить", exact: true }),
+  ).toBeDisabled();
+  await dialog
+    .getByRole("button", { name: "Обновить название", exact: true })
+    .click();
+  await expect(dialog.getByLabel("Название", { exact: true })).toHaveValue(
+    "Изменено в другой вкладке",
+  );
+  await dialog.getByLabel("Название", { exact: true }).fill("Мой вариант");
+  await dialog.getByRole("button", { name: "Сохранить", exact: true }).click();
+  await expect(
+    card.getByRole("heading", { name: "Мой вариант", exact: true }),
+  ).toBeVisible();
+  await card
+    .getByRole("button", { name: "Изменить название", exact: true })
+    .click();
+  await dialog
+    .getByRole("button", { name: "Вернуть исходное название", exact: true })
+    .click();
+  await expect(dialog).not.toBeVisible();
+  await expect(
+    card.getByRole("heading", { name: "Общий диалог", exact: true }),
+  ).toBeVisible();
+  await page.reload();
+  await allConversations(page);
+  await expect(
+    card.getByRole("heading", { name: "Общий диалог", exact: true }),
+  ).toBeVisible();
+  expect(f.state.titles.get("10")).toEqual({ title: null, revision: "4" });
+  expect(f.state.titlePatches.map((value) => value.expectedRevision)).toEqual([
+    "0",
+    "1",
+    "2",
+    "3",
+  ]);
+  expect(JSON.stringify([...f.threads.values()])).toBe(original);
+  expect([f.state.messages, f.state.paymentPosts, f.state.external]).toEqual([
+    0, 0, 0,
+  ]);
+  expect(f.state.unexpected).toEqual([]);
+});
+
+test("conversation title dialog is private, bounded on mobile, and cancels without a write", async ({
+  page,
+  context,
+}, testInfo) => {
+  const f = await install(context, false, true);
+  await page.goto("/");
+  await allConversations(page);
+  const button = page
+    .getByRole("article", { name: "Общий диалог", exact: true })
+    .getByRole("button", { name: "Изменить название", exact: true });
+  await button.click();
+  const dialog = page.getByRole("dialog", {
+    name: "Название разговора",
+    exact: true,
+  });
+  const field = dialog.getByLabel("Название", { exact: true });
+  await expect(field).toHaveAttribute("maxlength", "80");
+  await field.fill("Не сохранять");
+  expect(
+    await field.evaluate((element) => !!element.closest(".ym-hide-content")),
+  ).toBe(true);
+  expect(
+    await field.evaluate((element) =>
+      element.classList.contains("ym-disable-keys"),
+    ),
+  ).toBe(true);
+  const bounds = await dialog.boundingBox();
+  expect(bounds).toBeTruthy();
+  expect(bounds!.width).toBeLessThanOrEqual(page.viewportSize()!.width);
+  await page.screenshot({
+    path: testInfo.outputPath("conversation-title-editor.png"),
+  });
+  await page.keyboard.press("Escape");
+  await expect(dialog).not.toBeVisible();
+  await expect(button).toBeFocused();
+  expect(f.state.titlePatches).toEqual([]);
+  expect(f.state.titles.size).toBe(0);
+  expect([f.state.messages, f.state.paymentPosts, f.state.external]).toEqual([
+    0, 0, 0,
+  ]);
+  expect(f.state.unexpected).toEqual([]);
+});
+
+test("older conversation responses do not invent titles or offer unsupported editing", async ({
+  page,
+  context,
+}) => {
+  const f = await install(context);
+  await page.goto("/");
+  await allConversations(page);
+  await expect(
+    page.getByRole("button", { name: "Изменить название", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page
+      .getByRole("article", { name: "Общий диалог", exact: true })
+      .getByRole("heading", { name: "Общий диалог", exact: true }),
+  ).toBeVisible();
+  expect(f.state.titlePatches).toEqual([]);
   expect(f.state.unexpected).toEqual([]);
 });

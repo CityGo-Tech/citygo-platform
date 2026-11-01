@@ -24,6 +24,7 @@ const ownedTables = [
   "human_support_requests",
   "human_support_replies",
   "human_support_reads",
+  "conversation_titles",
   "personal_plan_items",
   "user_credentials",
   "sessions",
@@ -47,6 +48,7 @@ const ownedTables = [
 ] as const;
 const retained = [
   "human_support_reads",
+  "conversation_titles",
   "personal_plan_item_history",
   "personal_plan_checklists",
   "service_consent_events",

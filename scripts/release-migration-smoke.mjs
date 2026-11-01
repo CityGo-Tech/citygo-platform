@@ -28,11 +28,11 @@ export async function releaseMigrationSmoke({
     }));
   assert.equal(
     migrations.length,
-    43,
+    44,
     "Update the disposable upgrade fixture when migrations change",
   );
   const last = migrations.at(-1);
-  assert.equal(last.name, "0043_balance_history.sql");
+  assert.equal(last.name, "0044_conversation_titles.sql");
   const plan = {
     version: 1,
     kind: "citygo-release-migration",
@@ -235,6 +235,13 @@ export async function releaseMigrationSmoke({
         raise exception 'Support read history cannot be rewound';
       end if;
     end $$;
+    do $$ begin
+      if exists(select 1 from conversation_titles) then
+        raise exception 'Conversation title history cannot be rewound';
+      end if;
+    end $$;
+    drop table conversation_titles;
+    drop function citygo_guard_conversation_title();
     drop index ai_credit_visible_history;
     drop index payment_refund_success_history;
     drop table human_support_reads;
@@ -374,7 +381,7 @@ export async function releaseMigrationSmoke({
      alter table user_quests add constraint user_quests_user_id_quest_id_key unique(user_id,quest_id);
      alter table user_quests drop column plan_id, drop column plan_version;
      alter table relocation_plans drop constraint relocation_plans_owner_version_key;
-     delete from citygo_migrations where name in ('0010_quest_plan_expand.sql','0011_quest_plan_validate.sql','0012_housing_answer_history.sql','0013_account_access.sql','0014_citygo_credit.sql','0015_yookassa_orders.sql','0016_npd_receipts.sql','0017_credit_source_lots.sql','0018_payment_refunds.sql','0019_yookassa_live_orders.sql','0020_ai_budget_provider_balance.sql','0021_payment_notifications.sql','0022_payment_admission.sql','0023_payment_receipt_snapshots.sql','0024_ai_credit_overdraft.sql','0025_assistant_conversations.sql','0026_email_registration.sql','0027_phone_verification.sql','0028_password_recovery.sql','0029_personal_plan.sql','0030_service_consents.sql','0031_account_email_confirmation.sql','0032_phone_contact_bindings.sql','0033_ai_request_modes.sql','0034_gigachat_request_fees.sql','0035_ai_request_consent_bases.sql','0036_protected_phone_contacts.sql','0037_human_support_requests.sql','0038_manual_personal_plan.sql','0039_plan_checklists.sql','0040_human_support_replies.sql','0041_personal_plan_history.sql','0042_human_support_reads.sql','0043_balance_history.sql');
+     delete from citygo_migrations where name in ('0010_quest_plan_expand.sql','0011_quest_plan_validate.sql','0012_housing_answer_history.sql','0013_account_access.sql','0014_citygo_credit.sql','0015_yookassa_orders.sql','0016_npd_receipts.sql','0017_credit_source_lots.sql','0018_payment_refunds.sql','0019_yookassa_live_orders.sql','0020_ai_budget_provider_balance.sql','0021_payment_notifications.sql','0022_payment_admission.sql','0023_payment_receipt_snapshots.sql','0024_ai_credit_overdraft.sql','0025_assistant_conversations.sql','0026_email_registration.sql','0027_phone_verification.sql','0028_password_recovery.sql','0029_personal_plan.sql','0030_service_consents.sql','0031_account_email_confirmation.sql','0032_phone_contact_bindings.sql','0033_ai_request_modes.sql','0034_gigachat_request_fees.sql','0035_ai_request_consent_bases.sql','0036_protected_phone_contacts.sql','0037_human_support_requests.sql','0038_manual_personal_plan.sql','0039_plan_checklists.sql','0040_human_support_replies.sql','0041_personal_plan_history.sql','0042_human_support_reads.sql','0043_balance_history.sql','0044_conversation_titles.sql');
      commit`,
   );
   // A populated OLD-schema fixture, not just empty-table DDL. Explicit user ID
@@ -455,7 +462,7 @@ export async function releaseMigrationSmoke({
   ]).trim();
   assert.match(
     migrationPath,
-    /^\/app\/node_modules\/[a-zA-Z0-9_@./+-]+\/migrations\/0043_balance_history\.sql$/,
+    /^\/app\/node_modules\/[a-zA-Z0-9_@./+-]+\/migrations\/0044_conversation_titles\.sql$/,
   );
   const sqlFile = join(directory, "synthetic-failing-migration.sql");
   // Sequence increments survive rollback: prove the executor reached the SQL,
@@ -619,7 +626,7 @@ export async function releaseMigrationSmoke({
     );
     docker(["rm", ident]); // Exact disposable fixtures ONLY; runtime retains them.
   }
-  assert.equal(psql("select count(*) from citygo_migrations"), "43");
+  assert.equal(psql("select count(*) from citygo_migrations"), "44");
   assertClosedPaymentAdmission(psql);
   assertPaymentAdmissionAcls(psql);
   assert.equal(
