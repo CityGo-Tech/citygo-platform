@@ -1,3 +1,4 @@
+import { openLegacyMap } from "./navigation-helper";
 import { test, expect, type Page } from "@playwright/test";
 import type { Dashboard } from "@citygo/contracts";
 import { syntheticConsentPolicy } from "./service-consent-fixture";
@@ -77,6 +78,7 @@ test("internal processing and budget details stay out of the chat and there is n
   };
   await dashboard(page, board);
   await page.goto("/#chat");
+  await openLegacyMap(page);
   await expect(page.locator(".journey-chat .ai-access")).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: "Согласия", exact: true }),
@@ -88,6 +90,7 @@ test("internal processing and budget details stay out of the chat and there is n
   board.aiAccess.budget.reservedTodayMicros = 500000000;
   board.aiAccess.budget.remainingMicros = 0;
   await page.reload();
+  await openLegacyMap(page);
   await expect(page.locator(".journey-chat .ai-access")).toHaveCount(0);
   expect(await page.locator(".journey-chat").innerText()).not.toMatch(
     /резерв|RUB|500|03:00|OpenAI|test-model|×10/i,
@@ -104,6 +107,7 @@ test("legacy dashboard does not invent a personal 500 RUB allowance", async ({
 }) => {
   await dashboard(page, fixture());
   await page.goto("/#chat");
+  await openLegacyMap(page);
   await expect(
     page.getByRole("heading", { name: "Housing Navigator", exact: true }),
   ).toBeVisible();
@@ -158,6 +162,7 @@ for (const width of [320, 768, 1440]) {
     });
     await dashboard(page, board);
     await page.goto("/#chat");
+    await openLegacyMap(page);
     const reply = page.locator(".journey-message.assistant");
     await expect(reply.locator(".cg-assistant-heading")).toHaveText(
       "План поиска",
@@ -180,12 +185,32 @@ for (const width of [320, 768, 1440]) {
     await expect(reply).toContainText("Опасная ссылка");
     await expect(reply).toContainText("Внутренняя команда");
     await expect(reply).toContainText("Изображение не загружено: План");
-    await expect(reply.locator("img, script, iframe, h1, h2, h3")).toHaveCount(
-      0,
-    );
+    // The article now includes a trusted bookmark image in its action button.
+    // Model content still cannot produce any image or executable/heading node.
+    await expect(
+      reply
+        .locator(":scope > .cg-assistant-message")
+        .locator("img, script, iframe, h1, h2, h3"),
+    ).toHaveCount(0);
+    await expect(reply.locator("script, iframe, h1, h2, h3")).toHaveCount(0);
+    await expect(reply.locator("img")).toHaveCount(1);
+    await expect(
+      reply
+        .getByRole("button", { name: "В избранное", exact: true })
+        .locator("img"),
+    ).toHaveAttribute("src", "/figma/bookmark.svg");
     const user = page.locator(".journey-message.user");
-    await expect(user).toContainText("**Не форматировать** <img src=x>");
-    await expect(user.locator("strong, img")).toHaveCount(0);
+    await expect(user.locator(":scope > p")).toHaveText(
+      "**Не форматировать** <img src=x>",
+    );
+    await expect(user.locator("strong")).toHaveCount(0);
+    await expect(user.locator(":scope > p").locator("img")).toHaveCount(0);
+    await expect(user.locator("img")).toHaveCount(1);
+    await expect(
+      user
+        .getByRole("button", { name: "В избранное", exact: true })
+        .locator("img"),
+    ).toHaveAttribute("src", "/figma/bookmark.svg");
     expect(
       await reply.evaluate(
         (element) => element.scrollWidth <= element.clientWidth,
@@ -197,6 +222,7 @@ for (const width of [320, 768, 1440]) {
       ),
     ).toBe(true);
     await page.reload();
+    await openLegacyMap(page);
     await expect(reply.locator(".cg-assistant-heading")).toHaveText(
       "План поиска",
     );
@@ -254,6 +280,7 @@ for (const status of ["complete", "interrupted"] as const) {
       });
     });
     await page.goto("/#chat");
+    await openLegacyMap(page);
     await page.getByLabel("Сообщение помощнику").fill("Помоги с планом");
     await page.getByRole("button", { name: "Отправить", exact: true }).click();
     const reply = page.locator(".journey-message.assistant");
@@ -274,6 +301,7 @@ for (const status of ["complete", "interrupted"] as const) {
     if (status === "interrupted")
       await expect(reply).toContainText("Ответ не завершён");
     await page.reload();
+    await openLegacyMap(page);
     await expect(reply.locator("li")).toHaveCount(2);
     await expect(
       reply.locator("strong").filter({ hasText: "Бюджет" }),
@@ -336,6 +364,7 @@ test("plan, chat and completion fit 320px, tablet and desktop; back navigation w
     await page.setViewportSize({ width, height: 900 });
     for (const view of ["plan", "chat", "complete/housing-first"]) {
       await page.goto("/#" + view);
+      await openLegacyMap(page);
       await expect(
         page.locator(
           ".journey-" + (view.startsWith("complete") ? "complete" : view),
@@ -363,6 +392,7 @@ test("plan, chat and completion fit 320px, tablet and desktop; back navigation w
     page.getByRole("heading", { name: "Жильё: первый маршрут готов" }),
   ).toBeVisible();
   await page.goto("/#complete/not-a-completed-quest");
+  await openLegacyMap(page);
   await expect(
     page.getByRole("heading", { name: "Ваш план переезда" }),
   ).toBeVisible();
@@ -382,6 +412,7 @@ test("unconfigured provider disables chat; server rejection never displays succe
     }),
   );
   await page.goto("/#chat");
+  await openLegacyMap(page);
   await expect(page.getByRole("note")).toContainText(
     "Помощник временно недоступен. Попробуйте позже.",
   );
@@ -411,6 +442,7 @@ test("chat errors preserve the draft; stopping is possible before the first toke
     route.fulfill({ status: 503, json: { error: "Попробуйте позже" } }),
   );
   await page.goto("/#chat");
+  await openLegacyMap(page);
   await page.getByLabel("Сообщение помощнику").fill("Помоги с квартирой");
   await page.getByRole("button", { name: "Отправить", exact: true }).click();
   await expect(page.getByRole("main").getByRole("alert")).toContainText(
@@ -481,6 +513,7 @@ test("handoff updates the agent and interrupted history remains readable after r
     });
   });
   await page.goto("/#chat");
+  await openLegacyMap(page);
   await page.getByLabel("Сообщение помощнику").fill("Помоги найти работу");
   await page.getByRole("button", { name: "Отправить", exact: true }).click();
   await expect(
@@ -489,6 +522,7 @@ test("handoff updates the agent and interrupted history remains readable after r
   await expect(page.getByRole("status")).toContainText("Передаю вопрос");
   await expect(page.getByRole("log")).toContainText("Ответ не завершён");
   await page.reload();
+  await openLegacyMap(page);
   await expect(page.getByRole("log")).toContainText("Обсудим опыт");
   await expect(
     page.getByRole("button", { name: "Вернёмся к поиску квартиры" }),

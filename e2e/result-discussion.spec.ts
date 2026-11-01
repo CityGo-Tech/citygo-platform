@@ -1,3 +1,4 @@
+import { openResults as openResultsView } from "./navigation-helper";
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
 import type {
   Dashboard,
@@ -42,7 +43,7 @@ function messages(count = 3): FavoriteMessage[] {
 const results = (page: Page) =>
   page.getByRole("region", { name: "Полезное из разговоров", exact: true });
 async function openResults(page: Page) {
-  await page.getByRole("button", { name: "Результаты", exact: true }).click();
+  await openResultsView(page);
   await expect(results(page).getByRole("heading", { level: 1 })).toHaveText(
     "Полезное из разговоров",
   );
@@ -161,6 +162,17 @@ async function fixture(
     if (!state.authenticated)
       return route.fulfill({ status: 401, json: { error: "Signed out" } });
     if (path === "/api/v1/dashboard") return route.fulfill({ json: board() });
+    if (path === "/api/v1/account/profile")
+      return route.fulfill({
+        json: {
+          userId: state.owner,
+          email: board().user.email,
+          emailVerified: true,
+          phoneVerified: false,
+          giftStatus: "available",
+          emailConfirmation: "available",
+        },
+      });
     if (path === "/api/v1/personal-plan/summary") {
       const rows = state.owner === "101" ? state.plan : [];
       return route.fulfill({

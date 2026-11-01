@@ -1,3 +1,4 @@
+import { openLegacyMap } from "./navigation-helper";
 import { test, expect, type Page } from "@playwright/test";
 import type { Dashboard } from "@citygo/contracts";
 function board(): Dashboard {
@@ -189,6 +190,7 @@ test("malformed completion does not award XP or navigate to success", async ({
     await route.fulfill({ json: { awarded: "60" } });
   });
   await page.goto("/#chat");
+  await openLegacyMap(page);
   const criteria = page
     .getByRole("group", { name: "Подтвердите результат" })
     .getByRole("checkbox");

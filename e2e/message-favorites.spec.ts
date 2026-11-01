@@ -1,3 +1,4 @@
+import { clickAccountAction } from "./navigation-helper";
 import { fulfillProductAnalytics } from "./product-analytics-fixture";
 import { syntheticConsentPolicy } from "./service-consent-fixture";
 import { test, expect } from "@playwright/test";
@@ -38,7 +39,7 @@ test("real local API: favorite own and assistant messages survives reload; remov
   await expect(
     log.getByRole("button", { name: "В избранном", exact: true }),
   ).toHaveCount(2);
-  await page.getByRole("button", { name: "Избранное", exact: true }).click();
+  await clickAccountAction(page, "Избранное");
   const panel = page.getByRole("region", {
     name: "Избранные сообщения",
     exact: true,
@@ -134,9 +135,9 @@ test("late valid favorite response cannot reappear after logout", async ({
     });
   });
   await page.goto("/");
-  await page.getByRole("button", { name: "Избранное", exact: true }).click();
+  await clickAccountAction(page, "Избранное");
   await expect.poll(() => reads).toBe(1);
-  await page.getByRole("button", { name: "Выйти", exact: true }).click();
+  await clickAccountAction(page, "Выйти");
   await page
     .getByRole("dialog", { name: "Выйти из аккаунта?", exact: true })
     .getByRole("button", { name: "Выйти", exact: true })
@@ -219,7 +220,7 @@ test("favorites page through exact bigint IDs, remove only a bookmark and reload
     throw new Error("Unexpected favorites request: " + url.pathname);
   });
   await page.goto("/");
-  await page.getByRole("button", { name: "Избранное", exact: true }).click();
+  await clickAccountAction(page, "Избранное");
   const panel = page.getByRole("region", {
     name: "Избранные сообщения",
     exact: true,
@@ -242,7 +243,7 @@ test("favorites page through exact bigint IDs, remove only a bookmark and reload
   ).toHaveCount(0);
   expect(cursors).toEqual([null, firstIds.at(-1)]);
   await page.reload();
-  await page.getByRole("button", { name: "Избранное", exact: true }).click();
+  await clickAccountAction(page, "Избранное");
   await expect(entries).toHaveCount(19);
   await expect(
     panel.getByText("Saved answer " + firstIds[0], { exact: true }),
@@ -303,7 +304,7 @@ test("an active favorite panel rejects another owner's page without rendering it
     });
   });
   await page.goto("/");
-  await page.getByRole("button", { name: "Избранное", exact: true }).click();
+  await clickAccountAction(page, "Избранное");
   // A mismatched owner invalidates the private session rather than leaving
   // another account's response in a recoverable panel.
   await expect(

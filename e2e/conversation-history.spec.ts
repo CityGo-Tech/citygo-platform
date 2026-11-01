@@ -1,3 +1,4 @@
+import { openLegacyMap } from "./navigation-helper";
 import { fulfillProductAnalytics } from "./product-analytics-fixture";
 import { syntheticConsentPolicy } from "./service-consent-fixture";
 import { expect, test, type Page } from "@playwright/test";
@@ -366,6 +367,7 @@ test("legacy journey scrolling also preserves the visible row when older message
 }) => {
   const { state } = await install(page, 250, true);
   await page.goto("/#chat");
+  await openLegacyMap(page);
   await count(page, 100);
   await prepend(page, 200);
   await prepend(page, 250);

@@ -4,6 +4,7 @@ import "@citygo/design-tokens/tokens.css";
 import "@citygo/ui-web/styles.css";
 import "./globals.css";
 import "./journey.css";
+import "./prototype.css";
 const manrope = localFont({
   src: "./fonts/Manrope.ttf",
   display: "swap",

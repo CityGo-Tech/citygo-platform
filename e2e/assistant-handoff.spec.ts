@@ -1,3 +1,4 @@
+import { openMessageActions } from "./navigation-helper";
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
 import type { AgentKey, Dashboard, Message } from "@citygo/contracts";
 import { fulfillProductAnalytics } from "./product-analytics-fixture";
@@ -261,6 +262,7 @@ async function fixture(context: BrowserContext, paginated = false) {
 }
 
 async function openReview(page: Page) {
+  await openMessageActions(sourceArticle(page));
   await sourceArticle(page)
     .getByRole("button", { name: "Другому помощнику", exact: true })
     .click();

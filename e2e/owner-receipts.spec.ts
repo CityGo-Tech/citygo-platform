@@ -1,3 +1,4 @@
+import { openAccountMenu } from "./navigation-helper";
 import { fulfillProductAnalytics } from "./product-analytics-fixture";
 import { syntheticConsentPolicy } from "./service-consent-fixture";
 import { test, expect, type Page } from "@playwright/test";
@@ -141,6 +142,7 @@ test("receipts are requested only after explicit open, show the owner's actual10
   const state = await fixture(page);
   expect(state.reads).toBe(0);
   await expect(panel(page)).toHaveCount(0);
+  await openAccountMenu(page);
   await open(page).click();
   await expect(
     panel(page).getByText(`Номер оплаты: ${receipt.paymentId}`, {
@@ -190,6 +192,7 @@ test("cross-tab logout clears a loaded receipt and a delayed refresh cannot repu
   page,
 }) => {
   const state = await fixture(page);
+  await openAccountMenu(page);
   await open(page).click();
   await expect(
     panel(page).getByRole("link", { name: "Открыть чек ФНС", exact: true }),
@@ -239,6 +242,7 @@ test("a legacy nonnumeric dashboard ID fails only the receipt panel with a gener
 }) => {
   const state = await fixture(page, "legacy-compatible-user");
   expect(state.reads).toBe(0);
+  await openAccountMenu(page);
   await open(page).click();
   await expect(panel(page).getByRole("alert")).toHaveText(
     "Не удалось загрузить чеки. Попробуйте позже.",
@@ -264,6 +268,7 @@ test("a receipt belonging to another account is rejected without exposing its pa
 }) => {
   const state = await fixture(page);
   state.tasks = [{ ...receipt, userId: "2" }];
+  await openAccountMenu(page);
   await open(page).click();
   await expect(panel(page).getByRole("alert")).toContainText(
     "Не удалось загрузить чеки",

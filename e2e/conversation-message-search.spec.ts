@@ -1,3 +1,4 @@
+import { openConversationTools } from "./navigation-helper";
 import { expect, test, type Page } from "@playwright/test";
 import type { Dashboard, Message } from "@citygo/contracts";
 import { fulfillProductAnalytics } from "./product-analytics-fixture";
@@ -176,6 +177,7 @@ async function install(page: Page) {
 const dialog = (page: Page) =>
   page.getByRole("dialog", { name: "Найти в диалоге", exact: true });
 async function open(page: Page) {
+  await openConversationTools(page);
   await page
     .getByRole("button", { name: "Найти в диалоге", exact: true })
     .click();

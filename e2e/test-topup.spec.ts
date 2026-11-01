@@ -1,3 +1,4 @@
+import { clickWalletAction } from "./navigation-helper";
 import { fulfillProductAnalytics } from "./product-analytics-fixture";
 import { syntheticConsentPolicy } from "./service-consent-fixture";
 import { test, expect, type Page } from "@playwright/test";
@@ -207,10 +208,7 @@ async function saveSyntheticAttempt(
 }
 
 async function openBalance(page: Page) {
-  await page
-    .getByRole("region", { name: "Баланс и телефон", exact: true })
-    .getByRole("button", { name: "Пополнить баланс", exact: true })
-    .click();
+  await clickWalletAction(page, "Пополнить баланс");
   await expect(page.locator("#citygo-balance")).toBeVisible();
 }
 

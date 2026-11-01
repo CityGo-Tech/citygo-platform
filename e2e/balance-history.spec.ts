@@ -1,3 +1,4 @@
+import { clickWalletAction } from "./navigation-helper";
 import { expect, test, type Page } from "@playwright/test";
 import type { BalanceHistoryEntry, Dashboard } from "@citygo/contracts";
 import { fulfillProductAnalytics } from "./product-analytics-fixture";
@@ -115,10 +116,7 @@ async function install(page: Page) {
 }
 async function open(page: Page) {
   await page.goto("/");
-  await page
-    .getByRole("region", { name: "Баланс и телефон", exact: true })
-    .getByRole("button", { name: "Пополнить баланс", exact: true })
-    .click();
+  await clickWalletAction(page, "Пополнить баланс");
   await page
     .getByRole("button", { name: "История баланса", exact: true })
     .click();

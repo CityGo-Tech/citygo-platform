@@ -6,24 +6,37 @@
   margin-bottom: var(--cg-space-lg);
   padding: var(--cg-space-lg);
   border: 1px solid var(--cg-color-border);
+  border-radius: var(--cg-radius-card);
   min-width: 0;
   overflow-wrap: anywhere;
+}
+.overview > div:first-child {
+  display: grid;
+  gap: var(--cg-space-sm);
+  min-width: 0;
 }
 .eyebrow {
   color: var(--cg-color-primary-strong);
   font-size: 11px;
+  line-height: 1.45;
   font-weight: 700;
-  letter-spacing: 0.06em;
+  letter-spacing: normal;
 }
 .amount {
   color: var(--cg-color-foreground);
   font-size: 32px;
   line-height: 1.2;
   font-weight: 700;
-  margin: var(--cg-space-sm) 0;
+  margin: 0;
+  font-variant-numeric: tabular-nums;
 }
 .overview p {
-  margin-bottom: 0;
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.45;
+}
+.overview > div:first-child > :global(.cg-button) {
+  justify-self: start;
 }
 .actions {
   display: flex;
@@ -34,8 +47,21 @@
 }
 .actions small {
   flex-basis: 100%;
+  line-height: 1.45;
+}
+.overview :global(.cg-button),
+.profileCard :global(.cg-button) {
+  font-size: 15px;
+  line-height: 1.45;
+  font-weight: 600;
+}
+.overview :global(.cg-button-secondary) {
+  background: var(--cg-color-surface);
+  color: var(--cg-color-foreground);
+  border-color: var(--cg-color-border);
 }
 .page {
+  width: 100%;
   max-width: 816px;
   margin: auto;
   min-width: 0;
@@ -56,15 +82,25 @@
   border-radius: var(--cg-radius-card);
 }
 .profileCard {
+  display: grid;
+  gap: var(--cg-space-sm);
+  align-content: start;
+  width: 100%;
+  min-width: 0;
   padding: var(--cg-space-lg);
   border: 1px solid var(--cg-color-border);
   border-radius: var(--cg-radius-card);
-  margin-bottom: var(--cg-space-md);
+  margin: 0;
 }
 .profileCard h2 {
   font-size: 20px;
+  line-height: 1.45;
   font-weight: 700;
   letter-spacing: normal;
+  margin: 0;
+}
+.profileCard > :global(.cg-button) {
+  margin-top: var(--cg-space-sm);
 }
 @media (max-width: 700px) {
   .overview:global(.cg-card) {
@@ -87,5 +123,88 @@
   .page :global(.ai-access),
   .profileCard {
     padding: var(--cg-space-md);
+  }
+}
+/* The shared wallet entry fits the prototype header without a second hero card. */
+.overview.compact:global(.cg-card) {
+  position: relative;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--cg-radius-control);
+  background: transparent;
+  overflow: visible;
+}
+.compactBalance:global(.cg-button) {
+  min-width: 112px;
+  max-width: 220px;
+  padding: var(--cg-space-compact);
+  border-radius: var(--cg-radius-control) 0 0 var(--cg-radius-control);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.compactMenu {
+  position: relative;
+  flex: none;
+  align-self: stretch;
+}
+.compactMenu > summary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--cg-size-touch-min);
+  padding: var(--cg-space-compact);
+  border: 1px solid var(--cg-color-border);
+  border-left: 0;
+  border-radius: 0 var(--cg-radius-control) var(--cg-radius-control) 0;
+  background: var(--cg-color-surface);
+  color: var(--cg-color-foreground);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.45;
+  cursor: pointer;
+  list-style: none;
+}
+.compactMenu > summary::-webkit-details-marker {
+  display: none;
+}
+.compactMenu > summary:focus-visible {
+  outline: 3px solid var(--cg-color-focus);
+  outline-offset: 3px;
+}
+.compactMenu[open] > summary {
+  background: var(--cg-color-background);
+}
+.compactActions {
+  position: absolute;
+  z-index: 30;
+  inset-block-start: calc(100% + var(--cg-space-sm));
+  inset-inline-end: 0;
+  display: grid;
+  gap: var(--cg-space-sm);
+  width: 272px;
+  max-width: calc(100vw - 32px);
+  padding: var(--cg-space-md);
+  border: 1px solid var(--cg-color-border);
+  border-radius: var(--cg-radius-card);
+  background: var(--cg-color-surface);
+  box-shadow: 0 12px 32px #17192b14;
+}
+.compactActions :global(.cg-button) {
+  width: 100%;
+  white-space: normal;
+}
+.compactActions small {
+  display: block;
+  line-height: 1.45;
+}
+@media (max-width: 700px) {
+  .compactBalance:global(.cg-button) {
+    min-width: 92px;
+    max-width: 170px;
   }
 }

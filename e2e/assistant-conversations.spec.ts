@@ -1,3 +1,4 @@
+import { clickAccountAction, openLegacyMap } from "./navigation-helper";
 import { fulfillProductAnalytics } from "./product-analytics-fixture";
 import { syntheticConsentPolicy } from "./service-consent-fixture";
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
@@ -457,7 +458,7 @@ test("each helper opens an independent conversation without auto-send; history a
     .click();
   await expect(log).toContainText("ТОЛЬКО_ЖИЛЬЁ");
   await expect(log).not.toContainText("ТОЛЬКО_РАБОТА");
-  await page.getByRole("button", { name: "Избранное", exact: true }).click();
+  await clickAccountAction(page, "Избранное");
   const favorites = page.getByRole("region", {
     name: "Избранные сообщения",
     exact: true,
@@ -532,7 +533,7 @@ test("a pending stream cannot switch threads or leak late content after multi-ta
     const second = await context.newPage();
     await second.goto("/");
     await begin(second, "job-search");
-    await second.getByRole("button", { name: "Выйти", exact: true }).click();
+    await clickAccountAction(second, "Выйти");
     await second
       .getByRole("dialog", { name: "Выйти из аккаунта?", exact: true })
       .getByRole("button", { name: "Выйти", exact: true })
@@ -586,6 +587,7 @@ test("legacy profiles can open assistants; missing saved selection falls back, c
     localStorage.setItem("citygo:conversation:101", "999");
   });
   await page.goto("/");
+  await openLegacyMap(page);
   await expect(
     page.getByRole("heading", { name: "Ваш план переезда", exact: true }),
   ).toBeVisible();
@@ -593,9 +595,7 @@ test("legacy profiles can open assistants; missing saved selection falls back, c
   expect(
     await page.evaluate(() => localStorage.getItem("citygo:conversation:101")),
   ).toBeNull();
-  await page
-    .getByRole("button", { name: "Диалоги и помощники", exact: true })
-    .click();
+  await clickAccountAction(page, "Диалоги и помощники");
   await allConversations(page);
   const closed = page
     .getByRole("article", { name: "Диалог: " + names.housing, exact: true })
@@ -639,7 +639,7 @@ test("legacy profiles can open assistants; missing saved selection falls back, c
     .click();
   await expect(composer).toHaveValue("ЧЕРНОВИК_РАБОТЫ_НЕ_ОТПРАВЛЕН");
   await expect(log).not.toContainText("ЧЕРНОВИК_ЖИЛЬЯ_НЕ_ОТПРАВЛЕН");
-  await page.getByRole("button", { name: "Избранное", exact: true }).click();
+  await clickAccountAction(page, "Избранное");
   await expect(
     page.getByRole("region", { name: "Избранные сообщения", exact: true }),
   ).toContainText("ЗАВЕРШЁННАЯ_ИСТОРИЯ");

@@ -1,5 +1,7 @@
 .workspace {
+  width: 100%;
   max-width: 816px;
+  min-width: 0;
   margin: 0 auto;
 }
 .card {
@@ -7,6 +9,8 @@
   gap: var(--cg-space-md);
   padding: var(--cg-space-lg);
   border: none;
+  border-radius: var(--cg-radius-card);
+  background: var(--cg-color-surface);
   min-width: 0;
   overflow-wrap: anywhere;
 }
@@ -21,6 +25,10 @@
   margin: 0;
   line-height: 1.45;
 }
+.card > p:not([role]) {
+  color: var(--cg-color-muted);
+  font-size: 15px;
+}
 .eyebrow {
   color: var(--cg-color-primary-strong);
   font-size: 11px;
@@ -28,9 +36,12 @@
   line-height: 1.45;
 }
 .card form {
+  display: grid;
   gap: var(--cg-space-md);
 }
 .card :global(.cg-field) {
+  min-width: 0;
+  min-height: 82px;
   gap: var(--cg-space-sm);
   padding: var(--cg-space-md);
   border: 1px solid var(--cg-color-border);
@@ -38,12 +49,23 @@
   font-size: 12px;
   line-height: 1.45;
 }
+.card :global(.cg-field > span) {
+  font-weight: 700;
+}
+.card :global(.cg-field:focus-within) {
+  border-color: var(--cg-color-primary-strong);
+}
 .card :global(.cg-field input) {
+  width: 100%;
+  min-width: 0;
   border: none;
   padding: 0;
   border-radius: 0;
   font-weight: 400;
   min-height: 24px;
+  color: var(--cg-color-foreground);
+  background: var(--cg-color-surface);
+  font-size: 16px;
 }
 .notice {
   display: grid;
@@ -69,8 +91,10 @@
 }
 .card :global(.cg-button) {
   width: 100%;
+  min-height: 48px;
   font-size: 15px;
   font-weight: 600;
+  line-height: 1.45;
   text-align: center;
   display: flex;
   justify-content: center;
@@ -117,22 +141,40 @@
   padding: var(--cg-space-xl);
 }
 @media (max-width: 700px) {
+  .card {
+    padding: 0;
+    background: transparent;
+    border-radius: 0;
+  }
+  .card h1 {
+    font-size: 28px;
+    line-height: 1.45;
+  }
+  .card > p:not([role]) {
+    font-size: 14px;
+  }
   .actions {
     grid-template-columns: 1fr;
   }
   .registrationShell :global(.topbar) {
-    height: auto;
-    flex-wrap: wrap;
+    height: 72px;
+    padding: var(--cg-space-compact) var(--cg-space-md);
+    flex-wrap: nowrap;
+    gap: var(--cg-space-sm);
   }
   .registrationShell :global(.wordmark) {
-    width: auto;
+    width: 192px;
     margin-right: auto;
+  }
+  .registrationShell :global(.wordmark .citygo-brand-wordmark) {
+    display: block;
   }
   .registrationShell :global(.header-caption) {
     display: none;
   }
   .headerActions :global(.cg-button) {
     min-width: auto;
+    width: 116px;
     padding: var(--cg-space-compact);
   }
   .headerActions :global(.cg-button-primary) {
@@ -140,5 +182,11 @@
   }
   .registrationShell > main {
     padding: var(--cg-space-md);
+  }
+}
+
+@media (max-width: 359px) {
+  .headerActions :global(.cg-button) {
+    width: 80px;
   }
 }

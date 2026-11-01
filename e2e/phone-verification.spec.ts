@@ -1,3 +1,4 @@
+import { clickWalletAction, openWalletMenu } from "./navigation-helper";
 import { fulfillProductAnalytics } from "./product-analytics-fixture";
 import { syntheticConsentPolicy } from "./service-consent-fixture";
 import { expect, test, type Page } from "@playwright/test";
@@ -160,10 +161,7 @@ async function install(page: Page) {
   return state;
 }
 async function open(page: Page) {
-  await page
-    .getByRole("region", { name: "Баланс и телефон", exact: true })
-    .getByRole("button", { name: "Телефон и подарок", exact: true })
-    .click();
+  await clickWalletAction(page, "Телефон и подарок");
   await expect(
     page.getByRole("heading", { name: "Подтверждение телефона", exact: true }),
   ).toBeVisible();
@@ -193,6 +191,7 @@ test("opening gift checks availability only; disabled mode never sends SMS or in
   state.mode = "disabled";
   state.status = "unavailable";
   await page.goto("/");
+  await openWalletMenu(page);
   await expect(
     page
       .getByRole("region", { name: "Баланс и телефон", exact: true })

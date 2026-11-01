@@ -1,3 +1,4 @@
+import { openLegacyMap } from "./navigation-helper";
 import { fulfillProductAnalytics } from "./product-analytics-fixture";
 import { syntheticConsentPolicy } from "./service-consent-fixture";
 import { expect, test, type Page } from "@playwright/test";
@@ -300,6 +301,7 @@ test("legacy journey keeps unknown interruptions generic and focuses balance wit
     failureCode: "AI_CREDIT_EXHAUSTED",
   });
   await page.goto("/#chat");
+  await openLegacyMap(page);
   await expect(
     page.getByRole("log").getByText("Ответ не завершён", { exact: true }),
   ).toHaveCount(1);

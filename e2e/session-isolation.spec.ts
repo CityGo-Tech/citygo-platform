@@ -1,3 +1,8 @@
+import {
+  clickAccountAction,
+  openAccountMenu,
+  openLegacyMap,
+} from "./navigation-helper";
 import { fulfillProductAnalytics } from "./product-analytics-fixture";
 import { syntheticConsentPolicy } from "./service-consent-fixture";
 import { test, expect, type Page } from "@playwright/test";
@@ -96,6 +101,7 @@ async function signInB(page: Page) {
     .click();
 }
 async function openChat(page: Page) {
+  await openLegacyMap(page);
   await page.getByRole("link", { name: "Чат", exact: true }).click();
   await expect(page.getByLabel("Сообщение помощнику")).toBeVisible();
 }
@@ -105,8 +111,9 @@ test("logout A → login B clears chat drafts and allows a fresh B draft", async
 }) => {
   await install(page);
   await page.goto("/#chat");
+  await openLegacyMap(page);
   await page.getByLabel("Сообщение помощнику").fill("Черновик пользователя A");
-  await page.getByRole("button", { name: "Выйти", exact: true }).click();
+  await clickAccountAction(page, "Выйти");
   await page
     .getByRole("dialog", { name: "Выйти из аккаунта?", exact: true })
     .getByRole("button", { name: "Выйти", exact: true })
@@ -168,6 +175,7 @@ test("focus refresh preserves the same owner's draft but clears it when the cook
 }) => {
   const state = await install(page);
   await page.goto("/#chat");
+  await openLegacyMap(page);
   await page
     .getByLabel("Сообщение помощнику")
     .fill("Черновик A при обновлении");
@@ -182,6 +190,7 @@ test("focus refresh preserves the same owner's draft but clears it when the cook
   const changedOwner = page.waitForResponse("**/api/v1/dashboard");
   await page.evaluate(() => window.dispatchEvent(new Event("focus")));
   await changedOwner;
+  await openLegacyMap(page);
   await expect(page.locator("body")).toContainText("Сочи");
   await openChat(page);
   await expect(page.getByLabel("Сообщение помощнику")).toHaveValue("");
@@ -203,6 +212,7 @@ test("401 during chat clears the entire session without restoring rejected draft
     });
   });
   await page.goto("/#chat");
+  await openLegacyMap(page);
   await page.getByLabel("Сообщение помощнику").fill("Секретный черновик A");
   await page.getByRole("button", { name: "Отправить", exact: true }).click();
   await expect(page.locator(".notice[role=status]")).toContainText(
@@ -232,12 +242,14 @@ test("logout remains available during a delayed response and late A never enters
       .catch(() => {}); // Browser may have already cancelled the old request.
   });
   await page.goto("/#chat");
+  await openLegacyMap(page);
   await page.getByLabel("Сообщение помощнику").fill("Вопрос A");
   await page.getByRole("button", { name: "Отправить", exact: true }).click();
+  await openAccountMenu(page);
   await expect(
     page.getByRole("button", { name: "Выйти", exact: true }),
   ).toBeEnabled();
-  await page.getByRole("button", { name: "Выйти", exact: true }).click();
+  await clickAccountAction(page, "Выйти");
   await page
     .getByRole("dialog", { name: "Выйти из аккаунта?", exact: true })
     .getByRole("button", { name: "Выйти", exact: true })
@@ -256,8 +268,9 @@ test("failed Web logout clears local data but does not claim server revocation",
   await install(page);
   await page.route("**/api/v1/auth/logout", (route) => route.abort("failed"));
   await page.goto("/#chat");
+  await openLegacyMap(page);
   await page.getByLabel("Сообщение помощнику").fill("Черновик A");
-  await page.getByRole("button", { name: "Выйти", exact: true }).click();
+  await clickAccountAction(page, "Выйти");
   await page
     .getByRole("dialog", { name: "Выйти из аккаунта?", exact: true })
     .getByRole("button", { name: "Выйти", exact: true })
@@ -286,7 +299,7 @@ test("cross-tab invalidation clears a no-profile conversation draft before anoth
   const second = await context.newPage();
   await install(second);
   await second.goto("/");
-  await second.getByRole("button", { name: "Выйти", exact: true }).click();
+  await clickAccountAction(second, "Выйти");
   await second
     .getByRole("dialog", { name: "Выйти из аккаунта?", exact: true })
     .getByRole("button", { name: "Выйти", exact: true })
@@ -321,6 +334,7 @@ test("logout choice preserves the draft and browser storage on Stay and Escape w
     local: { ...localStorage },
     session: { ...sessionStorage },
   }));
+  await openAccountMenu(page);
   const trigger = page.getByRole("button", { name: "Выйти", exact: true });
   await trigger.click();
   const dialog = page.getByRole("dialog", {
@@ -373,7 +387,7 @@ test("logout confirmation clears private data before delayed revocation and disp
   });
   await page.goto("/#chat");
   await page.getByLabel("Сообщение помощнику").fill("СЕКРЕТНЫЙ_ЧЕРНОВИК");
-  await page.getByRole("button", { name: "Выйти", exact: true }).click();
+  await clickAccountAction(page, "Выйти");
   const confirm = page
     .getByRole("dialog", { name: "Выйти из аккаунта?", exact: true })
     .getByRole("button", { name: "Выйти", exact: true });
@@ -399,7 +413,7 @@ test("cross-tab invalidation dismisses an old logout choice without logging out 
     if (req.url().endsWith("/v1/auth/logout")) revokes++;
   });
   await page.goto("/#chat");
-  await page.getByRole("button", { name: "Выйти", exact: true }).click();
+  await clickAccountAction(page, "Выйти");
   const dialog = page.getByRole("dialog", {
     name: "Выйти из аккаунта?",
     exact: true,
@@ -430,7 +444,7 @@ test("failed confirmed logout retains the retry gate and retry does not reopen t
     return route.fulfill({ json: { ok: true } });
   });
   await page.goto("/#chat");
-  await page.getByRole("button", { name: "Выйти", exact: true }).click();
+  await clickAccountAction(page, "Выйти");
   await page
     .getByRole("dialog", { name: "Выйти из аккаунта?", exact: true })
     .getByRole("button", { name: "Выйти", exact: true })

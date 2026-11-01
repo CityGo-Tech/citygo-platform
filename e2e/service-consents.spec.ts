@@ -1,3 +1,4 @@
+import { openAccountMenu } from "./navigation-helper";
 import { fulfillProductAnalytics } from "./product-analytics-fixture";
 import { expect, test, type Page } from "@playwright/test";
 import type { Dashboard, ServiceConsentPolicy } from "@citygo/contracts";
@@ -330,6 +331,7 @@ test("existing account gate hides private service views and requires explicit ac
   await expect(
     page.getByRole("button", { name: "Мои чеки", exact: true }),
   ).toHaveCount(0);
+  await openAccountMenu(page);
   await expect(
     page.getByRole("button", { name: "Пароль", exact: true }),
   ).toBeVisible();

@@ -1,5 +1,7 @@
 "use client";
 import Image from "next/image";
+import { BubbleAvatar } from "./bubble-avatar";
+import { assistantPortrait } from "./assistant-portrait";
 import { useEffect, useState, type FormEvent } from "react";
 import {
   ConversationTitleEditor,
@@ -61,12 +63,7 @@ function BubbleCard() {
       className="assistant-directory-card assistant-partner"
       aria-label="Bubble"
     >
-      <Image
-        src="/figma/bubble-mark.png"
-        width={64}
-        height={64}
-        alt="Логотип Bubble"
-      />
+      <BubbleAvatar />
       <div>
         <h2>Bubble</h2>
         <p className="assistant-specialty">
@@ -102,7 +99,7 @@ export function AssistantCatalog({
         >
           <Image
             className="assistant-catalog-portrait"
-            src={`/characters/${item.key}-192.webp`}
+            src={assistantPortrait(item.key)}
             width={88}
             height={88}
             alt=""
