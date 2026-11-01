@@ -10,6 +10,7 @@ const tables = [
   "human_support_replies",
   "service_consent_events",
   "personal_plan_checklists",
+  "personal_plan_item_history",
   "personal_plan_items",
   "password_recovery_challenges",
   "account_email_confirmation_challenges",
@@ -115,6 +116,7 @@ const protectedEmpty = [
   "human_support_replies",
   // User-chosen steps and their tombstones need a separate erasure review.
   "personal_plan_checklists",
+  "personal_plan_item_history",
   "personal_plan_items",
   ...protectedNpd,
   ...protectedRefunds,
@@ -428,13 +430,15 @@ async function inspect(tx: Sql, options: Options) {
     });
   if (
     snapshot.counts.personal_plan_items ||
-    snapshot.counts.personal_plan_checklists
+    snapshot.counts.personal_plan_checklists ||
+    snapshot.counts.personal_plan_item_history
   )
     blockers.push({
       code: "PERSONAL_PLAN_HISTORY_REQUIRES_REVIEW",
       count:
         snapshot.counts.personal_plan_items! +
-        snapshot.counts.personal_plan_checklists!,
+        snapshot.counts.personal_plan_checklists! +
+        snapshot.counts.personal_plan_item_history!,
     });
   if (snapshot.counts.password_recovery_challenges)
     blockers.push({

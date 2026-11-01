@@ -257,7 +257,7 @@ test("24→25 preserves legacy rows, leases, all financial tables and original m
   const names = (await readdir(directory))
     .filter((name) => name.endsWith(".sql"))
     .sort();
-  assert.equal(names.length, 40);
+  assert.equal(names.length, 41);
   assert.equal(names[24], "0025_assistant_conversations.sql");
   assert.equal(names.at(-1), "0040_human_support_replies.sql");
   await db.exec(

@@ -9,6 +9,7 @@ import {
   PlanChecklists,
 } from "./index.js";
 import { applyFixtureMigration } from "./test-service-consents.js";
+import { seedLegacyPlan } from "./test-legacy-personal-plan.js";
 test("schema38 to39 preserves sourced and manual step bytes and creates no automatic checklist", async (t) => {
   const db = await connectDatabase("pglite://:memory:");
   t.after(() => db.close());
@@ -27,7 +28,7 @@ test("schema38 to39 preserves sourced and manual step bytes and creates no autom
   );
   const plan = new PersonalPlan(db),
     item = (
-      await plan.create(owner, {
+      await seedLegacyPlan(db, owner, {
         operationId: randomUUID(),
         sourceMessageId: null,
         title: "Мой шаг",

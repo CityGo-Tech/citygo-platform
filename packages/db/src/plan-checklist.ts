@@ -7,6 +7,7 @@ import {
 } from "@citygo/contracts";
 import type { Database, Sql } from "./index.js";
 import { DomainError } from "./errors.js";
+import { recordPersonalPlanRevision } from "./personal-plan-history.js";
 const missing = () => new DomainError(404, "Чек-лист не найден");
 type Row = { revision: string; entries: unknown };
 /** Only explicit owner edits. Parent CAS serializes with every other step edit. */
@@ -82,6 +83,7 @@ export class PlanChecklists {
         on conflict(item_id) do update set parent_revision=excluded.parent_revision,entries=excluded.entries`,
         [itemId, current.revision + 1, JSON.stringify(input.entries)],
       );
+      await recordPersonalPlanRevision(tx, itemId);
       return this.parse(userId, itemId, await this.read(tx, userId, itemId));
     });
   }

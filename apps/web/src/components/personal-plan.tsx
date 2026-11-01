@@ -10,6 +10,7 @@ import { Button, Card, Field, Progress } from "@citygo/ui-web";
 import styles from "./personal-plan.module.css";
 import { PlanItemChecklist } from "./plan-checklist";
 import { PlanExportAction } from "./plan-export";
+import { PlanItemHistory } from "./plan-history";
 import {
   createPersonalPlanResource,
   type PersonalPlanFilter,
@@ -295,6 +296,8 @@ export function PersonalPlanPanel({
     if (wasActive !== active) updateChecklistActivity((value) => value + 1);
   }
   const [source, setSource] = useState<PersonalPlanItem | null>(null);
+  const [history, setHistory] = useState<PersonalPlanItem | null>(null);
+  const lastHistory = useRef<string | null>(null);
   const resource = useRef<ReturnType<typeof createPersonalPlanResource> | null>(
     null,
   );
@@ -309,6 +312,8 @@ export function PersonalPlanPanel({
     setEditing(null);
     setRemoving(null);
     setSource(null);
+    setHistory(null);
+    lastHistory.current = null;
     lastSource.current = null;
     const controller = new AbortController();
     const signal = AbortSignal.any([controller.signal, sessionSignal]);
@@ -423,6 +428,14 @@ export function PersonalPlanPanel({
   useEffect(() => {
     if (editing) editorTitle.current?.focus({ preventScroll: true });
   }, [editing]);
+  useEffect(() => {
+    if (history || !lastHistory.current) return;
+    const id = lastHistory.current;
+    [...document.querySelectorAll<HTMLButtonElement>("[data-plan-history]")]
+      .find((element) => element.dataset.planHistory === id)
+      ?.focus({ preventScroll: true });
+    lastHistory.current = null;
+  }, [history]);
   if (sessionSignal.aborted || current?.phase === "closed") return null;
   const disabled = busy || needsRefresh || navigationBusy || !actions;
   const save = (event: FormEvent) => {
@@ -435,6 +448,17 @@ export function PersonalPlanPanel({
       status: editing.status,
     });
   };
+  if (history && current)
+    return (
+      <PlanItemHistory
+        key={userId + ":" + history.id}
+        userId={userId}
+        itemId={history.id}
+        sessionSignal={sessionSignal}
+        onBack={() => setHistory(null)}
+        onAccessDenied={onAccessDenied}
+      />
+    );
   if (source?.source && current)
     return (
       <FavoriteMessageContext
@@ -764,6 +788,18 @@ export function PersonalPlanPanel({
                   </Button>
                 </div>
               )}
+              <Button
+                variant="ghost"
+                disabled={busy || navigationBusy || interactionActive}
+                data-plan-history={item.id}
+                onClick={() => {
+                  if (listChangeBlocked()) return;
+                  lastHistory.current = item.id;
+                  setHistory(item);
+                }}
+              >
+                Что изменилось
+              </Button>
               {item.source && (
                 <Button
                   className={styles.source}

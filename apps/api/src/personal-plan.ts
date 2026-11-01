@@ -2,6 +2,8 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import {
   personalPlanIdSchema,
+  personalPlanHistoryQuerySchema,
+  personalPlanHistoryPageSchema,
   personalPlanQuerySchema,
   createPersonalPlanItemSchema,
   updatePersonalPlanItemSchema,
@@ -14,6 +16,7 @@ import {
 } from "@citygo/contracts";
 import {
   PersonalPlan,
+  PersonalPlanHistory,
   DomainError,
   exportPersonalPlan,
   type Database,
@@ -59,8 +62,26 @@ export function registerPersonalPlanApi(
   },
 ) {
   const plan = new PersonalPlan(options.db);
+  const history = new PersonalPlanHistory(options.db);
   const readLimit = { config: { rateLimit: { max: 60, timeWindow: 60_000 } } };
   const writeLimit = { config: { rateLimit: { max: 30, timeWindow: 60_000 } } };
+  app.get(
+    "/v1/personal-plan/:id/history",
+    readLimit,
+    async (request, reply) => {
+      const user = await options.authenticate(request);
+      const { id } = input(params, request.params);
+      const query = input(personalPlanHistoryQuerySchema, request.query);
+      reply.header("cache-control", "no-store");
+      const result = await stored(history.page(user.id, id, query.before));
+      if (result.itemId !== id)
+        throw new Error("Invalid personal plan history item");
+      const current = await options.authenticate(request);
+      if (current.id !== user.id)
+        throw new Error("Personal plan owner changed");
+      return output(personalPlanHistoryPageSchema, result, user.id);
+    },
+  );
   app.get("/v1/personal-plan", readLimit, async (request) => {
     const user = await options.authenticate(request);
     const query = input(personalPlanQuerySchema, request.query);
