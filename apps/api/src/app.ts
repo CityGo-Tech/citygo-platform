@@ -1,4 +1,5 @@
 import { registerBalanceHistoryApi } from "./balance-history.js";
+import { registerConversationExport } from "./conversation-export.js";
 import Fastify from "fastify";
 import { registerResultDiscussionApi } from "./result-discussion.js";
 import { registerConversationMessageSearch } from "./conversation-message-search.js";
@@ -939,6 +940,7 @@ export async function buildApp(options: {
   });
   registerConversationMessageSearch(app, options.db, authenticate);
   registerConversationTitles(app, options.db, authenticate);
+  registerConversationExport(app, options.db, authenticate);
   registerResultDiscussionApi(app, options.db, authenticate);
   app.post("/v1/conversations/start", async (request) => {
     const user = await authenticate(request);

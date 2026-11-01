@@ -11,7 +11,10 @@ import {
   resultDiscussionSourceSchema,
   type ResultDiscussionParams,
 } from "@citygo/contracts";
-import { personalPlanExportSchema } from "@citygo/contracts";
+import {
+  personalPlanExportSchema,
+  conversationExportSchema,
+} from "@citygo/contracts";
 export {
   createPersonalPlanHistoryResource,
   type PlanHistoryState,
@@ -1165,6 +1168,20 @@ export function createClient(
           "invalid_response",
         );
       return result;
+    },
+    exportConversation: async (conversationId: string) => {
+      const id = conversationHistoryIdSchema.parse(conversationId);
+      const snapshot = await request(
+        "/v1/conversations/" + id + "/export",
+        conversationExportSchema,
+      );
+      if (snapshot.thread.id !== id)
+        throw new ApiError(
+          200,
+          "Ответ сервера не соответствует выбранному диалогу",
+          "invalid_response",
+        );
+      return snapshot;
     },
     conversationMessages: async (conversationId: string, before?: string) => {
       const id = conversationHistoryIdSchema.parse(conversationId);
