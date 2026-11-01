@@ -70,6 +70,10 @@ export type HumanSupportMethods = {
     query?: SupportRequestsQuery,
   ): Promise<AdminSupportRequestsPage>;
   adminSupportRequest(raw: string): Promise<AdminSupportRequestResult>;
+  setOwnSupportRequestStatus(
+    raw: string,
+    command: UpdateSupportRequestStatus,
+  ): Promise<SupportRequestResult>;
   setSupportRequestStatus(
     raw: string,
     command: UpdateSupportRequestStatus,
@@ -263,6 +267,27 @@ export function createHumanSupportMethods(
           adminSupportRequestResultSchema,
         );
       if (value.request.id !== id) throw invalid();
+      return value;
+    },
+    setOwnSupportRequestStatus: async (
+      raw: string,
+      command: UpdateSupportRequestStatus,
+    ) => {
+      const id = supportRequestIdSchema.parse(raw),
+        input = updateSupportRequestStatusSchema.parse(command);
+      const value = await request<SupportRequestResult>(
+        "/v1/support-requests/" + id,
+        supportRequestResultSchema,
+        input,
+        "PATCH",
+      );
+      if (
+        value.request.id !== id ||
+        value.request.status !== input.status ||
+        value.request.revision < input.expectedRevision ||
+        value.request.revision > input.expectedRevision + 1
+      )
+        throw invalid();
       return value;
     },
     setSupportRequestStatus: async (

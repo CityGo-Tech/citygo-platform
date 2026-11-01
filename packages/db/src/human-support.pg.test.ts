@@ -171,6 +171,34 @@ test(
       ).rows[0]!.through_reply_id,
       latest.reply.id,
     );
+    // Owner closure and admin closure serialize on the same current revision.
+    const revision = latest.request.revision;
+    await assert.rejects(
+      store.setOwnStatus(operator, id, {
+        expectedRevision: revision,
+        status: "closed",
+      }),
+    );
+    const statusRace = await Promise.allSettled([
+      store.setOwnStatus(owner, id, {
+        expectedRevision: revision,
+        status: "closed",
+      }),
+      store.setStatus(operator, id, {
+        expectedRevision: revision,
+        status: "closed",
+      }),
+    ]);
+    assert.equal(statusRace.filter((r) => r.status === "fulfilled").length, 1);
+    assert.equal(statusRace.filter((r) => r.status === "rejected").length, 1);
+    const restored = await store.setOwnStatus(owner, id, {
+      expectedRevision: revision + 1,
+      status: "open",
+    });
+    assert.equal(restored.request.revision, revision + 2);
+    assert.equal(restored.request.body, command.body);
+    assert.equal((await store.replies(owner, id)).replies.length, 2);
+    assert.equal((await store.updates(owner)).unreadReplies, 0);
     for (const sql of [
       "update human_support_reads set user_id=user_id",
       "update human_support_reads set request_id=request_id",

@@ -128,13 +128,11 @@ test("an explicit human question is saved without AI or payment and the real adm
   await saved
     .getByRole("button", { name: "Обновить обращения", exact: true })
     .click();
-  await expect(saved.getByRole("status")).toContainText("Закрыто владельцем");
+  await expect(saved.getByRole("status")).toContainText("Закрыто");
   await expect(
-    saved
-      .getByRole("list")
-      .getByText(`Обращение №${record.id} · Закрыто владельцем`, {
-        exact: true,
-      }),
+    saved.getByRole("list").getByText(`Обращение №${record.id} · Закрыто`, {
+      exact: true,
+    }),
   ).toBeVisible();
   expect(forbidden).toEqual([]);
   expect(

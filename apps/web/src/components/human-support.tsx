@@ -10,6 +10,7 @@ import { Button, Card } from "@citygo/ui-web";
 import {
   createHumanSupportResource,
   type SupportState,
+  type SupportFilter,
 } from "./human-support-state";
 import styles from "./human-support.module.css";
 
@@ -19,12 +20,14 @@ export function HumanSupportPanel({
   onAccessDenied,
   onClose,
   initialRequestId,
+  canManageStatus = false,
 }: {
   userId: string;
   sessionSignal: AbortSignal;
   onAccessDenied: () => void;
   onClose: () => void;
   initialRequestId?: string | null;
+  canManageStatus?: boolean;
 }) {
   const [draft, setDraft] = useState({
     owner: userId,
@@ -120,11 +123,7 @@ export function HumanSupportPanel({
             </time>
           </p>
           <p>
-            Статус:{" "}
-            {state.receipt.status === "closed"
-              ? "Закрыто владельцем"
-              : "Открыто"}
-            .
+            Статус: {state.receipt.status === "closed" ? "Закрыто" : "Открыто"}.
           </p>
         </div>
       )}
@@ -190,6 +189,35 @@ export function HumanSupportPanel({
         data-citygo-private
       >
         <h2 id="support-history-heading">Мои обращения</h2>
+        <label className={styles.filter}>
+          Показать обращения
+          <select
+            value={state?.statusFilter ?? "all"}
+            disabled={!state || !!state.pending || !!state.changingId}
+            onChange={(event) => {
+              setReplyRequest(null);
+              void resource.current?.setFilter(
+                event.target.value as SupportFilter,
+              );
+            }}
+          >
+            <option value="all">Все</option>
+            <option value="open">Открытые</option>
+            <option value="closed">Закрытые</option>
+          </select>
+        </label>
+        {state?.statusMessage && <p role="status">{state.statusMessage}</p>}
+        {state?.uncertainRequestId && (
+          <Button
+            variant="secondary"
+            disabled={state.busy}
+            onClick={() =>
+              void resource.current?.open(state.uncertainRequestId!)
+            }
+          >
+            Обновить обращение №{state.uncertainRequestId}
+          </Button>
+        )}
         <Button
           variant="secondary"
           disabled={!state || state.busy}
@@ -203,7 +231,13 @@ export function HumanSupportPanel({
           </p>
         )}
         {state?.loaded && state.requests.length === 0 && (
-          <p>Сохранённых обращений пока нет.</p>
+          <p>
+            {state.statusFilter === "open"
+              ? "Открытых обращений пока нет."
+              : state.statusFilter === "closed"
+                ? "Закрытых обращений пока нет."
+                : "Сохранённых обращений пока нет."}
+          </p>
         )}
         <ul className={styles.list}>
           {state?.requests.map((item) => (
@@ -214,7 +248,7 @@ export function HumanSupportPanel({
             >
               <strong>
                 Обращение №{item.id} ·{" "}
-                {item.status === "closed" ? "Закрыто владельцем" : "Открыто"}
+                {item.status === "closed" ? "Закрыто" : "Открыто"}
               </strong>
               <p className={styles.body}>{item.body}</p>
               <small>
@@ -229,6 +263,29 @@ export function HumanSupportPanel({
               >
                 Ответы на обращение №{item.id}
               </Button>
+              {canManageStatus && (
+                <Button
+                  variant="secondary"
+                  disabled={
+                    state.busy ||
+                    state.uncertainRequestId === item.id ||
+                    !!state.pending
+                  }
+                  onClick={() =>
+                    void resource.current?.changeStatus(
+                      item.id,
+                      item.status === "open" ? "closed" : "open",
+                      item.revision,
+                    )
+                  }
+                >
+                  {state.changingId === item.id
+                    ? "Сохраняем статус…"
+                    : item.status === "open"
+                      ? "Закрыть обращение №" + item.id
+                      : "Открыть снова обращение №" + item.id}
+                </Button>
+              )}
               {replyRequest === item.id && (
                 <SupportReplies
                   key={userId + ":" + item.id}
