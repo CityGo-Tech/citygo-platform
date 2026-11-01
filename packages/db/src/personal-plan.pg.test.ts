@@ -417,6 +417,57 @@ test(
     assert.equal(history.entries[0]!.checklist[0]!.completed, true);
     assert.equal(history.entries[1]!.checklist.length, 0);
     assert.equal(history.entries[2]!.revision, 1);
+    const restorer = new PersonalPlanHistory(runtime);
+    const beforeHistory = (
+      await backend.query(
+        "select * from personal_plan_item_history where item_id=$1 order by revision",
+        [exportedItem.id],
+      )
+    ).rows;
+    const restores = await Promise.allSettled([
+      restorer.restore(other, exportedItem.id, {
+        expectedRevision: 3,
+        revision: 1,
+      }),
+      restorer.restore(other, exportedItem.id, {
+        expectedRevision: 3,
+        revision: 2,
+      }),
+    ]);
+    assert.equal(restores.filter((r) => r.status === "fulfilled").length, 1);
+    const lost = restores.find((r) => r.status === "rejected");
+    assert(
+      lost?.status === "rejected" &&
+        lost.reason instanceof DomainError &&
+        lost.reason.statusCode === 409,
+    );
+    assert.deepEqual(
+      (
+        await backend.query(
+          "select * from personal_plan_item_history where item_id=$1 and revision<=3 order by revision",
+          [exportedItem.id],
+        )
+      ).rows,
+      beforeHistory,
+    );
+    assert.equal(
+      (await restorer.page(other, exportedItem.id)).currentRevision,
+      4,
+    );
+    await assert.rejects(
+      restorer.restore(owner, exportedItem.id, {
+        expectedRevision: 4,
+        revision: 1,
+      }),
+      (e) => e instanceof DomainError && e.statusCode === 404,
+    );
+    await assert.rejects(
+      backend.transaction(async (tx) => {
+        await tx.exec(`set local role ${roles.citygo_worker}`);
+        await tx.query("select * from personal_plan_item_history");
+      }),
+      (e: unknown) => (e as { code?: string }).code === "42501",
+    );
     await backend.query("delete from messages where id=$1", [source]);
     assert.equal(
       (

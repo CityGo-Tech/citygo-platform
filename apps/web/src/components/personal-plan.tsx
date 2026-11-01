@@ -298,6 +298,7 @@ export function PersonalPlanPanel({
   const [source, setSource] = useState<PersonalPlanItem | null>(null);
   const [history, setHistory] = useState<PersonalPlanItem | null>(null);
   const lastHistory = useRef<string | null>(null);
+  const planHeading = useRef<HTMLHeadingElement>(null);
   const resource = useRef<ReturnType<typeof createPersonalPlanResource> | null>(
     null,
   );
@@ -429,13 +430,34 @@ export function PersonalPlanPanel({
     if (editing) editorTitle.current?.focus({ preventScroll: true });
   }, [editing]);
   useEffect(() => {
-    if (history || !lastHistory.current) return;
+    if (
+      history ||
+      !lastHistory.current ||
+      sessionSignal.aborted ||
+      current?.phase !== "ready" ||
+      busy ||
+      navigationBusy ||
+      interactionActive
+    )
+      return;
     const id = lastHistory.current;
-    [...document.querySelectorAll<HTMLButtonElement>("[data-plan-history]")]
-      .find((element) => element.dataset.planHistory === id)
-      ?.focus({ preventScroll: true });
-    lastHistory.current = null;
-  }, [history]);
+    const button = [
+      ...document.querySelectorAll<HTMLButtonElement>("[data-plan-history]"),
+    ].find((element) => element.dataset.planHistory === id);
+    // Returning from history also refreshes the list. Keep the focus target
+    // until that snapshot is ready and the original button is enabled.
+    if (button?.disabled) return;
+    const target = button ?? planHeading.current;
+    target?.focus({ preventScroll: true });
+    if (document.activeElement === target) lastHistory.current = null;
+  }, [
+    history,
+    current,
+    busy,
+    navigationBusy,
+    interactionActive,
+    sessionSignal,
+  ]);
   if (sessionSignal.aborted || current?.phase === "closed") return null;
   const disabled = busy || needsRefresh || navigationBusy || !actions;
   const save = (event: FormEvent) => {
@@ -455,7 +477,13 @@ export function PersonalPlanPanel({
         userId={userId}
         itemId={history.id}
         sessionSignal={sessionSignal}
-        onBack={() => setHistory(null)}
+        onBack={() => {
+          setHistory(null);
+          void actions?.load();
+        }}
+        onRestored={() => {
+          void actions?.load();
+        }}
         onAccessDenied={onAccessDenied}
       />
     );
@@ -513,7 +541,9 @@ export function PersonalPlanPanel({
       aria-busy={busy}
     >
       <span className={styles.eyebrow}>CITYGO · ВАШ ПЕРЕЕЗД</span>
-      <h1>Ваш переезд — понятными шагами</h1>
+      <h1 ref={planHeading} tabIndex={-1}>
+        Ваш переезд — понятными шагами
+      </h1>
       <p className={styles.intro}>
         Сохраняйте собственные шаги или выбирайте их из разговоров. Уточняйте
         план в своём темпе, даже если бюджет и дата ещё неизвестны.

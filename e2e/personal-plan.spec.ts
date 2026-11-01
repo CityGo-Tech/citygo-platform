@@ -120,10 +120,19 @@ test("saved step history compares exact versions and checklist, pages without wr
   await history.screenshot({
     path: info.outputPath("plan-history-comparison.png"),
   });
+  const previousCompletions = state.listCompletions;
+  state.holdList = true;
   await history
     .getByRole("button", { name: "← В мой план", exact: true })
     .click();
+  await expect(planPanel(page)).toHaveAttribute("aria-busy", "true");
+  await expect(trigger).toBeDisabled();
+  await expect(trigger).not.toBeFocused();
+  expect(state.listCompletions).toBe(previousCompletions);
+  state.releaseList();
+  await expect(trigger).toBeEnabled();
   await expect(trigger).toBeFocused();
+  expect(state.listCompletions).toBe(previousCompletions + 1);
   expect(reads[0]).toBe(null);
   expect(reads.filter((value) => value !== null)).toEqual(["3"]);
   expect(state.posts).toEqual([]);
@@ -1398,4 +1407,217 @@ test("cancelled plan export cannot download a delayed successful response", asyn
   expect(downloads).toBe(0);
   expect(calls).toBe(1);
   expect(state.forbidden).toEqual([]);
+});
+
+test("restoring the displayed saved plan version requires confirmation, sends once and survives returning and reload", async ({
+  page,
+  context,
+}, info) => {
+  const row = {
+    ...item(),
+    source: null,
+    revision: 3,
+    title: "Текущий шаг",
+    details: "Текущие подробности",
+  };
+  const state = await fixture(context, [row]);
+  let writes = 0,
+    currentRevision = 3;
+  const saved = (revision: number) => ({
+    revision,
+    title: revision === 3 ? "Текущий шаг" : "Выбранный шаг",
+    details:
+      revision === 3 ? "Текущие подробности" : "Точные старые подробности",
+    status: revision === 3 ? ("completed" as const) : ("pending" as const),
+    checklist: [
+      {
+        id: "11111111-1111-4111-8111-111111111111",
+        title: "Сохранённый пункт",
+        details: "Деталь пункта",
+        completed: true,
+      },
+    ],
+    initialSnapshot: false,
+    recordedAt: stamp,
+  });
+  await context.route("**/api/v1/personal-plan/*/history**", async (route) => {
+    if (route.request().method() === "POST") {
+      writes++;
+      expect(route.request().postDataJSON()).toEqual({
+        revision: 2,
+        expectedRevision: 3,
+      });
+      currentRevision = 4;
+      const entry = { ...saved(2), revision: 4 };
+      state.items = [
+        {
+          ...row,
+          title: entry.title,
+          details: entry.details,
+          status: entry.status,
+          revision: 4,
+        },
+      ];
+      return route.fulfill({
+        json: {
+          userId: state.owner,
+          itemId: row.id,
+          restoredRevision: 2,
+          entry,
+        },
+      });
+    }
+    return route.fulfill({
+      json: {
+        userId: state.owner,
+        itemId: row.id,
+        currentRevision,
+        entries:
+          currentRevision === 3
+            ? [saved(3), saved(2), saved(1)]
+            : [{ ...saved(2), revision: 4 }, saved(3), saved(2), saved(1)],
+        nextBefore: null,
+      },
+    });
+  });
+  await page.goto("/");
+  await openPlan(page);
+  await page
+    .getByRole("button", { name: "Что изменилось", exact: true })
+    .click();
+  const history = page.getByRole("region", {
+    name: "История изменений шага",
+    exact: true,
+  });
+  const trigger = history.getByRole("button", {
+    name: "Восстановить выбранную версию",
+    exact: true,
+  });
+  await trigger.click();
+  let dialog = page.getByRole("dialog", {
+    name: "Восстановить версию 2?",
+    exact: true,
+  });
+  await expect(dialog).toContainText("Точные старые подробности");
+  await expect(dialog).toContainText("Сохранённый пункт");
+  await expect(
+    dialog.getByRole("button", { name: "Отмена", exact: true }),
+  ).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+  expect(writes).toBe(0);
+  await trigger.click();
+  dialog = page.getByRole("dialog", {
+    name: "Восстановить версию 2?",
+    exact: true,
+  });
+  expect(
+    await dialog.evaluate((x) => x.classList.contains("ym-hide-content")),
+  ).toBe(true);
+  await dialog.screenshot({
+    path: info.outputPath("restore-confirmation.png"),
+  });
+  await dialog
+    .getByRole("button", { name: "Подтвердить восстановление", exact: true })
+    .click();
+  await expect(dialog).toHaveCount(0);
+  await expect(history.getByRole("status")).toContainText(
+    "Версия восстановлена",
+  );
+  await expect(
+    history.getByRole("region", { name: "Текущая версия", exact: true }),
+  ).toContainText("Выбранный шаг");
+  expect(writes).toBe(1);
+  await history
+    .getByRole("button", { name: "← В мой план", exact: true })
+    .click();
+  await expect(
+    planPanel(page).getByRole("heading", {
+      name: "Выбранный шаг",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await page.reload();
+  await openPlan(page);
+  await expect(
+    planPanel(page).getByRole("heading", {
+      name: "Выбранный шаг",
+      exact: true,
+    }),
+  ).toBeVisible();
+  expect(writes).toBe(1);
+  expect(state.posts).toEqual([]);
+  expect(state.updates).toEqual([]);
+  expect(state.external).toBe(0);
+  expect(state.forbidden).toEqual([]);
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+});
+test("a stale restore confirmation clears old comparisons and requires a fresh history instead of a repeat write", async ({
+  page,
+  context,
+}) => {
+  const row = { ...item(), source: null, revision: 2 };
+  const state = await fixture(context, [row]);
+  let writes = 0;
+  await context.route("**/api/v1/personal-plan/*/history**", async (route) => {
+    if (route.request().method() === "POST") {
+      writes++;
+      return route.fulfill({
+        status: 409,
+        json: {
+          error: "Шаг изменился",
+          code: "REVISION_CONFLICT",
+          currentRevision: 3,
+        },
+      });
+    }
+    return route.fulfill({
+      json: {
+        userId: state.owner,
+        itemId: row.id,
+        currentRevision: 2,
+        entries: [2, 1].map((revision) => ({
+          revision,
+          title: "Личная версия " + revision,
+          details: "",
+          status: "pending",
+          checklist: [],
+          initialSnapshot: false,
+          recordedAt: stamp,
+        })),
+        nextBefore: null,
+      },
+    });
+  });
+  await page.goto("/");
+  await openPlan(page);
+  await page
+    .getByRole("button", { name: "Что изменилось", exact: true })
+    .click();
+  const history = page.getByRole("region", {
+    name: "История изменений шага",
+    exact: true,
+  });
+  await history
+    .getByRole("button", { name: "Восстановить выбранную версию", exact: true })
+    .click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Подтвердить восстановление", exact: true })
+    .click();
+  await expect(history.getByRole("alert")).toContainText("Шаг изменился");
+  await expect(
+    history.getByRole("button", { name: "Обновить историю", exact: true }),
+  ).toBeVisible();
+  await expect(
+    history.getByRole("region", { name: "Выбранная версия", exact: true }),
+  ).toHaveCount(0);
+  expect(writes).toBe(1);
+  expect(state.forbidden).toEqual([]);
+  expect(state.external).toBe(0);
 });

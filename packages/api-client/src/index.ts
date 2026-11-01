@@ -18,6 +18,9 @@ export {
 } from "./personal-plan-history-resource.js";
 import {
   personalPlanHistoryPageSchema,
+  restorePersonalPlanRevisionSchema,
+  personalPlanRestoreResultSchema,
+  type RestorePersonalPlanRevision,
   personalPlanHistoryQuerySchema,
 } from "@citygo/contracts";
 import {
@@ -889,6 +892,29 @@ export function createClient(
           "invalid_response",
         );
       return value;
+    },
+    restorePersonalPlanRevision: async (
+      itemId: string,
+      input: RestorePersonalPlanRevision,
+    ) => {
+      const id = personalPlanIdSchema.parse(itemId);
+      const body = restorePersonalPlanRevisionSchema.parse(input);
+      const result = await request(
+        "/v1/personal-plan/" + id + "/history/restore",
+        personalPlanRestoreResultSchema,
+        body,
+      );
+      if (
+        result.itemId !== id ||
+        result.restoredRevision !== body.revision ||
+        result.entry.revision !== body.expectedRevision + 1
+      )
+        throw new ApiError(
+          0,
+          "Ответ сервера не подтверждает восстановление шага",
+          "invalid_response",
+        );
+      return result;
     },
     createPersonalPlanItem: async (input: CreatePersonalPlanItem) => {
       const body = createPersonalPlanItemSchema.parse(input);

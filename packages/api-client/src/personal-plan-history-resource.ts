@@ -1,11 +1,13 @@
 import type {
   PersonalPlanHistoryEntry,
   PersonalPlanHistoryPage,
+  RestorePersonalPlanRevision,
+  PersonalPlanRestoreResult,
 } from "@citygo/contracts";
 import { ApiError } from "./transport.js";
 
 export type PlanHistoryState = {
-  phase: "loading" | "ready" | "error" | "closed";
+  phase: "loading" | "restoring" | "ready" | "error" | "closed";
   current: PersonalPlanHistoryEntry | null;
   entries: readonly PersonalPlanHistoryEntry[];
   nextBefore: number | null;
@@ -17,6 +19,7 @@ export function createPersonalPlanHistoryResource({
   itemId,
   signal,
   read,
+  restore,
   publish,
   onAccessDenied,
 }: {
@@ -27,6 +30,10 @@ export function createPersonalPlanHistoryResource({
     before: number | undefined,
     signal: AbortSignal,
   ) => Promise<PersonalPlanHistoryPage>;
+  restore?: (
+    input: RestorePersonalPlanRevision,
+    signal: AbortSignal,
+  ) => Promise<PersonalPlanRestoreResult>;
   publish: (state: PlanHistoryState) => void;
   onAccessDenied: () => void;
 }) {
@@ -76,6 +83,7 @@ export function createPersonalPlanHistoryResource({
   async function load(before?: number) {
     if (
       !active() ||
+      state.phase === "restoring" ||
       (before !== undefined &&
         (state.phase === "loading" || before !== state.nextBefore))
     )
@@ -129,7 +137,78 @@ export function createPersonalPlanHistoryResource({
       });
     }
   }
+  async function restoreRevision(revision: number, expectedRevision: number) {
+    if (
+      !active() ||
+      !restore ||
+      state.phase !== "ready" ||
+      state.current?.revision !== expectedRevision
+    )
+      return false;
+    const selected = state.entries.find(
+      (entry) => entry.revision === revision && revision < expectedRevision,
+    );
+    if (!selected) return false;
+    const frozen = clone(selected);
+    request?.abort();
+    request = new AbortController();
+    const requestSignal = request.signal,
+      ticket = ++generation;
+    const current = () =>
+      active() && !requestSignal.aborted && generation === ticket;
+    commit({ ...state, phase: "restoring", error: "" });
+    try {
+      const result = await restore(
+        { revision, expectedRevision },
+        requestSignal,
+      );
+      if (!current()) return false;
+      if (result.userId !== userId || result.itemId !== itemId) {
+        close(true);
+        return false;
+      }
+      if (
+        result.restoredRevision !== revision ||
+        result.entry.revision !== expectedRevision + 1 ||
+        result.entry.initialSnapshot ||
+        result.entry.title !== frozen.title ||
+        result.entry.details !== frozen.details ||
+        result.entry.status !== frozen.status ||
+        JSON.stringify(result.entry.checklist) !==
+          JSON.stringify(frozen.checklist)
+      )
+        throw new Error("Invalid restoration receipt");
+      commit({
+        ...state,
+        phase: "ready",
+        current: clone(result.entry),
+        entries: [clone(result.entry)],
+        nextBefore: null,
+        error: "",
+      });
+      await load();
+      return true;
+    } catch (error) {
+      if (!current()) return false;
+      if (error instanceof ApiError && [401, 403].includes(error.status)) {
+        close(true);
+        return false;
+      }
+      commit({
+        phase: "error",
+        current: null,
+        entries: [],
+        nextBefore: null,
+        error:
+          error instanceof ApiError && error.status === 409
+            ? "Шаг изменился. Обновите историю и выберите версию заново."
+            : "Не удалось подтвердить восстановление. Шаг уже мог измениться. Обновите историю перед новой попыткой.",
+      });
+      return false;
+    }
+  }
   return {
+    restore: restoreRevision,
     load: () => load(),
     earlier: () =>
       state.nextBefore !== null ? load(state.nextBefore) : Promise.resolve(),
