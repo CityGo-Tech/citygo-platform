@@ -1,3 +1,4 @@
+import { registerBalanceHistoryApi } from "./balance-history.js";
 import Fastify from "fastify";
 import { registerConversationMessageSearch } from "./conversation-message-search.js";
 import cookie from "@fastify/cookie";
@@ -987,6 +988,15 @@ export async function buildApp(options: {
   });
   registerPersonalPlanApi(app, { db: options.db, authenticate });
   registerPlanChecklistApi(app, { db: options.db, authenticate });
+  registerBalanceHistoryApi(app, {
+    db: options.db,
+    context: async (request) => {
+      const user = await authenticate(request);
+      const token =
+        bearer(request.headers.authorization) ?? request.cookies[sessionName];
+      return { userId: user.id, sessionTokenHash: tokenHash(token!) };
+    },
+  });
   registerHumanSupportApi(app, {
     db: options.db,
     context: async (request) => {

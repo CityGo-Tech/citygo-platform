@@ -1,10 +1,6 @@
 "use client";
 import * as React from "react";
-import {
-  formatMoneyMicros,
-  formatSignedMoneyMicros,
-  type AiAccess,
-} from "@citygo/contracts";
+import { formatSignedMoneyMicros, type AiAccess } from "@citygo/contracts";
 import { Button, Card } from "@citygo/ui-web";
 import { TestTopupPanel, type TopupActions } from "./test-topup";
 import { chatBalanceTarget } from "./chat-readiness";
@@ -15,18 +11,23 @@ export function AiAccessPanel({
   userId,
   topups,
   onPhone,
+  renderHistory,
 }: {
   access: AiAccess;
   busy: boolean;
   userId?: string;
   topups?: TopupActions;
   onPhone?: () => void;
+  renderHistory?: (onClose: () => void) => React.ReactNode;
 }) {
   const citygoTariff = access.credit?.chargingStatus === "routerai_citygo_10x";
-  const operations =
-    access.credit?.history.filter((entry) =>
-      ["bonus", "topup", "settle"].includes(entry.kind),
-    ) ?? [];
+  const [historyOpen, setHistoryOpen] = React.useState(false);
+  if (historyOpen && renderHistory)
+    return (
+      <Card className="ai-access">
+        {renderHistory(() => setHistoryOpen(false))}
+      </Card>
+    );
   return (
     <Card className="ai-access">
       {access.credit && (
@@ -79,30 +80,14 @@ export function AiAccessPanel({
               проверки.
             </p>
           )}
-          {operations.length > 0 && (
-            <details>
-              <summary>Последние операции</summary>
-              <ul>
-                {operations.map((entry) => (
-                  <li key={entry.id}>
-                    {
-                      {
-                        bonus: "Подарок",
-                        topup: "Пополнение",
-                        settle: "Общение с помощником",
-                        hold: "",
-                        release: "",
-                      }[entry.kind]
-                    }
-                    : {formatMoneyMicros(entry.amountMicros)} ₽ ·{" "}
-                    {new Date(entry.createdAt).toLocaleString("ru-RU", {
-                      dateStyle: "short",
-                      timeStyle: "short",
-                    })}
-                  </li>
-                ))}
-              </ul>
-            </details>
+          {renderHistory && (
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => setHistoryOpen(true)}
+            >
+              История баланса
+            </Button>
           )}
         </section>
       )}
