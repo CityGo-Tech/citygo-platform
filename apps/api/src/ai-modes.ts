@@ -323,6 +323,8 @@ export function createAssistantModes(
     ? createAiExecution(config, originalBalanced)
     : undefined;
   const legacyBalanced =
+    config.AI_CUSTOMER_BILLING_MODE === "legacy" &&
+    config.AI_REQUEST_COST_LIMIT_MODE === "operator_ceiling" &&
     originalBalanced?.version === "ai-recipient-v2" &&
     originalExecution?.maxInputBytes === 8192 &&
     originalExecution.maxOutputTokens === 4096 &&
