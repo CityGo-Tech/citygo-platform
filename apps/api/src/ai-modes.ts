@@ -85,9 +85,15 @@ export function createAssistantModes(
     Boolean(minimumAccountRef);
   const minimumPricingId = minimumFixedConfigured
     ? hash({
-        version: "citygo-gigachat-flat3-success-v1",
+        version:
+          config.AI_CUSTOMER_BILLING_MODE === "postpay_actual_v1"
+            ? "citygo-gigachat-flat3-postpay-v1"
+            : "citygo-gigachat-flat3-success-v1",
         feeMicros: 3_000_000,
-        holdMicros: 5_000_000,
+        holdMicros:
+          config.AI_CUSTOMER_BILLING_MODE === "postpay_actual_v1"
+            ? 0
+            : 5_000_000,
         operatorCostMicros: 0,
         model: "GigaChat-3-Ultra",
         scope: "GIGACHAT_API_PERS",
@@ -317,6 +323,8 @@ export function createAssistantModes(
     ? createAiExecution(config, originalBalanced)
     : undefined;
   const legacyBalanced =
+    config.AI_CUSTOMER_BILLING_MODE === "legacy" &&
+    config.AI_REQUEST_COST_LIMIT_MODE === "operator_ceiling" &&
     originalBalanced?.version === "ai-recipient-v2" &&
     originalExecution?.maxInputBytes === 8192 &&
     originalExecution.maxOutputTokens === 4096 &&

@@ -1,4 +1,5 @@
 import type { Sql } from "./index.js";
+import type { AiRequestCostLimitMode } from "./request-cost-limit.js";
 import { DomainError } from "./errors.js";
 import { CITYGO_MAX_AMOUNT_MICROS } from "@citygo/contracts";
 
@@ -17,8 +18,29 @@ export async function outstandingCreditDebt(sql: Sql, userId: string) {
       [userId],
     )
   ).rows[0]!;
-  const debt = Number(row.debt);
-  if (!Number.isSafeInteger(debt) || debt < 0 || debt > MAX_OVERDRAFT_MICROS)
+  // Historical upgrade fixtures legitimately run before schema46 exists.
+  // Real schema46 admissions include both durable debt families.
+  const present =
+    (
+      await sql.query<{ present: boolean }>(
+        "select to_regclass('public.credit_postpay_liabilities') is not null as present",
+      )
+    ).rows[0]?.present === true;
+  const postpay = present
+    ? (
+        await sql.query<{ debt: string }>(
+          `select coalesce(sum(d.principal_micros-coalesce(r.paid,0)),0)::text as debt from credit_postpay_liabilities d left join
+    (select charge_id,sum(amount_micros) as paid from credit_postpay_repayments where user_id=$1 group by charge_id)r on r.charge_id=d.charge_id where d.user_id=$1`,
+          [userId],
+        )
+      ).rows[0]!.debt
+    : "0";
+  const debt = Number(row.debt) + Number(postpay);
+  if (
+    !Number.isSafeInteger(debt) ||
+    debt < 0 ||
+    debt > CITYGO_MAX_AMOUNT_MICROS
+  )
     throw new DomainError(503, "Долг баланса требует сверки");
   return debt;
 }
@@ -39,7 +61,11 @@ export async function assertCreditDebtPaid(tx: Sql, userId: string) {
     );
 }
 
-export async function assertFixed5Admission(tx: Sql, userId: string) {
+export async function assertFixed5Admission(
+  tx: Sql,
+  userId: string,
+  costLimitMode: AiRequestCostLimitMode = "operator_ceiling",
+) {
   await assertCreditDebtPaid(tx, userId);
   const account = (
     await tx.query<{ spent: string }>(
@@ -51,7 +77,10 @@ export async function assertFixed5Admission(tx: Sql, userId: string) {
     !account ||
     !Number.isSafeInteger(Number(account.spent)) ||
     Number(account.spent) >
-      CITYGO_MAX_AMOUNT_MICROS - MAX_OVERDRAFT_REAL_CEILING_MICROS * 10
+      CITYGO_MAX_AMOUNT_MICROS -
+        (costLimitMode === "user_balance"
+          ? FIXED_CITYGO_HOLD_MICROS
+          : MAX_OVERDRAFT_REAL_CEILING_MICROS * 10)
   )
     throw new DomainError(409, "Достигнут технический предел журнала AI");
   const pending = await tx.query(
