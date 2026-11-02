@@ -25,6 +25,8 @@ const canaries = {
   ROUTERAI_PRODUCTION_POLICY_ID: "a".repeat(64),
   AI_CREDIT_MODE: "routerai_at_cost",
   AI_CREDIT_RESERVATION_MODE: "fixed5_overdraft",
+  AI_REQUEST_COST_LIMIT_MODE: "user_balance",
+  AI_CUSTOMER_BILLING_MODE: "postpay_actual_v1",
   AI_ASSISTANT_MODES: "enabled",
   AI_MINIMUM_FIXED_FEE: "enabled",
   AI_MAXIMUM_REASONING_EFFORT: "medium",
@@ -168,6 +170,8 @@ test("API gets only known API settings; worker/migrator get no LLM or API settin
   assert.equal(api.AI_CREDIT_MODE, canaries.AI_CREDIT_MODE);
   for (const key of [
     "AI_ASSISTANT_MODES",
+    "AI_REQUEST_COST_LIMIT_MODE",
+    "AI_CUSTOMER_BILLING_MODE",
     "AI_MINIMUM_FIXED_FEE",
     "AI_MAXIMUM_REASONING_EFFORT",
     "AI_MODES_DATA_NOTICE",

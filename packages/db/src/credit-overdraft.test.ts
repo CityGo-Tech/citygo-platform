@@ -499,3 +499,194 @@ test(
     );
   },
 );
+
+test("automatic legacy completion releases an all-balance hold once using its durable exact tariff", async (t) => {
+  const f = await fixture(t, 500);
+  const hold = await f.reserve();
+  assert.equal((await f.ledger.status(f.user)).availableMicros, 0);
+  assert.deepEqual(await f.charges.completedUnresolvedAfter(), []);
+  const receipt = await f.complete(hold, "0.1000000123");
+  assert.deepEqual(await f.charges.completedUnresolvedAfter(), [
+    { holdId: hold, userId: f.user },
+  ]);
+  assert.equal(
+    await f.charges.settleCompletedAutomatically(f.user, hold, receipt),
+    true,
+  );
+  assert.equal(
+    await f.charges.settleCompletedAutomatically(f.user, hold, receipt),
+    true,
+  );
+  const status = await f.ledger.status(f.user);
+  assert.equal(status.heldMicros, 0);
+  assert.equal(status.spentMicros, 1000000);
+  assert.equal(status.availableMicros, 4000000);
+  assert.equal(
+    (
+      await f.db.query("select 1 from ai_credit_entries where hold_id=$1", [
+        hold,
+      ])
+    ).rows.length,
+    1,
+  );
+  assert.deepEqual(await f.charges.completedUnresolvedAfter(), []);
+});
+
+test("automatic legacy completion never finalizes zero or exceeds the accepted ceiling and never pauses the budget", async (t) => {
+  const f = await fixture(t, 500),
+    hold = await f.reserve();
+  const receipt = await f.complete(hold, "0");
+  await f.db.query(
+    "update ai_budget set enabled=true,currency='RUB',daily_limit_micros=1,total_limit_micros=1,rules='[{}]' where id=1",
+  );
+  const before = await f.db.query("select * from ai_budget where id=1");
+  for (const costRub of ["0", "0.0e+2", "6.0000001"]) {
+    assert.equal(
+      await f.charges.settleCompletedAutomatically(f.user, hold, {
+        ...receipt,
+        costRub,
+        amountMicros: routerAiCostMicros(costRub),
+      }),
+      false,
+    );
+    assert.equal((await f.ledger.status(f.user)).heldMicros, 5 * RUB);
+    assert.equal(
+      (
+        await f.db.query("select 1 from ai_credit_entries where hold_id=$1", [
+          hold,
+        ])
+      ).rows.length,
+      0,
+    );
+    assert.equal((await f.charges.get(f.user, hold)).receipt, null);
+    assert.deepEqual(
+      await f.db.query("select * from ai_budget where id=1"),
+      before,
+    );
+  }
+  assert.equal(
+    (
+      await f.db.query(
+        "select 1 from audit_log where action='ai-credit-cost-overrun'",
+      )
+    ).rows.length,
+    0,
+  );
+  assert.equal(
+    await f.charges.settleCompletedAutomatically(f.user, hold, {
+      ...receipt,
+      costRub: "0.2",
+      amountMicros: 200000,
+    }),
+    true,
+  );
+  assert.equal((await f.ledger.status(f.user)).spentMicros, 2 * RUB);
+});
+
+test("automatic legacy completion excludes an existing manual overrun even after a smaller observed cost", async (t) => {
+  const f = await fixture(t),
+    hold = await f.reserve();
+  const receipt = await f.complete(hold, "6.0000001");
+  await f.db.query(
+    "update ai_budget set enabled=true,currency='RUB',daily_limit_micros=1,total_limit_micros=1,rules='[{}]' where id=1",
+  );
+  // Existing explicit legacy recovery keeps its original stop/audit semantics.
+  await assert.rejects(
+    f.charges.settle(f.user, hold.toUpperCase(), {
+      ...receipt,
+      reference: hold.toUpperCase(),
+    }),
+    { statusCode: 409 },
+  );
+  const before = await f.db.query("select * from ai_budget where id=1");
+  const audit = await f.db.query(
+    "select * from audit_log where action='ai-credit-cost-overrun'",
+  );
+  assert.equal(audit.rows.length, 1);
+  assert.deepEqual(await f.charges.completedUnresolvedAfter(), []);
+  assert.equal(
+    await f.charges.settleCompletedAutomatically(f.user, hold, {
+      ...receipt,
+      costRub: "0.1",
+      amountMicros: 100000,
+    }),
+    false,
+  );
+  assert.deepEqual(
+    await f.db.query("select * from ai_budget where id=1"),
+    before,
+  );
+  assert.deepEqual(
+    await f.db.query(
+      "select * from audit_log where action='ai-credit-cost-overrun'",
+    ),
+    audit,
+  );
+  assert.equal((await f.ledger.status(f.user)).heldMicros, 5 * RUB);
+});
+
+test("legacy candidate pages reject incomplete, resolved and foreign identities before automatic accounting", async (t) => {
+  const f = await fixture(t),
+    hold = await f.reserve();
+  await f.charges.dispatch(f.user, hold);
+  await f.charges.identify(f.user, hold, "legacy-interrupted");
+  assert.deepEqual(await f.charges.completedUnresolvedAfter(), []);
+  await assert.rejects(
+    f.charges.settleCompletedAutomatically(f.user, hold, {
+      generationId: "legacy-interrupted",
+      reference: hold,
+      model: "test/model",
+      upstream: "synthetic",
+      currency: "RUB",
+      costRub: "0.1",
+      amountMicros: 100000,
+    }),
+    { statusCode: 409 },
+  );
+  await assert.rejects(
+    f.charges.settleCompletedAutomatically(f.other, hold, {
+      generationId: "legacy-interrupted",
+      reference: hold,
+      model: "test/model",
+      upstream: "synthetic",
+      currency: "RUB",
+      costRub: "0.1",
+      amountMicros: 100000,
+    }),
+    { statusCode: 404 },
+  );
+  await assert.rejects(f.charges.completedUnresolvedAfter("not-a-uuid"));
+  await assert.rejects(f.charges.completedUnresolvedAfter(undefined, 21));
+  assert.equal((await f.ledger.status(f.user)).heldMicros, 5 * RUB);
+});
+
+test(
+  "PostgreSQL automatic legacy receipt replay across two connections posts exactly one resolution",
+  { skip: !process.env.TEST_DATABASE_URL },
+  async (t) => {
+    const f = await fixture(t, 500),
+      hold = await f.reserve();
+    const receipt = await f.complete(hold, "0.1"),
+      peer = await f.independent();
+    const second = new AiCreditCharges(
+      peer,
+      CITYGO_10X_TARIFF,
+      "fixed5_overdraft",
+    );
+    const outcomes = await Promise.all([
+      f.charges.settleCompletedAutomatically(f.user, hold, receipt),
+      second.settleCompletedAutomatically(f.user, hold, receipt),
+    ]);
+    assert.deepEqual(outcomes, [true, true]);
+    assert.equal(
+      (
+        await f.db.query("select 1 from ai_credit_entries where hold_id=$1", [
+          hold,
+        ])
+      ).rows.length,
+      1,
+    );
+    assert.equal((await f.ledger.status(f.user)).spentMicros, RUB);
+    assert.equal((await f.ledger.status(f.user)).heldMicros, 0);
+  },
+);

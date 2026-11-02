@@ -24,6 +24,16 @@ export function createAiExecution(
         policyId: policy.id,
         ...limits,
         ...(modeProfile ? { modeProfile } : {}),
+        // A new balance-derived admission cannot reuse an operator approval
+        // signed for the historical fixed real ceiling. Omission is byte-for-
+        // byte compatible with every legacy execution/policy/catalog snapshot.
+        ...(config.AI_REQUEST_COST_LIMIT_MODE === "user_balance" &&
+        policy.provider === "routerai"
+          ? { requestCostLimitMode: "user_balance" }
+          : {}),
+        ...(config.AI_CUSTOMER_BILLING_MODE === "postpay_actual_v1"
+          ? { customerBillingMode: "postpay_actual_v1" }
+          : {}),
         ...(config.AI_CREDIT_RESERVATION_MODE === "fixed5_overdraft"
           ? { creditReservationMode: "fixed5_overdraft" }
           : {}),

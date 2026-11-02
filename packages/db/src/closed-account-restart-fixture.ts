@@ -305,6 +305,9 @@ export async function seedRestartNpdObligation(
 }
 
 export const retainedFinancialTables = [
+  "ai_postpay_attempts",
+  "credit_postpay_liabilities",
+  "credit_postpay_repayments",
   "credit_charge_debts",
   "credit_debt_repayments",
   "credit_hold_allocations",

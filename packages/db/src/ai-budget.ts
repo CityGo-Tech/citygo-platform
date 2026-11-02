@@ -250,6 +250,7 @@ export async function reserveAiMoney(
   tx: Sql,
   execution: AiExecution,
   userId: string,
+  balanceRealCeilingMicros?: number,
 ): Promise<
   AiMoneyReservation & {
     reservedAt: string;
@@ -294,7 +295,10 @@ export async function reserveAiMoney(
       "Режим денежного бюджета не подходит для выбранного провайдера.",
       "AI_BUDGET_UNAVAILABLE",
     );
-  const amount = rule.attemptCeilingMicros;
+  // Only the explicitly opted-in, locked user-balance admission supplies an
+  // override. The operator stop, execution identity and global/personal caps
+  // continue to be checked below. A legacy caller keeps its approved rule.
+  const amount = balanceRealCeilingMicros ?? rule.attemptCeilingMicros;
   if (settings.userDailyLimitMicros !== null) {
     const reserved = await userReservedToday(
       tx,
