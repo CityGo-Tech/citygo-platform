@@ -3037,6 +3037,7 @@ for (const migration of [
   "0033_ai_request_modes.sql",
   "0034_gigachat_request_fees.sql",
   "0036_protected_phone_contacts.sql",
+  "0045_ai_balance_request_cost_limit.sql",
 ]) {
   test(`readiness requires ${migration}`, async (t) => {
     const f = await fixture(false);
