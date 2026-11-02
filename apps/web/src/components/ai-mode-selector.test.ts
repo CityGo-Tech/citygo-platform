@@ -70,3 +70,18 @@ test("Minimum keeps only its name without changing its price, ID or availability
   );
   assert.match(render(catalog, true), /<select[^>]*disabled=""/);
 });
+
+test("the initially selected mode can explicitly request consent without a switch or an automatic grant", () => {
+  const catalog: AiModes = {
+    ...modes,
+    options: modes.options.map((option) => ({
+      ...option,
+      consentRequired: option.id === "balanced",
+    })),
+  };
+  assert.match(
+    render(catalog),
+    /<button[^>]*type="button"[^>]*>Подтвердить выбор<\/button>/,
+  );
+  assert.match(render(catalog, true), /<button[^>]*disabled=""/);
+});
