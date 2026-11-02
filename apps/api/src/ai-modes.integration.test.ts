@@ -2095,7 +2095,6 @@ test(
       initialKopeks: 1000,
     });
     const hold = await f.seedLegacyCharge(),
-      manualHold = await f.seedLegacyCharge(),
       peer = await f.peer();
     for (const connection of [f.db, peer])
       assert.equal(
@@ -2113,6 +2112,39 @@ test(
       CITYGO_10X_TARIFF,
       "fixed5_overdraft",
     );
+    assert.deepEqual(await first.completedUnresolvedAfter(), [
+      { holdId: hold, userId: f.board.user.id },
+    ]);
+    const generation = (await first.get(f.board.user.id, hold)).generation_id!;
+    const receipt = {
+      generationId: generation,
+      reference: hold,
+      model: "deepseek/deepseek-v4-pro-0813",
+      upstream: "deepseek",
+      currency: "RUB" as const,
+      costRub: "0.1",
+      amountMicros: 100000,
+    };
+    assert.deepEqual(
+      await Promise.all([
+        first.settleCompletedAutomatically(f.board.user.id, hold, receipt),
+        second.settleCompletedAutomatically(f.board.user.id, hold, receipt),
+      ]),
+      [true, true],
+    );
+    assert.equal((await f.balance()).heldMicros, 0);
+    assert.equal((await f.balance()).spentMicros, 1000000);
+    assert.equal(
+      (
+        await f.db.query("select 1 from ai_credit_entries where hold_id=$1", [
+          hold,
+        ])
+      ).rows.length,
+      1,
+    );
+    // A second old hold is legal only AFTER the first resolution. Preserve
+    // the production one-unresolved-legacy-attempt admission invariant.
+    const manualHold = await f.seedLegacyCharge();
     const manualGeneration = (await first.get(f.board.user.id, manualHold))
       .generation_id!;
     const manualReceipt = {
@@ -2132,9 +2164,11 @@ test(
       "select enabled,revision from ai_budget where id=1",
     );
     assert.equal(budgetBefore.rows[0]?.enabled, false);
-    assert.deepEqual(await first.completedUnresolvedAfter(), [
-      { holdId: hold, userId: f.board.user.id },
-    ]);
+    assert.deepEqual(await first.completedUnresolvedAfter(), []);
+    const auditBefore = await f.db.query(
+      "select * from audit_log where action='ai-credit-cost-overrun' and entity_type='ai-credit' and lower(entity_id)=$1",
+      [manualHold],
+    );
     assert.equal(
       await second.settleCompletedAutomatically(f.board.user.id, manualHold, {
         ...manualReceipt,
@@ -2158,33 +2192,17 @@ test(
       ).rows.length,
       1,
     );
-    const generation = (await first.get(f.board.user.id, hold)).generation_id!;
-    const receipt = {
-      generationId: generation,
-      reference: hold,
-      model: "deepseek/deepseek-v4-pro-0813",
-      upstream: "deepseek",
-      currency: "RUB" as const,
-      costRub: "0.1",
-      amountMicros: 100000,
-    };
     assert.deepEqual(
-      await Promise.all([
-        first.settleCompletedAutomatically(f.board.user.id, hold, receipt),
-        second.settleCompletedAutomatically(f.board.user.id, hold, receipt),
-      ]),
-      [true, true],
+      (
+        await peer.query(
+          "select * from audit_log where action='ai-credit-cost-overrun' and entity_type='ai-credit' and lower(entity_id)=$1",
+          [manualHold],
+        )
+      ).rows,
+      auditBefore.rows,
     );
     assert.equal((await f.balance()).heldMicros, 5000000);
     assert.equal((await f.balance()).spentMicros, 1000000);
-    assert.equal(
-      (
-        await f.db.query("select 1 from ai_credit_entries where hold_id=$1", [
-          hold,
-        ])
-      ).rows.length,
-      1,
-    );
     assert.equal(
       (
         await f.ownerDb.query(
