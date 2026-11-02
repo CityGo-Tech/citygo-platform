@@ -27,7 +27,11 @@ import { hashPassword, tokenHash } from "./auth.js";
 
 async function fixture(
   t: TestContext,
-  options: { minimum?: "free" | "fixed"; legacy?: boolean } = {},
+  options: {
+    minimum?: "free" | "fixed";
+    legacy?: boolean;
+    balanceLimit?: boolean;
+  } = {},
 ) {
   const minimum = options.minimum !== undefined;
   const freeMinimum = options.minimum === "free";
@@ -158,6 +162,9 @@ async function fixture(
     AI_MODES_DATA_NOTICE: "Synthetic recipients only.",
     AI_CREDIT_MODE: freeMinimum ? "disabled" : "routerai_citygo_10x",
     AI_CREDIT_RESERVATION_MODE: freeMinimum ? "full" : "fixed5_overdraft",
+    AI_REQUEST_COST_LIMIT_MODE: options.balanceLimit
+      ? "user_balance"
+      : "operator_ceiling",
     ...(minimum
       ? {
           GIGACHAT_MODEL: "GigaChat-3-Ultra",
@@ -1061,3 +1068,74 @@ test(
     assert.equal(f.reads.length, 0);
   },
 );
+
+test("HTTP opted-in balance limits snapshot each RouterAI request while fixed Minimum remains exactly three CityGo and all three modes keep five holds", async (t) => {
+  const f = await fixture(t, { minimum: "fixed", balanceLimit: true });
+  for (const mode of ["maximum", "minimum", "balanced"] as const)
+    assert.match(
+      (await f.send(mode, `Synthetic balance-mode ${mode}`)).body,
+      /"type":"done"/,
+    );
+  assert.deepEqual(
+    f.calls.map((call) => [call.mode, call.held]),
+    [
+      ["maximum", "5000000"],
+      ["minimum", "5000000"],
+      ["balanced", "5000000"],
+    ],
+  );
+  assert.deepEqual(
+    (
+      await f.db.query(
+        "select model,cost_limit_mode,balance_before_hold_micros::text as before,real_ceiling_micros::text as ceiling from ai_credit_charges order by balance_before_hold_micros desc",
+      )
+    ).rows,
+    [
+      {
+        model: "openai/gpt-6.1-sol",
+        cost_limit_mode: "user_balance",
+        before: "100000000",
+        ceiling: "10000000",
+      },
+      {
+        model: "deepseek/deepseek-v4-pro-0813",
+        cost_limit_mode: "user_balance",
+        before: "95000000",
+        ceiling: "9500000",
+      },
+    ],
+  );
+  assert.equal((await f.balance()).availableMicros, 94_000_000);
+  assert.equal((await f.balance()).heldMicros, 0);
+  assert.deepEqual(
+    (
+      await f.db.query(
+        "select state,snapshot->>'feeCitygoMicros' as fee,snapshot->>'operatorCostRubMicros' as provider_cost from gigachat_request_fees",
+      )
+    ).rows,
+    [{ state: "succeeded", fee: "3000000", provider_cost: "0" }],
+  );
+  assert.deepEqual(f.reads, ["maximum", "balanced"]);
+  const before = (await f.db.query("select * from ai_credit_charges")).rows;
+  await f.db.query(
+    "update ai_budget set enabled=false,revision=revision+1 where id=1",
+  );
+  const attempts = (await f.db.query("select * from ai_model_attempts")).rows;
+  for (const mode of ["maximum", "minimum", "balanced"] as const) {
+    const response = await f.send(
+      mode,
+      `Synthetic stopped balance-mode ${mode}`,
+    );
+    assert.doesNotMatch(response.body, /"type":"done"/);
+  }
+  assert.equal(f.calls.length, 3);
+  assert.deepEqual(
+    (await f.db.query("select * from ai_credit_charges")).rows,
+    before,
+  );
+  assert.deepEqual(
+    (await f.db.query("select * from ai_model_attempts")).rows,
+    attempts,
+  );
+  assert.equal((await f.balance()).heldMicros, 0);
+});

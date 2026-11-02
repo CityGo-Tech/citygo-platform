@@ -1,4 +1,5 @@
 import type { Sql } from "./index.js";
+import type { AiRequestCostLimitMode } from "./request-cost-limit.js";
 import { DomainError } from "./errors.js";
 import { CITYGO_MAX_AMOUNT_MICROS } from "@citygo/contracts";
 
@@ -18,7 +19,11 @@ export async function outstandingCreditDebt(sql: Sql, userId: string) {
     )
   ).rows[0]!;
   const debt = Number(row.debt);
-  if (!Number.isSafeInteger(debt) || debt < 0 || debt > MAX_OVERDRAFT_MICROS)
+  if (
+    !Number.isSafeInteger(debt) ||
+    debt < 0 ||
+    debt > CITYGO_MAX_AMOUNT_MICROS
+  )
     throw new DomainError(503, "Долг баланса требует сверки");
   return debt;
 }
@@ -39,7 +44,11 @@ export async function assertCreditDebtPaid(tx: Sql, userId: string) {
     );
 }
 
-export async function assertFixed5Admission(tx: Sql, userId: string) {
+export async function assertFixed5Admission(
+  tx: Sql,
+  userId: string,
+  costLimitMode: AiRequestCostLimitMode = "operator_ceiling",
+) {
   await assertCreditDebtPaid(tx, userId);
   const account = (
     await tx.query<{ spent: string }>(
@@ -51,7 +60,10 @@ export async function assertFixed5Admission(tx: Sql, userId: string) {
     !account ||
     !Number.isSafeInteger(Number(account.spent)) ||
     Number(account.spent) >
-      CITYGO_MAX_AMOUNT_MICROS - MAX_OVERDRAFT_REAL_CEILING_MICROS * 10
+      CITYGO_MAX_AMOUNT_MICROS -
+        (costLimitMode === "user_balance"
+          ? FIXED_CITYGO_HOLD_MICROS
+          : MAX_OVERDRAFT_REAL_CEILING_MICROS * 10)
   )
     throw new DomainError(409, "Достигнут технический предел журнала AI");
   const pending = await tx.query(

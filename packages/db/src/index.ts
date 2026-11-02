@@ -48,6 +48,11 @@ export {
 } from "./email-registration.js";
 export { AiCreditLedger } from "./ai-credit.js";
 export {
+  captureBalanceCostLimit,
+  type AiRequestCostLimitMode,
+  type BalanceCostLimitSnapshot,
+} from "./request-cost-limit.js";
+export {
   GigaChatFixedFees,
   parseGigaChatFixedFeeInput,
   type GigaChatFixedFeeInput,

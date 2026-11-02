@@ -11,6 +11,7 @@ import {
   type AiCredit,
 } from "@citygo/contracts";
 import type { Database, Sql } from "./index.js";
+import type { AiRequestCostLimitMode } from "./request-cost-limit.js";
 import { DomainError } from "./errors.js";
 import { lockPaymentMode } from "./payment-isolation.js";
 import {
@@ -55,6 +56,7 @@ export class AiCreditLedger {
     private topUpAvailable: boolean | (() => Promise<boolean>) = false,
     private reservationMode: AiCreditReservationMode = "full",
     private includeGigaFixedFees = false,
+    private requestCostLimitMode: AiRequestCostLimitMode = "operator_ceiling",
   ) {}
 
   private async lock(tx: Sql, userId: string, actorId?: string) {
@@ -325,7 +327,7 @@ export class AiCreditLedger {
       if (this.reservationMode === "fixed5_overdraft") {
         if (amountMicros !== FIXED_CITYGO_HOLD_MICROS)
           throw new DomainError(400, "Fixed5 требует ровно 5 ₽ CityGo резерва");
-        await assertFixed5Admission(tx, userId);
+        await assertFixed5Admission(tx, userId, this.requestCostLimitMode);
       } else await assertCreditDebtPaid(tx, userId);
       const result = await tx.query(
         "update ai_credit_accounts set held_micros=held_micros+$2 where user_id=$1 and granted_micros-held_micros-spent_micros >= $2 returning user_id",
@@ -397,6 +399,8 @@ export class AiCreditLedger {
         const charge = (
           await tx.query<{
             reservation_mode: string;
+            cost_limit_mode: AiRequestCostLimitMode;
+            balance_before_hold_micros: string | null;
             real_ceiling_micros: string;
             tariff_snapshot: unknown;
             receipt: unknown;
@@ -406,7 +410,7 @@ export class AiCreditLedger {
             dispatched: boolean;
             response_complete: boolean;
           }>(
-            `select reservation_mode,real_ceiling_micros::text,tariff_snapshot,receipt,generation_id,
+            `select reservation_mode,cost_limit_mode,balance_before_hold_micros::text,real_ceiling_micros::text,tariff_snapshot,receipt,generation_id,
               model,upstream,dispatched,response_complete from ai_credit_charges where hold_id=$1 and user_id=$2`,
             [holdId, userId],
           )
@@ -418,7 +422,9 @@ export class AiCreditLedger {
           !charge.dispatched ||
           !charge.response_complete ||
           Number(charge.real_ceiling_micros) < 500_000 ||
-          Number(charge.real_ceiling_micros) > MAX_OVERDRAFT_REAL_CEILING_MICROS
+          (charge.cost_limit_mode !== "user_balance" &&
+            Number(charge.real_ceiling_micros) >
+              MAX_OVERDRAFT_REAL_CEILING_MICROS)
         )
           throw new DomainError(
             409,
@@ -438,7 +444,11 @@ export class AiCreditLedger {
           receipt.generationId !== charge.generation_id ||
           receipt.model !== charge.model ||
           receipt.upstream !== charge.upstream ||
-          !exact ||
+          (charge.cost_limit_mode !== "user_balance" && !exact) ||
+          (charge.cost_limit_mode === "user_balance" &&
+            (charge.balance_before_hold_micros === null ||
+              BigInt(charge.balance_before_hold_micros) / 10n !==
+                BigInt(charge.real_ceiling_micros))) ||
           citygoDebitFromRealCostRub(receipt.costRub, tariff)
             .citygoDebitMicros !== resolution.amountMicros
         )
@@ -447,6 +457,26 @@ export class AiCreditLedger {
             "Долг не подтверждён точной стоимостью попытки",
           );
       }
+      // The public integer journal has a finite lifetime range. A provider
+      // receipt outside remaining technical capacity must roll back as pending,
+      // never post an unreadable counter, partial debit or guessed free charge.
+      const account = (
+        await tx.query<{ spent: string }>(
+          "select spent_micros::text as spent from ai_credit_accounts where user_id=$1",
+          [userId],
+        )
+      ).rows[0];
+      if (
+        !account ||
+        !Number.isSafeInteger(Number(account.spent)) ||
+        Number(account.spent) >
+          CITYGO_MAX_AMOUNT_MICROS - resolution.amountMicros
+      )
+        throw new DomainError(
+          409,
+          "Достигнут технический предел денежного журнала AI",
+          "AI_CREDIT_UNAVAILABLE",
+        );
       await resolveCreditSources(tx, userId, holdId, {
         ...resolution,
         amountMicros: Math.min(resolution.amountMicros, heldAmount),

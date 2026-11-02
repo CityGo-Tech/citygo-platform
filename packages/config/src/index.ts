@@ -237,6 +237,11 @@ export const serverConfigSchema = z.object({
   AI_CREDIT_RESERVATION_MODE: z
     .enum(["full", "fixed5_overdraft"])
     .default("full"),
+  // Explicit opt-in for new charges only. Existing accepted limits remain
+  // durable; installing this code/migration does not enable balance admission.
+  AI_REQUEST_COST_LIMIT_MODE: z
+    .enum(["operator_ceiling", "user_balance"])
+    .default("operator_ceiling"),
   YOOKASSA_MODE: z.enum(["disabled", "test", "live"]).default("disabled"),
   YOOKASSA_SHOP_ID: optionalSetting,
   YOOKASSA_SECRET_KEY: optionalSetting,
@@ -345,6 +350,18 @@ export function validateVerificationDeliveryConfig(
 export function validateCreditReservationConfig(
   config: z.infer<typeof serverConfigSchema>,
 ) {
+  if (
+    !["operator_ceiling", "user_balance"].includes(
+      config.AI_REQUEST_COST_LIMIT_MODE,
+    ) ||
+    (config.AI_REQUEST_COST_LIMIT_MODE === "user_balance" &&
+      (config.AI_CREDIT_RESERVATION_MODE !== "fixed5_overdraft" ||
+        config.AI_CREDIT_MODE !== "routerai_citygo_10x" ||
+        !["routerai", "disabled"].includes(config.LLM_PROVIDER ?? "")))
+  )
+    throw new Error(
+      "Balance-derived request cost limits require explicit fixed5 CityGo 10x RouterAI charging",
+    );
   if (
     !["full", "fixed5_overdraft"].includes(config.AI_CREDIT_RESERVATION_MODE) ||
     (config.AI_CREDIT_RESERVATION_MODE === "fixed5_overdraft" &&

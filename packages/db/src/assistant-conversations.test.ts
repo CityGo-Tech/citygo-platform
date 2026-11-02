@@ -257,9 +257,9 @@ test("24→25 preserves legacy rows, leases, all financial tables and original m
   const names = (await readdir(directory))
     .filter((name) => name.endsWith(".sql"))
     .sort();
-  assert.equal(names.length, 44);
+  assert.equal(names.length, 45);
   assert.equal(names[24], "0025_assistant_conversations.sql");
-  assert.equal(names.at(-1), "0044_conversation_titles.sql");
+  assert.equal(names.at(-1), "0045_ai_balance_request_cost_limit.sql");
   await db.exec(
     "create table citygo_migration_lock(id integer primary key); insert into citygo_migration_lock values(1); create table citygo_migrations(name text primary key,checksum text not null,applied_at timestamptz not null default now())",
   );

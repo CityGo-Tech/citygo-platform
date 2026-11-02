@@ -1,4 +1,4 @@
-// Synthetic-only 18→44 rehearsal for the disposable pilot harness, while its
+// Synthetic-only 18→45 rehearsal for the disposable pilot harness, while its
 // PostgreSQL container is the sole project member. Never a production rollback
 // or migration tool; a successful receipt cannot authorize public traffic.
 import assert from "node:assert/strict";
@@ -217,8 +217,9 @@ export function upgrade18RewindSql() {
     drop function citygo_apply_credit_debt_repayments(bigint);
     drop function citygo_repay_credit_debt_from_new_source();
     drop function citygo_check_credit_debt_conservation();
-    alter table ai_credit_charges drop constraint ai_credit_fixed5_scope,drop column reservation_mode;
-    alter table ai_credit_accounts drop constraint ai_credit_bounded_overdraft,
+    alter table ai_credit_charges drop constraint ai_credit_fixed5_scope,drop constraint ai_credit_balance_limit_snapshot,
+       drop column reservation_mode,drop column cost_limit_mode,drop column balance_before_hold_micros;
+    alter table ai_credit_accounts drop constraint ai_credit_bounded_overdraft,drop constraint ai_credit_spent_technical_bound,
       add constraint ai_credit_accounts_check check(held_micros+spent_micros<=granted_micros);
     drop table payment_notification_inbox;
     drop function citygo_guard_payment_notification();
@@ -246,7 +247,7 @@ export function upgrade18RewindSql() {
     alter table payment_topup_orders add constraint payment_topup_orders_test_check check(test);
     ${legacyFunction}
     delete from citygo_migrations where name in (
-      '0019_yookassa_live_orders.sql','0020_ai_budget_provider_balance.sql','0021_payment_notifications.sql','0022_payment_admission.sql','0023_payment_receipt_snapshots.sql','0024_ai_credit_overdraft.sql','0025_assistant_conversations.sql','0026_email_registration.sql','0027_phone_verification.sql','0028_password_recovery.sql','0029_personal_plan.sql','0030_service_consents.sql','0031_account_email_confirmation.sql','0032_phone_contact_bindings.sql','0033_ai_request_modes.sql','0034_gigachat_request_fees.sql','0035_ai_request_consent_bases.sql','0036_protected_phone_contacts.sql','0037_human_support_requests.sql','0038_manual_personal_plan.sql','0039_plan_checklists.sql','0040_human_support_replies.sql','0041_personal_plan_history.sql','0042_human_support_reads.sql','0043_balance_history.sql','0044_conversation_titles.sql');
+      '0019_yookassa_live_orders.sql','0020_ai_budget_provider_balance.sql','0021_payment_notifications.sql','0022_payment_admission.sql','0023_payment_receipt_snapshots.sql','0024_ai_credit_overdraft.sql','0025_assistant_conversations.sql','0026_email_registration.sql','0027_phone_verification.sql','0028_password_recovery.sql','0029_personal_plan.sql','0030_service_consents.sql','0031_account_email_confirmation.sql','0032_phone_contact_bindings.sql','0033_ai_request_modes.sql','0034_gigachat_request_fees.sql','0035_ai_request_consent_bases.sql','0036_protected_phone_contacts.sql','0037_human_support_requests.sql','0038_manual_personal_plan.sql','0039_plan_checklists.sql','0040_human_support_replies.sql','0041_personal_plan_history.sql','0042_human_support_reads.sql','0043_balance_history.sql','0044_conversation_titles.sql','0045_ai_balance_request_cost_limit.sql');
     commit`;
 }
 
@@ -448,6 +449,7 @@ export async function releaseUpgrade18Smoke({
       "0042_human_support_reads.sql",
       "0043_balance_history.sql",
       "0044_conversation_titles.sql",
+      "0045_ai_balance_request_cost_limit.sql",
     ],
   );
   const expectedJournal = migrations.map(({ name }) => ({
@@ -636,6 +638,6 @@ export async function releaseUpgrade18Smoke({
   );
   assert.deepEqual(journal(), expectedJournal);
   console.log(
-    "Exact synthetic 18→44 rehearsal passed: current migrations + ACLs, late-ACL transactional rollback, preserved legacy conversation/fixed budget/counters/test order/source hold and receipt-free v1 identity; empty pending-email/contact schema and unbound phone policy, least-privilege runtime, closed checkout, no production authorization or provider calls",
+    "Exact synthetic 18→45 rehearsal passed: current migrations + ACLs, late-ACL transactional rollback, preserved legacy conversation/fixed budget/counters/test order/source hold and receipt-free v1 identity; empty pending-email/contact schema and unbound phone policy, least-privilege runtime, closed checkout, no production authorization or provider calls",
   );
 }

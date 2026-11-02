@@ -29,6 +29,10 @@ import {
   conversationHistoryIdSchema,
 } from "@citygo/contracts";
 import { randomUUID } from "node:crypto";
+import {
+  captureBalanceCostLimit,
+  type AiRequestCostLimitMode,
+} from "./request-cost-limit.js";
 import { canTransitionQuest } from "@citygo/domain";
 import { DomainError } from "./errors.js";
 import { currentQuestPlan, lockQuestPlan } from "./quest-plans.js";
@@ -93,9 +97,20 @@ export class Repository {
     private creditReservationMode: AiCreditReservationMode = "full",
     private includeGigaFixedFees = false,
     private legacyBalanced?: LegacyBalancedConsentCompatibility,
+    private requestCostLimitMode: AiRequestCostLimitMode = "operator_ceiling",
   ) {
     this.legacyBalanced =
       parseLegacyBalancedConsentCompatibility(legacyBalanced);
+    if (
+      !["operator_ceiling", "user_balance"].includes(requestCostLimitMode) ||
+      (requestCostLimitMode === "user_balance" &&
+        (!creditCharging ||
+          creditTariff.version !== "citygo-10x-v1" ||
+          creditReservationMode !== "fixed5_overdraft"))
+    )
+      throw new Error(
+        "Balance cost admission requires explicit fixed5 CityGo 10x charging",
+      );
   }
   aiBudget(executions: AiExecution[]) {
     return aiBudget(this.db, executions);
@@ -303,9 +318,19 @@ export class Repository {
       );
       // A fixed product fee with free provider cost is never represented as a
       // RouterAI price/rule. The global administrative stop still applies.
+      const balanceLimit =
+        input.fixedFee === undefined &&
+        this.requestCostLimitMode === "user_balance"
+          ? await captureBalanceCostLimit(tx, input.userId)
+          : null;
       const money =
         input.fixedFee === undefined
-          ? await reserveAiMoney(tx, input.execution, input.userId)
+          ? await reserveAiMoney(
+              tx,
+              input.execution,
+              input.userId,
+              balanceLimit?.realCeilingMicros,
+            )
           : null;
       if (input.fixedFee !== undefined) {
         const budget = (
@@ -372,6 +397,7 @@ export class Repository {
             this.db,
             this.creditTariff,
             this.creditReservationMode,
+            this.requestCostLimitMode,
           ).reserve(
             tx,
             {
