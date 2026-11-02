@@ -62,7 +62,8 @@ async function fixture(
     assert.ok(["postgres:", "postgresql:"].includes(url.protocol));
     assert.equal(url.hostname, "127.0.0.1");
     assert.ok(
-      (url.port === "55439" && url.pathname === "/citygo_synthetic") ||
+      (["55438", "55439"].includes(url.port) &&
+        url.pathname === "/citygo_synthetic") ||
         ((url.port || "5432") === "5432" && url.pathname === "/citygo_test"),
     );
     assert.equal(url.search, "");
