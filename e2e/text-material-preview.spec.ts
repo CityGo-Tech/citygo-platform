@@ -1,3 +1,4 @@
+import { modeSelector, chooseMode } from "./ai-mode-navigation";
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
 import type { Dashboard, Message } from "@citygo/contracts";
 import { fulfillProductAnalytics } from "./product-analytics-fixture";
@@ -184,9 +185,7 @@ test("real TXT preview edits only the draft; explicit Send retains the helper, A
   state.hold = true;
   await page.goto("/");
   await composer(page).fill("Помогите оценить условия");
-  await page
-    .getByLabel("Режим работы", { exact: true })
-    .selectOption("minimum");
+  await chooseMode(page, "minimum");
   await entry(page).click();
   const dialog = page.getByRole("dialog", {
     name: "Прикрепить материал к разговору",
@@ -209,24 +208,33 @@ test("real TXT preview edits only the draft; explicit Send retains the helper, A
       exact: true,
     }),
   ).toBeVisible();
-  expect(await page.locator("dialog img").count()).toBe(0);
+  expect(
+    await page
+      .getByRole("dialog", { name: "Предпросмотр материала", exact: true })
+      .locator("img")
+      .count(),
+  ).toBe(0);
   await preview(page).fill("Проверенный текст материала");
   expect(state.sends).toEqual([]);
-  await expect(page.locator("dialog")).toHaveClass(/ym-hide-content/);
+  await expect(
+    page.getByRole("dialog", { name: "Предпросмотр материала", exact: true }),
+  ).toHaveClass(/ym-hide-content/);
   await expect(preview(page)).toHaveClass(/ym-disable-keys/);
   await page
     .getByRole("heading", { name: "Предпросмотр материала", exact: true })
     .focus();
-  await page.locator("dialog").evaluate((element) => {
-    element.scrollTop = 0;
-  });
+  await page
+    .getByRole("dialog", { name: "Предпросмотр материала", exact: true })
+    .evaluate((element) => {
+      element.scrollTop = 0;
+    });
   await page.screenshot({
     path: info.outputPath("text-material-preview.png"),
     fullPage: false,
   });
   expect(
     await page
-      .locator("dialog")
+      .getByRole("dialog", { name: "Предпросмотр материала", exact: true })
       .evaluate((element) => element.scrollWidth <= element.clientWidth + 1),
   ).toBe(true);
   await page
@@ -242,9 +250,7 @@ test("real TXT preview edits only the draft; explicit Send retains the helper, A
     "Помогите оценить условия\n\nМатериал:\nПроверенный текст материала",
   );
   expect(state.sends).toEqual([]);
-  await expect(page.getByLabel("Режим работы", { exact: true })).toHaveValue(
-    "minimum",
-  );
+  await expect(modeSelector(page)).toHaveAttribute("data-ai-mode", "minimum");
   try {
     await page.getByRole("button", { name: "Отправить", exact: true }).click();
     await expect.poll(() => state.sends.length).toBe(1);

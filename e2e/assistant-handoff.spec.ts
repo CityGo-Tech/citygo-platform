@@ -1,3 +1,4 @@
+import { modeSelector, chooseMode } from "./ai-mode-navigation";
 import { openMessageActions } from "./navigation-helper";
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
 import type { AgentKey, Dashboard, Message } from "@citygo/contracts";
@@ -318,9 +319,7 @@ test("reviewed handoff appends to target draft, preserves both histories and ori
   );
   await page.goto("/");
   await composer(page).fill(sourceDraft);
-  await page
-    .getByLabel("Режим работы", { exact: true })
-    .selectOption("minimum");
+  await chooseMode(page, "minimum");
   await openReview(page);
   await expect(page.getByLabel("Что передаём", { exact: true })).toHaveValue(
     sourceText,
@@ -348,9 +347,7 @@ test("reviewed handoff appends to target draft, preserves both histories and ori
   await expect(page.getByRole("log")).toContainText(
     "ПРЕЖНИЙ_РАЗГОВОР_ПО_РЕЗЮМЕ",
   );
-  await expect(page.getByLabel("Режим работы", { exact: true })).toHaveValue(
-    "minimum",
-  );
+  await expect(modeSelector(page)).toHaveAttribute("data-ai-mode", "minimum");
   expect(state.starts).toEqual(["resume-builder"]);
   const oldDraft = await page.evaluate(
     () =>

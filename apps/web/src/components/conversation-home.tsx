@@ -142,6 +142,14 @@ export function ConversationHome(props: JourneyProps) {
       disabled={busy || sending}
       city={board.profile?.targetCity}
       onHelpers={() => setTab("Помощники")}
+      modeSelector={
+        <AiModeSelector
+          modes={board.aiAccess.modes}
+          selected={props.aiMode ?? "balanced"}
+          disabled={busy || sending || !props.onAiMode}
+          onSelect={(mode) => props.onAiMode?.(mode)}
+        />
+      }
     />
   );
   const navigation = (

@@ -1,4 +1,9 @@
 import { clickAccountAction } from "./navigation-helper";
+import {
+  modeSelector as selector,
+  openModePicker,
+  chooseMode,
+} from "./ai-mode-navigation";
 import { expect, test, type Page } from "@playwright/test";
 import {
   fixture,
@@ -6,8 +11,6 @@ import {
   catalogId,
   policyId,
 } from "./ai-mode-fixture";
-const selector = (page: Page) =>
-  page.getByLabel("Режим работы", { exact: true });
 const composer = (page: Page) =>
   page.getByLabel("Сообщение помощнику", { exact: true });
 
@@ -19,17 +22,14 @@ test("mode switches affect only the next explicit question and remain frozen thr
   state.holdStream = true;
   state.holdRefresh = true;
   await page.goto("/");
-  await expect(selector(page)).toHaveValue("maximum");
-  await expect(selector(page).locator('option[value="minimum"]')).toHaveText(
-    "Минимум",
-  );
-  await expect(selector(page).locator('option[value="maximum"]')).toHaveText(
-    "Максимум",
-  );
-  await expect(selector(page).locator('option[value="balanced"]')).toHaveText(
-    "Баланс",
-  );
-  await selector(page).selectOption("maximum");
+  await expect(selector(page)).toHaveAttribute("data-ai-mode", "maximum");
+  const picker = await openModePicker(page);
+  for (const label of ["Минимум", "Максимум", "Баланс"]) {
+    await expect(
+      picker.getByRole("button", { name: label, exact: true }),
+    ).toContainText(label);
+  }
+  await chooseMode(page, "maximum");
   expect(state.sends).toEqual([]);
   await composer(page).fill("ПЕРВЫЙ_КОНТРОЛЬНЫЙ_ВОПРОС");
   await page.getByRole("button", { name: "Отправить", exact: true }).click();
@@ -51,7 +51,7 @@ test("mode switches affect only the next explicit question and remain frozen thr
   await expect(
     page.getByRole("log", { name: "История диалога" }),
   ).toContainText("ОТВЕТ_НА_ПЕРВЫЙ_КОНТРОЛЬНЫЙ_ВОПРОС");
-  await selector(page).selectOption("minimum");
+  await chooseMode(page, "minimum");
   expect(state.sends).toHaveLength(1);
   await composer(page).fill("ПОСЛЕДНИЙ_КОНТРОЛЬНЫЙ_ВОПРОС");
   await page.getByRole("button", { name: "Отправить", exact: true }).click();
@@ -88,19 +88,20 @@ test("unavailable modes and a failed request never fall back, retry or carry sel
   const state = await fixture(context, { minimumAvailable: false });
   state.failNextSend = true;
   await page.goto("/");
-  await expect(selector(page)).toHaveValue("maximum");
+  await expect(selector(page)).toHaveAttribute("data-ai-mode", "maximum");
+  const picker = await openModePicker(page);
   await expect(
-    selector(page).getByRole("option", { name: /^Минимум/ }),
-  ).toHaveJSProperty("disabled", true);
+    picker.getByRole("button", { name: "Минимум", exact: true }),
+  ).toBeDisabled();
   await expect(
-    selector(page).locator('option[value="minimum"]'),
+    picker.getByRole("button", { name: "Минимум", exact: true }),
   ).not.toContainText("за запрос");
-  await selector(page).selectOption("maximum");
+  await chooseMode(page, "maximum");
   await composer(page).fill("СОХРАНИТЬ_ПРИ_ОШИБКЕ");
   await page.getByRole("button", { name: "Отправить", exact: true }).click();
   await expect(composer(page)).toHaveValue("СОХРАНИТЬ_ПРИ_ОШИБКЕ");
   await expect(selector(page)).toBeEnabled();
-  await expect(selector(page)).toHaveValue("maximum");
+  await expect(selector(page)).toHaveAttribute("data-ai-mode", "maximum");
   expect(state.sends).toHaveLength(1);
   expect(state.sends[0]!.aiMode).toBe("maximum");
   await clickAccountAction(page, "Выйти");
@@ -116,7 +117,7 @@ test("unavailable modes and a failed request never fall back, retry or carry sel
     .fill("second@example.test");
   await page.getByLabel("Пароль", { exact: true }).fill("abcdef");
   await page.getByRole("button", { name: "Войти", exact: true }).click();
-  await expect(selector(page)).toHaveValue("maximum");
+  await expect(selector(page)).toHaveAttribute("data-ai-mode", "maximum");
   await expect(composer(page)).toHaveValue("");
   expect(state.sends).toHaveLength(1);
   noOtherTraffic(state);
@@ -150,12 +151,12 @@ test("legacy Balance keeps the chat; a cancelled first new-mode choice preserves
 }, testInfo) => {
   const state = await fixture(context, { firstChoiceConsent: true });
   await page.goto("/");
-  await selector(page).selectOption("balanced");
-  await expect(selector(page)).toHaveValue("balanced");
+  await chooseMode(page, "balanced");
+  await expect(selector(page)).toHaveAttribute("data-ai-mode", "balanced");
   await expect(page.getByRole("dialog")).toHaveCount(0);
   expect(state.consentReads).toBe(0);
   await composer(page).fill("ЧЕРНОВИК_БЕЗ_ОТПРАВКИ");
-  await selector(page).selectOption("maximum");
+  await chooseMode(page, "maximum");
   const dialog = page.getByRole("dialog", { name: "Новые режимы ответа" });
   await expect(dialog).toBeVisible();
   const checkbox = dialog.getByRole("checkbox");
@@ -177,7 +178,7 @@ test("legacy Balance keeps the chat; a cancelled first new-mode choice preserves
   await expect(dialog).not.toContainText("рекламу");
   await dialog.getByRole("button", { name: "Отмена", exact: true }).click();
   await expect(dialog).toHaveCount(0);
-  await expect(selector(page)).toHaveValue("balanced");
+  await expect(selector(page)).toHaveAttribute("data-ai-mode", "balanced");
   await expect(composer(page)).toHaveValue("ЧЕРНОВИК_БЕЗ_ОТПРАВКИ");
   await expect(
     page
@@ -200,12 +201,12 @@ test("current registration consent allows every mode without an extra dialog", a
   const state = await fixture(context, { firstChoiceConsent: true });
   state.consentOwners.add("101");
   await page.goto("/");
-  await selector(page).selectOption("balanced");
+  await chooseMode(page, "balanced");
   await expect(composer(page)).toBeVisible();
-  await selector(page).selectOption("maximum");
-  await expect(selector(page)).toHaveValue("maximum");
-  await selector(page).selectOption("minimum");
-  await expect(selector(page)).toHaveValue("minimum");
+  await chooseMode(page, "maximum");
+  await expect(selector(page)).toHaveAttribute("data-ai-mode", "maximum");
+  await chooseMode(page, "minimum");
+  await expect(selector(page)).toHaveAttribute("data-ai-mode", "minimum");
   await expect(page.getByRole("dialog")).toHaveCount(0);
   expect(state.consentReads).toBe(0);
   expect(state.consentSaves).toEqual([]);
@@ -219,20 +220,20 @@ test("first explicit new-mode consent selects only after persistence and dashboa
 }) => {
   const state = await fixture(context, { firstChoiceConsent: true });
   await page.goto("/");
-  await selector(page).selectOption("balanced");
+  await chooseMode(page, "balanced");
   await composer(page).fill("СОХРАНИТЬ_ЧЕРНОВИК");
-  await selector(page).selectOption("maximum");
+  await chooseMode(page, "maximum");
   const dialog = page.getByRole("dialog", { name: "Новые режимы ответа" });
   await dialog.getByRole("checkbox").check();
   await dialog.getByRole("button", { name: "Подтвердить и выбрать" }).click();
   await expect(dialog).toHaveCount(0);
-  await expect(selector(page)).toHaveValue("maximum");
+  await expect(selector(page)).toHaveAttribute("data-ai-mode", "maximum");
   await expect(composer(page)).toHaveValue("СОХРАНИТЬ_ЧЕРНОВИК");
   expect(state.consentSaves).toHaveLength(1);
   expect(state.consentOwners.has("101")).toBe(true);
   expect(state.dashboardReads).toBeGreaterThanOrEqual(3);
-  await selector(page).selectOption("minimum");
-  await expect(selector(page)).toHaveValue("minimum");
+  await chooseMode(page, "minimum");
+  await expect(selector(page)).toHaveAttribute("data-ai-mode", "minimum");
   await expect(dialog).toHaveCount(0);
   expect(state.consentReads).toBe(1);
   expect(state.consentSaves).toHaveLength(1);
@@ -247,16 +248,16 @@ test("a failed consent fetch leaves the old mode and draft intact; retry starts 
   const state = await fixture(context, { firstChoiceConsent: true });
   state.failConsentRead = true;
   await page.goto("/");
-  await selector(page).selectOption("balanced");
+  await chooseMode(page, "balanced");
   await composer(page).fill("НЕ_ТЕРЯТЬ_ТЕКСТ");
-  await selector(page).selectOption("minimum");
+  await chooseMode(page, "minimum");
   const dialog = page.getByRole("dialog");
   await expect(dialog.getByRole("alert")).toBeVisible();
   expect(state.consentSaves).toEqual([]);
   await dialog.getByRole("button", { name: "Загрузить условия" }).click();
   await expect(dialog.getByRole("checkbox")).not.toBeChecked();
   await dialog.getByRole("button", { name: "Отмена", exact: true }).click();
-  await expect(selector(page)).toHaveValue("balanced");
+  await expect(selector(page)).toHaveAttribute("data-ai-mode", "balanced");
   await expect(composer(page)).toHaveValue("НЕ_ТЕРЯТЬ_ТЕКСТ");
   expect(state.consentReads).toBe(2);
   expect(state.sends).toEqual([]);
@@ -270,18 +271,18 @@ test("cancelled late loads cannot reopen or replace a later mode choice", async 
   const state = await fixture(context, { firstChoiceConsent: true });
   state.holdConsentRead = true;
   await page.goto("/");
-  await selector(page).selectOption("balanced");
-  await selector(page).selectOption("maximum");
+  await chooseMode(page, "balanced");
+  await chooseMode(page, "maximum");
   const dialog = page.getByRole("dialog");
   await expect(dialog.getByRole("status")).toBeVisible();
   await dialog.getByRole("button", { name: "Отмена", exact: true }).click();
-  await selector(page).selectOption("minimum");
+  await chooseMode(page, "minimum");
   await expect(dialog.getByRole("checkbox")).not.toBeChecked();
   state.releaseConsentRead();
   await expect(dialog).toContainText("«Минимум»");
   await expect(dialog.getByRole("checkbox")).not.toBeChecked();
   await dialog.getByRole("button", { name: "Отмена", exact: true }).click();
-  await expect(selector(page)).toHaveValue("balanced");
+  await expect(selector(page)).toHaveAttribute("data-ai-mode", "balanced");
   expect(state.consentSaves).toEqual([]);
   expect(state.sends).toEqual([]);
   noOtherTraffic(state);
@@ -294,8 +295,8 @@ test("an account switch during consent persistence cannot select a mode for the 
   const state = await fixture(context, { firstChoiceConsent: true });
   state.holdConsentSave = true;
   await page.goto("/");
-  await selector(page).selectOption("balanced");
-  await selector(page).selectOption("maximum");
+  await chooseMode(page, "balanced");
+  await chooseMode(page, "maximum");
   const dialog = page.getByRole("dialog");
   await dialog.getByRole("checkbox").check();
   await dialog.getByRole("button", { name: "Подтвердить и выбрать" }).click();
@@ -303,10 +304,10 @@ test("an account switch during consent persistence cannot select a mode for the 
   state.owner = "202";
   await page.evaluate(() => window.dispatchEvent(new Event("focus")));
   await expect(dialog).toHaveCount(0);
-  await expect(selector(page)).toHaveValue("maximum");
+  await expect(selector(page)).toHaveAttribute("data-ai-mode", "maximum");
   state.releaseConsentSave();
   await expect(composer(page)).toHaveValue("");
-  await expect(selector(page)).toHaveValue("maximum");
+  await expect(selector(page)).toHaveAttribute("data-ai-mode", "maximum");
   expect(state.consentOwners.has("202")).toBe(false);
   expect(state.sends).toEqual([]);
   noOtherTraffic(state);
@@ -319,9 +320,9 @@ test("cancelling after persistence but before dashboard refresh never selects th
   const state = await fixture(context, { firstChoiceConsent: true });
   state.holdConsentRefresh = true;
   await page.goto("/");
-  await selector(page).selectOption("balanced");
+  await chooseMode(page, "balanced");
   await composer(page).fill("ОСТАВИТЬ_ЧЕРНОВИК");
-  await selector(page).selectOption("maximum");
+  await chooseMode(page, "maximum");
   const dialog = page.getByRole("dialog");
   await dialog.getByRole("checkbox").check();
   await dialog.getByRole("button", { name: "Подтвердить и выбрать" }).click();
@@ -329,7 +330,7 @@ test("cancelling after persistence but before dashboard refresh never selects th
   await dialog.getByRole("button", { name: "Отмена", exact: true }).click();
   state.releaseRefresh();
   await expect(dialog).toHaveCount(0);
-  await expect(selector(page)).toHaveValue("balanced");
+  await expect(selector(page)).toHaveAttribute("data-ai-mode", "balanced");
   await expect(composer(page)).toHaveValue("ОСТАВИТЬ_ЧЕРНОВИК");
   expect(state.consentSaves).toHaveLength(1);
   expect(state.sends).toEqual([]);
