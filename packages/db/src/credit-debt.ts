@@ -18,7 +18,24 @@ export async function outstandingCreditDebt(sql: Sql, userId: string) {
       [userId],
     )
   ).rows[0]!;
-  const debt = Number(row.debt);
+  // Historical upgrade fixtures legitimately run before schema46 exists.
+  // Real schema46 admissions include both durable debt families.
+  const present =
+    (
+      await sql.query<{ present: boolean }>(
+        "select to_regclass('public.credit_postpay_liabilities') is not null as present",
+      )
+    ).rows[0]?.present === true;
+  const postpay = present
+    ? (
+        await sql.query<{ debt: string }>(
+          `select coalesce(sum(d.principal_micros-coalesce(r.paid,0)),0)::text as debt from credit_postpay_liabilities d left join
+    (select charge_id,sum(amount_micros) as paid from credit_postpay_repayments where user_id=$1 group by charge_id)r on r.charge_id=d.charge_id where d.user_id=$1`,
+          [userId],
+        )
+      ).rows[0]!.debt
+    : "0";
+  const debt = Number(row.debt) + Number(postpay);
   if (
     !Number.isSafeInteger(debt) ||
     debt < 0 ||

@@ -39,6 +39,9 @@ const tables = [
   "citygo_migration_lock",
   "citygo_migrations",
   "consent_events",
+  "ai_postpay_attempts",
+  "credit_postpay_liabilities",
+  "credit_postpay_repayments",
   "credit_charge_debts",
   "credit_debt_repayments",
   "credit_hold_allocations",
@@ -103,6 +106,9 @@ const protectedNotifications = ["payment_notification_inbox"] as const;
 // Even fully repaid debt is immutable financial history, not resettable test
 // data. These FK children may join TRUNCATE only while empty under table locks.
 const protectedDebt = [
+  "ai_postpay_attempts",
+  "credit_postpay_liabilities",
+  "credit_postpay_repayments",
   "credit_charge_debts",
   "credit_debt_repayments",
 ] as const;

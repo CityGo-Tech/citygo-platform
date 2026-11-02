@@ -250,7 +250,8 @@ class Validation(unittest.TestCase):
                           s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_PROFILE,
                           s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_UNLIMITED_PROFILE,
                           s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_UNLIMITED_ASSISTANT_MODES_PROFILE,
-                          s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_UNLIMITED_ASSISTANT_MODES_GIGACHAT_FLAT3_PROFILE})
+                          s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_UNLIMITED_ASSISTANT_MODES_GIGACHAT_FLAT3_PROFILE,
+                          s.POSTPAY_ACTUAL_PROFILE})
         for key in value:
             missing = dict(value); del missing[key]
             with self.subTest(missing=key), self.assertRaises(b.BackupError): validate(missing)
@@ -686,9 +687,10 @@ class Validation(unittest.TestCase):
             with self.subTest(keys=list(change)), self.assertRaises(b.BackupError): validate({**value, **change})
         for old in set(s.PROFILE_VERSIONS) - {profile}:
             with self.subTest(old=old), self.assertRaises(b.BackupError): validate(value, old)
-            previous = ({"DATABASE_URL": legacy["DATABASE_URL"]} if old == s.PROFILE else routerai_fixture(old))
-            with self.subTest(extra_legacy_key=old), self.assertRaises(b.BackupError):
-                validate({**previous, "GIGACHAT_CREDENTIALS": value["GIGACHAT_CREDENTIALS"]}, old)
+            if s.PROFILE_VERSIONS[old] < 13:
+                previous = ({"DATABASE_URL": legacy["DATABASE_URL"]} if old == s.PROFILE else routerai_fixture(old))
+                with self.subTest(extra_legacy_key=old), self.assertRaises(b.BackupError):
+                    validate({**previous, "GIGACHAT_CREDENTIALS": value["GIGACHAT_CREDENTIALS"]}, old)
         self.assertEqual(validate(legacy, prior), encoded(legacy))
         with self.assertRaises(b.BackupError): validate(legacy)
 
@@ -738,7 +740,60 @@ class Validation(unittest.TestCase):
                              for service in spec["services"].values() for k in service["environment"]))
 
 
+    def test_postpay_v14_has_new_exact_closed_keyset_and_old_profiles_reject_it(self):
+        profile = s.POSTPAY_ACTUAL_PROFILE
+        legacy = routerai_fixture(s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_UNLIMITED_ASSISTANT_MODES_GIGACHAT_FLAT3_PROFILE)
+        value = routerai_fixture(profile)
+        additions = {"AI_CUSTOMER_BILLING_MODE": "postpay_actual_v1", "AI_REQUEST_COST_LIMIT_MODE": "operator_ceiling"}
+        self.assertEqual(value, {**legacy, **additions})
+        self.assertEqual(s.PROFILE_VERSIONS[profile], 14)
+        self.assertIn(profile, s.CLOSED_ONLY_PROFILES)
+        self.assertIn(profile, s.PROSTOSMS_UNLIMITED_PROFILES)
+        self.assertIn(profile, s.ASSISTANT_MODES_PROFILES)
+        def validate(data, selected=profile):
+            with patch.object(t, "read_file", return_value=encoded(data)):
+                return s.api_secret("/unused", selected)
+        self.assertEqual(validate(value), encoded(value))
+        for key in value:
+            missing = dict(value); del missing[key]
+            with self.subTest(missing=key), self.assertRaises(b.BackupError): validate(missing)
+        for change in ({"AI_CUSTOMER_BILLING_MODE": "legacy"}, {"AI_CUSTOMER_BILLING_MODE": "postpay"},
+                       {"AI_REQUEST_COST_LIMIT_MODE": "user_balance"}, {"AI_ASSISTANT_MODES": "disabled"},
+                       {"AI_MINIMUM_FIXED_FEE": "disabled"}, {"AI_CREDIT_MODE": "routerai_at_cost"},
+                       {"AI_CREDIT_RESERVATION_MODE": "full"}, {"YOOKASSA_FISCAL_PROFILE": "disabled"},
+                       {"PHONE_SMS_GLOBAL_TOTAL_LIMIT": "1"}):
+            with self.subTest(change=change), self.assertRaises(b.BackupError): validate({**value, **change})
+        for old, version in s.PROFILE_VERSIONS.items():
+            if version >= 14: continue
+            previous = {"DATABASE_URL": legacy["DATABASE_URL"]} if old == s.PROFILE else routerai_fixture(old)
+            self.assertEqual(validate(previous, old), encoded(previous))
+            with self.subTest(old=old), self.assertRaises(b.BackupError): validate(value, old)
+            for key, setting in additions.items():
+                with self.subTest(old=old, extra=key), self.assertRaises(b.BackupError): validate({**previous, key: setting}, old)
+        with self.assertRaises(b.BackupError): validate(legacy)
+
+    def test_postpay_v14_runtime_has_only_api_marker_and_rejects_ambient_billing(self):
+        profile = s.POSTPAY_ACTUAL_PROFILE
+        self.assertEqual(s.profile_environment(profile), {"LLM_PROVIDER": "routerai", "CITYGO_AI_PROFILE": "postpay-actual-v1"})
+        image = {"local_id": "sha256:" + "c" * 64, "config_id": "sha256:" + "c" * 64}
+        container = preparation_fixture.container("api"); container["Image"] = image["local_id"]; container["State"]["Dead"] = False
+        current = detail(container, "api", image, "/tmp/api.json", profile)
+        args = ("api", image, "citygo-fixture", ORIGIN, "/tmp/api.json", {"web_api": WEB_NETWORK, "database": "e" * 64})
+        s.runtime(current, *args, profile)
+        for key in ("AI_CUSTOMER_BILLING_MODE", "AI_REQUEST_COST_LIMIT_MODE"):
+            bad = copy.deepcopy(current); bad["Config"]["Env"].append(key + "=synthetic-hidden")
+            with self.subTest(ambient=key), self.assertRaises(b.BackupError): s.runtime(bad, *args, profile)
+        with self.assertRaises(b.BackupError): s.runtime(current, *args, s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_UNLIMITED_ASSISTANT_MODES_GIGACHAT_FLAT3_PROFILE)
+        spec = s.compose_spec("citygo-fixture", ORIGIN, {"api": image, "web": image}, "/tmp/api.json", profile)
+        self.assertEqual(spec["services"]["api"]["secrets"], [{"source": "api_config", "target": "api.json"}])
+        self.assertNotIn("secrets", spec["services"]["web"])
+
+
 def routerai_fixture(profile=s.ROUTERAI_PROFILE):
+    if profile == s.POSTPAY_ACTUAL_PROFILE:
+        return {**routerai_fixture(s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_UNLIMITED_ASSISTANT_MODES_GIGACHAT_FLAT3_PROFILE),
+                "AI_CUSTOMER_BILLING_MODE": "postpay_actual_v1",
+                "AI_REQUEST_COST_LIMIT_MODE": "operator_ceiling"}
     if profile == s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_UNLIMITED_ASSISTANT_MODES_GIGACHAT_FLAT3_PROFILE:
         return json.loads((Path(__file__).resolve().parent.parent / "fixtures" /
                            "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-unlimited-assistant-modes-gigachat-flat3-profile.fixture.json").read_bytes())

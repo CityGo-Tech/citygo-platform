@@ -11,6 +11,7 @@ import {
   type AiCredit,
 } from "@citygo/contracts";
 import type { Database, Sql } from "./index.js";
+import type { CustomerBillingMode } from "./postpay-charges.js";
 import type { AiRequestCostLimitMode } from "./request-cost-limit.js";
 import { DomainError } from "./errors.js";
 import { lockPaymentMode } from "./payment-isolation.js";
@@ -57,6 +58,7 @@ export class AiCreditLedger {
     private reservationMode: AiCreditReservationMode = "full",
     private includeGigaFixedFees = false,
     private requestCostLimitMode: AiRequestCostLimitMode = "operator_ceiling",
+    private customerBillingMode: CustomerBillingMode = "legacy",
   ) {}
 
   private async lock(tx: Sql, userId: string, actorId?: string) {
@@ -100,6 +102,16 @@ export class AiCreditLedger {
       typeof this.topUpAvailable === "function"
         ? await this.topUpAvailable()
         : this.topUpAvailable;
+    const postpaySchema =
+      (
+        await sql.query<{ present: boolean }>(
+          "select to_regclass('public.credit_postpay_liabilities') is not null as present",
+        )
+      ).rows[0]?.present === true;
+    const postpayDebt = postpaySchema
+      ? `(select coalesce(sum(d.principal_micros-coalesce(r.paid,0)),0) from credit_postpay_liabilities d left join
+      (select charge_id,sum(amount_micros) as paid from credit_postpay_repayments where user_id=$1 group by charge_id)r on r.charge_id=d.charge_id where d.user_id=$1)`
+      : "0";
     // One statement snapshot: concurrent grants/holds cannot mix totals/history.
     const row = (
       await sql.query<{
@@ -116,7 +128,7 @@ export class AiCreditLedger {
       exists(select 1 from ai_credit_entries b where b.user_id=$1 and b.kind='bonus') as bonus_granted,
       coalesce((select jsonb_agg(jsonb_build_object('id',e.id::text,'kind',e.kind,
         'amountMicros',e.amount_micros,'createdAt',to_char(e.created_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')) order by e.id desc)
-        from (select id,kind,amount_micros,created_at from ai_credit_entries where user_id=$1 order by id desc limit 20) e),'[]'::jsonb) as history,
+        from (select id,kind,amount_micros,created_at from ai_credit_entries where user_id=$1 and kind<>'postpay_open' order by id desc limit 20) e),'[]'::jsonb) as history,
       coalesce((select jsonb_agg(jsonb_build_object('holdId',p.hold_id,'amountMicros',p.amount_micros,'responseComplete',p.response_complete))
         from (select c.hold_id,e.amount_micros,c.response_complete,c.created_at from ai_credit_charges c
           join ai_credit_entries e on e.operation_id=c.hold_id where c.user_id=$1
@@ -125,15 +137,15 @@ export class AiCreditLedger {
             this.includeGigaFixedFees
               ? `union all select f.hold_id,e.amount_micros,false as response_complete,f.created_at
           from gigachat_request_fees f join ai_credit_entries e on e.operation_id=f.hold_id
-          where f.user_id=$1 and f.state in ('reserved','dispatched')
+          where f.user_id=$1 and f.state in ('reserved','dispatched') and e.kind='hold'
           and not exists(select 1 from ai_credit_entries r where r.hold_id=f.hold_id)`
               : ""
           }
           order by created_at desc limit 20) p),'[]'::jsonb) as pending,
-      (select coalesce(sum(d.principal_micros-coalesce(r.paid,0)),0)::text
+      ((select coalesce(sum(d.principal_micros-coalesce(r.paid,0)),0)
         from credit_charge_debts d left join
           (select debt_hold_id,sum(amount_micros) as paid from credit_debt_repayments where user_id=$1 group by debt_hold_id) r
-          on r.debt_hold_id=d.hold_id where d.user_id=$1) as outstanding_debt
+          on r.debt_hold_id=d.hold_id where d.user_id=$1)+${postpayDebt})::text as outstanding_debt
       from users u left join ai_credit_accounts a on a.user_id=u.id where u.id=$1`,
         [userId],
       )
@@ -153,12 +165,17 @@ export class AiCreditLedger {
       chargingStatus: this.chargingStatus,
       pending: row.pending,
       topUpAvailable,
-      ...(this.reservationMode === "fixed5_overdraft"
+      ...(this.customerBillingMode === "postpay_actual_v1"
         ? {
-            reservationMode: this.reservationMode,
-            minimumRequestBalanceMicros: FIXED_CITYGO_HOLD_MICROS,
+            billingPolicy: "postpay_actual_v1" as const,
+            minimumRequestBalanceMicros: 10,
           }
-        : {}),
+        : this.reservationMode === "fixed5_overdraft"
+          ? {
+              reservationMode: this.reservationMode,
+              minimumRequestBalanceMicros: FIXED_CITYGO_HOLD_MICROS,
+            }
+          : {}),
       ...(this.reservationMode === "fixed5_overdraft" ||
       Number(row.outstanding_debt) > 0
         ? { outstandingDebtMicros: Number(row.outstanding_debt) }

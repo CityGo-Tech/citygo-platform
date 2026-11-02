@@ -242,6 +242,9 @@ export const serverConfigSchema = z.object({
   AI_REQUEST_COST_LIMIT_MODE: z
     .enum(["operator_ceiling", "user_balance"])
     .default("operator_ceiling"),
+  AI_CUSTOMER_BILLING_MODE: z
+    .enum(["legacy", "postpay_actual_v1"])
+    .default("legacy"),
   YOOKASSA_MODE: z.enum(["disabled", "test", "live"]).default("disabled"),
   YOOKASSA_SHOP_ID: optionalSetting,
   YOOKASSA_SECRET_KEY: optionalSetting,
@@ -350,6 +353,21 @@ export function validateVerificationDeliveryConfig(
 export function validateCreditReservationConfig(
   config: z.infer<typeof serverConfigSchema>,
 ) {
+  if (
+    !["legacy", "postpay_actual_v1"].includes(config.AI_CUSTOMER_BILLING_MODE)
+  )
+    throw new Error("Unsupported customer billing mode");
+  if (
+    config.AI_CUSTOMER_BILLING_MODE === "postpay_actual_v1" &&
+    (config.AI_CREDIT_MODE !== "routerai_citygo_10x" ||
+      config.AI_CREDIT_RESERVATION_MODE !== "fixed5_overdraft" ||
+      config.AI_REQUEST_COST_LIMIT_MODE !== "operator_ceiling" ||
+      config.AI_ASSISTANT_MODES !== "enabled" ||
+      !["routerai", "disabled"].includes(config.LLM_PROVIDER ?? ""))
+  )
+    throw new Error(
+      "Postpay requires explicit CityGo10x fixed transport compatibility and its separate billing approval",
+    );
   if (
     !["operator_ceiling", "user_balance"].includes(
       config.AI_REQUEST_COST_LIMIT_MODE,

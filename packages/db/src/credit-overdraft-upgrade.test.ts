@@ -74,7 +74,7 @@ async function fixture(t: TestContext) {
   const names = (await readdir(directory))
     .filter((n) => n.endsWith(".sql"))
     .sort();
-  assert.equal(names.length, 45, "Update the literal schema23 upgrade fixture");
+  assert.equal(names.length, 46, "Update the literal schema23 upgrade fixture");
   assert.equal(names[22], "0023_payment_receipt_snapshots.sql");
   assert.equal(names[23], "0024_ai_credit_overdraft.sql");
   assert.equal(names[24], "0025_assistant_conversations.sql");
@@ -373,10 +373,7 @@ test("23→24 preserves paid money, exact historical receipts, pending full hold
   );
   assert.equal(upgradedJournal[23]!.name, "0024_ai_credit_overdraft.sql");
   assert.equal(upgradedJournal[24]!.name, "0025_assistant_conversations.sql");
-  assert.equal(
-    upgradedJournal.at(-1)!.name,
-    "0045_ai_balance_request_cost_limit.sql",
-  );
+  assert.equal(upgradedJournal.at(-1)!.name, "0046_postpay_actual.sql");
   assert.deepEqual(
     (await db.query("select distinct reservation_mode from ai_credit_charges"))
       .rows,
