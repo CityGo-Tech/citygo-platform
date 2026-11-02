@@ -167,6 +167,13 @@ test("server catalog contains only the three product labels and uses two indepen
   });
   const modes = createAssistantModes(readConfig(settings))!;
   const catalog = aiModesSchema.parse(modes.modeCatalog());
+  // Keep the exact strict wire shape and omitted-call route used by shipped APKs.
+  assert.equal(catalog.defaultMode, "balanced");
+  assert.deepEqual(Object.keys(catalog).sort(), [
+    "catalogId",
+    "defaultMode",
+    "options",
+  ]);
   assert.deepEqual(catalog.options, [
     { id: "maximum", label: "Максимум", available: true },
     { id: "balanced", label: "Баланс", available: true },

@@ -220,7 +220,7 @@ test("unsent chat draft survives reload, remains private and sends only after ex
   expect(state.sends).toHaveLength(1);
   expect(state.sends[0]?.input).toMatchObject({
     text: "Теперь отправить",
-    aiMode: "balanced",
+    aiMode: "maximum",
   });
   await page.reload();
   await expect(composer(page)).toHaveValue("");

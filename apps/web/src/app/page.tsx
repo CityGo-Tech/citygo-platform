@@ -1,4 +1,5 @@
 "use client";
+import { initialWebAiMode } from "../components/ai-mode-preference";
 import { BalanceHistoryPanel } from "../components/balance-history";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
@@ -132,7 +133,8 @@ export default function Home() {
   const [sending, setSending] = useState(false);
   const [pending, setPending] = useState("");
   const [streamAgent, setStreamAgent] = useState<AgentKey | null>(null);
-  const [selectedAiMode, setSelectedAiMode] = useState<AiModeId>("balanced");
+  const [selectedAiMode, setSelectedAiMode] =
+    useState<AiModeId>(initialWebAiMode);
   const aiModeChoiceSequence = useRef(0);
   const [aiModeConsent, setAiModeConsent] = useState<{
     mode: AiModeId;
@@ -220,7 +222,7 @@ export default function Home() {
     abort.current?.abort();
     abort.current = null;
     setBoard(null);
-    setSelectedAiMode("balanced");
+    setSelectedAiMode(initialWebAiMode);
     cancelAiModeChoice();
     chatSubmitting.current = false;
     setText("");
