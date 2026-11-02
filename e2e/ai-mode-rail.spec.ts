@@ -8,9 +8,9 @@ test("right mode picker uses the same preference, draft and focus without a dupl
 }) => {
   const state = await fixture(context);
   await page.goto("/");
-  const rail = page.locator(".conversation-context");
+  const rail = page.locator(".conversation-context").filter({ visible: true });
   if (page.viewportSize()!.width <= 1000) {
-    await expect(rail).not.toBeVisible();
+    await expect(rail).toHaveCount(0);
     await expect(modeSelector(page)).toHaveAttribute("data-ai-mode", "maximum");
     noOtherTraffic(state);
     return;

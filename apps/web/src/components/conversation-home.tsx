@@ -318,14 +318,6 @@ export function ConversationHome(props: JourneyProps) {
                 setShowList(false);
               }}
               onHelpers={() => setTab("Помощники")}
-              modeSelector={
-                <AiModeSelector
-                  modes={board.aiAccess.modes}
-                  selected={props.aiMode ?? "balanced"}
-                  disabled={busy || sending || !props.onAiMode}
-                  onSelect={(mode) => props.onAiMode?.(mode)}
-                />
-              }
             />
           </div>
           {rail}
@@ -350,14 +342,6 @@ export function ConversationHome(props: JourneyProps) {
                   props.onConversations?.(before, filters)
                 }
                 onHelpers={() => setTab("Помощники")}
-                modeSelector={
-                  <AiModeSelector
-                    modes={board.aiAccess.modes}
-                    selected={props.aiMode ?? "balanced"}
-                    disabled={busy || sending || !props.onAiMode}
-                    onSelect={(mode) => props.onAiMode?.(mode)}
-                  />
-                }
                 onFavorites={props.onFavorites}
               />
             )}
