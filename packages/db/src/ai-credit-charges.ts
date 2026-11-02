@@ -10,6 +10,10 @@ import {
   type RouterAiCharge,
 } from "@citygo/contracts";
 import type { Database, Sql } from "./index.js";
+import {
+  captureBalanceCostLimit,
+  type AiRequestCostLimitMode,
+} from "./request-cost-limit.js";
 import { AiCreditLedger } from "./ai-credit.js";
 import { DomainError } from "./errors.js";
 import {
@@ -45,6 +49,8 @@ type Charge = {
   tariff_snapshot: CityGoTariffSnapshot;
   real_ceiling_micros: string;
   reservation_mode: AiCreditReservationMode;
+  cost_limit_mode: AiRequestCostLimitMode;
+  balance_before_hold_micros: string | null;
 };
 export class AiCreditCharges {
   private ledger: AiCreditLedger;
@@ -53,6 +59,7 @@ export class AiCreditCharges {
     private db: Database,
     tariffSnapshot: CityGoTariffSnapshot = LEGACY_AT_COST_TARIFF,
     private reservationMode: AiCreditReservationMode = "full",
+    private requestCostLimitMode: AiRequestCostLimitMode = "operator_ceiling",
   ) {
     this.tariff = Object.freeze(
       citygoTariffSnapshotSchema.parse(tariffSnapshot),
@@ -63,11 +70,21 @@ export class AiCreditCharges {
         this.tariff.version !== "citygo-10x-v1")
     )
       throw new Error("Fixed5 overdraft requires the exact CityGo 10x tariff");
+    if (
+      !["operator_ceiling", "user_balance"].includes(requestCostLimitMode) ||
+      (requestCostLimitMode === "user_balance" &&
+        reservationMode !== "fixed5_overdraft")
+    )
+      throw new Error(
+        "User balance cost limits require fixed5 CityGo 10x charging",
+      );
     this.ledger = new AiCreditLedger(
       db,
       "not_connected",
       false,
       reservationMode,
+      false,
+      requestCostLimitMode,
     );
   }
 
@@ -84,6 +101,7 @@ export class AiCreditCharges {
   ) {
     if (
       this.reservationMode === "fixed5_overdraft" &&
+      this.requestCostLimitMode === "operator_ceiling" &&
       (!Number.isSafeInteger(amount) ||
         amount < 500_000 ||
         amount > MAX_OVERDRAFT_REAL_CEILING_MICROS)
@@ -91,6 +109,15 @@ export class AiCreditCharges {
       throw new DomainError(
         409,
         "Потолок fixed5 должен быть от 0,5 до 6 реальных ₽",
+      );
+    const balance =
+      this.requestCostLimitMode === "user_balance"
+        ? await captureBalanceCostLimit(tx, input.userId)
+        : null;
+    if (balance && amount !== balance.realCeilingMicros)
+      throw new DomainError(
+        409,
+        "Лимит запроса не соответствует доступному балансу CityGo",
       );
     const id = randomUUID();
     await this.ledger.hold(
@@ -102,8 +129,8 @@ export class AiCreditCharges {
       tx,
     );
     await tx.query(
-      `insert into ai_credit_charges(hold_id,user_id,thread_id,request_id,attempt_number,model,upstream,tariff_snapshot,real_ceiling_micros,reservation_mode)
-      values ($1,$2,$3,$4,1,$5,$6,$7,$8,$9)`,
+      `insert into ai_credit_charges(hold_id,user_id,thread_id,request_id,attempt_number,model,upstream,tariff_snapshot,real_ceiling_micros,reservation_mode,cost_limit_mode,balance_before_hold_micros)
+      values ($1,$2,$3,$4,1,$5,$6,$7,$8,$9,$10,$11)`,
       [
         id,
         input.userId,
@@ -114,6 +141,8 @@ export class AiCreditCharges {
         JSON.stringify(this.tariff),
         amount,
         this.reservationMode,
+        this.requestCostLimitMode,
+        balance?.balanceBeforeHoldMicros ?? null,
       ],
     );
     return id;
@@ -232,12 +261,13 @@ export class AiCreditCharges {
         Number(row.real_ceiling_micros),
       );
       if (
-        !exactWithinCeiling ||
+        (row.cost_limit_mode !== "user_balance" && !exactWithinCeiling) ||
         ((row.reservation_mode ?? "full") === "full" &&
           citygoDebitMicros > Number(row.amount_micros))
       ) {
-        // Full mode stays within its hold; fixed5 may exceed its initial hold
-        // only within the accepted real ceiling. Neither mode guesses overrun.
+        // Legacy full/fixed5 reservations keep their accepted ceiling and
+        // manual overrun stop. A balance-marked row is settled below using its
+        // actual exact receipt; neither path guesses an unknown cost.
         await tx.query(
           "update ai_budget set enabled=false,revision=revision+1 where id=1 and enabled",
         );
@@ -256,6 +286,22 @@ export class AiCreditCharges {
         );
         return true;
       }
+      if (row.cost_limit_mode === "user_balance" && !exactWithinCeiling)
+        await tx.query(
+          "insert into audit_log(actor_user_id,action,entity_type,entity_id,payload) values ($1,'ai-credit-balance-limit-exceeded','ai-credit',$2,$3)",
+          [
+            userId,
+            id,
+            JSON.stringify({
+              balanceBeforeHoldMicros: Number(row.balance_before_hold_micros),
+              realCeilingMicros: Number(row.real_ceiling_micros),
+              actualCostRub: receipt.costRub,
+              citygoDebitMicros,
+              resolution: "exact_actual_settlement",
+              budgetDisabled: false,
+            }),
+          ],
+        );
       if (row.reservation_mode === "fixed5_overdraft")
         await tx.query(
           "update ai_credit_charges set receipt=$2 where hold_id=$1",

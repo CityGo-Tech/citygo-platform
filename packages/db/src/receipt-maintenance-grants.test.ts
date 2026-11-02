@@ -23,7 +23,7 @@ const tables = [
   "credit_debt_repayments",
 ];
 
-test("the disposable release fixture rewinds only reviewed empty new schema and reapplies all forty-three migrations", async (t) => {
+test("the disposable release fixture rewinds only reviewed empty new schema and reapplies all current migrations", async (t) => {
   const db = await connectDatabase("pglite://:memory:");
   t.after(() => db.close());
   await migrate(db);
@@ -117,7 +117,7 @@ test("the disposable release fixture rewinds only reviewed empty new schema and 
   await migrate(db);
   assert.equal(
     (await db.query("select 1 from citygo_migrations")).rows.length,
-    44,
+    45,
   );
 });
 

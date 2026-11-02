@@ -258,6 +258,7 @@ export async function buildApp(options: {
     config.AI_CREDIT_RESERVATION_MODE,
     config.AI_MINIMUM_FIXED_FEE === "enabled",
     modes?.legacyBalancedCompatibility,
+    config.AI_REQUEST_COST_LIMIT_MODE,
   );
   const accounts = new AccountAccess(options.db);
   const registrationAiPolicy = (routing: AiRouting) =>
