@@ -1,3 +1,4 @@
+import { modeSelector, chooseMode } from "./ai-mode-navigation";
 import { expect, test } from "@playwright/test";
 import { fixture, noOtherTraffic, catalogId } from "./ai-mode-fixture";
 
@@ -7,8 +8,8 @@ test("a fresh Web owner starts at Maximum, sends only explicitly and preserves a
 }) => {
   const state = await fixture(context);
   await page.goto("/");
-  const selector = page.getByLabel("Режим работы", { exact: true });
-  await expect(selector).toHaveValue("maximum");
+  const selector = modeSelector(page);
+  await expect(selector).toHaveAttribute("data-ai-mode", "maximum");
   expect(state.sends).toEqual([]);
   expect(state.consentReads).toBe(0);
   await page
@@ -21,11 +22,11 @@ test("a fresh Web owner starts at Maximum, sends only explicitly and preserves a
     aiModeCatalogId: catalogId,
   });
   await expect(selector).toBeEnabled();
-  await selector.selectOption("balanced");
+  await chooseMode(page, "balanced");
   const reads = state.dashboardReads;
   await page.evaluate(() => window.dispatchEvent(new Event("focus")));
   await expect.poll(() => state.dashboardReads).toBeGreaterThan(reads);
-  await expect(selector).toHaveValue("balanced");
+  await expect(selector).toHaveAttribute("data-ai-mode", "balanced");
   expect(state.sends).toHaveLength(1);
   noOtherTraffic(state);
 });
@@ -36,23 +37,21 @@ test("initial Maximum requires an explicit confirmation and never grants, sends 
 }) => {
   const state = await fixture(context, { firstChoiceConsent: true });
   await page.goto("/");
-  const selector = page.getByLabel("Режим работы", { exact: true });
-  await expect(selector).toHaveValue("maximum");
+  const selector = modeSelector(page);
+  await expect(selector).toHaveAttribute("data-ai-mode", "maximum");
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: "Отправить", exact: true }),
   ).toBeDisabled();
   expect(state.consentReads).toBe(0);
-  await page
-    .getByRole("button", { name: "Подтвердить выбор", exact: true })
-    .click();
+  await chooseMode(page, "maximum");
   const dialog = page.getByRole("dialog", { name: "Новые режимы ответа" });
   await expect(dialog.getByRole("checkbox")).not.toBeChecked();
   await dialog.getByRole("button", { name: "Отмена", exact: true }).click();
-  await expect(selector).toHaveValue("maximum");
+  await expect(selector).toHaveAttribute("data-ai-mode", "maximum");
   expect(state.consentSaves).toEqual([]);
   expect(state.sends).toEqual([]);
-  await selector.selectOption("balanced");
+  await chooseMode(page, "balanced");
   await expect(
     page.getByLabel("Сообщение помощнику", { exact: true }),
   ).toBeEnabled();
@@ -65,9 +64,7 @@ test("unavailable initial Maximum stays selected and cannot silently use Balance
 }) => {
   const state = await fixture(context, { maximumAvailable: false });
   await page.goto("/");
-  await expect(page.getByLabel("Режим работы", { exact: true })).toHaveValue(
-    "maximum",
-  );
+  await expect(modeSelector(page)).toHaveAttribute("data-ai-mode", "maximum");
   await expect(
     page.getByRole("button", { name: "Отправить", exact: true }),
   ).toBeDisabled();
