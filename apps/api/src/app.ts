@@ -539,6 +539,16 @@ export async function buildApp(options: {
         "select name from citygo_migrations where name in ('0006_ai_budget.sql','0007_ai_user_daily_budget.sql','0008_ai_credit.sql','0009_ai_credit_charges.sql','0010_quest_plan_expand.sql','0011_quest_plan_validate.sql','0013_account_access.sql','0014_citygo_credit.sql','0015_yookassa_orders.sql','0016_npd_receipts.sql','0017_credit_source_lots.sql','0018_payment_refunds.sql','0019_yookassa_live_orders.sql','0020_ai_budget_provider_balance.sql','0021_payment_notifications.sql','0022_payment_admission.sql','0023_payment_receipt_snapshots.sql','0024_ai_credit_overdraft.sql','0025_assistant_conversations.sql','0030_service_consents.sql','0031_account_email_confirmation.sql','0032_phone_contact_bindings.sql','0033_ai_request_modes.sql','0034_gigachat_request_fees.sql','0036_protected_phone_contacts.sql')",
       );
       if (result.rows.length !== 25) throw new Error("Pending migration");
+      // Both legacy and balance-derived reservations persist these columns.
+      // Do not advertise readiness on schema44 even while the new opt-in is off.
+      const costLimitMigration = await options.db.query(
+        "select name from citygo_migrations where name='0045_ai_balance_request_cost_limit.sql'",
+      );
+      if (costLimitMigration.rows.length !== 1)
+        throw new Error("Pending request cost limit migration");
+      await options.db.query(
+        "select cost_limit_mode,balance_before_hold_micros from ai_credit_charges limit 0",
+      );
       const supportMigration = await options.db.query(
         "select name from citygo_migrations where name in ('0037_human_support_requests.sql','0038_manual_personal_plan.sql')",
       );
