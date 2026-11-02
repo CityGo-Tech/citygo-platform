@@ -10,6 +10,12 @@ import {
   enabledCollector,
 } from "./product-analytics-collector";
 
+// Finish page-owned local asset forwards before Playwright closes request fixtures.
+// Waiting keeps real route failures visible instead of ignoring late errors.
+test.afterEach(async ({ page }) => {
+  await page.unrouteAll({ behavior: "wait" });
+});
+
 test("a fresh Web owner starts at Maximum, sends only explicitly and preserves a later choice through refresh", async ({
   page,
   context,
