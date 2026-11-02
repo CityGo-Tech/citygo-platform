@@ -40,14 +40,16 @@ test("a real local PDF worker extracts Cyrillic without executing PDF actions or
   expect(state.sends).toEqual([]);
   expect(state.external).toBe(0);
   expect(state.unexpected).toEqual([]);
-  await expect(page.locator("dialog")).toHaveClass(/ym-hide-content/);
+  await expect(
+    page.getByRole("dialog", { name: "Предпросмотр материала", exact: true }),
+  ).toHaveClass(/ym-hide-content/);
   await expect(preview(page)).toHaveClass(/ym-disable-keys/);
   await preview(page).fill("Выбранный мною фрагмент резюме");
   await expect(preview(page)).toHaveValue("Выбранный мною фрагмент резюме");
   await expect(page.getByText("PDF: 2 стр.", { exact: false })).toBeVisible();
   expect(
     await page
-      .locator("dialog")
+      .getByRole("dialog", { name: "Предпросмотр материала", exact: true })
       .evaluate((element) => element.scrollWidth <= element.clientWidth + 1),
   ).toBe(true);
   await page.screenshot({ path: info.outputPath("pdf-text-preview.png") });
