@@ -55,6 +55,9 @@ test("the disposable release fixture rewinds only reviewed empty new schema and 
     "account_email_confirmation_challenges",
     "phone_contact_bindings",
     "phone_contact_changes",
+    "ai_postpay_attempts",
+    "credit_postpay_liabilities",
+    "credit_postpay_repayments",
     "ai_request_modes",
     "ai_request_consent_bases",
     "gigachat_request_fees",
@@ -86,6 +89,9 @@ test("the disposable release fixture rewinds only reviewed empty new schema and 
     "citygo_guard_phone_contact_change",
     "citygo_guard_phone_contact_completion",
     "citygo_guard_protected_phone_contact",
+    "citygo_guard_postpay_attempt",
+    "citygo_guard_postpay_liability",
+    "citygo_check_postpay_conservation",
     "citygo_guard_ai_request_mode",
     "citygo_guard_ai_mode_attempt",
     "citygo_guard_gigachat_request_fee",
@@ -117,7 +123,7 @@ test("the disposable release fixture rewinds only reviewed empty new schema and 
   await migrate(db);
   assert.equal(
     (await db.query("select 1 from citygo_migrations")).rows.length,
-    45,
+    46,
   );
 });
 

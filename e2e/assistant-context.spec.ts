@@ -154,7 +154,7 @@ test("explicit context preview shows saved facts and the last complete pairs, ke
   await composer(page).fill(draft);
   await expect(opener(page)).toHaveCount(1);
   expect(preview.requests).toEqual([]);
-  if (page.viewportSize()!.width > 1000)
+  if (page.viewportSize()!.width > 1100)
     await expect(
       page
         .locator(".conversation-context")
@@ -426,3 +426,42 @@ for (const status of [200, 401]) {
     },
   );
 }
+
+for (const width of [1024, 1100, 1101])
+  test(`context preview stays reachable at the ${width}px rail boundary`, async ({
+    page,
+    context,
+  }) => {
+    await page.setViewportSize({ width, height: 900 });
+    const { state, preview } = await contextFixture(context, knownProfile);
+    await page.goto("/");
+    const draft = "ЧЕРНОВИК_НА_ГРАНИЦЕ_ПАНЕЛИ";
+    await composer(page).fill(draft);
+    // The rail is hidden through 1100px inclusive. Exactly one visible opener
+    // must remain: the in-column fallback, then the rail from 1101px onward.
+    await expect(opener(page)).toHaveCount(1);
+    await expect(opener(page)).toBeEnabled();
+    const rail = page
+      .locator(".conversation-context")
+      .filter({ visible: true });
+    await expect(rail).toHaveCount(width > 1100 ? 1 : 0);
+    if (width > 1100)
+      await expect(
+        rail.getByRole("button", { name: contextName, exact: true }),
+      ).toBeVisible();
+    expect(preview.requests).toEqual([]);
+    await opener(page).click();
+    await expect(
+      panel(page).getByRole("region", { name: "Сохранённые сведения" }),
+    ).toContainText("Казань");
+    expect(preview.requests).toEqual([
+      { owner: "101", input: { threadId: "20", draft } },
+    ]);
+    await panel(page)
+      .getByRole("button", { name: "Вернуться назад", exact: true })
+      .click();
+    await expect(opener(page)).toBeFocused();
+    await expect(composer(page)).toHaveValue(draft);
+    await expect(heading(page)).toHaveCount(0);
+    noWrites(state);
+  });

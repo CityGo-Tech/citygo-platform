@@ -72,6 +72,8 @@ export const aiCreditResponseSchema = z
     // Optional capabilities keep responses from older servers readable. A small
     // fixed reservation is admission, never a promised final price or cost cap.
     reservationMode: z.enum(["full", "fixed5_overdraft"]).optional(),
+    // Optional: old object decoders safely ignore this additive capability.
+    billingPolicy: z.literal("postpay_actual_v1").optional(),
     minimumRequestBalanceMicros: amount.positive().optional(),
     outstandingDebtMicros: amount.optional(),
     chargingStatus: z.enum([

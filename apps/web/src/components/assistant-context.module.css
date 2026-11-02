@@ -81,7 +81,7 @@
 .mobileContext {
   display: none;
 }
-@media (max-width: 1000px) {
+@media (max-width: 1100px) {
   .mobileContext {
     display: flex;
     justify-content: flex-end;

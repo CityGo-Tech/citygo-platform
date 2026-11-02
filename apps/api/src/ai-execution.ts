@@ -31,6 +31,9 @@ export function createAiExecution(
         policy.provider === "routerai"
           ? { requestCostLimitMode: "user_balance" }
           : {}),
+        ...(config.AI_CUSTOMER_BILLING_MODE === "postpay_actual_v1"
+          ? { customerBillingMode: "postpay_actual_v1" }
+          : {}),
         ...(config.AI_CREDIT_RESERVATION_MODE === "fixed5_overdraft"
           ? { creditReservationMode: "fixed5_overdraft" }
           : {}),

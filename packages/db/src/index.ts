@@ -292,3 +292,10 @@ export {
   type BalanceHistoryContext,
 } from "./balance-history.js";
 export { readResultDiscussionSource } from "./result-discussion.js";
+
+export {
+  PostpayCharges,
+  capturePostpayBalance,
+  type CustomerBillingMode,
+  type PostpayAttempt,
+} from "./postpay-charges.js";

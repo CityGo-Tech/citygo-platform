@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { z } from "zod";
 import {
   creditGenerationIdSchema,
   routerAiChargeSchema,
@@ -147,6 +148,27 @@ export class AiCreditCharges {
     );
     return id;
   }
+  // Read-only keyset page: never lease a legacy hold or keep a DB lock while
+  // waiting on its provider GET. Existing ledger resolution remains atomic.
+  async completedUnresolvedAfter(after?: string, limit = 20) {
+    const cursor = after === undefined ? null : z.uuid().parse(after);
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 20)
+      throw new Error("Invalid legacy charge page limit");
+    return (
+      await this.db.query<{ holdId: string; userId: string }>(
+        `select c.hold_id::text as "holdId",c.user_id::text as "userId"
+       from ai_credit_charges c join ai_credit_entries h
+         on h.operation_id=c.hold_id and h.user_id=c.user_id and h.kind='hold'
+       where c.dispatched and c.response_complete and c.generation_id is not null and c.receipt is null
+         and ($1::uuid is null or c.hold_id>$1::uuid)
+         and not exists(select 1 from ai_credit_entries done where done.hold_id=c.hold_id)
+         and not exists(select 1 from audit_log a where a.action='ai-credit-cost-overrun'
+           and a.entity_type='ai-credit' and lower(a.entity_id)=c.hold_id::text)
+       order by c.hold_id limit $2`,
+        [cursor, limit],
+      )
+    ).rows;
+  }
   async get(userId: string, id: string, tx: Sql = this.db): Promise<Charge> {
     const result = await tx.query<Charge>(
       `select c.*,c.user_id::text,e.amount_micros::text,
@@ -224,8 +246,25 @@ export class AiCreditCharges {
     });
   }
   async settle(userId: string, id: string, raw: RouterAiCharge) {
+    await this.settleReceipt(userId, id, raw, false);
+  }
+  // Background recovery is a STRICT SUBSET of the original explicit path:
+  // positive known cost within the original accepted ceiling, no manual state.
+  async settleCompletedAutomatically(
+    userId: string,
+    id: string,
+    raw: RouterAiCharge,
+  ) {
+    return this.settleReceipt(userId, id, raw, true);
+  }
+  private async settleReceipt(
+    userId: string,
+    id: string,
+    raw: RouterAiCharge,
+    automatic: boolean,
+  ) {
     const receipt = routerAiChargeSchema.parse(raw);
-    const overrun = await this.db.transaction(async (tx) => {
+    const outcome = await this.db.transaction(async (tx) => {
       const row = await this.locked(tx, userId, id);
       if (
         !row.response_complete ||
@@ -238,13 +277,16 @@ export class AiCreditCharges {
           409,
           "Стоимость не соответствует завершённой попытке",
         );
+      // Provider GET zero has no finality proof. Never turn it into a new free
+      // legacy settlement, and never change the old explicit zero semantics.
+      if (automatic && Number(receipt.costRub) === 0) return "pending";
       if (row.receipt) {
         if (
           row.receipt.costRub !== receipt.costRub ||
           row.receipt.amountMicros !== receipt.amountMicros
         )
           throw new DomainError(409, "Подтверждённая стоимость изменилась");
-        return false;
+        return "settled";
       }
       // Replay uses the attempt's durable tariff, never this process's current
       // default. Scale the original decimal before rounding; provider cost and
@@ -260,6 +302,19 @@ export class AiCreditCharges {
         receipt.costRub,
         Number(row.real_ceiling_micros),
       );
+      if (automatic) {
+        const manual = await tx.query(
+          "select 1 from audit_log where action='ai-credit-cost-overrun' and entity_type='ai-credit' and lower(entity_id)=lower($1) limit 1",
+          [id],
+        );
+        if (
+          !exactWithinCeiling ||
+          manual.rows.length ||
+          ((row.reservation_mode ?? "full") === "full" &&
+            citygoDebitMicros > Number(row.amount_micros))
+        )
+          return "pending";
+      }
       if (
         (row.cost_limit_mode !== "user_balance" && !exactWithinCeiling) ||
         ((row.reservation_mode ?? "full") === "full" &&
@@ -284,7 +339,7 @@ export class AiCreditCharges {
             }),
           ],
         );
-        return true;
+        return "overrun";
       }
       if (row.cost_limit_mode === "user_balance" && !exactWithinCeiling)
         await tx.query(
@@ -318,12 +373,13 @@ export class AiCreditCharges {
         "update ai_credit_charges set receipt=$2 where hold_id=$1",
         [id, JSON.stringify(receipt)],
       );
-      return false;
+      return "settled";
     });
-    if (overrun)
+    if (outcome === "overrun")
       throw new DomainError(
         409,
         "Стоимость превысила резерв. AI остановлен до проверки администратором.",
       );
+    return outcome === "settled";
   }
 }

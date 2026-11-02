@@ -1,3 +1,8 @@
+import {
+  PostpayCharges,
+  capturePostpayBalance,
+  type CustomerBillingMode,
+} from "./postpay-charges.js";
 import type { Database, Sql } from "./index.js";
 import type {
   AgentKey,
@@ -98,9 +103,18 @@ export class Repository {
     private includeGigaFixedFees = false,
     private legacyBalanced?: LegacyBalancedConsentCompatibility,
     private requestCostLimitMode: AiRequestCostLimitMode = "operator_ceiling",
+    private customerBillingMode: CustomerBillingMode = "legacy",
   ) {
     this.legacyBalanced =
       parseLegacyBalancedConsentCompatibility(legacyBalanced);
+    if (
+      customerBillingMode === "postpay_actual_v1" &&
+      (!creditCharging ||
+        creditTariff.version !== "citygo-10x-v1" ||
+        creditReservationMode !== "fixed5_overdraft" ||
+        requestCostLimitMode !== "operator_ceiling")
+    )
+      throw new Error("Postpay requires explicit compatible CityGo10x billing");
     if (
       !["operator_ceiling", "user_balance"].includes(requestCostLimitMode) ||
       (requestCostLimitMode === "user_balance" &&
@@ -120,6 +134,22 @@ export class Repository {
     input: AiBudgetInput,
     executions: AiExecution[],
   ) {
+    if (
+      this.creditCharging &&
+      this.creditReservationMode === "fixed5_overdraft" &&
+      this.requestCostLimitMode === "operator_ceiling" &&
+      this.customerBillingMode === "legacy" &&
+      input.rules.some(
+        (r) =>
+          r.attemptCeilingMicros < 500_000 ||
+          r.attemptCeilingMicros > 6_000_000,
+      )
+    )
+      throw new DomainError(
+        400,
+        "Для текущего режима оплаты лимит запроса должен быть от0,5 до6 ₽. Бюджет не изменён.",
+        "VALIDATION_ERROR",
+      );
     return changeAiBudget(this.db, userId, input, executions);
   }
   async reserveAiAttempt(input: {
@@ -139,6 +169,7 @@ export class Repository {
     consentPolicyId?: string;
     mode?: AiRequestModeDescriptor;
     fixedFee?: GigaChatFixedFeeInput;
+    protocol?: "responses" | "chat/completions" | "gigachat";
   }) {
     // A caller may update its selector after send. Copy the accepted attempt
     // values before awaiting any transaction so that cannot retarget this call.
@@ -318,6 +349,14 @@ export class Repository {
       );
       // A fixed product fee with free provider cost is never represented as a
       // RouterAI price/rule. The global administrative stop still applies.
+      const postpayBalance =
+        this.customerBillingMode === "postpay_actual_v1"
+          ? await capturePostpayBalance(
+              tx,
+              input.userId,
+              input.fixedFee !== undefined,
+            )
+          : null;
       const balanceLimit =
         input.fixedFee === undefined &&
         this.requestCostLimitMode === "user_balance"
@@ -329,7 +368,7 @@ export class Repository {
               tx,
               input.execution,
               input.userId,
-              balanceLimit?.realCeilingMicros,
+              postpayBalance?.realCeiling ?? balanceLimit?.realCeilingMicros,
             )
           : null;
       if (input.fixedFee !== undefined) {
@@ -383,14 +422,29 @@ export class Repository {
         ],
       );
       if (input.fixedFee !== undefined && frozenMode)
-        return new GigaChatFixedFees(this.db).reserve(tx, {
+        return new GigaChatFixedFees(this.db, this.customerBillingMode).reserve(
+          tx,
+          {
+            userId: input.userId,
+            threadId: input.threadId,
+            requestId: input.requestId,
+            chatLease: input.lease,
+            catalogId: frozenMode.catalogId,
+            executionKey: input.execution.key,
+            pricing: input.fixedFee,
+          },
+        );
+      if (this.customerBillingMode === "postpay_actual_v1")
+        return new PostpayCharges(this.db).admit(tx, {
           userId: input.userId,
           threadId: input.threadId,
           requestId: input.requestId,
-          chatLease: input.lease,
-          catalogId: frozenMode.catalogId,
+          provider: "routerai",
+          protocol: input.protocol ?? "chat/completions",
+          model: input.model,
+          upstream: input.upstream,
           executionKey: input.execution.key,
-          pricing: input.fixedFee,
+          policyId: input.policyId,
         });
       return this.creditCharging
         ? new AiCreditCharges(
@@ -663,6 +717,8 @@ export class Repository {
             topUpAvailable,
             this.creditReservationMode,
             this.includeGigaFixedFees,
+            this.requestCostLimitMode,
+            this.customerBillingMode,
           ).status(user.id, tx),
           budget: await aiUserBudget(tx, user.id),
           policy,
@@ -1119,7 +1175,10 @@ export class Repository {
         ).rows.length
       )
         fail(409, "Этот запрос уже был принят");
-      if (access.fixed5CreditReadiness === true) {
+      if (
+        access.fixed5CreditReadiness === true ||
+        this.customerBillingMode === "postpay_actual_v1"
+      ) {
         if (
           !this.creditCharging ||
           this.creditReservationMode !== "fixed5_overdraft"
@@ -1140,7 +1199,10 @@ export class Repository {
            and not exists(select 1 from ai_credit_entries r where r.hold_id=e.operation_id) limit 1`,
           [userId],
         );
-        if (pending.rows.length)
+        if (
+          pending.rows.length &&
+          this.customerBillingMode !== "postpay_actual_v1"
+        )
           fail(
             409,
             "Стоимость предыдущего запроса ещё проверяется. Попробуйте позже.",
@@ -1405,7 +1467,7 @@ export class Repository {
         ))
     )
       fail(400, "Завершённый ответ не подтверждён.");
-    const fees = new GigaChatFixedFees(this.db);
+    const fees = new GigaChatFixedFees(this.db, this.customerBillingMode);
     return this.db.transaction(async (tx) => {
       // Unlike the legacy finish path, this transaction also resolves money.
       // Lock the owner/account before the conversation, never thread -> user.
@@ -1528,6 +1590,10 @@ export class Repository {
               status: complete ? "complete" : "interrupted",
               source: modelResponse ? "model" : "system",
               ...(modelResponse && generation ? { generation } : {}),
+              ...(this.customerBillingMode === "postpay_actual_v1" &&
+              creditHoldId
+                ? { requestId }
+                : {}),
               ...(failureCode ? { failureCode } : {}),
             }),
           ],
@@ -1537,7 +1603,20 @@ export class Repository {
         "update chat_requests set status=$3 where thread_id=$1 and request_id=$2",
         [threadId, requestId, complete ? "complete" : "interrupted"],
       );
-      if (creditHoldId && complete && modelResponse) {
+      if (
+        creditHoldId &&
+        complete &&
+        modelResponse &&
+        this.customerBillingMode === "postpay_actual_v1"
+      )
+        await new PostpayCharges(this.db).answer(
+          tx,
+          creditHoldId,
+          threadId,
+          requestId,
+          message.id,
+        );
+      else if (creditHoldId && complete && modelResponse) {
         const charge = await tx.query(
           "update ai_credit_charges set response_complete=true where hold_id=$1 and thread_id=$2 and request_id=$3 and dispatched returning hold_id",
           [creditHoldId, threadId, requestId],

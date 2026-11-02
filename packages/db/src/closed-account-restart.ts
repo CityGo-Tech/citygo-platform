@@ -39,6 +39,9 @@ const tables = [
   "citygo_migration_lock",
   "citygo_migrations",
   "consent_events",
+  "ai_postpay_attempts",
+  "credit_postpay_liabilities",
+  "credit_postpay_repayments",
   "credit_charge_debts",
   "credit_debt_repayments",
   "credit_hold_allocations",
@@ -108,6 +111,9 @@ const retainedTables = [
   "account_email_verifications",
   "email_registrations",
   "email_registration_rate_events",
+  "ai_postpay_attempts",
+  "credit_postpay_liabilities",
+  "credit_postpay_repayments",
   "credit_charge_debts",
   "credit_debt_repayments",
   "credit_hold_allocations",
@@ -407,6 +413,16 @@ async function inspect(tx: Sql, options: Options) {
     blockers.push({
       code: "AI_REQUEST_MODE_HISTORY_REQUIRES_REVIEW",
       count: snapshot.counts.ai_request_modes,
+    });
+  const postpayHistoryCount = [
+    "ai_postpay_attempts",
+    "credit_postpay_liabilities",
+    "credit_postpay_repayments",
+  ].reduce((sum, name) => sum + snapshot.counts[name]!, 0);
+  if (postpayHistoryCount)
+    blockers.push({
+      code: "POSTPAY_HISTORY_REQUIRES_REVIEW",
+      count: postpayHistoryCount,
     });
   const gigachatHistoryCount =
     snapshot.counts.gigachat_request_fees! +
