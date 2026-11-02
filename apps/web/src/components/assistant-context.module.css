@@ -1,0 +1,92 @@
+.panel {
+  display: grid;
+  gap: 16px;
+}
+.panel h1 {
+  margin: 0;
+  font-size: 28px;
+  line-height: 1.2;
+}
+.panel > p {
+  margin: 0;
+  color: var(--muted-foreground);
+}
+.row {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card, 24px);
+  padding: 16px;
+  display: grid;
+  gap: 8px;
+}
+.row h2 {
+  margin: 0;
+  font-size: 16px;
+}
+.row p {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.row dl {
+  margin: 0;
+  display: grid;
+  gap: 8px;
+}
+.row dl > div {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) 2fr;
+  gap: 12px;
+}
+.row dt {
+  color: var(--muted-foreground);
+}
+.row dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.messages {
+  margin: 0;
+  padding-left: 20px;
+  display: grid;
+  gap: 12px;
+  max-height: 440px;
+  overflow-y: auto;
+}
+.messages li {
+  padding-inline: 4px;
+}
+.meta {
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.actions > button {
+  flex: 1;
+  min-height: 48px;
+}
+@media (max-width: 600px) {
+  .panel h1 {
+    font-size: 24px;
+  }
+  .row dl > div {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+}
+
+.mobileContext {
+  display: none;
+}
+@media (max-width: 1000px) {
+  .mobileContext {
+    display: flex;
+    justify-content: flex-end;
+  }
+  .mobileContext > button {
+    min-height: 48px;
+  }
+}

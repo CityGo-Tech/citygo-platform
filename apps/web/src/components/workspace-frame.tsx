@@ -86,12 +86,16 @@ export function AssistantContextRail({
   disabled,
   onHelpers,
   modeSelector,
+  onKnowledge,
+  knowledgeAvailable,
   city,
 }: {
   agent: AgentKey;
   disabled: boolean;
   onHelpers: () => void;
   modeSelector?: ReactNode;
+  onKnowledge?: () => void;
+  knowledgeAvailable?: boolean;
   city?: string | null;
 }) {
   return (
@@ -109,6 +113,15 @@ export function AssistantContextRail({
         {city && <p>Ваш переезд: {city}</p>}
         <p>Начните с вопроса. Помощник уточнит нужное по ходу разговора.</p>
         {modeSelector}
+        {onKnowledge && (
+          <Button
+            variant="secondary"
+            disabled={disabled || !knowledgeAvailable}
+            onClick={onKnowledge}
+          >
+            Что помощники знают
+          </Button>
+        )}
         <Button variant="secondary" disabled={disabled} onClick={onHelpers}>
           Сменить помощника
         </Button>

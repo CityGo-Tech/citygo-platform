@@ -224,6 +224,7 @@ export const aiControlResponseSchema = z.object({
 
 export const dashboardResponseSchema = z.object({
   supportUpdatesAvailable: z.boolean().optional(),
+  assistantContextAvailable: z.boolean().optional(),
   supportManagementAvailable: z.boolean().optional(),
   user,
   profile: profileSchema.nullable(),

@@ -31,6 +31,8 @@ import { AiModeSelector } from "./ai-mode-selector";
 import { isAiModeAvailable } from "@citygo/api-client";
 import { trackProductEvent } from "./product-analytics";
 import { TextMaterialPreview } from "./text-material-preview";
+import { AssistantContextPanel } from "./assistant-context";
+import contextStyles from "./assistant-context.module.css";
 import { AssistantHandoffDialog } from "./assistant-handoff";
 import {
   currentAssistantHandoffSource,
@@ -74,6 +76,14 @@ export function ConversationHome(props: JourneyProps) {
       ? supportSelection.id
       : null;
   const [showList, setShowList] = useState(false);
+  const [contextSource, setContextSource] = useState<{
+    userId: string;
+    threadId: string | null;
+    draft: string;
+    signal: AbortSignal;
+    tab: string;
+  } | null>(null);
+  const contextOpener = useRef<HTMLElement | null>(null);
   const [planSource, setPlanSource] = useState<PlanMessageSource | null>(null);
   const [planGeneration, setPlanGeneration] = useState(0);
   const [handoffSource, setHandoffSource] =
@@ -129,13 +139,49 @@ export function ConversationHome(props: JourneyProps) {
     }
     return !!opened;
   };
+  const currentContext =
+    contextSource &&
+    !props.sessionSignal.aborted &&
+    contextSource.userId === board.user.id &&
+    contextSource.signal === props.sessionSignal &&
+    contextSource.threadId === (board.thread?.id ?? null)
+      ? contextSource
+      : null;
+  const closeContext = () => {
+    setTab(contextSource?.tab ?? "Диалоги");
+    setContextSource(null);
+    requestAnimationFrame(() => {
+      if (contextOpener.current?.isConnected) contextOpener.current.focus();
+    });
+  };
   const sidebar = (
     <JourneySidebar
-      disabled={busy || sending}
+      disabled={busy || sending || tab === "Контекст"}
       onSuggest={suggest}
       onSupport={() => setTab("Помощь человека")}
     />
   );
+  const openContext = () => {
+    if (
+      busy ||
+      sending ||
+      props.sessionSignal.aborted ||
+      board.assistantContextAvailable !== true
+    )
+      return;
+    contextOpener.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    setContextSource({
+      userId: board.user.id,
+      threadId: board.thread?.id ?? null,
+      draft: props.draft,
+      signal: props.sessionSignal,
+      tab: tab === "Контекст" ? "Диалоги" : tab,
+    });
+    setTab("Контекст");
+  };
   const rail = (
     <AssistantContextRail
       agent={contextAgent}
@@ -150,6 +196,8 @@ export function ConversationHome(props: JourneyProps) {
           onSelect={(mode) => props.onAiMode?.(mode)}
         />
       }
+      knowledgeAvailable={board.assistantContextAvailable === true}
+      onKnowledge={openContext}
     />
   );
   const navigation = (
@@ -184,6 +232,15 @@ export function ConversationHome(props: JourneyProps) {
   return (
     <section className="conversation-home">
       {navigationHost ? createPortal(navigation, navigationHost) : navigation}
+      <div className={contextStyles.mobileContext}>
+        <Button
+          variant="secondary"
+          disabled={busy || sending || board.assistantContextAvailable !== true}
+          onClick={openContext}
+        >
+          Что помощники знают
+        </Button>
+      </div>
       {board.supportUpdatesAvailable === true && (
         <SupportUpdatesNotice
           userId={board.user.id}
@@ -253,7 +310,49 @@ export function ConversationHome(props: JourneyProps) {
           }}
         />
       )}
-      {tab === "Помощь человека" ? (
+      {tab === "Контекст" ? (
+        <div className="conversation-workspace">
+          {sidebar}
+          <div className="conversation-main">
+            {currentContext ? (
+              <AssistantContextPanel
+                key={
+                  currentContext.userId +
+                  ":" +
+                  (currentContext.threadId ?? "none")
+                }
+                userId={currentContext.userId}
+                threadId={currentContext.threadId}
+                draft={currentContext.draft}
+                sessionSignal={currentContext.signal}
+                onAccessDenied={props.onAccessDenied}
+                onClose={closeContext}
+                onCorrect={() => {
+                  if (!currentContext || props.sessionSignal.aborted) return;
+                  if (!props.draft.trim())
+                    props.onText("Хочу уточнить сведения о переезде: ");
+                  setContextSource(null);
+                  setTab("Диалоги");
+                  setShowList(false);
+                  requestAnimationFrame(() =>
+                    document
+                      .querySelector<HTMLTextAreaElement>(
+                        "#conversation-message",
+                      )
+                      ?.focus(),
+                  );
+                }}
+              />
+            ) : (
+              <Card>
+                <p>Выбранный разговор изменился. Откройте контекст заново.</p>
+                <Button onClick={closeContext}>Вернуться назад</Button>
+              </Card>
+            )}
+          </div>
+          {rail}
+        </div>
+      ) : tab === "Помощь человека" ? (
         <div className="conversation-workspace">
           {sidebar}
           <div className="conversation-main">
