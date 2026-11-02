@@ -60,14 +60,18 @@ async function fixture(
   if (options.postgres) {
     const url = new URL(process.env.TEST_DATABASE_URL!);
     assert.ok(["postgres:", "postgresql:"].includes(url.protocol));
-    assert.equal(url.hostname, "127.0.0.1");
     assert.ok(
-      (["55438", "55439"].includes(url.port) &&
+      (url.hostname === "127.0.0.1" &&
+        ["55438", "55439"].includes(url.port) &&
         url.pathname === "/citygo_synthetic") ||
-        ((url.port || "5432") === "5432" && url.pathname === "/citygo_test"),
+        (["localhost", "127.0.0.1"].includes(url.hostname) &&
+          (url.port || "5432") === "5432" &&
+          url.pathname === "/citygo_test"),
     );
     assert.equal(url.search, "");
     assert.equal(url.hash, "");
+    // The trusted standard CI target is loopback too; use its IPv4 endpoint.
+    if (url.hostname === "localhost") url.hostname = "127.0.0.1";
     bootstrap = await connectDatabase(url.toString());
     await bootstrap.query(
       `create database "${databaseName}" template template0`,
