@@ -35,10 +35,10 @@ async function previewDatabase(t: TestContext, postgres: boolean) {
   const admin = await connectDatabase(target.toString());
   const name = "context_preview_test_" + randomUUID().replaceAll("-", "");
   let created = false;
-  let db: Database | undefined;
+  const owned: { db?: Database } = {};
   t.after(async () => {
     try {
-      await db?.close();
+      await owned.db?.close();
       if (created) await admin.query(`drop database "${name}"`);
     } finally {
       await admin.close();
@@ -47,7 +47,8 @@ async function previewDatabase(t: TestContext, postgres: boolean) {
   await admin.query(`create database "${name}" template template0`);
   created = true;
   target.pathname = "/" + name;
-  db = await connectDatabase(target.toString());
+  const db = await connectDatabase(target.toString());
+  owned.db = db;
   return db;
 }
 
