@@ -94,6 +94,7 @@ import { buildConversationContext } from "./conversation-context.js";
 import {
   observeChatClientDisconnect,
   recoverCompletedChatCharge,
+  LegacyCompletedChargeRecovery,
 } from "./ai-credit-recovery.js";
 import { registerSyntheticHousingApi } from "./housing.js";
 import { registerPersonalPlanApi } from "./personal-plan.js";
@@ -310,8 +311,11 @@ export async function buildApp(options: {
     userId: string,
     holdId: string,
     signal: AbortSignal = AbortSignal.timeout(5000),
+    automaticLegacy = false,
   ) {
+    signal.throwIfAborted();
     const charge = await charges.get(userId, holdId);
+    signal.throwIfAborted();
     if (charge.receipt) return credit.status(userId);
     const adapter = [
       ...(modes?.routes.map((route) => ({
@@ -341,6 +345,8 @@ export async function buildApp(options: {
       AbortSignal.any([signal, AbortSignal.timeout(5000)]),
     );
     signal.throwIfAborted();
+    if (automaticLegacy)
+      return charges.settleCompletedAutomatically(userId, holdId, receipt);
     await charges.settle(userId, holdId, receipt);
     return credit.status(userId);
   }
@@ -418,12 +424,31 @@ export async function buildApp(options: {
       : false,
   });
   if (postpayMode) {
+    const legacyRecovery = new LegacyCompletedChargeRecovery({
+      list: (after, limit) => charges.completedUnresolvedAfter(after, limit),
+      reconcile: async ({ userId, holdId }, signal) =>
+        (await reconcileCharge(userId, holdId, signal, true)) === true,
+    });
     const reconciler = new PostpayReconciler({
       scheduler: options.postpayReconcileScheduler,
       run: async (limit, signal) => {
         let processed = 0,
           retained = 0;
-        for (let n = 0; n < limit && !signal.aborted; n++) {
+        // This lane never participates in new-message admission or readiness.
+        // Reserve at most ONE of the existing ten slots; a pending legacy cost
+        // cannot consume the whole current-postpay queue or pause its budget.
+        try {
+          const legacy = await legacyRecovery.run(signal);
+          processed += legacy.processed;
+          retained += legacy.retained;
+        } catch {
+          signal.throwIfAborted();
+          app.log.warn(
+            { code: "AI_LEGACY_COST_PENDING" },
+            "Legacy cost verification pending",
+          );
+        }
+        for (let n = processed + retained; n < limit && !signal.aborted; n++) {
           const item = await postpay.claimDue();
           if (!item) break;
           try {

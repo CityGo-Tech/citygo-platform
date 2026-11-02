@@ -5,6 +5,7 @@ import { readFile } from "node:fs/promises";
 import { readConfig } from "@citygo/config";
 import {
   AiCreditLedger,
+  AiCreditCharges,
   PostpayCharges,
   ClosedAccountRestart,
   FreshAccountReset,
@@ -17,6 +18,7 @@ import {
   ServiceConsents,
 } from "@citygo/db";
 import {
+  CITYGO_10X_TARIFF,
   aiControlResponseSchema,
   routerAiCostMicros,
   dashboardResponseSchema,
@@ -41,6 +43,7 @@ async function fixture(
     balanceLimit?: boolean;
     postpay?: boolean;
     postgres?: boolean;
+    initialKopeks?: number;
   } = {},
 ) {
   const minimum = options.minimum !== undefined;
@@ -425,7 +428,7 @@ async function fixture(
     await ledger.topUpConfirmed(board.user.id, randomUUID(), {
       providerPaymentId: "synthetic-mode-payment-" + randomUUID(),
       merchantId: "synthetic-shop",
-      paidKopeks: 10000,
+      paidKopeks: options.initialKopeks ?? 10000,
       currency: "RUB",
       test: false,
       verifiedAt: new Date().toISOString(),
@@ -453,6 +456,52 @@ async function fixture(
     });
   const balance = async () =>
     (await call("GET", "/v1/ai/credit", token)).json<AiCredit>();
+  // A response completed by the OLD instance before postpay cutover. No model
+  // transport participates; only its retained accounting evidence is seeded.
+  async function seedLegacyCharge(
+    input: { complete?: boolean; model?: string } = {},
+  ) {
+    const using = new AiCreditCharges(
+      db,
+      CITYGO_10X_TARIFF,
+      "fixed5_overdraft",
+    );
+    const requestId = randomUUID(),
+      policy = modes.routes.find((route) => route.id === "balanced")!.policy.id;
+    const model = input.model ?? "deepseek/deepseek-v4-pro-0813";
+    await db.query(
+      "insert into chat_requests(thread_id,request_id,status,ai_policy_id,ai_routing_revision) values($1,$2,'complete',$3,1)",
+      [threadId, requestId, policy],
+    );
+    await db.query(
+      "insert into ai_model_attempts(thread_id,request_id,attempt_number,user_id,provider,model,policy_id,routing_revision,money_currency,money_reserved_micros,money_budget_revision,money_rule_key) values($1,$2,1,$3,'routerai',$4,$5,1,'RUB',6000000,1,$5)",
+      [threadId, requestId, board.user.id, model, policy],
+    );
+    const hold = await db.transaction((tx) =>
+      using.reserve(
+        tx,
+        {
+          userId: board.user.id,
+          threadId,
+          requestId,
+          model,
+          upstream: "deepseek",
+        },
+        6000000,
+      ),
+    );
+    const generation = "legacy-synthetic-" + randomUUID();
+    await using.dispatch(board.user.id, hold);
+    await using.identify(board.user.id, hold, generation);
+    references.set(generation, hold);
+    if (input.complete !== false)
+      await db.query(
+        "update ai_credit_charges set response_complete=true where hold_id=$1",
+        [hold],
+      );
+    return hold;
+  }
+
   return {
     db,
     ownerDb,
@@ -473,6 +522,7 @@ async function fixture(
     prices,
     ledger,
     tickReconciler,
+    seedLegacyCharge,
     balance,
     control,
     minimumStarted,
@@ -1924,3 +1974,225 @@ test("postpay Minimum admits exactly three available roubles without touching an
   assert.match(fail.body, /AI_CREDIT_EXHAUSTED/);
   assert.equal(f.calls.length, 1);
 });
+
+test("postpay background recovers a completed legacy hold covering the whole balance without a new model POST", async (t) => {
+  const f = await fixture(t, {
+    postpay: true,
+    minimum: "fixed",
+    initialKopeks: 500,
+  });
+  const hold = await f.seedLegacyCharge();
+  assert.equal((await f.balance()).availableMicros, 0);
+  assert.equal((await f.balance()).heldMicros, 5000000);
+  await f.tickReconciler();
+  assert.equal((await f.balance()).heldMicros, 0);
+  assert.equal((await f.balance()).availableMicros, 4000000);
+  assert.equal((await f.balance()).spentMicros, 1000000);
+  assert.deepEqual(f.calls, []);
+  assert.deepEqual(f.reads, ["balanced"]);
+  await f.tickReconciler();
+  assert.deepEqual(f.reads, ["balanced"]);
+  assert.equal(
+    (
+      await f.db.query("select 1 from ai_credit_entries where hold_id=$1", [
+        hold,
+      ])
+    ).rows.length,
+    1,
+  );
+});
+
+test("one legacy background slot preserves current postpay reconciliation progress and once-only actual debits", async (t) => {
+  const f = await fixture(t, { postpay: true, minimum: "fixed" });
+  f.failures.add("maximum");
+  assert.equal(
+    (await f.send("maximum", "Синтетический завершённый новый ответ"))
+      .statusCode,
+    200,
+  );
+  const hold = await f.seedLegacyCharge();
+  f.failures.delete("maximum");
+  await f.db.query(
+    "update ai_postpay_attempts set next_check_at=clock_timestamp()",
+  );
+  await f.tickReconciler();
+  assert.equal((await f.balance()).heldMicros, 0);
+  assert.equal((await f.balance()).spentMicros, 3000000);
+  assert.equal(f.calls.length, 1);
+  assert.deepEqual(f.reads, ["maximum", "balanced", "maximum"]);
+  assert.equal(
+    (
+      await f.db.query("select 1 from ai_credit_entries where hold_id=$1", [
+        hold,
+      ])
+    ).rows.length,
+    1,
+  );
+  assert.equal(
+    (
+      await f.db.query(
+        "select 1 from ai_postpay_attempts where state='settled'",
+      )
+    ).rows.length,
+    1,
+  );
+});
+
+for (const state of ["zero", "failed", "no-adapter", "interrupted"] as const)
+  test(
+    "postpay legacy " +
+      state +
+      " recovery cannot charge, release, block a new reply or retry its model",
+    async (t) => {
+      const f = await fixture(t, { postpay: true, minimum: "fixed" });
+      const hold = await f.seedLegacyCharge({
+        complete: state !== "interrupted",
+        ...(state === "no-adapter" ? { model: "retired/legacy-model" } : {}),
+      });
+      if (state === "zero") f.prices.set("balanced", "0");
+      if (state === "failed") f.failures.add("balanced");
+      await f.tickReconciler();
+      assert.equal((await f.balance()).heldMicros, 5000000);
+      assert.equal((await f.balance()).spentMicros, 0);
+      assert.equal(
+        (
+          await f.db.query("select 1 from ai_credit_entries where hold_id=$1", [
+            hold,
+          ])
+        ).rows.length,
+        0,
+      );
+      assert.equal(
+        (
+          await f.send(
+            "maximum",
+            "Другой синтетический вопрос после старой стоимости",
+          )
+        ).statusCode,
+        200,
+      );
+      assert.equal(f.calls.length, 1);
+      assert.equal(f.calls[0]!.mode, "maximum");
+      assert.equal((await f.balance()).heldMicros, 5000000);
+      assert.equal((await f.balance()).spentMicros, 2000000);
+      assert.deepEqual(
+        f.reads,
+        state === "zero" || state === "failed"
+          ? ["balanced", "maximum"]
+          : ["maximum"],
+      );
+    },
+  );
+
+test(
+  "postpay PostgreSQL restricted API recovers one legacy receipt across independent connections without Worker rights",
+  { skip: !process.env.TEST_DATABASE_URL },
+  async (t) => {
+    const f = await fixture(t, {
+      postpay: true,
+      minimum: "fixed",
+      postgres: true,
+      initialKopeks: 1000,
+    });
+    const hold = await f.seedLegacyCharge(),
+      manualHold = await f.seedLegacyCharge(),
+      peer = await f.peer();
+    for (const connection of [f.db, peer])
+      assert.equal(
+        (await connection.query("select current_user as role")).rows[0]?.role,
+        f.roles.citygo_api,
+        "candidate audit reads and both settlement transactions use the restricted API role",
+      );
+    const first = new AiCreditCharges(
+      f.db,
+      CITYGO_10X_TARIFF,
+      "fixed5_overdraft",
+    );
+    const second = new AiCreditCharges(
+      peer,
+      CITYGO_10X_TARIFF,
+      "fixed5_overdraft",
+    );
+    const manualGeneration = (await first.get(f.board.user.id, manualHold))
+      .generation_id!;
+    const manualReceipt = {
+      generationId: manualGeneration,
+      reference: manualHold,
+      model: "deepseek/deepseek-v4-pro-0813",
+      upstream: "deepseek",
+      currency: "RUB" as const,
+      costRub: "7",
+      amountMicros: 7000000,
+    };
+    await assert.rejects(
+      first.settle(f.board.user.id, manualHold, manualReceipt),
+      /Стоимость превысила резерв/,
+    );
+    const budgetBefore = await f.db.query(
+      "select enabled,revision from ai_budget where id=1",
+    );
+    assert.equal(budgetBefore.rows[0]?.enabled, false);
+    assert.deepEqual(await first.completedUnresolvedAfter(), [
+      { holdId: hold, userId: f.board.user.id },
+    ]);
+    assert.equal(
+      await second.settleCompletedAutomatically(f.board.user.id, manualHold, {
+        ...manualReceipt,
+        costRub: "0.1",
+        amountMicros: 100000,
+      }),
+      false,
+      "the independent API connection preserves the existing manual overrun",
+    );
+    assert.deepEqual(
+      (await f.db.query("select enabled,revision from ai_budget where id=1"))
+        .rows,
+      budgetBefore.rows,
+    );
+    assert.equal(
+      (
+        await peer.query(
+          "select 1 from audit_log where action='ai-credit-cost-overrun' and entity_type='ai-credit' and lower(entity_id)=$1",
+          [manualHold],
+        )
+      ).rows.length,
+      1,
+    );
+    const generation = (await first.get(f.board.user.id, hold)).generation_id!;
+    const receipt = {
+      generationId: generation,
+      reference: hold,
+      model: "deepseek/deepseek-v4-pro-0813",
+      upstream: "deepseek",
+      currency: "RUB" as const,
+      costRub: "0.1",
+      amountMicros: 100000,
+    };
+    assert.deepEqual(
+      await Promise.all([
+        first.settleCompletedAutomatically(f.board.user.id, hold, receipt),
+        second.settleCompletedAutomatically(f.board.user.id, hold, receipt),
+      ]),
+      [true, true],
+    );
+    assert.equal((await f.balance()).heldMicros, 5000000);
+    assert.equal((await f.balance()).spentMicros, 1000000);
+    assert.equal(
+      (
+        await f.db.query("select 1 from ai_credit_entries where hold_id=$1", [
+          hold,
+        ])
+      ).rows.length,
+      1,
+    );
+    assert.equal(
+      (
+        await f.ownerDb.query(
+          "select has_table_privilege($1,'ai_credit_charges','SELECT') as allowed",
+          [f.roles.citygo_worker],
+        )
+      ).rows[0]?.allowed,
+      false,
+    );
+  },
+);
