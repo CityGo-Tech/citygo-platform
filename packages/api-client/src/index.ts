@@ -1,4 +1,9 @@
 import {
+  assistantContextInputSchema,
+  assistantContextPreviewSchema,
+  type AssistantContextInput,
+} from "@citygo/contracts";
+import {
   conversationTitleSchema,
   updateConversationTitleSchema,
   type UpdateConversationTitle,
@@ -1229,6 +1234,21 @@ export function createClient(
         throw new ApiError(
           200,
           "Ответ сервера не соответствует исходному сообщению",
+          "invalid_response",
+        );
+      return result;
+    },
+    previewAssistantContext: async (input: AssistantContextInput) => {
+      const parsed = assistantContextInputSchema.parse(input);
+      const result = await request(
+        "/v1/ai/context-preview",
+        assistantContextPreviewSchema,
+        parsed,
+      );
+      if (result.threadId !== parsed.threadId)
+        throw new ApiError(
+          200,
+          "Ответ сервера не соответствует выбранному диалогу",
           "invalid_response",
         );
       return result;

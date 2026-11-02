@@ -823,6 +823,55 @@ export class Repository {
       };
     });
   }
+  /** Read-only preview inputs; the same owner -> thread lock order as admission. */
+  async conversationContextSnapshot(userId: string, threadId: string | null) {
+    if (
+      !conversationIdSchema.safeParse(userId).success ||
+      (threadId !== null && !conversationIdSchema.safeParse(threadId).success)
+    )
+      fail(400, "Недопустимый идентификатор диалога");
+    return this.db.transaction(async (tx) => {
+      const owner = (
+        await tx.query<{ status: string; must_change_password: boolean }>(
+          "select status,must_change_password from users where id=$1 for share",
+          [userId],
+        )
+      ).rows[0];
+      if (!owner || owner.status !== "active")
+        return fail(403, "Аккаунт недоступен");
+      if (owner.must_change_password)
+        fail(403, "Сначала измените временный пароль");
+      const thread =
+        threadId === null
+          ? null
+          : (
+              await tx.query<{
+                id: string;
+                agentKey: AgentKey;
+                assistantKey: AgentKey | null;
+                closed: boolean;
+              }>(
+                `select id::text,agent_key as "agentKey",conversation_agent_key as "assistantKey",(status='closed') as closed
+        from agent_threads where id=$2 and user_id=$1 for share`,
+                [userId, threadId],
+              )
+            ).rows[0];
+      if (threadId !== null && !thread) fail(404, "Диалог не найден");
+      const profile =
+        (
+          await tx.query<{ preferences: Questionnaire }>(
+            "select preferences from relocation_profiles where user_id=$1",
+            [userId],
+          )
+        ).rows[0]?.preferences ?? null;
+      return {
+        userId,
+        thread: thread ?? null,
+        profile,
+        messages: thread ? await this.history(tx, thread.id) : [],
+      };
+    });
+  }
   async conversationMessages(
     userId: string,
     threadId: string,

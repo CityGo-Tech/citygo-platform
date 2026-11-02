@@ -170,6 +170,7 @@ export type Message = {
 export type Dashboard = {
   // New Web/API pairs opt in; older servers do not receive unknown reads.
   supportUpdatesAvailable?: boolean;
+  assistantContextAvailable?: boolean;
   supportManagementAvailable?: boolean;
   user: AccountUser;
   profile: Questionnaire | null;
