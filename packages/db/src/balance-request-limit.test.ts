@@ -52,6 +52,15 @@ async function fixture(
     created = false;
   const peers: Database[] = [];
   const createdRoles: string[] = [];
+  const roleSuffix = randomUUID().replaceAll("-", "");
+  const runtimeRoles = {
+    citygo_api: "cgb8_api_" + roleSuffix,
+    citygo_worker: "cgb8_worker_" + roleSuffix,
+    citygo_backup: "cgb8_backup_" + roleSuffix,
+    citygo_migrator: "cgb8_migrator_" + roleSuffix,
+  };
+  for (const role of Object.values(runtimeRoles))
+    assert.match(role, /^cgb8_(?:api|worker|backup|migrator)_[a-f0-9]{32}$/);
   t.after(async () => {
     const failures: unknown[] = [];
     for (const close of [
@@ -100,12 +109,7 @@ async function fixture(
       base,
       "Restricted-role evidence requires the disposable PostgreSQL target",
     );
-    const roles = [
-      "citygo_api",
-      "citygo_worker",
-      "citygo_backup",
-      "citygo_migrator",
-    ];
+    const roles = Object.values(runtimeRoles);
     assert.equal(
       (
         await db.query(
@@ -118,12 +122,12 @@ async function fixture(
     );
     for (const role of roles) {
       await db.exec(
-        `create role "${role}" ${role === "citygo_api" ? "login password 'synthetic-balance-api-password'" : "nologin"} nosuperuser nocreatedb nocreaterole`,
+        `create role "${role}" ${role === runtimeRoles.citygo_api ? "login password 'synthetic-balance-api-password'" : "nologin"} nosuperuser nocreatedb nocreaterole`,
       );
       createdRoles.push(role);
     }
     await db.exec(
-      `revoke all on schema public from public;grant usage,create on schema public to citygo_migrator;grant create on database "${name}" to citygo_migrator;grant usage on schema public to citygo_api,citygo_worker,citygo_backup;alter default privileges for role citygo_migrator revoke execute on functions from public;set role citygo_migrator`,
+      `revoke all on schema public from public;grant usage,create on schema public to ${runtimeRoles.citygo_migrator};grant create on database "${name}" to ${runtimeRoles.citygo_migrator};grant usage on schema public to ${runtimeRoles.citygo_api},${runtimeRoles.citygo_worker},${runtimeRoles.citygo_backup};alter default privileges for role ${runtimeRoles.citygo_migrator} revoke execute on functions from public;set role ${runtimeRoles.citygo_migrator}`,
     );
   }
   if (schema44) {
@@ -159,13 +163,33 @@ async function fixture(
         "utf8",
       )
     ).replace(/^\\set[^\n]*\n/gm, "");
-    await db.exec(grants);
+    // Use the exact production grant statements with only complete role tokens
+    // renamed to this test's unique principals. Never change/reuse cluster-wide
+    // citygo_* roles that other concurrently running PostgreSQL cases own.
+    const rolePattern = /\bcitygo_(api|worker|backup|migrator)\b/g;
+    const scopedGrants = grants.replace(
+      rolePattern,
+      (role) => runtimeRoles[role as keyof typeof runtimeRoles],
+    );
+    assert.doesNotMatch(
+      scopedGrants,
+      /\bcitygo_(api|worker|backup|migrator)\b/,
+    );
+    for (const role of [
+      "citygo_api",
+      "citygo_worker",
+      "citygo_backup",
+    ] as const)
+      assert.ok(
+        grants.includes(role) && scopedGrants.includes(runtimeRoles[role]),
+      );
+    await db.exec(scopedGrants);
     await db.exec("reset role");
   }
   let runtimeApi: Database | undefined;
   if (runtimeRole) {
     const scoped = new URL(url);
-    scoped.username = "citygo_api";
+    scoped.username = runtimeRoles.citygo_api;
     scoped.password = "synthetic-balance-api-password";
     runtimeApi = await connectDatabase(scoped.toString());
     peers.push(runtimeApi);
@@ -298,6 +322,7 @@ async function fixture(
   return {
     db,
     runtimeApi,
+    runtimeRoles,
     user,
     other,
     ledger,
@@ -955,12 +980,13 @@ test(
     const api = f.runtimeApi!;
     assert.deepEqual(
       (await api.query("select current_user::text as role")).rows,
-      [{ role: "citygo_api" }],
+      [{ role: f.runtimeRoles.citygo_api }],
     );
     assert.deepEqual(
       (
         await f.db.query(
-          "select rolsuper,rolcreatedb,rolcreaterole from pg_roles where rolname='citygo_api'",
+          "select rolsuper,rolcreatedb,rolcreaterole from pg_roles where rolname=$1",
+          [f.runtimeRoles.citygo_api],
         )
       ).rows,
       [{ rolsuper: false, rolcreatedb: false, rolcreaterole: false }],
@@ -1004,7 +1030,8 @@ test(
     assert.deepEqual(
       (
         await f.db.query(
-          "select has_table_privilege('citygo_worker','ai_credit_charges','SELECT') as worker,has_function_privilege('citygo_worker','citygo_apply_credit_debt_repayments(bigint)','EXECUTE') as worker_execute,has_function_privilege('citygo_api','citygo_apply_credit_debt_repayments(bigint)','EXECUTE') as api_execute",
+          "select has_table_privilege($1,'ai_credit_charges','SELECT') as worker,has_function_privilege($1,'citygo_apply_credit_debt_repayments(bigint)','EXECUTE') as worker_execute,has_function_privilege($2,'citygo_apply_credit_debt_repayments(bigint)','EXECUTE') as api_execute",
+          [f.runtimeRoles.citygo_worker, f.runtimeRoles.citygo_api],
         )
       ).rows,
       [{ worker: false, worker_execute: false, api_execute: true }],
@@ -1015,7 +1042,7 @@ test(
           "select p.prosecdef,pg_get_userbyid(p.proowner) as owner from pg_proc p where p.oid='citygo_apply_credit_debt_repayments(bigint)'::regprocedure",
         )
       ).rows,
-      [{ prosecdef: false, owner: "citygo_migrator" }],
+      [{ prosecdef: false, owner: f.runtimeRoles.citygo_migrator }],
     );
   },
 );
