@@ -837,3 +837,22 @@ test("production rejects local databases, HTTP and missing proxy trust", () => {
     /TRUSTED_PROXY_CIDRS/,
   );
 });
+
+test("balance-derived request cost admission is a separate explicit fixed5 ×10 opt-in", () => {
+  assert.equal(readConfig({}).AI_REQUEST_COST_LIMIT_MODE, "operator_ceiling");
+  const allowed = {
+    LLM_PROVIDER: "routerai",
+    AI_CREDIT_MODE: "routerai_citygo_10x",
+    AI_CREDIT_RESERVATION_MODE: "fixed5_overdraft",
+    AI_REQUEST_COST_LIMIT_MODE: "user_balance",
+  };
+  assert.equal(readConfig(allowed).AI_REQUEST_COST_LIMIT_MODE, "user_balance");
+  for (const patch of [
+    { AI_CREDIT_MODE: "disabled" },
+    { AI_CREDIT_MODE: "routerai_at_cost" },
+    { AI_CREDIT_RESERVATION_MODE: "full" },
+    { LLM_PROVIDER: "gigachat" },
+    { AI_REQUEST_COST_LIMIT_MODE: "unlimited" },
+  ])
+    assert.throws(() => readConfig({ ...allowed, ...patch }));
+});

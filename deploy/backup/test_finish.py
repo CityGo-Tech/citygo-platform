@@ -469,4 +469,38 @@ class CityGo10xAssistantModesGigaChatFlat3Cutover(RouterAiCutover):
             self.assertIs(result["finish"][key], False)
 
 
+@unittest.skipUnless(sys.platform.startswith("linux"), "Linux protected postpay atomic cutover")
+class PostpayActualCutover(RouterAiCutover):
+    # Inherit all closed cutover, expiry, secret drift and rollback-barrier cases.
+    profile = s.POSTPAY_ACTUAL_PROFILE
+    marker = "postpay-actual-v1"
+
+    def test_v14_postpay_stays_hash_bound_closed_and_private_to_api(self):
+        result = self.finish()
+        spec = json.loads(self.plan["files"]["compose.json"])
+        value = json.loads(self.api.read_bytes())
+        self.assertEqual(s.approval(self.start_approval.path.read_bytes(), time.time())["version"], 14)
+        self.assertEqual(value["AI_CUSTOMER_BILLING_MODE"], "postpay_actual_v1")
+        self.assertEqual(value["AI_REQUEST_COST_LIMIT_MODE"], "operator_ceiling")
+        self.assertEqual(value["AI_CREDIT_RESERVATION_MODE"], "fixed5_overdraft")
+        self.assertEqual(value["AI_MINIMUM_FIXED_FEE"], "enabled")
+        self.assertEqual(value["YOOKASSA_FISCAL_PROFILE"], "citygo_service_full_payment_v1")
+        self.assertEqual(value["PHONE_VERIFICATION_MODE"], "prosto_sms")
+        self.assertEqual(spec["services"]["api"]["environment"]["CITYGO_AI_PROFILE"], self.marker)
+        self.assertEqual(spec["services"]["api"]["secrets"], [{"source": "api_config", "target": "api.json"}])
+        for role, service in spec["services"].items():
+            for key in ("AI_CUSTOMER_BILLING_MODE", "AI_REQUEST_COST_LIMIT_MODE"):
+                self.assertNotIn(key, service.get("environment", {}))
+            if role != "api":
+                self.assertFalse(any(mount.get("source") == "api_config" if isinstance(mount, dict)
+                                     else mount == "api_config" for mount in service.get("secrets", [])))
+        for key in s.EMAIL_PRIVATE_KEYS | s.PROSTOSMS_PRIVATE_KEYS | {"GIGACHAT_CREDENTIALS", "ROUTERAI_API_KEY"}:
+            self.assertNotIn(value[key], self.plan["files"]["compose.json"].decode())
+            self.assertNotIn(value[key], json.dumps(result))
+        self.assertTrue(self.host.closed)
+        self.assertFalse((self.state / w.ADMISSION).exists())
+        for key in ("traffic_authorized", "worker_authorized", "restart_authorized"):
+            self.assertIs(result["finish"][key], False)
+
+
 if __name__ == "__main__": unittest.main()

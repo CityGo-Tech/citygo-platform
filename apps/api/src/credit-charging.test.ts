@@ -30,6 +30,8 @@ async function fixture(
   ceiling = 100 * RUB,
   mode: "routerai_at_cost" | "routerai_citygo_10x" = "routerai_at_cost",
   reservationMode: "full" | "fixed5_overdraft" = "full",
+  requestCostLimitMode:
+    "operator_ceiling" | "user_balance" = "operator_ceiling",
 ) {
   const base = process.env.TEST_DATABASE_URL;
   const database = "citygo_charging_" + randomUUID().replaceAll("-", "");
@@ -150,6 +152,7 @@ async function fixture(
     ADMIN_USER_IDS: "1",
     AI_CREDIT_MODE: mode,
     AI_CREDIT_RESERVATION_MODE: reservationMode,
+    AI_REQUEST_COST_LIMIT_MODE: requestCostLimitMode,
   });
   await seedTestBudget(db, config, { routerai: provider });
   await db.query(
@@ -1439,5 +1442,156 @@ test("settlement ledger and receipt roll back together when receipt persistence 
   await assert.rejects(
     new AiCreditLedger(f.db).hold(f.user.id, randomUUID(), 500 * RUB),
     /Недостаточно/,
+  );
+});
+
+test("user-balance admission snapshots 100 CityGo as 10 real RUB before fixed5 and settles an above-cap actual receipt without administrator or budget pause", async (t) => {
+  const f = await fixture(
+    t,
+    6 * RUB,
+    "routerai_citygo_10x",
+    "fixed5_overdraft",
+    "user_balance",
+  );
+  await fundSynthetic100Rub(f);
+  f.state.cost = "20.000000123";
+  const before = await budgetStatus(f);
+  const request = randomUUID();
+  const response = await f.send(request);
+  assert.match(response.body, /"type":"done"/);
+  assert.equal(f.state.posts, 1);
+  assert.equal(f.state.gets, 1);
+  const balance = await f.balance();
+  assert.equal(balance.heldMicros, 0);
+  assert.equal(balance.spentMicros, 200_000_001);
+  assert.equal(balance.availableMicros, -100_000_001);
+  assert.equal(balance.outstandingDebtMicros, 100_000_001);
+  const rows = await f.db.query<{
+    mode: string;
+    balance: string;
+    ceiling: string;
+    held: string;
+    debit: string;
+    receipt: { costRub: string };
+  }>(
+    `select c.cost_limit_mode as mode,c.balance_before_hold_micros::text as balance,c.real_ceiling_micros::text as ceiling,
+     h.amount_micros::text as held,s.amount_micros::text as debit,c.receipt
+     from ai_credit_charges c join ai_credit_entries h on h.operation_id=c.hold_id
+     join ai_credit_entries s on s.hold_id=c.hold_id where c.user_id=$1`,
+    [f.user.id],
+  );
+  assert.equal(rows.rows.length, 1);
+  assert.deepEqual(
+    { ...rows.rows[0], receipt: undefined },
+    {
+      mode: "user_balance",
+      balance: "100000000",
+      ceiling: "10000000",
+      held: "5000000",
+      debit: "200000001",
+      receipt: undefined,
+    },
+  );
+  assert.equal(rows.rows[0]!.receipt.costRub, "20.000000123");
+  const after = await budgetStatus(f);
+  assert.equal(after.settings.enabled, true);
+  assert.equal(after.settings.revision, before.settings.revision);
+  assert.equal(
+    after.totalReservedMicros - before.totalReservedMicros,
+    10 * RUB,
+  );
+  assert.equal(
+    (
+      await f.db.query(
+        "select id from audit_log where action='ai-credit-balance-limit-exceeded'",
+      )
+    ).rows.length,
+    1,
+  );
+  // The request UUID cannot dispatch or debit twice, even on explicit replay.
+  await f.send(request);
+  assert.equal(f.state.posts, 1);
+  assert.equal((await f.balance()).spentMicros, 200_000_001);
+});
+
+test("unknown user-balance cost remains held; the next explicit message only recovers by GET before its one new model POST", async (t) => {
+  const f = await fixture(
+    t,
+    6 * RUB,
+    "routerai_citygo_10x",
+    "fixed5_overdraft",
+    "user_balance",
+  );
+  await fundSynthetic100Rub(f);
+  f.state.costDown = true;
+  assert.match((await f.send()).body, /"type":"done"/);
+  assert.equal(f.state.posts, 1);
+  let balance = await f.balance();
+  assert.equal(balance.spentMicros, 0);
+  assert.equal(balance.heldMicros, 5 * RUB);
+  assert.equal(balance.availableMicros, 95 * RUB);
+  assert.match((await f.send()).body, /AI_CREDIT_UNAVAILABLE/);
+  assert.equal(
+    f.state.posts,
+    1,
+    "Unconfirmed cost must never retry the model POST",
+  );
+  assert.equal((await budgetStatus(f)).settings.enabled, true);
+  f.state.costDown = false;
+  f.state.cost = "1.234567891";
+  assert.match((await f.send()).body, /"type":"done"/);
+  assert.equal(
+    f.state.posts,
+    2,
+    "One newly requested answer after recovering the old receipt",
+  );
+  balance = await f.balance();
+  assert.equal(balance.spentMicros, 24_691_356);
+  assert.equal(balance.heldMicros, 0);
+  assert.equal(balance.pending?.length, 0);
+  assert.equal(
+    (
+      await f.db.query(
+        "select id from ai_credit_entries where user_id=$1 and kind='settle'",
+        [f.user.id],
+      )
+    ).rows.length,
+    2,
+  );
+});
+
+test("a late known above-balance receipt is recovered automatically by GET, clears fixed5 and prevents a new model call until the negative balance is funded", async (t) => {
+  const f = await fixture(
+    t,
+    6 * RUB,
+    "routerai_citygo_10x",
+    "fixed5_overdraft",
+    "user_balance",
+  );
+  await fundSynthetic100Rub(f);
+  f.state.costDown = true;
+  assert.match((await f.send()).body, /"type":"done"/);
+  assert.equal((await f.balance()).heldMicros, 5 * RUB);
+  f.state.costDown = false;
+  f.state.cost = "20.000000123";
+  assert.match((await f.send()).body, /AI_CREDIT_EXHAUSTED/);
+  assert.equal(
+    f.state.posts,
+    1,
+    "GET settlement of an old charge never dispatches a model",
+  );
+  const balance = await f.balance();
+  assert.equal(balance.heldMicros, 0);
+  assert.equal(balance.availableMicros, -100_000_001);
+  assert.equal(balance.spentMicros, 200_000_001);
+  assert.equal((await budgetStatus(f)).settings.enabled, true);
+  assert.equal(
+    (
+      await f.db.query(
+        "select id from ai_credit_entries where user_id=$1 and kind='settle'",
+        [f.user.id],
+      )
+    ).rows.length,
+    1,
   );
 });

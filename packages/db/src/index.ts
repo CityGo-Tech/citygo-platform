@@ -48,6 +48,11 @@ export {
 } from "./email-registration.js";
 export { AiCreditLedger } from "./ai-credit.js";
 export {
+  captureBalanceCostLimit,
+  type AiRequestCostLimitMode,
+  type BalanceCostLimitSnapshot,
+} from "./request-cost-limit.js";
+export {
   GigaChatFixedFees,
   parseGigaChatFixedFeeInput,
   type GigaChatFixedFeeInput,
@@ -287,3 +292,10 @@ export {
   type BalanceHistoryContext,
 } from "./balance-history.js";
 export { readResultDiscussionSource } from "./result-discussion.js";
+
+export {
+  PostpayCharges,
+  capturePostpayBalance,
+  type CustomerBillingMode,
+  type PostpayAttempt,
+} from "./postpay-charges.js";

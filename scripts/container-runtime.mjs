@@ -135,7 +135,15 @@ const citygo10xLiveCnFiscalOverdraftEmailProstoUnlimitedAssistantModesGigaFixed 
     GIGACHAT_CA_BUNDLE_FILE: "/app/certs/russian-trusted-root.crt",
     LLM_REQUEST_TIMEOUT_MS: "60000",
   };
+// Independent v14: exact prior transport plus explicit postpay admission.
+// The legacy reservation marker remains a compatibility envelope, not a hold.
+const postpayActualFixed = {
+  ...citygo10xLiveCnFiscalOverdraftEmailProstoUnlimitedAssistantModesGigaFixed,
+  AI_CUSTOMER_BILLING_MODE: "postpay_actual_v1",
+  AI_REQUEST_COST_LIMIT_MODE: "operator_ceiling",
+};
 const routerAiProfiles = {
+  "postpay-actual-v1": postpayActualFixed,
   "routerai-credit-v1": routerAiFixed,
   "routerai-citygo-10x-v1": citygo10xFixed,
   "routerai-citygo-10x-yookassa-live-v1": citygo10xLiveFixed,
@@ -283,7 +291,8 @@ function validateRouterAi(value, fixed) {
           fixed ===
             citygo10xLiveCnFiscalOverdraftEmailProstoUnlimitedAssistantModesFixed ||
           fixed ===
-            citygo10xLiveCnFiscalOverdraftEmailProstoUnlimitedAssistantModesGigaFixed
+            citygo10xLiveCnFiscalOverdraftEmailProstoUnlimitedAssistantModesGigaFixed ||
+          fixed === postpayActualFixed
             ? value[key] !== "unlimited"
             : !/^[1-9][0-9]{0,6}$/.test(value[key]) ||
               Number(value[key]) > maximum,
@@ -305,7 +314,7 @@ export function containerSpec(
   if (
     inherited.CITYGO_MOUNTED_CONFIG !== undefined &&
     Object.keys(inherited).some((key) =>
-      /^(EMAIL_|POSTBOX_|PHONE_|SMS_|PROSTOSMS_|AI_ASSISTANT_MODES$|AI_MINIMUM_FIXED_FEE$|AI_MAXIMUM_REASONING_EFFORT$|AI_MODES_)/.test(
+      /^(EMAIL_|POSTBOX_|PHONE_|SMS_|PROSTOSMS_|AI_ASSISTANT_MODES$|AI_MINIMUM_FIXED_FEE$|AI_MAXIMUM_REASONING_EFFORT$|AI_MODES_|AI_CUSTOMER_BILLING_MODE$|AI_REQUEST_COST_LIMIT_MODE$)/.test(
         key,
       ),
     )
