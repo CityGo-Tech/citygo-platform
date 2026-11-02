@@ -166,6 +166,7 @@ export function ConversationHome(props: JourneyProps) {
       busy ||
       sending ||
       props.sessionSignal.aborted ||
+      tab === "Контекст" ||
       board.assistantContextAvailable !== true
     )
       return;
@@ -176,7 +177,7 @@ export function ConversationHome(props: JourneyProps) {
     setContextSource({
       userId: board.user.id,
       threadId: board.thread?.id ?? null,
-      draft: props.draft,
+      draft: props.text,
       signal: props.sessionSignal,
       tab: tab === "Контекст" ? "Диалоги" : tab,
     });
@@ -329,7 +330,7 @@ export function ConversationHome(props: JourneyProps) {
                 onClose={closeContext}
                 onCorrect={() => {
                   if (!currentContext || props.sessionSignal.aborted) return;
-                  if (!props.draft.trim())
+                  if (!props.text.trim())
                     props.onText("Хочу уточнить сведения о переезде: ");
                   setContextSource(null);
                   setTab("Диалоги");
@@ -616,6 +617,7 @@ export function ConversationHome(props: JourneyProps) {
                               busy ||
                               sending ||
                               props.sessionSignal.aborted ||
+                              tab === "Контекст" ||
                               !board.thread
                             )
                               return;

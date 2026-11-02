@@ -28,9 +28,14 @@ export async function fixture(
     minimumAvailable?: boolean;
     minimumPrice?: boolean;
     firstChoiceConsent?: boolean;
+    assistantContextAvailable?: boolean;
+    profile?: Dashboard["profile"];
+    initialMessages?: Message[];
   } = {},
 ) {
-  const messages: Message[] = [
+  const messages: Message[] = options.initialMessages?.map((message) => ({
+    ...message,
+  })) ?? [
     {
       id: "100",
       role: "user",
@@ -108,13 +113,16 @@ export async function fixture(
     currentAiConsentRequired: required,
   });
   const board = (): Dashboard => ({
+    ...(options.assistantContextAvailable === undefined
+      ? {}
+      : { assistantContextAvailable: options.assistantContextAvailable }),
     user: {
       id: state.owner,
       email: `modes-${state.owner}@example.test`,
       role: "user",
       mustChangePassword: false,
     },
-    profile: null,
+    profile: state.owner === "101" ? (options.profile ?? null) : null,
     xp: 0,
     quests: [],
     thread: {
