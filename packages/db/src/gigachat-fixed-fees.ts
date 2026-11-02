@@ -1,3 +1,4 @@
+import { PostpayCharges, type CustomerBillingMode } from "./postpay-charges.js";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { Database, Sql } from "./index.js";
@@ -29,6 +30,7 @@ export type GigaChatFixedFee = {
   servedModel: string | null;
   accountRef: string;
   snapshot: Record<string, unknown>;
+  billingMode: CustomerBillingMode;
 };
 const conflict = () =>
   new DomainError(409, "Операция ответа не соответствует принятому запросу");
@@ -51,7 +53,10 @@ export function parseGigaChatFixedFeeInput(
 // All cash movements still use the existing gift-first/paid-FIFO ledger.
 export class GigaChatFixedFees {
   private ledger: AiCreditLedger;
-  constructor(private db: Database) {
+  constructor(
+    private db: Database,
+    private billingMode: CustomerBillingMode = "legacy",
+  ) {
     this.ledger = new AiCreditLedger(
       db,
       "not_connected",
@@ -86,7 +91,7 @@ export class GigaChatFixedFees {
     const result = await tx.query<GigaChatFixedFee>(
       `select hold_id::text as "holdId",user_id::text as "userId",thread_id::text as "threadId",request_id::text as "requestId",
  chat_lease::text as "chatLease",lease_token::text as "leaseToken",expires_at::text as "expiresAt",state,
- response_message_id::text as "responseMessageId",served_model as "servedModel",account_ref as "accountRef",snapshot
+ response_message_id::text as "responseMessageId",served_model as "servedModel",account_ref as "accountRef",snapshot,billing_mode as "billingMode"
  from gigachat_request_fees where hold_id=$1 and user_id=$2${lock ? " for update" : ""}`,
       [holdId, userId],
     );
@@ -109,11 +114,32 @@ export class GigaChatFixedFees {
     digest.parse(input.catalogId);
     digest.parse(input.executionKey);
     id.parse(input.chatLease);
-    const holdId = randomUUID(),
-      leaseToken = randomUUID();
+    const leaseToken = randomUUID();
+    let holdId: string;
+    if (this.billingMode === "postpay_actual_v1") {
+      const attempt = (
+        await tx.query<{ policy_id: string }>(
+          "select policy_id from ai_model_attempts where thread_id=$1 and request_id=$2 and user_id=$3 and attempt_number=1",
+          [input.threadId, input.requestId, input.userId],
+        )
+      ).rows[0];
+      if (!attempt) throw conflict();
+      holdId = await new PostpayCharges(this.db).admit(tx, {
+        userId: input.userId,
+        threadId: input.threadId,
+        requestId: input.requestId,
+        provider: "gigachat",
+        protocol: "gigachat",
+        model: "GigaChat-3-Ultra",
+        executionKey: input.executionKey,
+        policyId: attempt.policy_id,
+        fixedFee: true,
+      });
+    } else holdId = randomUUID();
     // Same security/user/account order as every other credit admission. Capacity
     // contention rolls back the hold, allocations, attempt and daily counters.
-    await this.ledger.hold(input.userId, holdId, 5000000, tx);
+    if (this.billingMode === "legacy")
+      await this.ledger.hold(input.userId, holdId, 5000000, tx);
     await tx.query(
       "insert into gigachat_account_leases(account_ref) values($1) on conflict do nothing",
       [pricing.accountRef],
@@ -128,13 +154,16 @@ export class GigaChatFixedFees {
     // another user never steals it or locks accounts in a different order.
     if (!slot || slot.lease_token !== null) throw busy();
     const snapshot = {
-      version: "citygo-gigachat-flat3-success-v1",
+      version:
+        this.billingMode === "postpay_actual_v1"
+          ? "citygo-gigachat-flat3-postpay-v1"
+          : "citygo-gigachat-flat3-success-v1",
       provider: "gigachat",
       mode: "minimum",
       model: "GigaChat-3-Ultra",
       scope: "GIGACHAT_API_PERS",
       feeCitygoMicros: 3000000,
-      holdCitygoMicros: 5000000,
+      holdCitygoMicros: this.billingMode === "postpay_actual_v1" ? 0 : 5000000,
       operatorCostRubMicros: 0,
       pricingId: pricing.pricingId,
       accountRef: pricing.accountRef,
@@ -143,7 +172,7 @@ export class GigaChatFixedFees {
     };
     await tx.query(
       `insert into gigachat_request_fees(hold_id,user_id,thread_id,request_id,chat_lease,catalog_id,pricing_id,account_ref,
- execution_key,snapshot,lease_token,expires_at) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,clock_timestamp()+$12::integer*interval '1 millisecond')`,
+ execution_key,snapshot,lease_token,expires_at,billing_mode) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,clock_timestamp()+$12::integer*interval '1 millisecond',$13)`,
       [
         holdId,
         input.userId,
@@ -157,6 +186,7 @@ export class GigaChatFixedFees {
         JSON.stringify(snapshot),
         leaseToken,
         pricing.leaseMs ?? 180000,
+        this.billingMode,
       ],
     );
     await tx.query(
@@ -188,6 +218,8 @@ export class GigaChatFixedFees {
       );
       if (!request.rows.length) throw conflict();
       await this.assertLive(tx, fee);
+      if (fee.billingMode === "postpay_actual_v1")
+        await new PostpayCharges(this.db).dispatch(userId, holdId, tx);
       await tx.query(
         "update gigachat_request_fees set state='dispatched' where hold_id=$1",
         [holdId],
@@ -207,14 +239,27 @@ export class GigaChatFixedFees {
     )
       throw conflict();
     await this.assertLive(tx, fee);
-    const operationId = randomUUID();
-    await this.ledger.resolve(
-      fee.userId,
-      operationId,
-      fee.holdId,
-      { kind: "settle", amountMicros: 3000000 },
-      tx,
-    );
+    let operationId: string;
+    if (fee.billingMode === "postpay_actual_v1") {
+      const charges = new PostpayCharges(this.db);
+      await charges.answer(
+        tx,
+        fee.holdId,
+        fee.threadId,
+        fee.requestId,
+        input.messageId,
+      );
+      operationId = await charges.settleFixed(tx, fee.userId, fee.holdId);
+    } else {
+      operationId = randomUUID();
+      await this.ledger.resolve(
+        fee.userId,
+        operationId,
+        fee.holdId,
+        { kind: "settle", amountMicros: 3000000 },
+        tx,
+      );
+    }
     await tx.query(
       `update gigachat_request_fees set state='succeeded',response_message_id=$2,served_model=$3,
  resolution_operation_id=$4,resolved_at=clock_timestamp() where hold_id=$1`,
@@ -232,14 +277,23 @@ export class GigaChatFixedFees {
   ) {
     if (fee.state === "succeeded") throw conflict();
     if (fee.state === "reserved" || fee.state === "dispatched") {
-      const operationId = randomUUID();
-      await this.ledger.resolve(
-        fee.userId,
-        operationId,
-        fee.holdId,
-        { kind: "release", amountMicros: 0 },
-        tx,
-      );
+      let operationId: string;
+      if (fee.billingMode === "postpay_actual_v1") {
+        const charges = new PostpayCharges(this.db);
+        operationId = await charges.closeFree(
+          tx,
+          await charges.get(fee.userId, fee.holdId, tx),
+        );
+      } else {
+        operationId = randomUUID();
+        await this.ledger.resolve(
+          fee.userId,
+          operationId,
+          fee.holdId,
+          { kind: "release", amountMicros: 0 },
+          tx,
+        );
+      }
       await tx.query(
         `update gigachat_request_fees set state=$2,resolution_operation_id=$3,resolved_at=clock_timestamp()
  where hold_id=$1`,

@@ -151,3 +151,43 @@ test("a fixed Minimum billing profile is part of the frozen execution approval",
     ),
   );
 });
+
+test("user-balance admission requires its own RouterAI execution approval and leaves legacy and Minimum identities unchanged", () => {
+  const common = {
+    LLM_PROVIDER: "routerai",
+    AI_CREDIT_MODE: "routerai_citygo_10x",
+    AI_CREDIT_RESERVATION_MODE: "fixed5_overdraft",
+  };
+  const legacy = readConfig(common),
+    opted = readConfig({
+      ...common,
+      AI_REQUEST_COST_LIMIT_MODE: "user_balance",
+    });
+  const provider = { name: "routerai" as const, model: "synthetic/model" };
+  const policy = createAiPolicy(legacy, provider)!;
+  assert.deepEqual(createAiPolicy(opted, provider), policy);
+  const before = createAiExecution(legacy, policy),
+    after = createAiExecution(opted, policy);
+  assert.notEqual(after.key, before.key);
+  assert.deepEqual(after.policy, before.policy);
+  assert.equal(
+    before.key,
+    createAiExecution(
+      readConfig({ ...common, AI_REQUEST_COST_LIMIT_MODE: "operator_ceiling" }),
+      policy,
+    ).key,
+  );
+  const minimum = createAiPolicy(legacy, {
+    name: "gigachat",
+    model: "GigaChat-3-Ultra",
+  })!;
+  const pricing = {
+    protocol: "gigachat" as const,
+    requestTimeoutMs: 60_000,
+    billingProfile: { pricingId: "a".repeat(64) },
+  };
+  assert.deepEqual(
+    createAiExecution(opted, minimum, pricing),
+    createAiExecution(legacy, minimum, pricing),
+  );
+});

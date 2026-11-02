@@ -1,3 +1,8 @@
+import { PostpayCharges } from "@citygo/db";
+import {
+  PostpayReconciler,
+  type PostpayReconcileScheduler,
+} from "./postpay-reconciler.js";
 import { registerBalanceHistoryApi } from "./balance-history.js";
 import { registerConversationExport } from "./conversation-export.js";
 import { registerAssistantContext } from "./assistant-context.js";
@@ -90,6 +95,7 @@ import { buildConversationContext } from "./conversation-context.js";
 import {
   observeChatClientDisconnect,
   recoverCompletedChatCharge,
+  LegacyCompletedChargeRecovery,
 } from "./ai-credit-recovery.js";
 import { registerSyntheticHousingApi } from "./housing.js";
 import { registerPersonalPlanApi } from "./personal-plan.js";
@@ -157,6 +163,7 @@ export async function buildApp(options: {
   paymentClient?: PaymentClient;
   refundClient?: RefundClient;
   paymentReconcileScheduler?: PaymentReconcileScheduler;
+  postpayReconcileScheduler?: PostpayReconcileScheduler;
   emailRegistrationDelivery?: RegistrationEmailDelivery;
   passwordRecoveryDelivery?: PasswordRecoveryEmailDelivery;
   phoneVerificationDelivery?: PhoneVerificationDelivery;
@@ -164,6 +171,12 @@ export async function buildApp(options: {
 }) {
   const drain = options.drain ?? new ApiDrain();
   const config = options.config ?? readConfig();
+  const postpayMode = config.AI_CUSTOMER_BILLING_MODE === "postpay_actual_v1";
+  if (
+    options.postpayReconcileScheduler &&
+    (config.NODE_ENV !== "test" || options.testing !== true)
+  )
+    throw new Error("Synthetic postpay scheduler requires test harness");
   validateCreditReservationConfig(config);
   validateVerificationDeliveryConfig(config);
   if (
@@ -259,6 +272,8 @@ export async function buildApp(options: {
     config.AI_CREDIT_RESERVATION_MODE,
     config.AI_MINIMUM_FIXED_FEE === "enabled",
     modes?.legacyBalancedCompatibility,
+    config.AI_REQUEST_COST_LIMIT_MODE,
+    config.AI_CUSTOMER_BILLING_MODE,
   );
   const accounts = new AccountAccess(options.db);
   const registrationAiPolicy = (routing: AiRouting) =>
@@ -274,6 +289,8 @@ export async function buildApp(options: {
     topUpAvailable,
     config.AI_CREDIT_RESERVATION_MODE,
     config.AI_MINIMUM_FIXED_FEE === "enabled",
+    config.AI_REQUEST_COST_LIMIT_MODE,
+    config.AI_CUSTOMER_BILLING_MODE,
   );
   const charges = new AiCreditCharges(
     options.db,
@@ -282,7 +299,7 @@ export async function buildApp(options: {
   );
   const gigaFees =
     config.AI_MINIMUM_FIXED_FEE === "enabled"
-      ? new GigaChatFixedFees(options.db)
+      ? new GigaChatFixedFees(options.db, config.AI_CUSTOMER_BILLING_MODE)
       : undefined;
   // Quarantine survives process restarts and changing YOOKASSA_MODE back to
   // disabled. A per-admission DB guard also protects already running replicas.
@@ -295,8 +312,11 @@ export async function buildApp(options: {
     userId: string,
     holdId: string,
     signal: AbortSignal = AbortSignal.timeout(5000),
+    automaticLegacy = false,
   ) {
+    signal.throwIfAborted();
     const charge = await charges.get(userId, holdId);
+    signal.throwIfAborted();
     if (charge.receipt) return credit.status(userId);
     const adapter = [
       ...(modes?.routes.map((route) => ({
@@ -326,8 +346,54 @@ export async function buildApp(options: {
       AbortSignal.any([signal, AbortSignal.timeout(5000)]),
     );
     signal.throwIfAborted();
+    if (automaticLegacy)
+      return charges.settleCompletedAutomatically(userId, holdId, receipt);
     await charges.settle(userId, holdId, receipt);
     return credit.status(userId);
+  }
+  const postpay = new PostpayCharges(options.db);
+  async function reconcilePostpay(
+    userId: string,
+    id: string,
+    signal: AbortSignal = AbortSignal.timeout(5000),
+  ) {
+    const charge = await postpay.get(userId, id);
+    if (charge.state === "settled") return true;
+    if (!charge.generation_id || !charge.dispatched) return false;
+    const candidates = [
+      ...(modes?.routes.map((route) => ({
+        adapter: route.provider,
+        upstream: route.upstream,
+        protocol: route.id === "maximum" ? "responses" : "chat/completions",
+        executionKey: route.execution.key,
+        policyId: route.policy.id,
+      })) ?? []),
+      {
+        adapter: providers.routerai,
+        upstream: config.ROUTERAI_UPSTREAM,
+        protocol: "chat/completions",
+        executionKey: null,
+        policyId: null,
+      },
+    ];
+    const adapter = candidates.find(
+      (profile) =>
+        profile.adapter?.name === "routerai" &&
+        profile.adapter.model === charge.model &&
+        profile.upstream === charge.upstream &&
+        profile.protocol === charge.protocol &&
+        profile.executionKey === charge.execution_key &&
+        profile.policyId === charge.policy_id,
+    )?.adapter;
+    if (!adapter?.readCharge) return false;
+    signal.throwIfAborted();
+    const receipt = await adapter.readCharge(
+      charge.generation_id,
+      id,
+      AbortSignal.any([signal, AbortSignal.timeout(5000)]),
+    );
+    signal.throwIfAborted();
+    return postpay.settleRouter(userId, id, receipt);
   }
   const executions = modes
     ? [
@@ -358,6 +424,64 @@ export async function buildApp(options: {
       ? config.TRUSTED_PROXY_CIDRS
       : false,
   });
+  if (postpayMode) {
+    const legacyRecovery = new LegacyCompletedChargeRecovery({
+      list: (after, limit) => charges.completedUnresolvedAfter(after, limit),
+      reconcile: async ({ userId, holdId }, signal) =>
+        (await reconcileCharge(userId, holdId, signal, true)) === true,
+    });
+    const reconciler = new PostpayReconciler({
+      scheduler: options.postpayReconcileScheduler,
+      run: async (limit, signal) => {
+        let processed = 0,
+          retained = 0;
+        // This lane never participates in new-message admission or readiness.
+        // Reserve at most ONE of the existing ten slots; a pending legacy cost
+        // cannot consume the whole current-postpay queue or pause its budget.
+        try {
+          const legacy = await legacyRecovery.run(signal);
+          processed += legacy.processed;
+          retained += legacy.retained;
+        } catch {
+          signal.throwIfAborted();
+          app.log.warn(
+            { code: "AI_LEGACY_COST_PENDING" },
+            "Legacy cost verification pending",
+          );
+        }
+        for (let n = processed + retained; n < limit && !signal.aborted; n++) {
+          const item = await postpay.claimDue();
+          if (!item) break;
+          try {
+            if (
+              await reconcilePostpay(
+                item.attempt.user_id,
+                item.attempt.id,
+                signal,
+              )
+            )
+              processed++;
+            else retained++;
+          } catch {
+            retained++;
+          } finally {
+            await postpay.finishCheck(
+              item.attempt.user_id,
+              item.attempt.id,
+              item.token,
+            );
+          }
+        }
+        return { processed, retained };
+      },
+    });
+    app.addHook("onReady", async () => {
+      reconciler.start();
+    });
+    app.addHook("onClose", async () => {
+      await reconciler.stop();
+    });
+  }
   const secure = config.NODE_ENV === "production";
   registerDrain(app, drain);
   const sessionName = secure ? "__Host-citygo" : "citygo";
@@ -538,6 +662,33 @@ export async function buildApp(options: {
         "select name from citygo_migrations where name in ('0006_ai_budget.sql','0007_ai_user_daily_budget.sql','0008_ai_credit.sql','0009_ai_credit_charges.sql','0010_quest_plan_expand.sql','0011_quest_plan_validate.sql','0013_account_access.sql','0014_citygo_credit.sql','0015_yookassa_orders.sql','0016_npd_receipts.sql','0017_credit_source_lots.sql','0018_payment_refunds.sql','0019_yookassa_live_orders.sql','0020_ai_budget_provider_balance.sql','0021_payment_notifications.sql','0022_payment_admission.sql','0023_payment_receipt_snapshots.sql','0024_ai_credit_overdraft.sql','0025_assistant_conversations.sql','0030_service_consents.sql','0031_account_email_confirmation.sql','0032_phone_contact_bindings.sql','0033_ai_request_modes.sql','0034_gigachat_request_fees.sql','0036_protected_phone_contacts.sql')",
       );
       if (result.rows.length !== 25) throw new Error("Pending migration");
+      // Both legacy and balance-derived reservations persist these columns.
+      // Do not advertise readiness on schema44 even while the new opt-in is off.
+      const costLimitMigration = await options.db.query(
+        "select name from citygo_migrations where name='0045_ai_balance_request_cost_limit.sql'",
+      );
+      if (costLimitMigration.rows.length !== 1)
+        throw new Error("Pending request cost limit migration");
+      await options.db.query(
+        "select cost_limit_mode,balance_before_hold_micros from ai_credit_charges limit 0",
+      );
+      const postpayMigration = await options.db.query(
+        "select name from citygo_migrations where name='0046_postpay_actual.sql'",
+      );
+      if (postpayMigration.rows.length !== 1)
+        throw new Error("Pending postpay migration");
+      await options.db.query(
+        "select id,state,response_complete,reconcile_token from ai_postpay_attempts limit 0",
+      );
+      await options.db.query(
+        "select charge_id,principal_micros from credit_postpay_liabilities limit 0",
+      );
+      await options.db.query(
+        "select charge_id,source_lot_id,amount_micros from credit_postpay_repayments limit 0",
+      );
+      await options.db.query(
+        "select billing_mode from gigachat_request_fees limit 0",
+      );
       const supportMigration = await options.db.query(
         "select name from citygo_migrations where name in ('0037_human_support_requests.sql','0038_manual_personal_plan.sql')",
       );
@@ -1146,6 +1297,7 @@ export async function buildApp(options: {
       const threadId = questParams.parse(request.params).id;
       const input = chatInputSchema.parse(request.body);
       if (
+        !postpayMode &&
         config.AI_CREDIT_RESERVATION_MODE === "fixed5_overdraft" &&
         input.creditReservationMode !== "fixed5_overdraft" &&
         !routeAgent(input.text, "support").human
@@ -1232,6 +1384,7 @@ export async function buildApp(options: {
           let fixed5CreditReadiness = false;
           if (
             creditCharging &&
+            !postpayMode &&
             config.AI_CREDIT_RESERVATION_MODE === "fixed5_overdraft"
           ) {
             const preflight = await repo.chatRecoveryPreflight(
@@ -1376,6 +1529,15 @@ export async function buildApp(options: {
             globalDailyLimit: config.LLM_GLOBAL_DAILY_ATTEMPT_LIMIT,
             execution,
             upstream,
+            ...(postpayMode
+              ? {
+                  protocol: fixedFee
+                    ? ("gigachat" as const)
+                    : selectedMode?.id === "maximum"
+                      ? ("responses" as const)
+                      : ("chat/completions" as const),
+                }
+              : {}),
             ...(fixedFee ? { fixedFee } : {}),
           });
         } catch (error) {
@@ -1433,6 +1595,7 @@ export async function buildApp(options: {
           let completed = false;
           if (creditHoldId) {
             if (fixedFee) await gigaFees!.dispatch(user.id, creditHoldId);
+            else if (postpayMode) await postpay.dispatch(user.id, creditHoldId);
             else await charges.dispatch(user.id, creditHoldId);
           }
           signal.throwIfAborted();
@@ -1448,7 +1611,9 @@ export async function buildApp(options: {
                     billing: {
                       reference: creditHoldId,
                       onGeneration: (id: string) =>
-                        charges.identify(user.id, creditHoldId!, id),
+                        postpayMode
+                          ? postpay.identify(user.id, creditHoldId!, id)
+                          : charges.identify(user.id, creditHoldId!, id),
                     },
                   }
                 : {}),
@@ -1504,8 +1669,12 @@ export async function buildApp(options: {
         saved = true;
         if (creditHoldId && !fixedFee) {
           // Read-only cost lookup, not a second model attempt. A lost/invalid
-          // receipt leaves a durable hold for reconciliation, never a guessed fee.
-          await reconcileCharge(user.id, creditHoldId).catch(() => {
+          // receipt leaves durable billing evidence (no hold in postpay), never a guessed fee.
+          await (
+            postpayMode
+              ? reconcilePostpay(user.id, creditHoldId)
+              : reconcileCharge(user.id, creditHoldId)
+          ).catch(() => {
             request.log.warn(
               { code: "AI_CHARGE_COST_PENDING", phase: "after_answer" },
               "AI cost verification pending",
@@ -1514,13 +1683,23 @@ export async function buildApp(options: {
         }
         send({ type: "done", messageId });
       } catch (error) {
-        if (error instanceof RouterAIInsufficientFundsError)
+        if (error instanceof RouterAIInsufficientFundsError) {
+          if (postpayMode)
+            request.log.warn(
+              { code: "AI_PROVIDER_FUNDS_UNAVAILABLE", phase: "generation" },
+              "AI request unavailable",
+            );
           attemptError = new DomainError(
             503,
-            "AI временно недоступен: баланс внешнего сервиса исчерпан или недостаточен для запроса. Администратору нужно пополнить его. Повтор автоматически не выполняется; существующий резерв требует сверки.",
+            postpayMode
+              ? "Помощник временно недоступен. Попробуйте позже. За незавершённый ответ ничего не списано; история сохранена."
+              : "AI временно недоступен: баланс внешнего сервиса исчерпан или недостаточен для запроса. Администратору нужно пополнить его. Повтор автоматически не выполняется; существующий резерв требует сверки.",
             "AI_CREDIT_UNAVAILABLE",
           );
-        if (creditHoldId && !adapterEntered && !fixedFee)
+        }
+        if (creditHoldId && postpayMode && !fixedFee)
+          await postpay.interrupted(user.id, creditHoldId).catch(() => {});
+        if (creditHoldId && !postpayMode && !adapterEntered && !fixedFee)
           await charges
             .releaseBeforeTransport(user.id, creditHoldId)
             .catch(() => {});
@@ -1583,7 +1762,9 @@ export async function buildApp(options: {
                 : "Ответ прерван. За него ничего не списано. История сохранена."
               : (attemptError?.message ??
                 (creditHoldId
-                  ? "Ответ прерван. История сохранена. Стоимость уточняется; резерв удерживается до сверки. Не повторяйте запрос вслепую."
+                  ? postpayMode
+                    ? "Ответ прерван. История сохранена. За незавершённый ответ ничего не списано. Можно продолжить общение при достаточном балансе."
+                    : "Ответ прерван. История сохранена. Стоимость уточняется; резерв удерживается до сверки. Не повторяйте запрос вслепую."
                   : "Ответ прерван. История сохранена; попробуйте отправить сообщение снова.")),
         });
       } finally {

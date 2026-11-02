@@ -1005,7 +1005,8 @@ export default function Home() {
       return;
     }
     const requestId = crypto.randomUUID();
-    const submittedMode = mode?.aiMode ?? selectedAiMode;
+    // The legacy API omits a catalog and keeps its Balanced route.
+    const submittedMode = mode?.aiMode ?? "balanced";
     let answerCompleted = false;
     let responseStarted = false;
     trackProductEvent("ai_request_submitted", {
