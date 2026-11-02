@@ -88,8 +88,8 @@ test("the composed 4000-character limit includes the exact current question, sep
 
 test("extension, empty size, invalid size and 64-KB metadata fail before a buffer is read", async () => {
   for (const metadata of [
-    { name: "resume.pdf", size: 20 },
-    { name: "resume.txt.pdf", size: 20 },
+    { name: "resume.docx", size: 20 },
+    { name: "resume.txt.docx", size: 20 },
     { name: "resume.txt", size: 0 },
     { name: "resume.txt", size: NaN },
     { name: "resume.txt", size: TEXT_MATERIAL_MAX_BYTES + 1 },
