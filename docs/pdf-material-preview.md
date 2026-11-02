@@ -1,6 +1,6 @@
 # Local PDF materials for conversations
 
-A user can select a TXT or a **text-based PDF**, review and edit its extracted text, then explicitly add an excerpt to the current question. Selection and preview do not upload the file, submit a question or create an AI request. The usual Send action remains separate, with the existing mode, reservation and tariffs.
+A user can select a TXT or a **text-based PDF**, review and edit its extracted text, then explicitly add an excerpt to the current question. Selection and preview do not upload the file, submit a question or create an AI request. The usual Send action remains separate, with the existing mode, post-answer billing without a customer money hold, and tariffs (main `923ac30`, schema 46).
 
 ## Bounds and lifecycle
 
