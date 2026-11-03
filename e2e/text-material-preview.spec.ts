@@ -9,9 +9,9 @@ const policyId = "a".repeat(64);
 const composer = (page: Page) =>
   page.getByLabel("Сообщение помощнику", { exact: true });
 const entry = (page: Page) =>
-  page.getByRole("button", { name: "Прикрепить TXT-материал", exact: true });
+  page.getByRole("button", { name: "Прикрепить материал", exact: true });
 const upload = (page: Page) =>
-  page.getByLabel("TXT-файл в UTF-8, до 64 КБ и 4000 символов", {
+  page.getByLabel("TXT до 64 КБ или PDF с текстом до 8 МБ и 50 страниц", {
     exact: true,
   });
 const preview = (page: Page) =>
@@ -287,7 +287,7 @@ test("invalid files and combined overflow remain local, preserve the question an
     {
       name: "resume.pdf",
       buffer: Buffer.from("%PDF fake"),
-      error: "Поддерживаются только TXT-файлы",
+      error: "Не удалось прочитать PDF",
     },
     {
       name: "large.txt",
@@ -339,7 +339,7 @@ test("invalid files and combined overflow remain local, preserve the question an
     .getByRole("button", { name: "Назад к выбору", exact: true })
     .click();
   await expect(
-    page.getByRole("button", { name: "Выбрать TXT-файл", exact: true }),
+    page.getByRole("button", { name: "Выбрать файл", exact: true }),
   ).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(page.getByRole("dialog")).toHaveCount(0);

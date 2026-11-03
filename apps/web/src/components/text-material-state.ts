@@ -1,3 +1,11 @@
+import {
+  abortableMaterialRead,
+  PDF_MATERIAL_MAX_BYTES,
+  PDF_MATERIAL_MAX_TEXT,
+  PDF_MATERIAL_TIMEOUT_MS,
+  type PdfMaterialText,
+} from "./pdf-material-limits";
+
 export const TEXT_MATERIAL_MAX_BYTES = 64 * 1024;
 export const TEXT_MESSAGE_MAX_LENGTH = 4000;
 
@@ -14,7 +22,14 @@ export type TextMaterialFile = Pick<File, "name" | "size" | "arrayBuffer">;
 export type TextMaterialView =
   | { phase: "select"; error?: string }
   | { phase: "reading"; filename: string }
-  | { phase: "preview"; filename: string; text: string; error?: string }
+  | {
+      phase: "preview";
+      filename: string;
+      text: string;
+      format?: "pdf";
+      pages?: number;
+      error?: string;
+    }
   | { phase: "closed" };
 
 export function sameTextMaterialScope(
@@ -28,7 +43,7 @@ export function sameTextMaterialScope(
   );
 }
 
-function validText(text: string) {
+function validText(text: string, limit = TEXT_MESSAGE_MAX_LENGTH) {
   if (!text.trim())
     throw new Error("В материале нет текста. Выберите другой TXT-файл.");
   for (const point of text) {
@@ -38,9 +53,11 @@ function validText(text: string) {
         "В файле есть нетекстовые данные. Выберите обычный TXT-файл в UTF-8.",
       );
   }
-  if (text.length > TEXT_MESSAGE_MAX_LENGTH)
+  if (text.length > limit)
     throw new Error(
-      "В материале больше 4000 символов. Сократите текст материала.",
+      limit === TEXT_MESSAGE_MAX_LENGTH
+        ? "В материале больше 4000 символов. Сократите текст материала."
+        : "В PDF больше 200 000 символов. Выберите меньший документ.",
     );
 }
 
@@ -60,9 +77,14 @@ export function createTextMaterialResource(options: {
   current: () => TextMaterialContext;
   publish: (view: TextMaterialView) => void;
   apply: (draft: string) => void;
+  readPdf?: (
+    buffer: ArrayBuffer,
+    signal: AbortSignal,
+  ) => Promise<PdfMaterialText>;
 }) {
   let disposed = false;
   let generation = 0;
+  let reading: AbortController | null = null;
   let view: TextMaterialView = { phase: "select" };
   const active = () =>
     !disposed &&
@@ -73,7 +95,12 @@ export function createTextMaterialResource(options: {
     view = next;
     if (active()) options.publish(next);
   };
+  const cancelRead = () => {
+    reading?.abort();
+    reading = null;
+  };
   const stop = () => {
+    cancelRead();
     generation++;
     disposed = true;
     view = { phase: "closed" };
@@ -82,20 +109,75 @@ export function createTextMaterialResource(options: {
   return {
     async select(file: TextMaterialFile) {
       if (!active()) return;
+      cancelRead();
       const selected = ++generation;
+      const controller = new AbortController();
+      reading = controller;
+      let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        // Metadata must pass before allocating a file buffer.
-        if (!/\.txt$/iu.test(file.name))
-          throw new Error("Поддерживаются только TXT-файлы в UTF-8.");
+        // Metadata must pass before allocating a file buffer or starting a worker.
+        const pdf = /\.pdf$/iu.test(file.name);
+        if (!pdf && !/\.txt$/iu.test(file.name))
+          throw new Error("Поддерживаются TXT-файлы в UTF-8 и PDF с текстом.");
         if (!Number.isSafeInteger(file.size) || file.size < 1)
-          throw new Error("Файл пуст. Выберите TXT-файл с текстом.");
-        if (file.size > TEXT_MATERIAL_MAX_BYTES)
-          throw new Error("Файл больше 64 КБ. Выберите меньший TXT-файл.");
+          throw new Error("Файл пуст. Выберите файл с текстом.");
+        const maxBytes = pdf ? PDF_MATERIAL_MAX_BYTES : TEXT_MATERIAL_MAX_BYTES;
+        if (file.size > maxBytes)
+          throw new Error(
+            pdf
+              ? "PDF больше 8 МБ. Выберите меньший документ."
+              : "Файл больше 64 КБ. Выберите меньший TXT-файл.",
+          );
+        if (pdf)
+          timer = setTimeout(
+            () =>
+              controller.abort(
+                new Error(
+                  "Не удалось прочитать PDF за 20 секунд. Выберите меньший документ.",
+                ),
+              ),
+            PDF_MATERIAL_TIMEOUT_MS,
+          );
         publish({ phase: "reading", filename: file.name });
-        const buffer = await file.arrayBuffer();
+        const buffer = await abortableMaterialRead(
+          file.arrayBuffer(),
+          controller.signal,
+        );
         if (!active() || selected !== generation) return;
-        if (buffer.byteLength > TEXT_MATERIAL_MAX_BYTES)
-          throw new Error("Файл больше 64 КБ. Выберите меньший TXT-файл.");
+        if (buffer.byteLength > maxBytes)
+          throw new Error(
+            pdf
+              ? "PDF больше 8 МБ. Выберите меньший документ."
+              : "Файл больше 64 КБ. Выберите меньший TXT-файл.",
+          );
+        if (pdf) {
+          if (
+            !/^%PDF-\d\.\d/.test(
+              new TextDecoder("ascii").decode(buffer.slice(0, 8)),
+            )
+          )
+            throw new Error(
+              "Не удалось прочитать PDF. Проверьте формат файла.",
+            );
+          const result = await abortableMaterialRead(
+            options.readPdf
+              ? options.readPdf(buffer, controller.signal)
+              : import("./pdf-material-reader").then(({ readPdfMaterial }) =>
+                  readPdfMaterial(buffer, controller.signal),
+                ),
+            controller.signal,
+          );
+          if (!active() || selected !== generation) return;
+          validText(result.text, PDF_MATERIAL_MAX_TEXT);
+          publish({
+            phase: "preview",
+            filename: file.name,
+            text: result.text,
+            format: "pdf",
+            pages: result.pages,
+          });
+          return;
+        }
         let text: string;
         try {
           text = new TextDecoder("utf-8", { fatal: true }).decode(buffer);
@@ -115,14 +197,18 @@ export function createTextMaterialResource(options: {
               ? cause.message
               : "Не удалось прочитать файл. Выберите его ещё раз.",
         });
+      } finally {
+        clearTimeout(timer);
+        if (reading === controller) reading = null;
       }
     },
     edit(text: string) {
       if (!active() || view.phase !== "preview") return;
-      publish({ phase: "preview", filename: view.filename, text });
+      publish({ ...view, text, error: undefined });
     },
     back() {
       if (!active()) return;
+      cancelRead();
       generation++;
       publish({ phase: "select" });
     },

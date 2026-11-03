@@ -9,6 +9,7 @@ import {
   type TextMaterialScope,
   type TextMaterialView,
 } from "./text-material-state";
+import { PDF_MATERIAL_MAX_TEXT } from "./pdf-material-limits";
 import styles from "./text-material-preview.module.css";
 
 export function TextMaterialPreview({
@@ -61,7 +62,7 @@ export function TextMaterialPreview({
           disabled={disabled || sessionSignal.aborted}
           onClick={() => setScope({ userId, threadId, sessionSignal })}
         >
-          Прикрепить TXT-материал
+          Прикрепить материал
         </Button>
       </span>
       {scope && available && (
@@ -170,12 +171,24 @@ function TextMaterialDialog({
           <section className={styles.file} aria-label="Текст материала">
             <span className={styles.eyebrow}>ПРОСМОТР ПЕРЕД ОТПРАВКОЙ</span>
             <h3>{preview.filename}</h3>
-            <label htmlFor="text-material-content">Текст из TXT-файла</label>
+            <label htmlFor="text-material-content">
+              {preview.format === "pdf"
+                ? "Текст из PDF-файла"
+                : "Текст из TXT-файла"}
+            </label>
+            {preview.format === "pdf" && (
+              <p>
+                PDF: {preview.pages} стр. Оставьте нужный фрагмент для вашего
+                вопроса. Форматирование и порядок текста могут отличаться от
+                документа.
+              </p>
+            )}
             <textarea
               id="text-material-content"
               className="ym-disable-keys ym-hide-content"
               value={preview.text}
               rows={9}
+              maxLength={PDF_MATERIAL_MAX_TEXT}
               onChange={(event) => resource.current?.edit(event.target.value)}
               aria-describedby="text-material-count"
             />
@@ -186,11 +199,11 @@ function TextMaterialDialog({
             </small>
           </section>
         ) : (
-          <section className={styles.file} aria-label="Выбор TXT-файла">
+          <section className={styles.file} aria-label="Выбор файла">
             <span className={styles.eyebrow}>ПРОСМОТР ПЕРЕД ОТПРАВКОЙ</span>
             <h3>Текстовый материал</h3>
             <label htmlFor="text-material-file">
-              TXT-файл в UTF-8, до 64 КБ и 4000 символов
+              TXT до 64 КБ или PDF с текстом до 8 МБ и 50 страниц
             </label>
             <input
               ref={file}
@@ -198,7 +211,7 @@ function TextMaterialDialog({
               type="file"
               hidden
               className="ym-disable-keys ym-hide-content"
-              accept=".txt,text/plain"
+              accept=".txt,.pdf,text/plain,application/pdf"
               disabled={reading}
               onChange={(event) => {
                 const selected = event.target.files?.[0];
@@ -212,9 +225,13 @@ function TextMaterialDialog({
                 disabled={reading}
                 onClick={() => file.current?.click()}
               >
-                Выбрать TXT-файл
+                Выбрать файл
               </Button>
             </span>
+            <p>
+              Сканы и PDF с паролем не поддерживаются. После проверки оставьте
+              фрагмент: вопрос вместе с материалом — до 4000 символов.
+            </p>
             {reading && <p role="status">Читаем текст…</p>}
           </section>
         )}

@@ -22,7 +22,8 @@
     "@citygo/content": "workspace:*",
     "@citygo/assets": "workspace:*",
     "@citygo/design-tokens": "workspace:*",
-    "@citygo/admin": "workspace:*"
+    "@citygo/admin": "workspace:*",
+    "pdfjs-dist": "6.5.438"
   },
   "devDependencies": {
     "@types/react": "^19.1.10",
