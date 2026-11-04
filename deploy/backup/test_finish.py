@@ -564,7 +564,14 @@ class PostpayMemoryCutover(RouterAiCutover):
         for role, service in spec["services"].items():
             for key in ("LLM_MAX_INPUT_BYTES", "AI_CONTEXT_STRATEGY", "AI_CUSTOMER_BILLING_MODE"):
                 self.assertNotIn(key, service.get("environment", {}))
-            if role != "api": self.assertNotIn("secrets", service)
+            if role != "api":
+                self.assertFalse(any(mount.get("source") == "api_config" if isinstance(mount, dict)
+                                     else mount == "api_config" for mount in service.get("secrets", [])))
+        self.assertEqual(spec["services"]["worker"]["secrets"], [{"source": "worker_config", "target": "worker.json"}])
+        self.assertNotIn("secrets", spec["services"]["web"])
+        for key in s.EMAIL_PRIVATE_KEYS | s.PROSTOSMS_PRIVATE_KEYS | {"GIGACHAT_CREDENTIALS", "ROUTERAI_API_KEY"}:
+            self.assertNotIn(value[key], self.plan["files"]["compose.json"].decode())
+            self.assertNotIn(value[key], json.dumps(result))
         self.assertTrue(self.host.closed)
         self.assertFalse((self.state / w.ADMISSION).exists())
         for key in ("traffic_authorized", "worker_authorized", "restart_authorized"):
