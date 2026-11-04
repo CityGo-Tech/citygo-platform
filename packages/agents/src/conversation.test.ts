@@ -52,14 +52,24 @@ test("all CityGo specialists share gradual conversational help and confirmation 
     "digital-mentor",
   ] as const) {
     const prompt = instructions(agent);
-    assert.match(prompt, /сначала дай полезный ориентир/);
-    assert.match(prompt, /не более одного следующего уместного вопроса/);
+    assert.match(prompt, /Дай полезный ответ из имеющихся данных/);
+    assert.match(prompt, /не более одного вопроса/);
     assert.match(prompt, /Для первой помощи не нужны заполненный профиль/);
-    assert.match(prompt, /пропуск вопроса допустимы/);
-    assert.match(prompt, /не повторяй пропущенный вопрос автоматически/);
-    assert.match(prompt, /явно уточнённые человеком данные/);
-    assert.match(prompt, /Не превращай догадки модели в подтверждённые данные/);
-    assert.match(prompt, /у тебя нет инструмента записи профиля/);
+    assert.match(
+      prompt,
+      /Ответы «не знаю», «ещё не решил» и пропуск вопроса допустимы/,
+    );
+    assert.match(prompt, /человек может сменить тему/);
+    assert.match(prompt, /Не повторяй пропущенный вопрос автоматически/);
+    assert.match(
+      prompt,
+      /Более позднее явное исправление важнее ранней реплики или профиля/,
+    );
+    assert.match(
+      prompt,
+      /Не превращай собственную догадку в слова пользователя/,
+    );
+    assert.match(prompt, /У тебя нет инструмента записи профиля/);
     assert.match(prompt, /Не проси паспорт, платёжные данные, пароли/);
   }
 });

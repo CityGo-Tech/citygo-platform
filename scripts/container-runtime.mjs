@@ -142,7 +142,13 @@ const postpayActualFixed = {
   AI_CUSTOMER_BILLING_MODE: "postpay_actual_v1",
   AI_REQUEST_COST_LIMIT_MODE: "operator_ceiling",
 };
+// Explicit v15 input envelope; the approved v14 marker keeps its 8 KiB cap.
+const postpayContext64Fixed = {
+  ...postpayActualFixed,
+  LLM_MAX_INPUT_BYTES: "65536",
+};
 const routerAiProfiles = {
+  "postpay-context64-v1": postpayContext64Fixed,
   "postpay-actual-v1": postpayActualFixed,
   "routerai-credit-v1": routerAiFixed,
   "routerai-citygo-10x-v1": citygo10xFixed,
@@ -292,7 +298,8 @@ function validateRouterAi(value, fixed) {
             citygo10xLiveCnFiscalOverdraftEmailProstoUnlimitedAssistantModesFixed ||
           fixed ===
             citygo10xLiveCnFiscalOverdraftEmailProstoUnlimitedAssistantModesGigaFixed ||
-          fixed === postpayActualFixed
+          fixed === postpayActualFixed ||
+          fixed === postpayContext64Fixed
             ? value[key] !== "unlimited"
             : !/^[1-9][0-9]{0,6}$/.test(value[key]) ||
               Number(value[key]) > maximum,
