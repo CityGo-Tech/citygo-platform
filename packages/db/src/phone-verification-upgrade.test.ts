@@ -257,9 +257,7 @@ test("disposable schema rewinds fail closed on a bound phone identity before dro
       "utf8",
     );
     const match =
-      /psql\(\s*`(begin;\s*drop table payment_admission_commands,payment_admission_reconciliation_events,payment_admission;[\s\S]*?commit)`/.exec(
-        source,
-      );
+      /psql\(\s*`(begin;\s*-- 0047 private memory[\s\S]*?commit)`/.exec(source);
     assert.ok(match);
     assert.equal(match[1]!.includes("${"), false);
     rewinds.push(match[1]!);

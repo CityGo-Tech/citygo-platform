@@ -33,13 +33,15 @@ export function registerAssistantContext(
       maxOutputTokens: number;
     };
   },
+  authenticateBeforeBody = authenticate,
 ) {
   app.post(
     "/v1/ai/context-preview",
     {
       bodyLimit: 2 * 1024 * 1024,
-      onRequest: async (request) => {
-        await authenticate(request);
+      preParsing: async (request, _reply, payload) => {
+        await authenticateBeforeBody(request);
+        return payload;
       },
       config: { rateLimit: { max: 30, timeWindow: 60_000 } },
     },

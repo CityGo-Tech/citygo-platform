@@ -1143,6 +1143,7 @@ export async function buildApp(options: {
           },
         }
       : undefined,
+    (request) => drain.run(() => authenticate(request)),
   );
   registerResultDiscussionApi(app, options.db, authenticate);
   app.post("/v1/conversations/start", async (request) => {
@@ -1336,8 +1337,9 @@ export async function buildApp(options: {
     "/v1/threads/:id/messages",
     {
       bodyLimit: 2 * 1024 * 1024,
-      onRequest: async (request) => {
-        await authenticate(request);
+      preParsing: async (request, _reply, payload) => {
+        await drain.run(() => authenticate(request));
+        return payload;
       },
       config: {
         rateLimit: {

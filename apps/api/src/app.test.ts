@@ -268,6 +268,91 @@ test("production RouterAI approval still requires user consent, monetary approva
   assert.equal(calls, 1);
 });
 
+for (const contextPreview of [false, true])
+  test(
+    `shutdown waits for pre-body authentication and rejects the later ${contextPreview ? "context preview" : "chat"} handler without DB access`,
+    { timeout: 15000 },
+    async (t) => {
+      const f = await fixture();
+      let release!: () => void, entered!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      t.after(async () => {
+        release();
+        await f.close();
+      });
+      const user = await chatUser(f);
+      const original: Database["query"] = f.db.query.bind(f.db);
+      let authCalls = 0,
+        closed = false;
+      const queries = t.mock.method(
+        f.db,
+        "query",
+        async <T>(sql: string, params?: unknown[]) => {
+          assert.equal(
+            closed,
+            false,
+            "shutdown cannot close the DB while pre-body authentication still uses it",
+          );
+          if (sql.includes("from sessions")) {
+            authCalls++;
+            if (authCalls === 1) {
+              entered();
+              await gate;
+            }
+          }
+          return original<T>(sql, params);
+        },
+      );
+      const pending = f.call(
+        "POST",
+        contextPreview
+          ? "/v1/ai/context-preview"
+          : `/v1/threads/${user.thread}/messages`,
+        user.token,
+        contextPreview
+          ? { threadId: user.thread, draft: "Сохранённый текст" }
+          : {
+              text: "Не отправлять модели",
+              requestId: randomUUID(),
+              policyId: user.policyId,
+            },
+      );
+      await started;
+      assert.equal(f.drain.active, 1);
+      const stopped = createShutdown(f.drain, async () => {
+        closed = true;
+      })();
+      assert.equal(closed, false);
+      release();
+      await stopped;
+      const response = await pending;
+      assert.equal(response.statusCode, 503, response.body);
+      assert.equal(response.json().code, "SERVICE_UNAVAILABLE");
+      assert.equal(closed, true);
+      assert.equal(f.drain.active, 0);
+      assert.equal(
+        authCalls,
+        1,
+        "the drained handler never performs its second authorization",
+      );
+      assert.ok(
+        queries.mock.callCount() > 1,
+        "the whole multi-query authorization stays inside the drain lease",
+      );
+      queries.mock.restore();
+      assert.equal((await f.db.query("select 1 from messages")).rows.length, 0);
+      assert.equal(
+        (await f.db.query("select 1 from ai_model_attempts")).rows.length,
+        0,
+      );
+    },
+  );
+
 for (const cancelled of [false, true]) {
   test(
     `API drain blocks all new DB operations and settles chat (${cancelled ? "cancelled" : "completed"})`,
@@ -329,6 +414,11 @@ for (const cancelled of [false, true]) {
           },
         ],
         ["POST", "/v1/questionnaire", testProfile],
+        [
+          "POST",
+          "/v1/ai/context-preview",
+          { threadId: user.thread, draft: "Не читать во время остановки" },
+        ],
         [
           "POST",
           path,

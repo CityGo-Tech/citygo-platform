@@ -97,9 +97,7 @@ test("reset and exact disposable rewinds retain active and unlinked contact proo
       "utf8",
     );
     const match =
-      /psql\(\s*`(begin;\s*drop table payment_admission_commands,payment_admission_reconciliation_events,payment_admission;[\s\S]*?commit)`/.exec(
-        source,
-      );
+      /psql\(\s*`(begin;\s*-- 0047 private memory[\s\S]*?commit)`/.exec(source);
     assert.ok(
       match,
       "Exercise the exact guarded fixture SQL, not a second copy",

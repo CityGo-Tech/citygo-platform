@@ -73,9 +73,7 @@ test("exact disposable rewinds reject populated personal-plan history and tombst
       "utf8",
     );
     const match =
-      /psql\(\s*`(begin;\s*drop table payment_admission_commands,payment_admission_reconciliation_events,payment_admission;[\s\S]*?commit)`/.exec(
-        source,
-      );
+      /psql\(\s*`(begin;\s*-- 0047 private memory[\s\S]*?commit)`/.exec(source);
     assert.ok(match, "Execute the exact static fixture SQL, not a second copy");
     assert.equal(match[1]!.includes("${"), false);
     rewinds.push({ name: file, sql: match[1]! });
