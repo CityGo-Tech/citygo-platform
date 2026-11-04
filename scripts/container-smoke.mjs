@@ -163,7 +163,7 @@ try {
   );
   assert.equal(
     psql(
-      "select bool_or(rolsuper or rolcreaterole or rolcreatedb) from pg_roles where rolname in ('citygo_api','citygo_worker','citygo_migrator')",
+      "select bool_or(rolsuper or rolcreaterole or rolcreatedb) from pg_roles where rolname in ('citygo_api','citygo_worker','citygo_migrator','citygo_backup')",
     ),
     "f",
   );
@@ -177,10 +177,10 @@ try {
   assert.equal(psql("select count(*) from conversation_memory_fragments"), "0");
   assert.equal(
     psql(
-      "select has_table_privilege('citygo_api','conversation_memory_fragments','SELECT') and has_table_privilege('citygo_api','conversation_memory_fragments','INSERT') and has_table_privilege('citygo_backup','conversation_memory_fragments','SELECT') and not has_table_privilege('citygo_api','conversation_memory_fragments','UPDATE') and not has_table_privilege('citygo_api','conversation_memory_fragments','DELETE') and not has_table_privilege('citygo_api','conversation_memory_fragments','TRUNCATE') and not has_table_privilege('citygo_worker','conversation_memory_fragments','SELECT') and not has_table_privilege('citygo_worker','conversation_memory_fragments','INSERT') and not has_table_privilege('citygo_worker','conversation_memory_fragments','UPDATE') and not has_table_privilege('citygo_worker','conversation_memory_fragments','DELETE') and not has_table_privilege('citygo_worker','conversation_memory_fragments','TRUNCATE')",
+      "select has_table_privilege('citygo_api','conversation_memory_fragments','SELECT') and has_table_privilege('citygo_api','conversation_memory_fragments','INSERT') and has_table_privilege('citygo_backup','conversation_memory_fragments','SELECT') and not has_table_privilege('citygo_backup','conversation_memory_fragments','INSERT') and not has_table_privilege('citygo_backup','conversation_memory_fragments','UPDATE') and not has_table_privilege('citygo_backup','conversation_memory_fragments','DELETE') and not has_table_privilege('citygo_backup','conversation_memory_fragments','TRUNCATE') and not has_table_privilege('citygo_api','conversation_memory_fragments','UPDATE') and not has_table_privilege('citygo_api','conversation_memory_fragments','DELETE') and not has_table_privilege('citygo_api','conversation_memory_fragments','TRUNCATE') and not has_table_privilege('citygo_worker','conversation_memory_fragments','SELECT') and not has_table_privilege('citygo_worker','conversation_memory_fragments','INSERT') and not has_table_privilege('citygo_worker','conversation_memory_fragments','UPDATE') and not has_table_privilege('citygo_worker','conversation_memory_fragments','DELETE') and not has_table_privilege('citygo_worker','conversation_memory_fragments','TRUNCATE')",
     ),
     "t",
-    "Private conversation quotations start empty with append-only API access and no worker access",
+    "Private conversation quotations start empty with append-only API access, read-only backup access and no worker access",
   );
   compose(["up", "-d", "--wait", "--wait-timeout", "120", "api", "web"]);
   const url = "http://" + compose(["port", "web", "3000"]).trim();
