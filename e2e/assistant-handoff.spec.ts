@@ -532,7 +532,7 @@ test("a full target draft is never overwritten or silently truncated", async ({
   context,
 }) => {
   const state = await fixture(context);
-  const existing = "x".repeat(3999);
+  const existing = "x".repeat(99_999);
   await page.addInitScript(
     (text) =>
       sessionStorage.setItem(

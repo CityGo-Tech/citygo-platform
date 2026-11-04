@@ -11,7 +11,7 @@ const composer = (page: Page) =>
 const entry = (page: Page) =>
   page.getByRole("button", { name: "Прикрепить материал", exact: true });
 const upload = (page: Page) =>
-  page.getByLabel("TXT до 64 КБ или PDF с текстом до 8 МБ и 50 страниц", {
+  page.getByLabel("TXT до 1 МБ или PDF с текстом до 8 МБ и 50 страниц", {
     exact: true,
   });
 const preview = (page: Page) =>
