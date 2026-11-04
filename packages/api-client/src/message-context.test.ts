@@ -100,7 +100,7 @@ test("source context rejects missing/different target, foreign thread, invalid o
     { ...base, threadId: "9007199254740994" },
     { ...base, messages: [message(target), message("9007199254740994")] },
     { ...base, messages: [message(target), message(target)] },
-    { ...base, nextCursor: base.messages[0]!.id },
+    { ...base, nextCursor: base.messages.at(-1)!.id },
     { ...base, messages: [message("1\n"), message(target)] },
     { ...base, messages: [{ ...message(target), role: "tool" }] },
   ]) {

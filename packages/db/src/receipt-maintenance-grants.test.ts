@@ -32,9 +32,7 @@ test("the disposable release fixture rewinds only reviewed empty new schema and 
     "utf8",
   );
   const rewind =
-    /psql\(\s*`(begin;\s*drop table payment_admission_commands,payment_admission_reconciliation_events,payment_admission;[\s\S]*?commit)`/.exec(
-      source,
-    );
+    /psql\(\s*`(begin;\s*-- 0047 private memory[\s\S]*?commit)`/.exec(source);
   assert.ok(
     rewind,
     "Test the exact static disposable rewind, not a second copy",
@@ -46,6 +44,7 @@ test("the disposable release fixture rewinds only reviewed empty new schema and 
     9,
   );
   for (const table of [
+    "conversation_memory_fragments",
     "human_support_requests",
     "human_support_reads",
     "personal_plan_item_history",
@@ -79,6 +78,8 @@ test("the disposable release fixture rewinds only reviewed empty new schema and 
       null,
     );
   for (const name of [
+    "citygo_guard_conversation_memory_fragment",
+    "citygo_reject_conversation_memory_update",
     "citygo_guard_human_support_request",
     "citygo_guard_support_read",
     "citygo_guard_personal_plan_history",
@@ -120,10 +121,18 @@ test("the disposable release fixture rewinds only reviewed empty new schema and 
         .length,
       0,
     );
+  assert.equal(
+    (
+      await db.query<{ relation: string | null }>(
+        "select to_regclass('public.messages_memory_sources_idx')::text as relation",
+      )
+    ).rows[0]!.relation,
+    null,
+  );
   await migrate(db);
   assert.equal(
     (await db.query("select 1 from citygo_migrations")).rows.length,
-    46,
+    47,
   );
 });
 

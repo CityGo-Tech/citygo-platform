@@ -36,6 +36,7 @@ export function projectConversationHistory(
   state: ConversationHistoryState,
   latest: readonly Message[],
   maxMessages = 1000,
+  latestNextCursor?: string | null,
 ) {
   if (state.detached || state.phase === "closed") return state;
   if (!ascending(state.messages) || !ascending(latest))
@@ -45,7 +46,7 @@ export function projectConversationHistory(
   const gap =
     !!first &&
     !!last &&
-    latest.length >= 100 &&
+    (latestNextCursor !== undefined || latest.length >= 100) &&
     BigInt(first.id) > BigInt(last.id);
   const messages = merge(state.messages, latest);
   if (gap)
@@ -53,7 +54,8 @@ export function projectConversationHistory(
       ...state,
       phase: "ready" as const,
       messages: copy(latest),
-      nextCursor: latest[0]!.id,
+      nextCursor:
+        latestNextCursor === undefined ? latest[0]!.id : latestNextCursor,
       detached: false,
       error: "",
       notice:
@@ -73,6 +75,7 @@ export function createConversationHistoryResource({
   userId,
   threadId,
   initialMessages,
+  initialNextCursor,
   sessionSignal,
   load,
   publish,
@@ -82,6 +85,7 @@ export function createConversationHistoryResource({
   userId: string;
   threadId: string;
   initialMessages: readonly Message[];
+  initialNextCursor?: string | null;
   sessionSignal: AbortSignal;
   load: (before: string, signal: AbortSignal) => Promise<unknown>;
   publish: (state: ConversationHistoryState) => void;
@@ -95,16 +99,29 @@ export function createConversationHistoryResource({
     conversationHistoryIdSchema.safeParse(threadId).success &&
     ascending(initialMessages);
   let latest = copy(initialMessages);
+  let latestNextCursor = initialNextCursor;
   let closed = sessionSignal.aborted;
   let disposed = false;
   let generation = 0;
   let request: AbortController | undefined;
-  const initialCursor = (messages: readonly Message[]) =>
-    numeric && messages.length === 100 ? messages[0]!.id : null;
+  const initialCursor = (
+    messages: readonly Message[],
+    cursor?: string | null,
+  ) => {
+    if (!numeric) return null;
+    if (cursor !== undefined)
+      return cursor !== null &&
+        conversationHistoryIdSchema.safeParse(cursor).success &&
+        cursor === messages[0]?.id
+        ? cursor
+        : null;
+    // Old servers only page by count. An absent field keeps that contract.
+    return messages.length === 100 ? messages[0]!.id : null;
+  };
   let state: ConversationHistoryState = {
     phase: closed ? "closed" : "ready",
     messages: closed ? [] : copy(latest),
-    nextCursor: closed ? null : initialCursor(latest),
+    nextCursor: closed ? null : initialCursor(latest, latestNextCursor),
     detached: false,
     error: "",
     notice: "",
@@ -137,10 +154,11 @@ export function createConversationHistoryResource({
   sessionSignal.addEventListener("abort", close, { once: true });
   return {
     snapshot,
-    acceptLatest(messages: readonly Message[]) {
+    acceptLatest(messages: readonly Message[], nextCursor?: string | null) {
       if (!active()) return;
       if (numeric && !ascending(messages)) return;
       latest = copy(messages);
+      latestNextCursor = nextCursor;
       if (state.detached) return;
       // Do not discard already loaded older rows on a focus/balance/stream
       // refresh. If the bounded window fills, keep it read-only and offer the
@@ -149,6 +167,7 @@ export function createConversationHistoryResource({
         state,
         latest,
         maxPages * 100,
+        latestNextCursor,
       );
       if (
         projected.messages[0]?.id !== state.messages[0]?.id &&
@@ -187,7 +206,7 @@ export function createConversationHistoryResource({
       commit({
         phase: "ready",
         messages: copy(latest),
-        nextCursor: initialCursor(latest),
+        nextCursor: initialCursor(latest, latestNextCursor),
         detached: false,
         error: "",
         notice: "",
@@ -225,7 +244,7 @@ export function createConversationHistoryResource({
             (message) => BigInt(message.id) >= BigInt(before),
           ) ||
           (parsed.data.nextCursor !== null &&
-            (parsed.data.messages.length !== 100 ||
+            (parsed.data.messages.length === 0 ||
               parsed.data.nextCursor !== parsed.data.messages[0]?.id))
         )
           throw new Error("Invalid history page");

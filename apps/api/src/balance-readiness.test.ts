@@ -28,9 +28,13 @@ async function fixture(t: TestContext, oldSchema = 0) {
     assert.equal(names.length, oldSchema);
     assert.equal(
       names.at(-1),
-      oldSchema === 44
-        ? "0044_conversation_titles.sql"
-        : "0045_ai_balance_request_cost_limit.sql",
+      (
+        {
+          44: "0044_conversation_titles.sql",
+          45: "0045_ai_balance_request_cost_limit.sql",
+          46: "0046_postpay_actual.sql",
+        } as Record<number, string>
+      )[oldSchema],
     );
     for (const name of names) {
       const source = await readFile(new URL(name, directory), "utf8");
@@ -61,7 +65,7 @@ async function fixture(t: TestContext, oldSchema = 0) {
   return { db, app };
 }
 
-test("readiness rejects actual schema44 under legacy default and turns ready only after applying46 without creating money or model attempts", async (t) => {
+test("readiness rejects actual schema44 under legacy default and turns ready only after applying47 without creating money or model attempts", async (t) => {
   const f = await fixture(t, 44);
   const before = (
     await f.db.query(
@@ -93,7 +97,7 @@ test("readiness rejects actual schema44 under legacy default and turns ready onl
   assert.deepEqual(current.json(), { status: "ok" });
   assert.equal(
     (await f.db.query("select name from citygo_migrations")).rows.length,
-    46,
+    47,
   );
   assert.deepEqual(
     (
@@ -102,6 +106,54 @@ test("readiness rejects actual schema44 under legacy default and turns ready onl
       )
     ).rows,
     before,
+  );
+});
+
+test("readiness rejects actual schema46 until memory47 exists and checks its physical source guard", async (t) => {
+  const f = await fixture(t, 46);
+  assert.equal(
+    (await f.app.inject({ method: "GET", url: "/ready" })).statusCode,
+    503,
+  );
+  await migrate(f.db);
+  assert.equal(
+    (await f.app.inject({ method: "GET", url: "/ready" })).statusCode,
+    200,
+  );
+  await f.db.exec(
+    "alter table conversation_memory_fragments disable trigger conversation_memory_fragment_guard",
+  );
+  assert.equal(
+    (await f.app.inject({ method: "GET", url: "/ready" })).statusCode,
+    503,
+  );
+  await f.db.exec(
+    "alter table conversation_memory_fragments enable trigger conversation_memory_fragment_guard",
+  );
+  await f.db.exec(
+    "alter table conversation_memory_fragments disable trigger conversation_memory_update_guard",
+  );
+  assert.equal(
+    (await f.app.inject({ method: "GET", url: "/ready" })).statusCode,
+    503,
+  );
+  await f.db.exec(
+    "alter table conversation_memory_fragments enable trigger conversation_memory_update_guard",
+  );
+  await f.db.exec(
+    "alter table conversation_memory_fragments drop column source_sha256 cascade",
+  );
+  assert.equal(
+    (await f.app.inject({ method: "GET", url: "/ready" })).statusCode,
+    503,
+  );
+  assert.equal(
+    (
+      await f.db.query(
+        "select name from citygo_migrations where name='0047_conversation_memory.sql'",
+      )
+    ).rows.length,
+    1,
   );
 });
 

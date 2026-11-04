@@ -31,6 +31,56 @@ test("stored past move dates and legacy dashboards without optional money fields
   );
 });
 
+test("an explicit short-page history cursor is additive and bound to its first visible message", () => {
+  const thread = {
+    id: "1",
+    agentKey: "housing",
+    messages: [
+      {
+        id: "9007199254740993",
+        role: "user",
+        content: "😀".repeat(100000),
+        agentKey: "housing",
+        status: "complete",
+      },
+    ],
+  };
+  for (const messagesNextCursor of [undefined, null, "9007199254740993"]) {
+    const value = {
+      ...board,
+      thread: {
+        ...thread,
+        ...(messagesNextCursor === undefined ? {} : { messagesNextCursor }),
+      },
+    };
+    assert.deepEqual(dashboardResponseSchema.parse(value), value);
+  }
+  for (const messagesNextCursor of [
+    "9007199254740994",
+    "9007199254740993\n",
+    "01",
+    1,
+  ])
+    assert.equal(
+      dashboardResponseSchema.safeParse({
+        ...board,
+        thread: { ...thread, messagesNextCursor },
+      }).success,
+      false,
+    );
+  assert.equal(
+    dashboardResponseSchema.safeParse({
+      ...board,
+      thread: {
+        ...thread,
+        messages: [],
+        messagesNextCursor: "9007199254740993",
+      },
+    }).success,
+    false,
+  );
+});
+
 test("credit admission failure is additive and only valid for an ungenerated interrupted assistant message", () => {
   const message = {
     id: "2",

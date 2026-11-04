@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { readConfig } from "@citygo/config";
 import { createAiPolicy } from "./ai-policy.js";
 import { createAiExecution } from "./ai-execution.js";
+import { modelContextBudget } from "./model-context-budget.js";
 
 test("money approval binds recipient model and input/output caps, never credentials", () => {
   const config = readConfig({});
@@ -190,4 +191,78 @@ test("user-balance admission requires its own RouterAI execution approval and le
     createAiExecution(opted, minimum, pricing),
     createAiExecution(legacy, minimum, pricing),
   );
+});
+
+test("model-window packing binds the exact mode budget, counter and memory source semantics into execution identity", () => {
+  const common = {
+    LLM_PROVIDER: "routerai",
+    AI_CREDIT_MODE: "routerai_citygo_10x",
+    AI_CREDIT_RESERVATION_MODE: "fixed5_overdraft",
+    AI_CUSTOMER_BILLING_MODE: "postpay_actual_v1",
+    AI_ASSISTANT_MODES: "enabled",
+    AI_MINIMUM_FIXED_FEE: "enabled",
+    GIGACHAT_MODEL: "GigaChat-3-Ultra",
+    GIGACHAT_SCOPE: "GIGACHAT_API_PERS",
+    LLM_MAX_INPUT_BYTES: "65536",
+  };
+  const legacy = readConfig(common);
+  const configured = readConfig({
+    ...common,
+    LLM_MAX_INPUT_BYTES: "8388608",
+    AI_CONTEXT_STRATEGY: "model_window_memory_v1",
+  });
+  for (const [mode, provider, model, protocol] of [
+    ["maximum", "routerai", "openai/gpt-6.1-sol", "responses"],
+    [
+      "balanced",
+      "routerai",
+      "deepseek/deepseek-v4-pro-0813",
+      "chat/completions",
+    ],
+    ["minimum", "gigachat", "GigaChat-3-Ultra", "gigachat"],
+  ] as const) {
+    const policy = createAiPolicy(configured, { name: provider, model })!;
+    const modeProfile = { protocol, requestTimeoutMs: 60_000 };
+    const execution = createAiExecution(configured, policy, modeProfile);
+    assert.equal(execution.maxInputBytes, 8388608);
+    assert.equal(
+      execution.key,
+      createHash("sha256")
+        .update(
+          JSON.stringify({
+            version: "ai-reserve-v1",
+            policyId: policy.id,
+            maxInputBytes: 8388608,
+            maxOutputTokens: execution.maxOutputTokens,
+            modeProfile: {
+              ...modeProfile,
+              contextBudget: modelContextBudget(
+                mode,
+                execution.maxOutputTokens,
+              ),
+            },
+            customerBillingMode: "postpay_actual_v1",
+            creditReservationMode: "fixed5_overdraft",
+          }),
+        )
+        .digest("hex"),
+    );
+    assert.notEqual(
+      execution.key,
+      createAiExecution(legacy, policy, modeProfile).key,
+    );
+    assert.deepEqual(
+      Object.keys(execution).sort(),
+      ["key", "policy", "maxInputBytes", "maxOutputTokens"].sort(),
+    );
+    assert.throws(() => createAiExecution(configured, policy), /pinned mode/);
+    assert.throws(
+      () =>
+        createAiExecution(configured, policy, {
+          ...modeProfile,
+          protocol: protocol === "gigachat" ? "responses" : "gigachat",
+        }),
+      /pinned mode/,
+    );
+  }
 });

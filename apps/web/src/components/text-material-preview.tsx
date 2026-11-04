@@ -9,7 +9,11 @@ import {
   type TextMaterialScope,
   type TextMaterialView,
 } from "./text-material-state";
-import { PDF_MATERIAL_MAX_TEXT } from "./pdf-material-limits";
+import {
+  CHAT_CHARACTER_LIMIT_LABEL,
+  CHAT_MAX_UTF16_UNITS,
+  chatCharacterCount,
+} from "@citygo/contracts";
 import styles from "./text-material-preview.module.css";
 
 export function TextMaterialPreview({
@@ -78,7 +82,11 @@ export function TextMaterialPreview({
             )
               trigger.current?.querySelector("button")?.focus();
           }}
-          draftLength={draft.length}
+          draftLength={
+            draft.length > CHAT_MAX_UTF16_UNITS
+              ? null
+              : chatCharacterCount(draft)
+          }
         />
       )}
     </>
@@ -98,7 +106,7 @@ function TextMaterialDialog({
   onApply: (text: string) => void;
   onClose: () => void;
   onRestore: () => void;
-  draftLength: number;
+  draftLength: number | null;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const title = useRef<HTMLHeadingElement>(null);
@@ -188,14 +196,22 @@ function TextMaterialDialog({
               className="ym-disable-keys ym-hide-content"
               value={preview.text}
               rows={9}
-              maxLength={PDF_MATERIAL_MAX_TEXT}
               onChange={(event) => resource.current?.edit(event.target.value)}
               aria-describedby="text-material-count"
             />
             <small id="text-material-count">
               Вопрос и материал:{" "}
-              {draftLength + (draftLength ? 2 : 0) + 10 + preview.text.length}/
-              {TEXT_MESSAGE_MAX_LENGTH} символов с заголовком «Материал».
+              {draftLength === null ||
+              preview.text.length > CHAT_MAX_UTF16_UNITS * 2
+                ? "больше допустимого"
+                : (
+                    draftLength +
+                    (draftLength ? 2 : 0) +
+                    10 +
+                    chatCharacterCount(preview.text)
+                  ).toLocaleString("ru-RU")}
+              /{TEXT_MESSAGE_MAX_LENGTH.toLocaleString("ru-RU")} символов с
+              заголовком «Материал».
             </small>
           </section>
         ) : (
@@ -203,7 +219,7 @@ function TextMaterialDialog({
             <span className={styles.eyebrow}>ПРОСМОТР ПЕРЕД ОТПРАВКОЙ</span>
             <h3>Текстовый материал</h3>
             <label htmlFor="text-material-file">
-              TXT до 64 КБ или PDF с текстом до 8 МБ и 50 страниц
+              TXT до 1 МБ или PDF с текстом до 8 МБ и 50 страниц
             </label>
             <input
               ref={file}
@@ -230,7 +246,8 @@ function TextMaterialDialog({
             </span>
             <p>
               Сканы и PDF с паролем не поддерживаются. После проверки оставьте
-              фрагмент: вопрос вместе с материалом — до 4000 символов.
+              фрагмент: вопрос вместе с материалом — до{" "}
+              {CHAT_CHARACTER_LIMIT_LABEL} символов.
             </p>
             {reading && <p role="status">Читаем текст…</p>}
           </section>

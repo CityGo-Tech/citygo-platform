@@ -229,6 +229,57 @@ test("unsent chat draft survives reload, remains private and sends only after ex
   expect(state.external).toBe(0);
 });
 
+test("a full 100000-character emoji question survives reload and sends once without truncation", async ({
+  page,
+  context,
+}) => {
+  const state = await fixture(context);
+  const text = "😀".repeat(100000);
+  await page.goto("/");
+  await composer(page).fill(text);
+  await expect(composer(page)).toHaveValue(text);
+  await expect(composer(page)).not.toHaveAttribute("maxlength");
+  await page.reload();
+  await expect(composer(page)).toHaveValue(text);
+  expect(state.sends).toEqual([]);
+  const bounds = await composer(page).evaluate((element) => ({
+    height: element.getBoundingClientRect().height,
+    overflow: getComputedStyle(element).overflowY,
+  }));
+  expect(bounds.height).toBeLessThanOrEqual(270);
+  expect(bounds.overflow).toBe("auto");
+  await page.getByRole("button", { name: "Отправить", exact: true }).click();
+  await expect(
+    page.getByText("ПРОВЕРОЧНЫЙ_ОТВЕТ", { exact: true }),
+  ).toBeVisible();
+  expect(state.sends).toHaveLength(1);
+  expect(state.sends[0]!.input.text).toBe(text);
+  expect(state.external).toBe(0);
+  expect(state.unexpected).toEqual([]);
+});
+
+test("over-limit edits remain visible, block sending and cannot restore the preceding draft", async ({
+  page,
+  context,
+}) => {
+  const state = await fixture(context);
+  await page.goto("/");
+  await composer(page).fill("Ранее сохранённый вопрос");
+  const text = "Я".repeat(100001);
+  await composer(page).fill(text);
+  await expect(composer(page)).toHaveValue(text);
+  await expect(
+    page.getByRole("alert").filter({ hasText: "до 100 000 символов" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Отправить", exact: true }),
+  ).toBeDisabled();
+  expect(state.sends).toEqual([]);
+  await page.reload();
+  await expect(composer(page)).toHaveValue("");
+  expect(state.sends).toEqual([]);
+});
+
 test("draft restore never crosses authenticated owner after reload", async ({
   page,
   context,

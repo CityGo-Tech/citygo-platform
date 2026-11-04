@@ -147,7 +147,15 @@ const postpayContext64Fixed = {
   ...postpayActualFixed,
   LLM_MAX_INPUT_BYTES: "65536",
 };
+// Independent v16: model-window packing and source-bound memory are never
+// inferred from the old profile's larger byte allowance.
+const postpayMemoryFixed = {
+  ...postpayContext64Fixed,
+  LLM_MAX_INPUT_BYTES: "8388608",
+  AI_CONTEXT_STRATEGY: "model_window_memory_v1",
+};
 const routerAiProfiles = {
+  "postpay-memory-v1": postpayMemoryFixed,
   "postpay-context64-v1": postpayContext64Fixed,
   "postpay-actual-v1": postpayActualFixed,
   "routerai-credit-v1": routerAiFixed,
@@ -299,7 +307,8 @@ function validateRouterAi(value, fixed) {
           fixed ===
             citygo10xLiveCnFiscalOverdraftEmailProstoUnlimitedAssistantModesGigaFixed ||
           fixed === postpayActualFixed ||
-          fixed === postpayContext64Fixed
+          fixed === postpayContext64Fixed ||
+          fixed === postpayMemoryFixed
             ? value[key] !== "unlimited"
             : !/^[1-9][0-9]{0,6}$/.test(value[key]) ||
               Number(value[key]) > maximum,
@@ -321,7 +330,7 @@ export function containerSpec(
   if (
     inherited.CITYGO_MOUNTED_CONFIG !== undefined &&
     Object.keys(inherited).some((key) =>
-      /^(EMAIL_|POSTBOX_|PHONE_|SMS_|PROSTOSMS_|AI_ASSISTANT_MODES$|AI_MINIMUM_FIXED_FEE$|AI_MAXIMUM_REASONING_EFFORT$|AI_MODES_|AI_CUSTOMER_BILLING_MODE$|AI_REQUEST_COST_LIMIT_MODE$)/.test(
+      /^(EMAIL_|POSTBOX_|PHONE_|SMS_|PROSTOSMS_|AI_ASSISTANT_MODES$|AI_MINIMUM_FIXED_FEE$|AI_MAXIMUM_REASONING_EFFORT$|AI_MODES_|AI_CUSTOMER_BILLING_MODE$|AI_REQUEST_COST_LIMIT_MODE$|AI_CONTEXT_STRATEGY$)/.test(
         key,
       ),
     )

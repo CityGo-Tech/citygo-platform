@@ -10,5 +10,9 @@ revoke delete on ai_credit_charges from citygo_api;
 -- Match production consent evidence permissions despite the broad synthetic
 -- fixture grant above. The runtime must only read and append these records.
 revoke update, delete, truncate on service_consent_events from citygo_api;
+-- Match the production private memory index's append-only boundary.
+revoke update, delete, truncate on conversation_memory_fragments from citygo_api;
 grant select, delete on sessions, analytics_events to citygo_worker;
 grant select, update on agent_threads, chat_requests to citygo_worker;
+grant select on all tables in schema public to citygo_backup;
+grant select on all sequences in schema public to citygo_backup;

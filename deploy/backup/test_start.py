@@ -251,7 +251,7 @@ class Validation(unittest.TestCase):
                           s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_UNLIMITED_PROFILE,
                           s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_UNLIMITED_ASSISTANT_MODES_PROFILE,
                           s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_UNLIMITED_ASSISTANT_MODES_GIGACHAT_FLAT3_PROFILE,
-                          s.POSTPAY_ACTUAL_PROFILE, s.POSTPAY_CONTEXT64_PROFILE})
+                          s.POSTPAY_ACTUAL_PROFILE, s.POSTPAY_CONTEXT64_PROFILE, s.POSTPAY_MEMORY_PROFILE})
         for key in value:
             missing = dict(value); del missing[key]
             with self.subTest(missing=key), self.assertRaises(b.BackupError): validate(missing)
@@ -839,7 +839,60 @@ class Validation(unittest.TestCase):
         self.assertNotIn("ports", spec["services"]["api"])
 
 
+    def test_memory_v16_is_explicit_and_all_legacy_keysets_stay_closed(self):
+        profile = s.POSTPAY_MEMORY_PROFILE
+        value = routerai_fixture(profile)
+        previous = routerai_fixture(s.POSTPAY_CONTEXT64_PROFILE)
+        additions = {"LLM_MAX_INPUT_BYTES": "8388608", "AI_CONTEXT_STRATEGY": "model_window_memory_v1"}
+        self.assertEqual(value, {**previous, **additions})
+        self.assertEqual(s.PROFILE_VERSIONS[profile], 16)
+        for profiles in (s.CLOSED_ONLY_PROFILES, s.ASSISTANT_MODES_PROFILES, s.PROSTOSMS_UNLIMITED_PROFILES):
+            self.assertIn(profile, profiles)
+        def validate(data, selected=profile):
+            with patch.object(t, "read_file", return_value=encoded(data)):
+                return s.api_secret("/unused", selected)
+        self.assertEqual(validate(value), encoded(value))
+        for key in value:
+            missing = dict(value); del missing[key]
+            with self.subTest(missing=key), self.assertRaises(b.BackupError): validate(missing)
+        for change in ({"LLM_MAX_INPUT_BYTES": "65536"}, {"LLM_MAX_INPUT_BYTES": "8388607"},
+                       {"LLM_MAX_INPUT_BYTES": "8388609"}, {"AI_CONTEXT_STRATEGY": "legacy"},
+                       {"AI_CONTEXT_STRATEGY": "unlimited"}, {"AI_CUSTOMER_BILLING_MODE": "legacy"},
+                       {"AI_REQUEST_COST_LIMIT_MODE": "user_balance"}, {"AI_ASSISTANT_MODES": "disabled"},
+                       {"AI_MINIMUM_FIXED_FEE": "disabled"}, {"ROUTERAI_MAX_OUTPUT_TOKENS": "8192"},
+                       {"YOOKASSA_FISCAL_PROFILE": "disabled"}, {"PHONE_SMS_GLOBAL_TOTAL_LIMIT": "1"}):
+            with self.subTest(change=change), self.assertRaises(b.BackupError): validate({**value, **change})
+        for old, version in s.PROFILE_VERSIONS.items():
+            if version >= 16: continue
+            before = {"DATABASE_URL": value["DATABASE_URL"]} if old == s.PROFILE else routerai_fixture(old)
+            self.assertEqual(validate(before, old), encoded(before))
+            with self.subTest(old=old), self.assertRaises(b.BackupError): validate(value, old)
+            with self.subTest(old_strategy=old), self.assertRaises(b.BackupError):
+                validate({**before, "AI_CONTEXT_STRATEGY": "model_window_memory_v1"}, old)
+        with self.assertRaises(b.BackupError): validate(previous)
+
+    def test_memory_v16_marker_cannot_be_replaced_by_ambient_configuration(self):
+        profile = s.POSTPAY_MEMORY_PROFILE
+        self.assertEqual(s.profile_environment(profile), {"LLM_PROVIDER": "routerai", "CITYGO_AI_PROFILE": "postpay-memory-v1"})
+        image = {"local_id": "sha256:" + "c" * 64, "config_id": "sha256:" + "c" * 64}
+        container = preparation_fixture.container("api"); container["Image"] = image["local_id"]; container["State"]["Dead"] = False
+        current = detail(container, "api", image, "/tmp/api.json", profile)
+        args = ("api", image, "citygo-fixture", ORIGIN, "/tmp/api.json", {"web_api": WEB_NETWORK, "database": "e" * 64})
+        s.runtime(current, *args, profile)
+        for key in ("LLM_MAX_INPUT_BYTES", "AI_CONTEXT_STRATEGY", "AI_CUSTOMER_BILLING_MODE"):
+            bad = copy.deepcopy(current); bad["Config"]["Env"].append(key + "=synthetic-hidden")
+            with self.subTest(ambient=key), self.assertRaises(b.BackupError): s.runtime(bad, *args, profile)
+        with self.assertRaises(b.BackupError): s.runtime(current, *args, s.POSTPAY_CONTEXT64_PROFILE)
+        spec = s.compose_spec("citygo-fixture", ORIGIN, {"api": image, "web": image}, "/tmp/api.json", profile)
+        self.assertEqual(spec["services"]["api"]["restart"], "no")
+        self.assertNotIn("ports", spec["services"]["api"])
+        self.assertNotIn("secrets", spec["services"]["web"])
+
+
 def routerai_fixture(profile=s.ROUTERAI_PROFILE):
+    if profile == s.POSTPAY_MEMORY_PROFILE:
+        return json.loads((Path(__file__).resolve().parent.parent / "fixtures" /
+                           "postpay-memory-profile.fixture.json").read_bytes())
     if profile == s.POSTPAY_CONTEXT64_PROFILE:
         return json.loads((Path(__file__).resolve().parent.parent / "fixtures" /
                            "postpay-context64-profile.fixture.json").read_bytes())

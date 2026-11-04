@@ -1,5 +1,6 @@
 import {
   assistantContextInputSchema,
+  chatMessageTextSchema,
   assistantContextPreviewSchema,
   type AssistantContextInput,
 } from "@citygo/contracts";
@@ -1210,7 +1211,7 @@ export function createClient(
               BigInt(messages[index - 1]!.id) >= BigInt(message.id)),
         ) ||
         (result.nextCursor !== null &&
-          (result.messages.length !== 100 ||
+          (result.messages.length === 0 ||
             result.nextCursor !== result.messages[0]?.id))
       )
         throw new ApiError(
@@ -1336,6 +1337,9 @@ export function createClient(
       creditReservationMode?: "full" | "fixed5_overdraft",
       mode?: AiModeSelection,
     ) {
+      const validated = chatMessageTextSchema.safeParse(text);
+      if (!validated.success)
+        throw new ApiError(400, validated.error.issues[0]!.message);
       // Capture the exact displayed capability before yielding to fetch. No
       // selection, fallback or retry may change an already submitted request.
       const selectedMode =
@@ -1351,7 +1355,13 @@ export function createClient(
         response = await fetchResponse(
           path,
           op,
-          { text, requestId, policyId, creditReservationMode, ...selectedMode },
+          {
+            text,
+            requestId,
+            policyId,
+            creditReservationMode,
+            ...selectedMode,
+          },
           true,
         );
         await checkStatus(response, path, op);

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { chatMessageTextSchema } from "./chat-limits.js";
 import type { AiProviderId, ModelGeneration } from "./llm.js";
 import { aiPolicyIdSchema, type AiAccess } from "./ai-access.js";
 import type { ApiErrorResponse } from "./protocol.js";
@@ -117,7 +118,7 @@ export type ConversationList = {
 };
 export const chatInputSchema = z
   .object({
-    text: z.string().trim().min(1).max(4000),
+    text: chatMessageTextSchema,
     requestId: z.uuid(),
     // Missing IDs from old clients fail closed at admission, without sending data.
     policyId: aiPolicyIdSchema.optional(),
@@ -181,6 +182,8 @@ export type Dashboard = {
     agentKey: AgentKey;
     assistantKey?: AgentKey | null;
     closed?: boolean;
+    // Optional on old servers; explicit null means there are no earlier rows.
+    messagesNextCursor?: string | null;
     messages: Message[];
   } | null;
   provider: AiProviderId | "unconfigured";

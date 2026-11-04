@@ -31,6 +31,11 @@ import {
   loginSchema,
   formatMoneyMicros,
   formatSignedMoneyMicros,
+  CHAT_CHARACTER_LIMIT_LABEL,
+  CHAT_MAX_UTF16_UNITS,
+  chatCharacterCount,
+  chatTextError,
+  chatTextProblem,
   type Dashboard,
   type AiModeId,
 } from "@citygo/contracts";
@@ -130,6 +135,7 @@ export default function App() {
     [draft, setDraft] = useState(""),
     [confirmed, setConfirmed] = useState(false),
     [notice, setNotice] = useState("");
+  const [chatInputError, setChatInputError] = useState("");
   const abort = useRef<AbortController | null>(null);
   const contentScroll = useRef<ScrollView | null>(null);
   const balanceSection = useRef<View | null>(null);
@@ -169,6 +175,7 @@ export default function App() {
     setChangingPassword(false);
     setConfirmed(false);
     setText("");
+    setChatInputError("");
     setDraft("");
     setNotice("");
     setCompletion(null);
@@ -1166,11 +1173,33 @@ export default function App() {
                   <Field
                     label="Сообщение помощнику"
                     value={text}
-                    onChangeText={setText}
+                    onChangeText={(value) => {
+                      if (value.length > CHAT_MAX_UTF16_UNITS) {
+                        setChatInputError(chatTextError(value)!);
+                        return;
+                      }
+                      setChatInputError("");
+                      setText(value);
+                    }}
                     multiline
-                    maxLength={4000}
+                    style={{
+                      minHeight: 72,
+                      maxHeight: 240,
+                      textAlignVertical: "top",
+                    }}
                     editable={!busy}
                   />
+                  {chatInputError || chatTextError(text) ? (
+                    <Text accessibilityRole="alert">
+                      {chatInputError || chatTextError(text)}
+                    </Text>
+                  ) : text.length >= 1000 &&
+                    text.length <= CHAT_MAX_UTF16_UNITS ? (
+                    <Text>
+                      {chatCharacterCount(text).toLocaleString("ru-RU")} /{" "}
+                      {CHAT_CHARACTER_LIMIT_LABEL} символов
+                    </Text>
+                  ) : null}
                   <MobileAiModeSelector
                     key={board.user.id}
                     modes={board.aiAccess.modes}
@@ -1183,6 +1212,8 @@ export default function App() {
                     disabled={
                       busy ||
                       !text.trim() ||
+                      chatTextProblem(text) !== null ||
+                      Boolean(chatInputError) ||
                       !board.thread ||
                       !board.aiAccess?.granted ||
                       !isAiModeAvailable(
@@ -1193,6 +1224,8 @@ export default function App() {
                     }
                     onPress={() =>
                       void act("chat", async (ticket, operation) => {
+                        const textError = chatTextError(text);
+                        if (textError) throw new ApiError(400, textError);
                         const message = text;
                         const mode = captureAiModeSelection(
                           board.aiAccess.modes,

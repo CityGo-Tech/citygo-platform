@@ -6,6 +6,7 @@ import { X509Certificate } from "node:crypto";
 
 export const gigaAuthUrl = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth";
 export const gigaChatUrl = "https://api.giga.chat/v1/chat/completions";
+export const gigaTokenCountUrl = "https://api.giga.chat/v1/tokens/count";
 export type GigaPost = (
   url: string,
   init: {
@@ -47,7 +48,7 @@ export function createGigaPost(caBundleFile?: string): GigaPost {
     }
   }
   return async (url, init) => {
-    if (url !== gigaAuthUrl && url !== gigaChatUrl)
+    if (url !== gigaAuthUrl && url !== gigaChatUrl && url !== gigaTokenCountUrl)
       throw new Error("Unexpected GigaChat endpoint");
     init.signal.throwIfAborted();
     return new Promise<Response>((resolve, reject) => {

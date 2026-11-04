@@ -1572,6 +1572,119 @@ test("v15 mounts only the explicit 64 KiB context profile while v14 keeps 8 KiB"
       );
 });
 
+test("v16 requires its explicit memory profile without changing legacy profiles or scoped secrets", (t) => {
+  const directory = fixture(t);
+  const read = (file) =>
+    JSON.parse(readFileSync(join(root, "deploy/fixtures", file), "utf8"));
+  const marker = "postpay-memory-v1";
+  const value = read("postpay-memory-profile.fixture.json");
+  const previous = read("postpay-context64-profile.fixture.json");
+  const additions = {
+    LLM_MAX_INPUT_BYTES: "8388608",
+    AI_CONTEXT_STRATEGY: "model_window_memory_v1",
+  };
+  assert.deepEqual(value, { ...previous, ...additions });
+  mkdirSync(join(directory, "certs"));
+  copyFileSync(
+    join(root, "deploy/certificates/russian-trusted-root.crt"),
+    join(directory, "certs/russian-trusted-root.crt"),
+  );
+  const spec = (data, profile = marker, mode = "api", ambient = {}) => {
+    writeFileSync(join(directory, "api.json"), JSON.stringify(data));
+    return containerSpec(
+      mode,
+      {
+        CITYGO_MOUNTED_CONFIG: "1",
+        CITYGO_AI_PROFILE: profile,
+        LLM_PROVIDER: "routerai",
+        ...ambient,
+      },
+      directory,
+      directory,
+    );
+  };
+  const env = spec(value).env;
+  for (const [key, setting] of Object.entries(value))
+    assert.equal(env[key], setting);
+  for (const key of Object.keys(value)) {
+    const missing = { ...value };
+    delete missing[key];
+    assert.throws(() => spec(missing), /Invalid mounted/);
+  }
+  for (const change of [
+    { LLM_MAX_INPUT_BYTES: "65536" },
+    { LLM_MAX_INPUT_BYTES: "8388607" },
+    { LLM_MAX_INPUT_BYTES: "8388609" },
+    { AI_CONTEXT_STRATEGY: "legacy" },
+    { AI_CONTEXT_STRATEGY: "unlimited" },
+    { AI_CUSTOMER_BILLING_MODE: "legacy" },
+    { AI_REQUEST_COST_LIMIT_MODE: "user_balance" },
+    { AI_ASSISTANT_MODES: "disabled" },
+    { AI_MINIMUM_FIXED_FEE: "disabled" },
+    { ROUTERAI_MAX_OUTPUT_TOKENS: "8192" },
+    { AI_MAXIMUM_REASONING_EFFORT: "high" },
+    { YOOKASSA_FISCAL_PROFILE: "disabled" },
+    { PHONE_SMS_GLOBAL_TOTAL_LIMIT: "1" },
+    { OPENAI_API_KEY: "synthetic-forbidden" },
+  ])
+    assert.throws(() => spec({ ...value, ...change }), /Invalid mounted/);
+  for (const [oldMarker, file, override] of [
+    ["routerai-credit-v1", "routerai-profile.fixture.json"],
+    ["routerai-citygo-10x-v1", "routerai-citygo-10x-profile.fixture.json"],
+    ...liveMountedProfiles.map(([oldMarker, file]) => [oldMarker, file]),
+    [
+      "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-unlimited-assistant-modes-v1",
+      "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-unlimited-assistant-modes-profile.fixture.json",
+    ],
+    [
+      "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-unlimited-assistant-modes-gigachat-flat3-v1",
+      "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-unlimited-assistant-modes-gigachat-flat3-profile.fixture.json",
+    ],
+    [
+      "postpay-actual-v1",
+      "postpay-context64-profile.fixture.json",
+      { LLM_MAX_INPUT_BYTES: "8192" },
+    ],
+    ["postpay-context64-v1", "postpay-context64-profile.fixture.json"],
+  ]) {
+    const old = { ...read(file), ...override };
+    assert.doesNotThrow(() => spec(old, oldMarker));
+    assert.throws(() => spec(value, oldMarker), /Invalid mounted/);
+    assert.throws(() => spec(old), /Invalid mounted/);
+    assert.throws(
+      () =>
+        spec(
+          { ...old, AI_CONTEXT_STRATEGY: additions.AI_CONTEXT_STRATEGY },
+          oldMarker,
+        ),
+      /Invalid mounted/,
+    );
+    assert.throws(
+      () =>
+        spec(old, oldMarker, "api", {
+          AI_CONTEXT_STRATEGY: additions.AI_CONTEXT_STRATEGY,
+        }),
+      /Invalid mounted verification/,
+    );
+  }
+  for (const [key, setting] of Object.entries(additions))
+    assert.throws(
+      () => spec(value, marker, "api", { [key]: setting }),
+      /Invalid (?:mounted|container AI)/,
+    );
+  for (const mode of ["web", "worker", "migrate", "migrate-release"])
+    assert.throws(
+      () => spec(value, marker, mode),
+      /Invalid container AI profile/,
+    );
+  for (const scope of ["web", "build", "mobile", "worker", "migrator"])
+    for (const key of Object.keys(additions))
+      assert.equal(
+        serviceEnv(scope, { directory, inherited: env, loadFiles: false })[key],
+        undefined,
+      );
+});
+
 test("all mounted profiles, including disabled, refuse ambient verification prefixes", (t) => {
   const directory = fixture(t);
   for (const mode of ["api", "worker", "migrate"])
@@ -1595,6 +1708,7 @@ test("all mounted profiles, including disabled, refuse ambient verification pref
       "AI_MAXIMUM_REASONING_EFFORT",
       "AI_MODES_DATA_NOTICE",
       "AI_MODES_PRODUCTION_POLICY_ID",
+      "AI_CONTEXT_STRATEGY",
     ])
       assert.throws(
         () =>

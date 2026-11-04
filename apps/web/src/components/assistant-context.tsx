@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createClient } from "@citygo/api-client";
 import { Button, Card } from "@citygo/ui-web";
+import type { AiModeId } from "@citygo/contracts";
 import {
   createAssistantContextResource,
   type AssistantContextView,
@@ -14,6 +15,8 @@ export function AssistantContextPanel(props: {
   userId: string;
   threadId: string | null;
   draft: string;
+  aiMode?: AiModeId;
+  aiModeCatalogId?: string;
   sessionSignal: AbortSignal;
   onAccessDenied: () => void;
   onClose: () => void;
@@ -29,18 +32,30 @@ export function AssistantContextPanel(props: {
     userId: string;
     threadId: string | null;
     draft: string;
+    aiMode?: AiModeId;
+    aiModeCatalogId?: string;
     signal: AbortSignal;
     view: AssistantContextView;
   } | null>(null);
   useEffect(() => {
-    const { userId, threadId, draft, sessionSignal } = props;
-    const scope = { userId, threadId, draft, signal: sessionSignal };
+    const { userId, threadId, draft, sessionSignal, aiMode, aiModeCatalogId } =
+      props;
+    const scope = {
+      userId,
+      threadId,
+      draft,
+      signal: sessionSignal,
+      aiMode,
+      aiModeCatalogId,
+    };
     const current = createAssistantContextResource({
       scope,
       current: () => ({
         userId: latest.current.userId,
         threadId: latest.current.threadId,
         draft: latest.current.draft,
+        aiMode: latest.current.aiMode,
+        aiModeCatalogId: latest.current.aiModeCatalogId,
         signal: latest.current.sessionSignal,
         enabled: true,
       }),
@@ -48,6 +63,8 @@ export function AssistantContextPanel(props: {
         createClient("/api", { signal: () => signal }).previewAssistantContext({
           threadId,
           draft,
+          contextVersion: "model_window_memory_v1",
+          ...(aiMode && aiModeCatalogId ? { aiMode, aiModeCatalogId } : {}),
         }),
       publish: (view) => setSnapshot({ ...scope, view }),
       onAccessDenied: () => latest.current.onAccessDenied(),
@@ -59,13 +76,22 @@ export function AssistantContextPanel(props: {
       current.dispose();
       if (resource.current === current) resource.current = null;
     };
-  }, [props.userId, props.threadId, props.draft, props.sessionSignal]);
+  }, [
+    props.userId,
+    props.threadId,
+    props.draft,
+    props.sessionSignal,
+    props.aiMode,
+    props.aiModeCatalogId,
+  ]);
   const view =
     !props.sessionSignal.aborted &&
     snapshot?.userId === props.userId &&
     snapshot.threadId === props.threadId &&
     snapshot.signal === props.sessionSignal &&
-    snapshot.draft === props.draft
+    snapshot.draft === props.draft &&
+    snapshot.aiMode === props.aiMode &&
+    snapshot.aiModeCatalogId === props.aiModeCatalogId
       ? snapshot.view
       : null;
   const value = view?.phase === "ready" ? view.value : null;
@@ -135,13 +161,13 @@ export function AssistantContextPanel(props: {
           </section>
           {fields.some(([, text]) => text === null) && (
             <section className={styles.row}>
-              <h2>Вы пока не рассказывали</h2>
+              <h2>Не заполнено в профиле</h2>
               <p>
                 {fields
                   .filter(([, text]) => text === null)
                   .map(([label]) => label)
                   .join(", ")}
-                . Помощник уточнит нужное по ходу разговора.
+                . Эти сведения могут быть в переписке.
               </p>
             </section>
           )}
@@ -168,6 +194,38 @@ export function AssistantContextPanel(props: {
               </p>
             )}
           </section>
+          {value.memory && (
+            <section className={styles.row} aria-label="Память диалога">
+              <h2>Память диалога</h2>
+              <p>
+                Фрагменты ваших сообщений из этого разговора. Новые уточнения
+                важнее прежних сведений.
+              </p>
+              {value.memory.fragments.length ? (
+                <ol className={styles.messages}>
+                  {value.memory.fragments.map((fragment) => (
+                    <li key={fragment.messageId + ":" + fragment.start}>
+                      <strong>Ваше сообщение №{fragment.messageId}</strong>
+                      <p>{fragment.content}</p>
+                    </li>
+                  ))}
+                </ol>
+              ) : (
+                <p>Сохранённых фрагментов для этого вопроса пока нет.</p>
+              )}
+              {!value.memory.complete && (
+                <p className={styles.meta}>
+                  Показаны выбранные фрагменты. Полная переписка сохраняется в
+                  диалоге.
+                </p>
+              )}
+              {value.contextBudget?.needsProviderCheck && (
+                <p className={styles.meta}>
+                  Размер и состав контекста уточняются при отправке сообщения.
+                </p>
+              )}
+            </section>
+          )}
         </>
       )}
       <div className={styles.actions}>

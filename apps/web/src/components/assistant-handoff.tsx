@@ -1,6 +1,8 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import type { AgentKey, Dashboard } from "@citygo/contracts";
+import { CHAT_CHARACTER_LIMIT_LABEL, chatTextProblem } from "@citygo/contracts";
+import { ChatTextarea } from "./chat-textarea";
 import { Button, Card, SelectField } from "@citygo/ui-web";
 import { assistantCatalog } from "./assistant-conversations";
 import {
@@ -30,7 +32,7 @@ export function AssistantHandoffDialog({
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
-  const sourceFits = source.content.length <= 4000;
+  const sourceFits = chatTextProblem(source.content) === null;
   const [text, setText] = useState(sourceFits ? source.content : "");
   const [target, setTarget] = useState<AgentKey>(
     assistantCatalog.find((item) => item.key !== source.assistantKey)!.key,
@@ -154,15 +156,14 @@ export function AssistantHandoffDialog({
           <label htmlFor="assistant-handoff-text">Что передаём</label>
           {!sourceFits && (
             <p>
-              Сообщение длиннее 4000 символов. Вставьте сюда только нужный
-              фрагмент.
+              Сообщение длиннее {CHAT_CHARACTER_LIMIT_LABEL} символов. Вставьте
+              сюда только нужный фрагмент.
             </p>
           )}
-          <textarea
+          <ChatTextarea
             id="assistant-handoff-text"
             className="ym-hide-content ym-disable-keys"
             value={text}
-            maxLength={4000}
             rows={7}
             disabled={pending || disabled}
             onChange={(event) => {
@@ -184,7 +185,12 @@ export function AssistantHandoffDialog({
         <div className={styles.actions}>
           <Button
             type="button"
-            disabled={pending || disabled || !text.trim()}
+            disabled={
+              pending ||
+              disabled ||
+              !text.trim() ||
+              chatTextProblem(text) !== null
+            }
             onClick={() => void prepare()}
           >
             {pending ? "Готовим разговор…" : "Подготовить разговор"}

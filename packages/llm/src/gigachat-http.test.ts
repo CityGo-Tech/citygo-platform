@@ -7,7 +7,12 @@ import { getCACertificates } from "node:tls";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createGigaPost, gigaAuthUrl, gigaChatUrl } from "./gigachat-http.js";
+import {
+  createGigaPost,
+  gigaAuthUrl,
+  gigaChatUrl,
+  gigaTokenCountUrl,
+} from "./gigachat-http.js";
 
 const init = {
   headers: { Authorization: "Basic test-key" },
@@ -23,6 +28,7 @@ test("GigaChat HTTPS transport verifies TLS, isolates CA trust and never follows
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   let status = 200,
     calls = 0;
+  let expectedUrl = gigaAuthUrl;
   const originalRoots = getCACertificates("default");
   t.mock.method(
     https,
@@ -33,7 +39,7 @@ test("GigaChat HTTPS transport verifies TLS, isolates CA trust and never follows
       callback: (response: IncomingMessage) => void,
     ) => {
       calls++;
-      assert.equal(url, gigaAuthUrl);
+      assert.equal(url, expectedUrl);
       assert.equal(options.rejectUnauthorized, true);
       assert.equal(options.agent, false);
       assert.equal(options.method, "POST");
@@ -59,15 +65,19 @@ test("GigaChat HTTPS transport verifies TLS, isolates CA trust and never follows
   );
   const post = createGigaPost(path);
   assert.deepEqual(await (await post(gigaAuthUrl, init)).json(), { ok: true });
+  expectedUrl = gigaTokenCountUrl;
+  assert.deepEqual(await (await post(gigaTokenCountUrl, init)).json(), {
+    ok: true,
+  });
   status = 302;
-  assert.equal((await post(gigaAuthUrl, init)).status, 302);
-  assert.equal(calls, 2);
+  assert.equal((await post(gigaTokenCountUrl, init)).status, 302);
+  assert.equal(calls, 3);
   assert.deepEqual(getCACertificates("default"), originalRoots);
   await assert.rejects(
     post("https://other.example/redirect", init),
     /Unexpected GigaChat endpoint/,
   );
-  assert.equal(calls, 2);
+  assert.equal(calls, 3);
 });
 
 test("GigaChat chat transport supplies User-Agent without changing auth or body", async (t) => {

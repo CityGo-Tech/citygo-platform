@@ -1,10 +1,12 @@
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
 import type {
+  AiModeId,
+  AssistantContextInput,
   AssistantContextPreview,
   Dashboard,
   Message,
 } from "@citygo/contracts";
-import { fixture, noOtherTraffic } from "./ai-mode-fixture";
+import { catalogId, fixture, noOtherTraffic } from "./ai-mode-fixture";
 
 const contextName = "Что помощники знают";
 const opener = (page: Page) =>
@@ -16,6 +18,56 @@ const heading = (page: Page) =>
 const panel = (page: Page) => heading(page).locator("..");
 const composer = (page: Page) =>
   page.getByLabel("Сообщение помощнику", { exact: true });
+function previewInput(
+  threadId: string | null,
+  draft: string,
+  aiMode: AiModeId = "maximum",
+  aiModeCatalogId = catalogId,
+): AssistantContextInput {
+  return {
+    threadId,
+    draft,
+    contextVersion: "model_window_memory_v1",
+    aiMode,
+    aiModeCatalogId,
+  };
+}
+function contextBudget(
+  mode: AiModeId = "maximum",
+  needsProviderCheck = true,
+): NonNullable<AssistantContextPreview["contextBudget"]> {
+  return {
+    strategy: "model_window_memory_v1",
+    mode,
+    contextWindowTokens: 1_000_000,
+    maxInputTokens: 991_808,
+    maxOutputTokens: 4096,
+    framingReserve: 4096,
+    inputTextTokens: 1200,
+    verification: needsProviderCheck ? "conservative_utf8" : "provider_text",
+    needsProviderCheck,
+    mandatoryFits: true,
+  };
+}
+function memoryQuote(
+  content: string,
+  complete = false,
+): NonNullable<AssistantContextPreview["memory"]> {
+  return {
+    fragments: [
+      {
+        messageId: "9007199254740993",
+        content,
+        start: 7,
+        end: 7 + [...content].length,
+        sourceSha256: "a".repeat(64),
+      },
+    ],
+    complete,
+    indexComplete: complete,
+    indexedMessages: 3,
+  };
+}
 const knownProfile: NonNullable<Dashboard["profile"]> = {
   originCity: "Пермь",
   targetCity: "Казань",
@@ -76,11 +128,19 @@ async function contextFixture(
     profile,
     initialMessages: messages,
   });
-  const preview = {
-    requests: [] as {
+  const preview: {
+    requests: {
       owner: string;
-      input: { threadId: string | null; draft: string };
-    }[],
+      input: AssistantContextInput;
+    }[];
+    memory?: AssistantContextPreview["memory"];
+    contextBudget?: AssistantContextPreview["contextBudget"];
+    hold: boolean;
+    status: number;
+    revokeOnRead: boolean;
+    release: () => void;
+  } = {
+    requests: [],
     hold: false,
     status: 200,
     revokeOnRead: false,
@@ -96,12 +156,18 @@ async function contextFixture(
     const request = route.request();
     expect(request.method()).toBe("POST");
     expect(new URL(request.url()).search).toBe("");
-    const input = request.postDataJSON() as {
-      threadId: string | null;
-      draft: string;
-    };
+    const input = request.postDataJSON() as AssistantContextInput;
     const owner = state.owner;
-    expect(Object.keys(input).sort()).toEqual(["draft", "threadId"]);
+    expect(Object.keys(input).sort()).toEqual([
+      "aiMode",
+      "aiModeCatalogId",
+      "contextVersion",
+      "draft",
+      "threadId",
+    ]);
+    expect(input.contextVersion).toBe("model_window_memory_v1");
+    expect(input.aiModeCatalogId).toBe(state.catalogId);
+    expect(["maximum", "balanced", "minimum"]).toContain(input.aiMode);
     expect(input.threadId).toBe(owner === "101" ? "20" : "30");
     const response: AssistantContextPreview = {
       userId: owner,
@@ -119,6 +185,10 @@ async function contextFixture(
       closed: false,
       draftIncluded: Boolean(input.draft.trim()),
       messages: owner === "101" ? selected : [],
+      ...(owner === "101" && preview.memory ? { memory: preview.memory } : {}),
+      ...(preview.contextBudget
+        ? { contextBudget: { ...preview.contextBudget, mode: input.aiMode! } }
+        : {}),
     };
     const status = preview.status;
     if (preview.revokeOnRead) state.authenticated = false;
@@ -177,7 +247,7 @@ test("explicit context preview shows saved facts and the last complete pairs, ke
     "Семья",
   ]);
   await expect(
-    view.getByRole("heading", { name: "Вы пока не рассказывали", exact: true }),
+    view.getByRole("heading", { name: "Не заполнено в профиле", exact: true }),
   ).toHaveCount(0);
   await expect(view.locator("ol li p")).toHaveText(
     selected.map((message) => message.content),
@@ -208,7 +278,7 @@ test("explicit context preview shows saved facts and the last complete pairs, ke
     fullPage: true,
   });
   expect(preview.requests).toEqual([
-    { owner: "101", input: { threadId: "20", draft } },
+    { owner: "101", input: previewInput("20", draft) },
   ]);
   noWrites(state);
   await view
@@ -245,7 +315,7 @@ test("unknown relocation facts remain unknown; Back restores opener focus and em
     "Предполагаю, что ваш город Сочи",
   );
   await expect(
-    view.getByRole("heading", { name: "Вы пока не рассказывали", exact: true }),
+    view.getByRole("heading", { name: "Не заполнено в профиле", exact: true }),
   ).toBeVisible();
   await expect(view).toContainText(
     "Город назначения, Бюджет в месяц, Дата переезда, Состав семьи",
@@ -287,12 +357,185 @@ test("unknown relocation facts remain unknown; Back restores opener focus and em
   );
   await expect(composer(page)).toBeFocused();
   expect(preview.requests).toEqual([
-    { owner: "101", input: { threadId: "20", draft: "" } },
-    { owner: "101", input: { threadId: "20", draft: "" } },
-    { owner: "101", input: { threadId: "20", draft: "" } },
+    { owner: "101", input: previewInput("20", "") },
+    { owner: "101", input: previewInput("20", "") },
+    { owner: "101", input: previewInput("20", "") },
   ]);
   noWrites(state);
 });
+
+for (const complete of [false, true])
+  test(`source memory preserves exact user quotes and ${complete ? "complete" : "partial"} coverage without treating missing profile fields as missing history`, async ({
+    page,
+    context,
+  }) => {
+    const { state, preview } = await contextFixture(context);
+    const quote =
+      'Работаю у станции Тестовая; переезжаю с семьёй 🧳. <img src=x onerror="alert(1)">';
+    preview.memory = memoryQuote(quote, complete);
+    preview.contextBudget = contextBudget("maximum", !complete);
+    await page.goto("/");
+    await composer(page).fill("Что учитывать при выборе района?");
+    await opener(page).click();
+    const view = panel(page);
+    const memory = view.getByRole("region", {
+      name: "Память диалога",
+      exact: true,
+    });
+    await expect(memory.locator("ol li p")).toHaveText([quote]);
+    await expect(memory.locator("ol li strong")).toHaveText([
+      "Ваше сообщение №9007199254740993",
+    ]);
+    await expect(memory.locator("img")).toHaveCount(0);
+    await expect(memory).toContainText(
+      "Новые уточнения важнее прежних сведений.",
+    );
+    await expect(
+      view.getByRole("heading", {
+        name: "Не заполнено в профиле",
+        exact: true,
+      }),
+    ).toBeVisible();
+    await expect(view).toContainText("Эти сведения могут быть в переписке.");
+    await expect(
+      view.getByRole("region", { name: "Сохранённые сведения", exact: true }),
+    ).not.toContainText(quote);
+    const partial = memory.getByText(
+      "Показаны выбранные фрагменты. Полная переписка сохраняется в диалоге.",
+      { exact: true },
+    );
+    const providerCheck = memory.getByText(
+      "Размер и состав контекста уточняются при отправке сообщения.",
+      { exact: true },
+    );
+    if (complete) {
+      await expect(partial).toHaveCount(0);
+      await expect(providerCheck).toHaveCount(0);
+    } else {
+      await expect(partial).toBeVisible();
+      await expect(providerCheck).toBeVisible();
+    }
+    expect(preview.requests).toEqual([
+      {
+        owner: "101",
+        input: previewInput("20", "Что учитывать при выборе района?"),
+      },
+    ]);
+    await expect(view).toHaveClass(/ym-hide-content/);
+    await expect(view).toHaveClass(/ym-disable-keys/);
+    noWrites(state);
+  });
+
+test("an empty memory selection does not claim the complete conversation was forgotten", async ({
+  page,
+  context,
+}) => {
+  const { state, preview } = await contextFixture(context);
+  preview.memory = {
+    fragments: [],
+    complete: false,
+    indexComplete: true,
+    indexedMessages: 22,
+  };
+  preview.contextBudget = contextBudget();
+  await page.goto("/");
+  await opener(page).click();
+  const memory = panel(page).getByRole("region", {
+    name: "Память диалога",
+    exact: true,
+  });
+  await expect(memory).toContainText(
+    "Сохранённых фрагментов для этого вопроса пока нет.",
+  );
+  await expect(memory).toContainText("Полная переписка сохраняется в диалоге.");
+  await expect(memory.locator("li")).toHaveCount(0);
+  await expect(
+    panel(page).getByText("ЗАВЕРШЁННЫЙ_ВОПРОС_10", { exact: true }),
+  ).toBeVisible();
+  noWrites(state);
+});
+
+for (const change of ["mode", "catalog"] as const)
+  for (const status of [200, 401])
+    test(`a ${change} replacement reads fresh memory and ignores a delayed ${status} from the previous scope`, async ({
+      page,
+      context,
+    }) => {
+      // The right rail exposes mode selection while the context view is open.
+      await page.setViewportSize({ width: 1280, height: 900 });
+      const { state, preview } = await contextFixture(context);
+      const previousQuote = "СТАРЫЙ_КОНТЕКСТ_ДРУГОГО_РЕЖИМА_ИЛИ_КАТАЛОГА";
+      const currentQuote = "АКТУАЛЬНАЯ_ЦИТАТА_ПОСЛЕ_СМЕНЫ_РЕЖИМА_ИЛИ_КАТАЛОГА";
+      preview.memory = memoryQuote(previousQuote);
+      preview.contextBudget = contextBudget();
+      preview.hold = true;
+      preview.status = status;
+      await page.goto("/");
+      const draft = "НЕОТПРАВЛЕННЫЙ_ВОПРОС_ПРИ_СМЕНЕ_РЕЖИМА";
+      await composer(page).fill(draft);
+      await opener(page).click();
+      await expect.poll(() => preview.requests.length).toBe(1);
+      await expect(panel(page).getByRole("status")).toContainText(
+        "Загружаем контекст",
+      );
+      try {
+        // The handler already captured the old response/status. The replacement
+        // must read a new scope, even if aborting the old transport races delivery.
+        preview.memory = memoryQuote(currentQuote);
+        preview.status = 200;
+        if (change === "mode") {
+          const rail = page
+            .locator(".conversation-context")
+            .filter({ visible: true });
+          await rail
+            .getByRole("button", { name: "Режим работы", exact: true })
+            .click();
+          await rail
+            .getByRole("dialog", { name: "Режим работы", exact: true })
+            .getByRole("button", { name: "Баланс", exact: true })
+            .click();
+        } else {
+          const before = state.dashboardReads;
+          state.catalogId = "c".repeat(64);
+          await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+          await expect.poll(() => state.dashboardReads).toBeGreaterThan(before);
+        }
+        await expect.poll(() => preview.requests.length).toBe(2);
+        const memory = panel(page).getByRole("region", {
+          name: "Память диалога",
+          exact: true,
+        });
+        await expect(memory.locator("ol li p")).toHaveText([currentQuote]);
+        expect(preview.requests).toEqual([
+          { owner: "101", input: previewInput("20", draft) },
+          {
+            owner: "101",
+            input: previewInput(
+              "20",
+              draft,
+              change === "mode" ? "balanced" : "maximum",
+              change === "catalog" ? "c".repeat(64) : catalogId,
+            ),
+          },
+        ]);
+        preview.release();
+        await expect(memory.locator("ol li p")).toHaveText([currentQuote]);
+        await expect(
+          page.getByText(previousQuote, { exact: true }),
+        ).toHaveCount(0);
+        await expect(
+          page.getByText("Сессия завершилась. Войдите снова.", { exact: true }),
+        ).toHaveCount(0);
+        await expect(page.getByLabel("Пароль", { exact: true })).toHaveCount(0);
+        await panel(page)
+          .getByRole("button", { name: "Вернуться назад", exact: true })
+          .click();
+        await expect(composer(page)).toHaveValue(draft);
+        noWrites(state);
+      } finally {
+        preview.release();
+      }
+    });
 
 test("an older dashboard without context capability never dispatches a preview", async ({
   page,
@@ -417,7 +660,7 @@ for (const status of [200, 401]) {
         ).toHaveCount(0);
         expect(preview.requests[1]).toEqual({
           owner: "202",
-          input: { threadId: "30", draft: "" },
+          input: previewInput("30", ""),
         });
       } finally {
         preview.release();
@@ -455,7 +698,7 @@ for (const width of [1024, 1100, 1101])
       panel(page).getByRole("region", { name: "Сохранённые сведения" }),
     ).toContainText("Казань");
     expect(preview.requests).toEqual([
-      { owner: "101", input: { threadId: "20", draft } },
+      { owner: "101", input: previewInput("20", draft) },
     ]);
     await panel(page)
       .getByRole("button", { name: "Вернуться назад", exact: true })

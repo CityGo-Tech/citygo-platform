@@ -1,4 +1,5 @@
 /** Tab-local unsent text. Never a message receipt and never sent automatically. */
+import { CHAT_MAX_UTF16_UNITS, chatTextProblem } from "@citygo/contracts";
 type DraftStorage = Pick<
   Storage,
   "getItem" | "setItem" | "removeItem" | "key" | "length"
@@ -23,7 +24,8 @@ export function readChatDraft(
   try {
     const raw = storage.getItem(key);
     if (raw === null) return "";
-    if (raw.length > 25000) throw new Error("Oversized draft");
+    if (raw.length > CHAT_MAX_UTF16_UNITS * 6 + 256)
+      throw new Error("Oversized draft");
     const value: unknown = JSON.parse(raw);
     if (
       !value ||
@@ -31,7 +33,7 @@ export function readChatDraft(
       !("text" in value) ||
       !("savedAt" in value) ||
       typeof value.text !== "string" ||
-      value.text.length > 4000 ||
+      chatTextProblem(value.text) !== null ||
       typeof value.savedAt !== "number" ||
       !Number.isFinite(value.savedAt) ||
       value.savedAt > now ||
@@ -57,7 +59,16 @@ export function writeChatDraft(
   now = Date.now(),
 ): boolean {
   const key = keyFor(owner, thread);
-  if (!key || !storage || text.length > 4000) return false;
+  if (!key || !storage) return false;
+  if (chatTextProblem(text) !== null) {
+    // Do not resurrect the earlier valid draft after a rejected oversized edit.
+    try {
+      storage.removeItem(key);
+    } catch {
+      /* Storage is optional; the current text stays in the composer. */
+    }
+    return false;
+  }
   try {
     if (text === "") storage.removeItem(key);
     else storage.setItem(key, JSON.stringify({ text, savedAt: now }));

@@ -30,6 +30,7 @@ export function useConversationHistory({
     threadId: string;
     signal: AbortSignal;
     latestInput: readonly Message[];
+    latestCursor?: string | null;
     resource: ReturnType<typeof createConversationHistoryResource>;
   } | null>(null);
   const denied = useRef(onAccessDenied);
@@ -46,6 +47,7 @@ export function useConversationHistory({
       userId,
       threadId,
       initialMessages: board.thread.messages,
+      initialNextCursor: board.thread.messagesNextCursor,
       sessionSignal: signal,
       load: (before, requestSignal) =>
         createClient("/api", {
@@ -59,6 +61,7 @@ export function useConversationHistory({
       threadId,
       signal: sessionSignal,
       latestInput: board.thread.messages,
+      latestCursor: board.thread.messagesNextCursor,
       resource,
     };
     publish(resource.snapshot());
@@ -84,12 +87,23 @@ export function useConversationHistory({
     if (
       board?.thread &&
       activeResource() &&
-      current.current!.latestInput !== board.thread.messages
+      (current.current!.latestInput !== board.thread.messages ||
+        current.current!.latestCursor !== board.thread.messagesNextCursor)
     ) {
       current.current!.latestInput = board.thread.messages;
-      current.current!.resource.acceptLatest(board.thread.messages);
+      current.current!.latestCursor = board.thread.messagesNextCursor;
+      current.current!.resource.acceptLatest(
+        board.thread.messages,
+        board.thread.messagesNextCursor,
+      );
     }
-  }, [board?.thread?.messages, userId, threadId, sessionSignal]);
+  }, [
+    board?.thread?.messages,
+    board?.thread?.messagesNextCursor,
+    userId,
+    threadId,
+    sessionSignal,
+  ]);
   const matched =
     !sessionSignal.aborted &&
     snapshot !== null &&
@@ -102,8 +116,14 @@ export function useConversationHistory({
     matched &&
     board?.thread &&
     activeResource() &&
-    current.current!.latestInput !== board.thread.messages
-      ? projectConversationHistory(matched, board.thread.messages)
+    (current.current!.latestInput !== board.thread.messages ||
+      current.current!.latestCursor !== board.thread.messagesNextCursor)
+      ? projectConversationHistory(
+          matched,
+          board.thread.messages,
+          1000,
+          board.thread.messagesNextCursor,
+        )
       : matched;
   return {
     state,
@@ -111,7 +131,11 @@ export function useConversationHistory({
       board && board.thread && state
         ? {
             ...board,
-            thread: { ...board.thread, messages: [...state.messages] },
+            thread: {
+              ...board.thread,
+              messages: [...state.messages],
+              messagesNextCursor: state.nextCursor,
+            },
           }
         : board,
     detached: state?.detached ?? false,

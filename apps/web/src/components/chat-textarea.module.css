@@ -1,0 +1,22 @@
+.input {
+  field-sizing: content;
+  min-height: 4.5rem;
+  max-height: 16rem;
+  overflow-y: auto;
+  resize: vertical;
+}
+
+.status {
+  color: var(--muted, #687184);
+  display: block;
+  font-size: 0.875rem;
+  grid-column: 1 / -1;
+}
+
+:global(.conversation-composer) > .status {
+  grid-row: 3;
+}
+
+.error {
+  color: var(--danger, #b42342);
+}

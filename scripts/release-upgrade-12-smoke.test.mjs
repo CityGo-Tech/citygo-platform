@@ -52,13 +52,13 @@ test("the upgrade rehearsal rejects a production project before Docker or databa
   );
 });
 
-test("literal 12-era fixture rewinds current 46, rolls back late ACL failure and reapplies without losing data", async (t) => {
+test("literal 12-era fixture rewinds current 47, rolls back late ACL failure and reapplies without losing data", async (t) => {
   const db = new PGlite();
   t.after(() => db.close());
   await db.waitReady;
-  assert.equal(migrations.length, 46);
+  assert.equal(migrations.length, 47);
   assert.equal(migrations[11].name, "0012_housing_answer_history.sql");
-  assert.equal(migrations.at(-1).name, "0046_postpay_actual.sql");
+  assert.equal(migrations.at(-1).name, "0047_conversation_memory.sql");
   await db.exec(
     "create role citygo_api; create role citygo_worker; create role citygo_backup; create table citygo_migrations(name text primary key,checksum text not null)",
   );
@@ -84,14 +84,70 @@ test("literal 12-era fixture rewinds current 46, rolls back late ACL failure and
   await apply(migrations);
 
   const rewind =
-    /psql\(\s*`(begin;\s*drop table payment_admission_commands,payment_admission_reconciliation_events,payment_admission;[\s\S]*?commit)`/.exec(
-      source,
-    );
+    /psql\(\s*`(begin;\s*-- 0047 private memory[\s\S]*?commit)`/.exec(source);
   assert.ok(
     rewind,
     "Execute the helper's exact static rewind, not a second copy",
   );
   assert.equal(rewind[1].includes("${"), false);
+  const upgrade9Rewind =
+    /psql\(\s*`(begin;\s*-- 0047 private memory[\s\S]*?commit)`/.exec(
+      readFileSync(join(root, "scripts/release-migration-smoke.mjs"), "utf8"),
+    );
+  assert.ok(
+    upgrade9Rewind,
+    "Exercise the exact 9-era fixture memory guard too",
+  );
+  assert.equal(upgrade9Rewind[1].includes("${"), false);
+  const memoryUser = (
+    await db.query(
+      "insert into users(auth_subject) values('upgrade12-memory-canary') returning id",
+    )
+  ).rows[0].id;
+  const memoryThread = (
+    await db.query(
+      "insert into agent_threads(user_id,agent_key) values($1,'coordinator') returning id",
+      [memoryUser],
+    )
+  ).rows[0].id;
+  const memoryMessage = (
+    await db.query(
+      "insert into messages(thread_id,role,content) values($1,'user','Synthetic original memory quotation.') returning id",
+      [memoryThread],
+    )
+  ).rows[0].id;
+  await db.query(
+    `insert into conversation_memory_fragments(message_id,ordinal,user_id,thread_id,source_sha256,start_offset,end_offset,content)
+     select id,0,$2,thread_id,encode(sha256(convert_to(content,'UTF8')),'hex'),0,char_length(content),content
+     from messages where id=$1`,
+    [memoryMessage, memoryUser],
+  );
+  for (const sql of [upgrade9Rewind[1], rewind[1]]) {
+    await assert.rejects(db.exec(sql), /Conversation memory cannot be rewound/);
+    await db.exec("rollback");
+    assert.deepEqual(
+      (
+        await db.query(`select
+        (select count(*)::int from conversation_memory_fragments) as quotations,
+        (select count(*)::int from citygo_migrations) as migrations,
+        to_regclass('payment_admission') is not null as admission,
+        to_regclass('messages_memory_sources_idx') is not null as source_index,
+        exists(select 1 from pg_proc where proname='citygo_guard_conversation_memory_fragment') as guard`)
+      ).rows,
+      [
+        {
+          quotations: 1,
+          migrations: 47,
+          admission: true,
+          source_index: true,
+          guard: true,
+        },
+      ],
+      "A populated private cache rejects every rewind before historical DDL",
+    );
+  }
+  // Delete only this in-memory canary; its quotations cascade with their owner.
+  await db.query("delete from users where id=$1", [memoryUser]);
   const confirmationUser = (
     await db.query(
       "insert into users(auth_subject) values('upgrade12-confirmation-canary') returning id",
@@ -116,7 +172,7 @@ test("literal 12-era fixture rewinds current 46, rolls back late ACL failure and
       to_regclass('payment_admission') is not null as admission,
       exists(select 1 from pg_proc where proname='citygo_guard_account_email_verification_proof') as guard`)
     ).rows,
-    [{ confirmation: 1, migrations: 46, admission: true, guard: true }],
+    [{ confirmation: 1, migrations: 47, admission: true, guard: true }],
   );
   // Only this in-memory fixture's canary is removed; populated real history
   // remains a hard stop for every disposable rewind and reset helper.
@@ -140,7 +196,7 @@ test("literal 12-era fixture rewinds current 46, rolls back late ACL failure and
       to_regclass('payment_admission') is not null as admission,
       exists(select 1 from pg_proc where proname='citygo_guard_password_recovery') as guard`)
     ).rows,
-    [{ recovery: 1, migrations: 46, admission: true, guard: true }],
+    [{ recovery: 1, migrations: 47, admission: true, guard: true }],
     "Rejected rewind retains recovery history and rolls back earlier DDL",
   );
   // Remove only this synthetic in-memory test row before the existing empty
@@ -149,6 +205,15 @@ test("literal 12-era fixture rewinds current 46, rolls back late ACL failure and
     recoveryId,
   ]);
   await db.exec(rewind[1]);
+  assert.deepEqual(
+    (
+      await db.query(
+        "select to_regclass('conversation_memory_fragments')::text as quotations,to_regclass('messages_memory_sources_idx')::text as source_index,exists(select 1 from pg_proc where proname in ('citygo_guard_conversation_memory_fragment','citygo_reject_conversation_memory_update')) as guard",
+      )
+    ).rows,
+    [{ quotations: null, source_index: null, guard: false }],
+    "Empty rewind removes the actual 0047 structures, not only its journal entry",
+  );
   assert.deepEqual(
     (
       await db.query(
@@ -241,6 +306,29 @@ test("literal 12-era fixture rewinds current 46, rolls back late ACL failure and
   );
   assert.deepEqual(await history(), historyBefore);
   await apply(migrations.slice(12));
+  assert.deepEqual(
+    (
+      await db.query(`select
+      (select count(*)::int from conversation_memory_fragments) as quotations,
+      has_table_privilege('citygo_api','conversation_memory_fragments','SELECT') as can_read,
+      has_table_privilege('citygo_api','conversation_memory_fragments','INSERT') as can_append,
+      has_table_privilege('citygo_api','conversation_memory_fragments','UPDATE') as can_rewrite,
+      has_table_privilege('citygo_api','conversation_memory_fragments','DELETE') as can_delete,
+      has_table_privilege('citygo_worker','conversation_memory_fragments','SELECT') as worker_read,
+      has_table_privilege('citygo_backup','conversation_memory_fragments','SELECT') as backup_read`)
+    ).rows,
+    [
+      {
+        quotations: 0,
+        can_read: true,
+        can_append: true,
+        can_rewrite: false,
+        can_delete: false,
+        worker_read: false,
+        backup_read: true,
+      },
+    ],
+  );
   assert.deepEqual(
     (
       await db.query(

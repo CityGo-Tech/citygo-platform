@@ -247,6 +247,10 @@ export const dashboardResponseSchema = z.object({
       agentKey: agentKeySchema,
       assistantKey: agentKeySchema.nullable().optional(),
       closed: z.boolean().optional(),
+      messagesNextCursor: conversationIdSchema
+        .refine((value) => value === value.trim())
+        .nullable()
+        .optional(),
       messages: z
         .array(
           z
@@ -283,6 +287,12 @@ export const dashboardResponseSchema = z.object({
         )
         .max(1000),
     })
+    .refine(
+      (thread) =>
+        thread.messagesNextCursor == null ||
+        thread.messagesNextCursor === thread.messages[0]?.id,
+      "History cursor must identify the first visible message",
+    )
     .nullable(),
   provider: aiProviderIdSchema.or(z.literal("unconfigured")),
   aiAccess: z.object({
@@ -325,7 +335,7 @@ export const conversationDetailResponseSchema = z.object({
   userId: conversationIdSchema,
   thread: dashboardResponseSchema.shape.thread
     .unwrap()
-    .extend({
+    .safeExtend({
       id: conversationIdSchema,
       assistantKey: agentKeySchema.nullable(),
       closed: z.boolean(),

@@ -2,6 +2,7 @@ import { ApiError } from "@citygo/api-client";
 import {
   assistantContextPreviewSchema,
   type AssistantContextPreview,
+  type AiModeId,
 } from "@citygo/contracts";
 
 type Scope = {
@@ -9,6 +10,8 @@ type Scope = {
   threadId: string | null;
   draft: string;
   signal: AbortSignal;
+  aiMode?: AiModeId;
+  aiModeCatalogId?: string;
 };
 export type AssistantContextView =
   | { phase: "loading" }
@@ -35,6 +38,8 @@ export function createAssistantContextResource(options: {
       now.userId === options.scope.userId &&
       now.threadId === options.scope.threadId &&
       now.draft === options.scope.draft &&
+      now.aiMode === options.scope.aiMode &&
+      now.aiModeCatalogId === options.scope.aiModeCatalogId &&
       now.signal === options.scope.signal
     );
   };
@@ -66,6 +71,12 @@ export function createAssistantContextResource(options: {
           options.onAccessDenied();
           return;
         }
+        if (
+          value.contextBudget &&
+          options.scope.aiMode &&
+          value.contextBudget.mode !== options.scope.aiMode
+        )
+          throw new Error("Context mode did not match the selected mode");
         options.publish({ phase: "ready", value });
       } catch (cause) {
         if (!live() || current.signal.aborted || controller !== current) return;

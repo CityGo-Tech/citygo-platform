@@ -29,7 +29,7 @@ test("reset and literal disposable rewinds retain a real accepted mode snapshot 
     (select count(*)::int from pg_sequences where schemaname='public') as sequences,
     (select count(*)::int from citygo_migrations) as migrations`)
     ).rows,
-    [{ tables: 79, sequences: 23, migrations: 46 }],
+    [{ tables: 80, sequences: 23, migrations: 47 }],
   );
   const repo = new Repository(db),
     user = await repo.register("retained-mode@example.test", "synthetic-hash");
@@ -99,12 +99,15 @@ test("reset and literal disposable rewinds retain a real accepted mode snapshot 
   );
   const before = await captureRestartRows(db),
     options = { expectedUserCount: 1, maintenanceConfirmed: true as const };
+  assert.equal(Object.keys(before).length, 80);
+  assert.equal(before.conversation_memory_fragments!.length, 1);
   const dry = await new AccountReset(db).plan(options),
     closed = await new ClosedAccountRestart(db).plan(options),
     fresh = await new FreshAccountReset(db).plan(options);
   for (const plan of [dry, closed, fresh]) {
     assert.equal(plan.accountsDeleted, 0);
     assert.equal(plan.counts.ai_request_modes, 1);
+    assert.equal(plan.counts.conversation_memory_fragments, 1);
     assert.ok(
       plan.blockers.some(
         (b) =>
@@ -112,12 +115,27 @@ test("reset and literal disposable rewinds retain a real accepted mode snapshot 
       ),
     );
     assert.ok(
+      plan.blockers.some(
+        (b) =>
+          b.code === "CONVERSATION_MEMORY_REQUIRES_REVIEW" && b.count === 1,
+      ),
+    );
+    assert.ok(
       ("retained" in plan ? plan.retained : plan.preservedTables).includes(
         "ai_request_modes",
       ),
     );
+    assert.ok(
+      ("retained" in plan ? plan.retained : plan.preservedTables).includes(
+        "conversation_memory_fragments",
+      ),
+    );
   }
   assert.equal(fresh.erasedTables.includes("ai_request_modes"), false);
+  assert.equal(
+    fresh.erasedTables.includes("conversation_memory_fragments"),
+    false,
+  );
   const common = {
     ...options,
     backupReceiptSha256: hash("synthetic-backup"),
@@ -154,18 +172,16 @@ test("reset and literal disposable rewinds retain a real accepted mode snapshot 
       "utf8",
     );
     const match =
-      /psql\(\s*`(begin;\s*drop table payment_admission_commands,payment_admission_reconciliation_events,payment_admission;[\s\S]*?commit)`/.exec(
-        source,
-      );
+      /psql\(\s*`(begin;\s*-- 0047 private memory[\s\S]*?commit)`/.exec(source);
     assert.ok(match);
     assert.equal(match[1]!.includes("${"), false);
     rewinds.push(match[1]!);
   }
+  // reserveChat also retains the exact user-source index. Its newer guard must
+  // refuse the rewind before any older request-mode or financial DDL executes.
   for (const sql of rewinds) {
-    await assert.rejects(
-      db.exec(sql),
-      /AI request mode history cannot be rewound/,
-    );
+    assert.match(sql, /AI request mode history cannot be rewound/);
+    await assert.rejects(db.exec(sql), /Conversation memory cannot be rewound/);
     await db.exec("rollback");
     assert.deepEqual(await captureRestartRows(db), before);
   }

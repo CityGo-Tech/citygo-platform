@@ -162,6 +162,7 @@ test("conversation HTTP: five assistants, owner-only history, numeric pagination
         agentKey,
         assistantKey: agentKey,
         closed: false,
+        messagesNextCursor: null,
         messages: [],
       },
     });

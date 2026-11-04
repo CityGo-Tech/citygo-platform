@@ -5,7 +5,7 @@ import { pdfMaterialFixture } from "./pdf-material-fixture";
 const entry = (page: Page) =>
   page.getByRole("button", { name: "Прикрепить материал", exact: true });
 const upload = (page: Page) =>
-  page.getByLabel("TXT до 64 КБ или PDF с текстом до 8 МБ и 50 страниц", {
+  page.getByLabel("TXT до 1 МБ или PDF с текстом до 8 МБ и 50 страниц", {
     exact: true,
   });
 const preview = (page: Page) =>
@@ -62,7 +62,7 @@ test("a real local PDF worker extracts Cyrillic without executing PDF actions or
   expect(state.sends).toEqual([]);
 });
 
-test("PDF text above 4000 is not truncated: the user must explicitly choose an excerpt", async ({
+test("PDF text beyond the former 4000 limit can be added complete without a model request", async ({
   page,
   context,
 }) => {
@@ -77,8 +77,32 @@ test("PDF text above 4000 is not truncated: the user must explicitly choose an e
   await page
     .getByRole("button", { name: "Добавить в сообщение", exact: true })
     .click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(composer(page)).toHaveValue(
+    "Мой вопрос\n\nМатериал:\n" + fullText,
+  );
+  expect(state.sends).toEqual([]);
+  expect(state.external).toBe(0);
+  expect(state.unexpected).toEqual([]);
+});
+
+test("an edited PDF excerpt over 100000 remains intact and cannot replace the current question", async ({
+  page,
+  context,
+}) => {
+  const state = await pdfMaterialFixture(context);
+  await page.goto("/");
+  await composer(page).fill("Мой вопрос");
+  await entry(page).click();
+  await upload(page).setInputFiles(pdf("long-text.pdf"));
+  await expect(preview(page)).toHaveValue(/Строка 000:[\s\S]*Строка 089:/);
+  const fullText = "Я".repeat(100001);
+  await preview(page).fill(fullText);
+  await page
+    .getByRole("button", { name: "Добавить в сообщение", exact: true })
+    .click();
   await expect(page.getByRole("dialog").getByRole("alert")).toContainText(
-    "больше 4000",
+    "больше 100 000",
   );
   await expect(preview(page)).toHaveValue(fullText);
   await expect(composer(page)).toHaveValue("Мой вопрос");

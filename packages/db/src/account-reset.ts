@@ -25,6 +25,7 @@ const ownedTables = [
   "human_support_replies",
   "human_support_reads",
   "conversation_titles",
+  "conversation_memory_fragments",
   "personal_plan_items",
   "user_credentials",
   "sessions",
@@ -52,6 +53,7 @@ const retained = [
   "credit_postpay_repayments",
   "human_support_reads",
   "conversation_titles",
+  "conversation_memory_fragments",
   "personal_plan_item_history",
   "personal_plan_checklists",
   "service_consent_events",
@@ -213,6 +215,11 @@ export class AccountReset {
         blockers.push({
           code: "CONVERSATION_TITLES_REQUIRE_REVIEW",
           count: counts.conversation_titles,
+        });
+      if (counts.conversation_memory_fragments)
+        blockers.push({
+          code: "CONVERSATION_MEMORY_REQUIRES_REVIEW",
+          count: counts.conversation_memory_fragments,
         });
       if (counts.human_support_requests || counts.human_support_replies)
         blockers.push({

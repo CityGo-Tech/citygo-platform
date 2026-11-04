@@ -3,6 +3,13 @@ import {
   capturePostpayBalance,
   type CustomerBillingMode,
 } from "./postpay-charges.js";
+import { indexConversationMemoryMessage } from "./conversation-memory.js";
+import {
+  readBoundedConversationMessages,
+  conversationHistoryByteLimit,
+  CONVERSATION_CONTEXT_CONTENT_BYTES,
+  type ConversationHistoryByteLimit,
+} from "./bounded-conversation-messages.js";
 import type { Database, Sql } from "./index.js";
 import type {
   AgentKey,
@@ -690,7 +697,10 @@ export class Repository {
           [user.id],
         )
       ).rows[0];
-      const messages = thread ? await this.history(tx, thread.id) : [];
+      const messagePage = thread
+        ? await readBoundedConversationMessages(tx, thread.id)
+        : { messages: [], nextCursor: null };
+      const messages = messagePage.messages;
       return {
         user,
         profile,
@@ -703,6 +713,7 @@ export class Repository {
               assistantKey: null,
               closed: false,
               messages,
+              messagesNextCursor: messagePage.nextCursor,
             }
           : null,
         provider,
@@ -817,14 +828,24 @@ export class Repository {
         )
       ).rows[0];
       if (!thread) fail(404, "Чат не найден");
+      const page = await readBoundedConversationMessages(tx, threadId);
       return {
         userId,
-        thread: { ...thread, messages: await this.history(tx, threadId) },
+        thread: {
+          ...thread,
+          messages: page.messages,
+          messagesNextCursor: page.nextCursor,
+        },
       };
     });
   }
   /** Read-only preview inputs; the same owner -> thread lock order as admission. */
-  async conversationContextSnapshot(userId: string, threadId: string | null) {
+  async conversationContextSnapshot(
+    userId: string,
+    threadId: string | null,
+    historyMaxBytes?: ConversationHistoryByteLimit,
+  ) {
+    conversationHistoryByteLimit(historyMaxBytes);
     if (
       !conversationIdSchema.safeParse(userId).success ||
       (threadId !== null && !conversationIdSchema.safeParse(threadId).success)
@@ -868,7 +889,9 @@ export class Repository {
         userId,
         thread: thread ?? null,
         profile,
-        messages: thread ? await this.history(tx, thread.id) : [],
+        messages: thread
+          ? await this.history(tx, thread.id, historyMaxBytes)
+          : [],
       };
     });
   }
@@ -934,19 +957,13 @@ export class Repository {
       // Keyset by the original bigint, not timestamps, OFFSET or Number.
       // 101 is only a lookahead; never return more than 100. The existing
       // (thread_id,created_at,id) index is not an O(1) pagination guarantee.
-      const rows = (
-        await tx.query<Message>(
-          `select m.id::text,m.role,m.content,coalesce(m.metadata->>'agentKey','housing') as "agentKey",
-            coalesce(m.metadata->>'status','complete') as status, m.metadata->'generation' as generation,
-            m.metadata->>'failureCode' as "failureCode",
-            (m.metadata->'citygoFavorite'='true'::jsonb) is true as favorite
-           from messages m where m.thread_id=$1 and m.role in ('user','assistant')
-            and ($2::bigint is null or m.id${inclusive ? "<=" : "<"}$2::bigint)
-           order by m.id desc limit 101`,
-          [threadId, beforeId ?? null],
-        )
-      ).rows;
-      const messages = rows.slice(0, 100).reverse();
+      const page = await readBoundedConversationMessages(
+        tx,
+        threadId,
+        beforeId,
+        inclusive,
+      );
+      const messages = page.messages;
       // The context route must never substitute a neighbouring message if the
       // exact target disappeared or stopped being visible during the read.
       if (inclusive && messages.at(-1)?.id !== beforeId)
@@ -955,7 +972,7 @@ export class Repository {
         userId,
         threadId,
         messages,
-        nextCursor: rows.length > 100 ? messages[0]!.id : null,
+        nextCursor: page.nextCursor,
       };
     });
   }
@@ -999,19 +1016,22 @@ export class Repository {
       );
     });
   }
-  async history(tx: Sql, threadId: string): Promise<Message[]> {
-    const rows = (
-      await tx.query<Message>(
-        `select m.id::text,m.role,m.content,coalesce(m.metadata->>'agentKey','housing') as "agentKey",
-      coalesce(m.metadata->>'status','complete') as status, m.metadata->'generation' as generation,
-      m.metadata->>'failureCode' as "failureCode",
-      (m.metadata->'citygoFavorite'='true'::jsonb) is true as favorite
-      from messages m where m.thread_id=$1 and m.role in ('user','assistant')
-      order by m.id desc limit 100`,
-        [threadId],
+  async history(
+    tx: Sql,
+    threadId: string,
+    historyMaxBytes?: ConversationHistoryByteLimit,
+  ): Promise<Message[]> {
+    const maxBytes = conversationHistoryByteLimit(historyMaxBytes);
+    return (
+      await readBoundedConversationMessages(
+        tx,
+        threadId,
+        undefined,
+        false,
+        maxBytes === CONVERSATION_CONTEXT_CONTENT_BYTES ? 256 : 100,
+        maxBytes,
       )
-    ).rows;
-    return rows.reverse();
+    ).messages;
   }
   async questionnaire(userId: string, profile: Questionnaire) {
     return this.db.transaction(async (tx) => {
@@ -1140,8 +1160,10 @@ export class Repository {
       leaseMs?: number;
       modeSnapshot?: AiRequestModeSnapshot;
       fixed5CreditReadiness?: boolean;
+      historyMaxBytes?: ConversationHistoryByteLimit;
     },
   ) {
+    conversationHistoryByteLimit(access.historyMaxBytes);
     access = {
       ...access,
       ...(access.modeSnapshot === undefined
@@ -1324,13 +1346,19 @@ export class Repository {
           grant: consentBasis,
           legacy: legacyBasis,
         });
-      await tx.query(
-        "insert into messages(thread_id,role,content,metadata) values ($1,'user',$2,$3)",
+      const insertedUserMessage = await tx.query<{ id: string }>(
+        "insert into messages(thread_id,role,content,metadata) values ($1,'user',$2,$3) returning id::text",
         [
           threadId,
           text,
           JSON.stringify({ agentKey: thread.agent_key, status: "complete" }),
         ],
+      );
+      await indexConversationMemoryMessage(
+        tx,
+        userId,
+        threadId,
+        insertedUserMessage.rows[0]!.id,
       );
       const profile =
         (
@@ -1343,7 +1371,7 @@ export class Repository {
         thread,
         lease,
         profile,
-        messages: await this.history(tx, threadId),
+        messages: await this.history(tx, threadId, access.historyMaxBytes),
         ...(modeSnapshot ? { modeSnapshot } : {}),
       };
     });
@@ -1532,7 +1560,7 @@ export class Repository {
           messageId: message.id,
           servedModel: input.generation!.model!,
         });
-      else await fees.releaseFailure(tx, fee);
+      else await fees.releaseFailure(tx, fee, "failed");
       await tx.query(
         "update agent_threads set busy_until=null,lease_token=null,updated_at=now() where id=$1 and lease_token=$2",
         [input.threadId, input.lease],

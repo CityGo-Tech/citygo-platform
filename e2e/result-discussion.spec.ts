@@ -474,7 +474,7 @@ test("long result remains complete and requires a selected fragment instead of s
   context,
 }) => {
   const state = await fixture(context);
-  state.discussionText = "ТОЧНЫЙ_РЕЗУЛЬТАТ" + "x".repeat(4100) + "КОНЕЦ";
+  state.discussionText = "ТОЧНЫЙ_РЕЗУЛЬТАТ" + "x".repeat(100_100) + "КОНЕЦ";
   await page.goto("/");
   await openResults(page);
   await results(page)

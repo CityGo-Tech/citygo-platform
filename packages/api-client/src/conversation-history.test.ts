@@ -153,7 +153,6 @@ test("history page response is strict, thread-bound and ascending/unique below t
       ),
     },
     { ...base, messages: [], nextCursor: "1" },
-    { ...base, nextCursor: "9007199254740993" },
     { ...base, nextCursor: "9007199254740992" },
     { ...base, nextCursor: 1 },
     { ...base, nextCursor: "1\n" },
@@ -165,6 +164,22 @@ test("history page response is strict, thread-bound and ascending/unique below t
       invalidResponse,
     );
     assert.equal(calls, before + 1, "invalid pages are never retried");
+  }
+});
+
+test("a byte-bounded short history page retains its exact older cursor in Web and native", async () => {
+  const reply = { ...page(), nextCursor: "9007199254740993" };
+  for (const native of [false, true]) {
+    let calls = 0;
+    const client = createClient("http://synthetic", {
+      native,
+      fetch: async () => {
+        calls++;
+        return Response.json(reply, { headers });
+      },
+    });
+    assert.deepEqual(await client.conversationMessages(threadId), reply);
+    assert.equal(calls, 1);
   }
 });
 

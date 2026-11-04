@@ -21,6 +21,7 @@ import type {
   ServiceConsentChoice,
   AiModeId,
 } from "@citygo/contracts";
+import { chatTextError } from "@citygo/contracts";
 import { Button, Card, Field, Badge } from "@citygo/ui-web";
 import {
   currentResultDiscussionInput,
@@ -995,6 +996,11 @@ export default function Home() {
       !snapshot.aiAccess.granted
     )
       return;
+    const textError = chatTextError(message);
+    if (textError) {
+      setError(textError);
+      return;
+    }
     let mode: ReturnType<typeof captureAiModeSelection>;
     try {
       mode = captureAiModeSelection(snapshot.aiAccess.modes, selectedAiMode);

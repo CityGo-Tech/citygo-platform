@@ -1,10 +1,42 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { readConfig } from "@citygo/config";
+import { createAssistantModes } from "./ai-modes.js";
 import { createAiPolicy } from "./ai-policy.js";
+
+const root = fileURLToPath(new URL("../../../", import.meta.url));
+const fixture = JSON.parse(
+  readFileSync(
+    new URL(
+      "../../../deploy/fixtures/postpay-memory-profile.fixture.json",
+      import.meta.url,
+    ),
+    "utf8",
+  ),
+) as Record<string, string>;
+const system = Object.fromEntries(
+  Object.entries(process.env).filter(([key]) =>
+    /^(PATH|PATHEXT|SYSTEMROOT|WINDIR|COMSPEC|SYSTEMDRIVE|TEMP|TMP|TMPDIR)$/i.test(
+      key,
+    ),
+  ),
+);
+const publicFields = Object.fromEntries(
+  [
+    "ROUTERAI_MODEL",
+    "ROUTERAI_UPSTREAM",
+    "ROUTERAI_COUNTRY",
+    "ROUTERAI_DATA_NOTICE",
+    "AI_ASSISTANT_MODES",
+    "AI_MODES_DATA_NOTICE",
+    "AI_MAXIMUM_REASONING_EFFORT",
+    "GIGACHAT_MODEL",
+    "GIGACHAT_SCOPE",
+  ].map((key) => [key, fixture[key]!]),
+);
 
 const publicConfig = {
   ROUTERAI_MODEL: "synthetic/model",
@@ -13,8 +45,7 @@ const publicConfig = {
   ROUTERAI_DATA_NOTICE:
     "Synthetic operator notice, not approved for real users.",
 };
-
-function preview(overrides: Record<string, string | undefined> = {}) {
+function legacyPreview(overrides: Record<string, string | undefined> = {}) {
   return spawnSync(
     process.execPath,
     [
@@ -25,8 +56,9 @@ function preview(overrides: Record<string, string | undefined> = {}) {
     {
       encoding: "utf8",
       timeout: 15_000,
+      windowsHide: true,
       env: {
-        ...process.env,
+        ...system,
         ...publicConfig,
         NODE_ENV: "production",
         LLM_PROVIDER: "routerai",
@@ -41,7 +73,7 @@ function preview(overrides: Record<string, string | undefined> = {}) {
 }
 
 test("policy preview ignores inherited credentials, approvals and runtime configuration", () => {
-  const result = preview();
+  const result = legacyPreview();
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stderr, "");
   assert.deepEqual(
@@ -71,14 +103,13 @@ test("owner-approved CN public snapshot is pinned explicitly and preview does no
     "ROUTERAI_PRODUCTION_POLICY_ID",
     "ROUTERAI_UPSTREAM",
   ]);
-  // Independently recorded after the owner's approval, never derived at startup.
   const approvedId =
     "6308c24a8c3eb9e0a2d5363ab7ec6f62dbf57ce6b7ad9ee31cfd2ca3b05b7615";
   assert.equal(fields.ROUTERAI_PRODUCTION_POLICY_ID, approvedId);
   assert.equal(fields.ROUTERAI_COUNTRY, "cn");
   assert.equal(fields.ROUTERAI_UPSTREAM, "deepseek");
   assert.equal(fields.ROUTERAI_MODEL, "deepseek/deepseek-v4-pro-0813");
-  const result = preview(fields);
+  const result = legacyPreview(fields);
   assert.equal(result.status, 0, result.stderr);
   const policy = JSON.parse(result.stdout);
   assert.equal(policy.id, approvedId);
@@ -107,10 +138,81 @@ test("policy preview rejects missing or invalid public metadata without printing
     { ROUTERAI_DATA_NOTICE: "" },
     { ROUTERAI_DATA_NOTICE: "invalid-notice-canary".repeat(300) },
   ]) {
-    const result = preview(overrides);
+    const result = legacyPreview(overrides);
     assert.equal(result.status, 1);
     assert.equal(result.stdout, "");
     assert.match(result.stderr, /invalid values are hidden/);
     assert.doesNotMatch(result.stderr, /canary/);
+  }
+});
+
+function preview(settings: Record<string, string | undefined>) {
+  return spawnSync(
+    process.execPath,
+    ["--import", "tsx", "apps/api/src/preview-policy.ts"],
+    {
+      cwd: root,
+      env: {
+        ...system,
+        ...publicFields,
+        NODE_ENV: "production",
+        DATABASE_URL: "postgresql://127.0.0.1:1/ignored-unreachable",
+        ROUTERAI_API_KEY: "synthetic-ignored-provider-key",
+        GIGACHAT_CREDENTIALS: "synthetic-ignored-provider-key",
+        AI_CUSTOMER_BILLING_MODE: "ignored-private-control",
+        ...settings,
+      },
+      encoding: "utf8",
+      timeout: 10_000,
+      windowsHide: true,
+    },
+  );
+}
+
+test("public preview reproduces the new memory policy without credentials, database or spending settings", () => {
+  const config = readConfig({
+    ...fixture,
+    NODE_ENV: "test",
+    LLM_PROVIDER: "disabled",
+    WEB_ORIGIN: "https://pilot.example.test",
+    GIGACHAT_CA_BUNDLE_FILE: undefined,
+  });
+  const expected = createAssistantModes(config)!.policy;
+  const result = preview({ AI_CONTEXT_STRATEGY: "model_window_memory_v1" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stderr, "");
+  assert.deepEqual(JSON.parse(result.stdout), expected);
+  assert.doesNotMatch(
+    result.stdout,
+    /ignored|postgresql|synthetic-client|Server listening/,
+  );
+});
+
+test("legacy public preview identities remain exact and invalid memory routes fail closed", () => {
+  const expected = createAssistantModes(readConfig(publicFields))!.policy;
+  for (const AI_CONTEXT_STRATEGY of [undefined, "legacy"]) {
+    const result = preview({ AI_CONTEXT_STRATEGY });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), expected);
+  }
+  for (const settings of [
+    { AI_CONTEXT_STRATEGY: "unlimited" },
+    {
+      AI_CONTEXT_STRATEGY: "model_window_memory_v1",
+      AI_ASSISTANT_MODES: "disabled",
+    },
+    {
+      AI_CONTEXT_STRATEGY: "model_window_memory_v1",
+      GIGACHAT_MODEL: "GigaChat-2-Max",
+    },
+    {
+      AI_CONTEXT_STRATEGY: "model_window_memory_v1",
+      GIGACHAT_SCOPE: "GIGACHAT_API_B2B",
+    },
+  ]) {
+    const result = preview(settings);
+    assert.equal(result.status, 1);
+    assert.equal(result.stdout, "");
+    assert.doesNotMatch(result.stderr, /ignored|postgresql|ECONNREFUSED/);
   }
 });

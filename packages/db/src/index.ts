@@ -5,6 +5,16 @@ export { MessageFavorites } from "./message-favorites.js";
 export { ConversationMessageSearch } from "./conversation-message-search.js";
 export { ConversationTitles } from "./conversation-titles.js";
 export {
+  ConversationMemory,
+  type ConversationMemoryFragment,
+  type ConversationMemorySnapshot,
+} from "./conversation-memory.js";
+export {
+  CONVERSATION_PAGE_CONTENT_BYTES,
+  CONVERSATION_CONTEXT_CONTENT_BYTES,
+  type ConversationHistoryByteLimit,
+} from "./bounded-conversation-messages.js";
+export {
   CustomerObservability,
   type CustomerObservabilityContext,
 } from "./customer-observability.js";

@@ -57,6 +57,7 @@ import {
 } from "@citygo/contracts";
 import {
   Repository,
+  ConversationMemory,
   AccountAccess,
   ServiceConsents,
   MessageFavorites,
@@ -92,6 +93,7 @@ import { createAiExecution } from "./ai-execution.js";
 import { createAssistantModes, type ModeProviders } from "./ai-modes.js";
 import { ApiDrain, registerDrain } from "./shutdown.js";
 import { buildConversationContext } from "./conversation-context.js";
+import { buildModelConversationContext } from "./model-conversation-context.js";
 import {
   observeChatClientDisconnect,
   recoverCompletedChatCharge,
@@ -276,6 +278,7 @@ export async function buildApp(options: {
     config.AI_CUSTOMER_BILLING_MODE,
   );
   const accounts = new AccountAccess(options.db);
+  const conversationMemory = new ConversationMemory(options.db);
   const registrationAiPolicy = (routing: AiRouting) =>
     control.resolve(routing).policy;
   const serviceConsents = new ServiceConsents(
@@ -689,6 +692,19 @@ export async function buildApp(options: {
       await options.db.query(
         "select billing_mode from gigachat_request_fees limit 0",
       );
+      const memoryMigration = await options.db.query(
+        "select name from citygo_migrations where name='0047_conversation_memory.sql'",
+      );
+      if (memoryMigration.rows.length !== 1)
+        throw new Error("Pending conversation memory migration");
+      await options.db.query(
+        "select message_id,ordinal,user_id,thread_id,source_sha256,start_offset,end_offset,content,search_vector from conversation_memory_fragments limit 0",
+      );
+      const memoryGuard = await options.db.query(
+        "select 1 from pg_trigger where tgrelid='conversation_memory_fragments'::regclass and tgname in ('conversation_memory_fragment_guard','conversation_memory_update_guard') and tgenabled='O' and not tgisinternal",
+      );
+      if (memoryGuard.rows.length !== 2)
+        throw new Error("Conversation memory guard is unavailable");
       const supportMigration = await options.db.query(
         "select name from citygo_migrations where name in ('0037_human_support_requests.sql','0038_manual_personal_plan.sql')",
       );
@@ -1093,7 +1109,42 @@ export async function buildApp(options: {
   registerConversationMessageSearch(app, options.db, authenticate);
   registerConversationTitles(app, options.db, authenticate);
   registerConversationExport(app, options.db, authenticate);
-  registerAssistantContext(app, repo, authenticate, config.LLM_MAX_INPUT_BYTES);
+  registerAssistantContext(
+    app,
+    repo,
+    authenticate,
+    config.LLM_MAX_INPUT_BYTES,
+    config.AI_CONTEXT_STRATEGY === "model_window_memory_v1" && modes
+      ? {
+          memory: conversationMemory,
+          resolve: (user, input) => {
+            if (
+              input.aiModeCatalogId !== undefined &&
+              input.aiModeCatalogId !== modes.modeCatalog(user).catalogId
+            )
+              throw new DomainError(
+                409,
+                "Режимы работы изменились. Обновите страницу.",
+                "AI_MODE_CHANGED",
+              );
+            const mode = input.aiMode ?? "balanced";
+            const route = modes.routes.find((item) => item.id === mode);
+            if (!route)
+              throw new DomainError(
+                503,
+                "Режим работы недоступен.",
+                "AI_UNAVAILABLE",
+              );
+            return {
+              mode,
+              maxInputBytes: route.execution.maxInputBytes,
+              maxOutputTokens: route.execution.maxOutputTokens,
+            };
+          },
+        }
+      : undefined,
+    (request) => drain.run(() => authenticate(request)),
+  );
   registerResultDiscussionApi(app, options.db, authenticate);
   app.post("/v1/conversations/start", async (request) => {
     const user = await authenticate(request);
@@ -1285,6 +1336,11 @@ export async function buildApp(options: {
   app.post(
     "/v1/threads/:id/messages",
     {
+      bodyLimit: 2 * 1024 * 1024,
+      preParsing: async (request, _reply, payload) => {
+        await drain.run(() => authenticate(request));
+        return payload;
+      },
       config: {
         rateLimit: {
           max: 20,
@@ -1443,6 +1499,9 @@ export async function buildApp(options: {
               userDailyLimit: config.LLM_USER_DAILY_REQUEST_LIMIT,
               globalDailyLimit: config.LLM_GLOBAL_DAILY_REQUEST_LIMIT,
               leaseMs: limits.chatLeaseMs,
+              ...(config.AI_CONTEXT_STRATEGY === "model_window_memory_v1"
+                ? { historyMaxBytes: 8388608 as const }
+                : {}),
               ...(fixed5CreditReadiness ? { fixed5CreditReadiness: true } : {}),
               ...(selectedMode && modes
                 ? {
@@ -1501,6 +1560,7 @@ export async function buildApp(options: {
       let attemptError: DomainError | undefined;
       let creditHoldId: string | null = null;
       let adapterEntered = false;
+      let attemptPreparedForCount = false;
       const reserveAttempt = async () => {
         signal.throwIfAborted();
         try {
@@ -1571,13 +1631,44 @@ export async function buildApp(options: {
         } else {
           let modelContext: ReturnType<typeof buildConversationContext>;
           try {
-            modelContext = buildConversationContext({
+            const contextInput = {
               instructions: instructions(routing.to),
               profile: profileContext(reservation.profile),
               history: reservation.messages,
               currentQuestion: input.text,
-              maxInputBytes: config.LLM_MAX_INPUT_BYTES,
-            });
+              maxInputBytes: execution.maxInputBytes,
+            };
+            modelContext =
+              config.AI_CONTEXT_STRATEGY === "model_window_memory_v1" &&
+              selectedMode
+                ? await buildModelConversationContext({
+                    ...contextInput,
+                    mode: selectedMode.id,
+                    maxOutputTokens: execution.maxOutputTokens,
+                    memory: await conversationMemory.snapshot(
+                      user.id,
+                      threadId,
+                      input.text,
+                      {
+                        beforeMessageId: reservation.messages.at(-1)!.id,
+                      },
+                    ),
+                    countInputTokens: provider.countInputTokens
+                      ? async (...args) => {
+                          // OAuth/token counting uses the same personal GigaChat slot
+                          // as generation. Acquire it before any upstream POST, with
+                          // zero customer hold; reuse this admission for the answer.
+                          await reserveAttempt();
+                          attemptPreparedForCount = true;
+                          const counts = await provider.countInputTokens!(
+                            ...args,
+                          );
+                          return counts;
+                        }
+                      : undefined,
+                    signal,
+                  })
+                : buildConversationContext(contextInput);
           } catch (error) {
             if (error instanceof DomainError) attemptError = error;
             throw error;
@@ -1587,7 +1678,7 @@ export async function buildApp(options: {
           // Bound context and reserve both attempt + money before adapter/OAuth.
           // RouterAI cost requires reconciliation; the fixed fee is settled
           // atomically with a completed, persisted GigaChat answer.
-          await reserveAttempt();
+          if (!attemptPreparedForCount) await reserveAttempt();
           generation = {
             provider: provider.name,
             requestedModel: provider.model,
@@ -1756,16 +1847,18 @@ export async function buildApp(options: {
           ),
           message: persistenceFailed
             ? "Ответ прерван. Не удалось подтвердить сохранение истории. Обновите историю и обратитесь к администратору перед повторной отправкой."
-            : fixedFee && creditHoldId
-              ? saved
-                ? "Ответ сохранён. Обновите историю."
-                : "Ответ прерван. За него ничего не списано. История сохранена."
-              : (attemptError?.message ??
-                (creditHoldId
-                  ? postpayMode
-                    ? "Ответ прерван. История сохранена. За незавершённый ответ ничего не списано. Можно продолжить общение при достаточном балансе."
-                    : "Ответ прерван. История сохранена. Стоимость уточняется; резерв удерживается до сверки. Не повторяйте запрос вслепую."
-                  : "Ответ прерван. История сохранена; попробуйте отправить сообщение снова.")),
+            : attemptError && !adapterEntered
+              ? attemptError.message
+              : fixedFee && creditHoldId
+                ? saved
+                  ? "Ответ сохранён. Обновите историю."
+                  : "Ответ прерван. За него ничего не списано. История сохранена."
+                : (attemptError?.message ??
+                  (creditHoldId
+                    ? postpayMode
+                      ? "Ответ прерван. История сохранена. За незавершённый ответ ничего не списано. Можно продолжить общение при достаточном балансе."
+                      : "Ответ прерван. История сохранена. Стоимость уточняется; резерв удерживается до сверки. Не повторяйте запрос вслепую."
+                    : "Ответ прерван. История сохранена; попробуйте отправить сообщение снова.")),
         });
       } finally {
         clearInterval(heartbeat);

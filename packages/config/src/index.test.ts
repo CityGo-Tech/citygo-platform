@@ -856,3 +856,42 @@ test("balance-derived request cost admission is a separate explicit fixed5 ×10 
   ])
     assert.throws(() => readConfig({ ...allowed, ...patch }));
 });
+
+test("model-window memory is an explicit three-mode postpay strategy and preserves the legacy byte ceiling", () => {
+  assert.equal(readConfig({}).AI_CONTEXT_STRATEGY, "legacy");
+  assert.equal(readConfig({}).LLM_MAX_INPUT_BYTES, 64000);
+  assert.equal(
+    readConfig({ LLM_MAX_INPUT_BYTES: "262144" }).LLM_MAX_INPUT_BYTES,
+    262144,
+  );
+  assert.throws(() => readConfig({ LLM_MAX_INPUT_BYTES: "262145" }));
+  const allowed = {
+    LLM_PROVIDER: "routerai",
+    AI_CREDIT_MODE: "routerai_citygo_10x",
+    AI_CREDIT_RESERVATION_MODE: "fixed5_overdraft",
+    AI_CUSTOMER_BILLING_MODE: "postpay_actual_v1",
+    AI_ASSISTANT_MODES: "enabled",
+    AI_MINIMUM_FIXED_FEE: "enabled",
+    GIGACHAT_MODEL: "GigaChat-3-Ultra",
+    GIGACHAT_SCOPE: "GIGACHAT_API_PERS",
+    AI_CONTEXT_STRATEGY: "model_window_memory_v1",
+    LLM_MAX_INPUT_BYTES: "8388608",
+  };
+  assert.equal(readConfig(allowed).LLM_MAX_INPUT_BYTES, 8388608);
+  assert.equal(
+    readConfig(allowed).AI_CONTEXT_STRATEGY,
+    "model_window_memory_v1",
+  );
+  for (const change of [
+    { AI_CONTEXT_STRATEGY: "legacy" },
+    { AI_CONTEXT_STRATEGY: "unlimited" },
+    { AI_CONTEXT_STRATEGY: "" },
+    { LLM_MAX_INPUT_BYTES: "8388609" },
+    { AI_CUSTOMER_BILLING_MODE: "legacy" },
+    { AI_ASSISTANT_MODES: "disabled" },
+    { AI_MINIMUM_FIXED_FEE: "disabled" },
+    { GIGACHAT_MODEL: "GigaChat-2-Max" },
+    { GIGACHAT_SCOPE: "GIGACHAT_API_B2B" },
+  ])
+    assert.throws(() => readConfig({ ...allowed, ...change }));
+});

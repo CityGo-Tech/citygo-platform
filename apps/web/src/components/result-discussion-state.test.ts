@@ -24,11 +24,11 @@ test("discussion appends reviewed text without truncating either draft and binds
     resultDiscussionDraft("  Проверено 🧳  ", "Мой прежний черновик"),
     "Мой прежний черновик\n\nПроверено 🧳",
   );
-  for (const text of ["", "x".repeat(4001), "\0", "\ud800"])
+  for (const text of ["", "x".repeat(100001), "\0", "\ud800"])
     assert.throws(() => resultDiscussionDraft(text));
-  assert.throws(() => resultDiscussionDraft("Новый текст", "x".repeat(3995)));
+  assert.throws(() => resultDiscussionDraft("Новый текст", "x".repeat(99995)));
   assert.equal(
-    initialResultDiscussionDraft({ ...saved(), text: "x".repeat(4001) }),
+    initialResultDiscussionDraft({ ...saved(), text: "x".repeat(100001) }),
     "",
   );
   const controller = new AbortController();

@@ -6,7 +6,8 @@ import { Button, Card, Badge, AssistantMessage } from "@citygo/ui-web";
 import { agentNames, type JourneyProps } from "./journey";
 import { FavoriteButton } from "./message-favorites";
 import { EmptyAiCreditHint, messageInterruptionLabel } from "./chat-readiness";
-import type { AgentKey } from "@citygo/contracts";
+import { chatTextProblem, type AgentKey } from "@citygo/contracts";
+import { ChatTextarea } from "./chat-textarea";
 import {
   AssistantCatalog,
   ConversationList,
@@ -325,6 +326,12 @@ export function ConversationHome(props: JourneyProps) {
                 userId={currentContext.userId}
                 threadId={currentContext.threadId}
                 draft={currentContext.draft}
+                aiMode={
+                  board.aiAccess.modes
+                    ? (props.aiMode ?? board.aiAccess.modes.defaultMode)
+                    : undefined
+                }
+                aiModeCatalogId={board.aiAccess.modes?.catalogId}
                 sessionSignal={currentContext.signal}
                 onAccessDenied={props.onAccessDenied}
                 onClose={closeContext}
@@ -716,12 +723,11 @@ export function ConversationHome(props: JourneyProps) {
                       </Button>
                     </div>
                   )}
-                  <textarea
+                  <ChatTextarea
                     className="ym-disable-keys ym-hide-content"
                     id="conversation-message"
                     value={props.text}
                     onChange={(e) => props.onText(e.target.value)}
-                    maxLength={4000}
                     rows={2}
                     placeholder="Напишите сообщение…"
                     disabled={!canSend || sending}
@@ -748,7 +754,11 @@ export function ConversationHome(props: JourneyProps) {
                         className="ym-show-content"
                         type="submit"
                         aria-label="Отправить"
-                        disabled={!canSend || !props.text.trim()}
+                        disabled={
+                          !canSend ||
+                          !props.text.trim() ||
+                          chatTextProblem(props.text) !== null
+                        }
                       >
                         <span aria-hidden="true">↑</span>
                       </Button>

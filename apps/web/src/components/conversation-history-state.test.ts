@@ -115,6 +115,52 @@ test("exactly100 messages permits one empty ending page; short/legacy IDs never 
   }
 });
 
+test("explicit byte-bounded short pages remain reachable and return-to-latest preserves their cursor", async () => {
+  const calls: string[] = [],
+    initialMessages = rows(101, 3);
+  const value = createConversationHistoryResource({
+    userId: "10",
+    threadId: "20",
+    initialMessages,
+    initialNextCursor: "101",
+    sessionSignal: new AbortController().signal,
+    load: async (before) => {
+      calls.push(before);
+      return {
+        userId: "10",
+        threadId: "20",
+        messages: rows(98, 3),
+        nextCursor: "98",
+      };
+    },
+    publish: () => {},
+  });
+  assert.deepEqual(calls, []);
+  assert.equal(value.snapshot().nextCursor, "101");
+  await value.loadOlder();
+  assert.deepEqual(calls, ["101"]);
+  assert.deepEqual(value.snapshot().messages, rows(98, 6));
+  assert.equal(value.snapshot().nextCursor, "98");
+  value.returnToLatest();
+  assert.deepEqual(value.snapshot().messages, initialMessages);
+  assert.equal(value.snapshot().nextCursor, "101");
+  value.dispose();
+});
+
+test("an explicit short latest snapshot cannot join two ranges across a gap", () => {
+  const s = setup();
+  s.resource.acceptLatest(rows(1001, 2), "1001");
+  assert.deepEqual(s.last().messages, rows(1001, 2));
+  assert.match(s.last().notice, /Появились новые сообщения/);
+  assert.equal(s.last().nextCursor, "1001");
+  s.resource.returnToLatest();
+  assert.equal(s.last().nextCursor, "1001");
+  s.resource.acceptLatest(rows(2001, 2), null);
+  assert.deepEqual(s.last().messages, rows(2001, 2));
+  assert.equal(s.last().nextCursor, null);
+  s.resource.dispose();
+});
+
 test("focus/stream/balance refresh preserves an older prefix and updates only confirmed favorites before latest refresh", async () => {
   const s = setup();
   await s.resource.loadOlder();
