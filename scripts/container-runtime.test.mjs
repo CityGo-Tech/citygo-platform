@@ -1466,6 +1466,112 @@ test("v14 explicitly mounts postpay while every legacy profile keeps its exact b
       );
 });
 
+test("v15 mounts only the explicit 64 KiB context profile while v14 keeps 8 KiB", (t) => {
+  const directory = fixture(t);
+  const marker = "postpay-context64-v1";
+  const read = (file) =>
+    JSON.parse(readFileSync(join(root, "deploy/fixtures", file), "utf8"));
+  const value = read("postpay-context64-profile.fixture.json");
+  const v13 = read(
+    "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-unlimited-assistant-modes-gigachat-flat3-profile.fixture.json",
+  );
+  const v14 = {
+    ...v13,
+    AI_CUSTOMER_BILLING_MODE: "postpay_actual_v1",
+    AI_REQUEST_COST_LIMIT_MODE: "operator_ceiling",
+  };
+  assert.deepEqual(value, { ...v14, LLM_MAX_INPUT_BYTES: "65536" });
+  mkdirSync(join(directory, "certs"));
+  copyFileSync(
+    join(root, "deploy/certificates/russian-trusted-root.crt"),
+    join(directory, "certs/russian-trusted-root.crt"),
+  );
+  const spec = (data, profile = marker, mode = "api", ambient = {}) => {
+    writeFileSync(join(directory, "api.json"), JSON.stringify(data));
+    return containerSpec(
+      mode,
+      {
+        CITYGO_MOUNTED_CONFIG: "1",
+        CITYGO_AI_PROFILE: profile,
+        LLM_PROVIDER: "routerai",
+        ...ambient,
+      },
+      directory,
+      directory,
+    );
+  };
+  const env = spec(value).env;
+  for (const [key, setting] of Object.entries(value))
+    assert.equal(env[key], setting);
+  assert.equal(env.ROUTERAI_MAX_OUTPUT_TOKENS, "4096");
+  assert.equal(env.AI_MAXIMUM_REASONING_EFFORT, "medium");
+  assert.equal(env.AI_MINIMUM_FIXED_FEE, "enabled");
+  assert.equal(env.YOOKASSA_FISCAL_PROFILE, "citygo_service_full_payment_v1");
+  assert.equal(env.PHONE_VERIFICATION_MODE, "prosto_sms");
+  for (const key of Object.keys(value)) {
+    const missing = { ...value };
+    delete missing[key];
+    assert.throws(() => spec(missing), /Invalid mounted/);
+  }
+  for (const change of [
+    { LLM_MAX_INPUT_BYTES: "8192" },
+    { LLM_MAX_INPUT_BYTES: "65535" },
+    { LLM_MAX_INPUT_BYTES: "65537" },
+    { LLM_MAX_INPUT_BYTES: "64000" },
+    { ROUTERAI_MAX_OUTPUT_TOKENS: "8192" },
+    { AI_MAXIMUM_REASONING_EFFORT: "high" },
+    { AI_CUSTOMER_BILLING_MODE: "legacy" },
+    { AI_REQUEST_COST_LIMIT_MODE: "user_balance" },
+    { AI_ASSISTANT_MODES: "disabled" },
+    { AI_MINIMUM_FIXED_FEE: "disabled" },
+    { YOOKASSA_FISCAL_PROFILE: "disabled" },
+    { PHONE_SMS_GLOBAL_TOTAL_LIMIT: "1" },
+    { OPENAI_API_KEY: "synthetic-forbidden" },
+  ])
+    assert.throws(() => spec({ ...value, ...change }), /Invalid mounted/);
+  assert.equal(spec(v14, "postpay-actual-v1").env.LLM_MAX_INPUT_BYTES, "8192");
+  assert.throws(() => spec(value, "postpay-actual-v1"), /Invalid mounted/);
+  assert.throws(() => spec(v14), /Invalid mounted/);
+  for (const [oldMarker, file] of [
+    ["routerai-credit-v1", "routerai-profile.fixture.json"],
+    ["routerai-citygo-10x-v1", "routerai-citygo-10x-profile.fixture.json"],
+    ...liveMountedProfiles.map(([oldMarker, file]) => [oldMarker, file]),
+    [
+      "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-unlimited-assistant-modes-v1",
+      "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-unlimited-assistant-modes-profile.fixture.json",
+    ],
+    [
+      "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-unlimited-assistant-modes-gigachat-flat3-v1",
+      "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-unlimited-assistant-modes-gigachat-flat3-profile.fixture.json",
+    ],
+  ]) {
+    const old = read(file);
+    assert.doesNotThrow(() => spec(old, oldMarker));
+    assert.throws(() => spec(value, oldMarker), /Invalid mounted/);
+    assert.throws(() => spec(old), /Invalid mounted/);
+  }
+  for (const [key, setting] of Object.entries({
+    LLM_MAX_INPUT_BYTES: "65536",
+    AI_CUSTOMER_BILLING_MODE: "postpay_actual_v1",
+    AI_REQUEST_COST_LIMIT_MODE: "operator_ceiling",
+  }))
+    assert.throws(
+      () => spec(value, marker, "api", { [key]: setting }),
+      /Invalid (?:mounted|container AI)/,
+    );
+  for (const mode of ["web", "worker", "migrate", "migrate-release"])
+    assert.throws(
+      () => spec(value, marker, mode),
+      /Invalid container AI profile/,
+    );
+  for (const scope of ["web", "build", "mobile", "worker", "migrator"])
+    for (const key of ["LLM_MAX_INPUT_BYTES", "AI_CUSTOMER_BILLING_MODE"])
+      assert.equal(
+        serviceEnv(scope, { directory, inherited: env, loadFiles: false })[key],
+        undefined,
+      );
+});
+
 test("all mounted profiles, including disabled, refuse ambient verification prefixes", (t) => {
   const directory = fixture(t);
   for (const mode of ["api", "worker", "migrate"])
