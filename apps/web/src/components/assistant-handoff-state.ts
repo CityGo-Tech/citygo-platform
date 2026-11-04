@@ -1,5 +1,5 @@
 import type { AgentKey, Dashboard } from "@citygo/contracts";
-import { agentKeys } from "@citygo/contracts";
+import { agentKeys, chatTextError } from "@citygo/contracts";
 
 export type AssistantHandoffSource = {
   userId: string;
@@ -46,15 +46,13 @@ export function assistantHandoffTarget(
   );
 }
 
-/** The same UTF-16 bound as chatInputSchema/composer; no silent truncation. */
+/** The same Unicode bound as chatInputSchema/composer; no silent truncation. */
 export function assistantHandoffDraft(text: string, existing = "") {
   const reviewed = text.trim();
   if (!reviewed) throw new Error("Выберите текст для другого помощника.");
   const result = (existing ? existing + "\n\n" : "") + reviewed;
-  if (result.length > 4000)
-    throw new Error(
-      "Фрагмент и сохранённый черновик вместе превышают 4000 символов. Сократите фрагмент или сначала проверьте черновик помощника.",
-    );
+  const error = chatTextError(result);
+  if (error) throw new Error(error);
   for (const point of result) {
     const code = point.codePointAt(0)!;
     if (

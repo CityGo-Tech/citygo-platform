@@ -9,6 +9,8 @@ import type {
   Quest,
   AiModeId,
 } from "@citygo/contracts";
+import { chatTextProblem } from "@citygo/contracts";
+import { ChatTextarea } from "./chat-textarea";
 import {
   AssistantMessage,
   Badge,
@@ -553,17 +555,21 @@ export function Journey(props: JourneyProps) {
                   </Button>
                 </div>
               )}
-              <textarea
+              <ChatTextarea
                 ref={composer}
                 id="journey-message"
                 value={text}
                 onChange={(event) => onText(event.target.value)}
                 placeholder="Напишите сообщение…"
-                maxLength={4000}
                 rows={2}
                 disabled={!canChat}
               />
-              <Button disabled={!canChat || !text.trim()} type="submit">
+              <Button
+                disabled={
+                  !canChat || !text.trim() || chatTextProblem(text) !== null
+                }
+                type="submit"
+              >
                 Отправить
               </Button>
               {sending && (

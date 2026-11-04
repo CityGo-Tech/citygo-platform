@@ -81,8 +81,11 @@ export const serverConfigSchema = z.object({
     .number()
     .int()
     .min(1024)
-    .max(262144)
+    .max(8 * 1024 * 1024)
     .default(64000),
+  AI_CONTEXT_STRATEGY: z
+    .enum(["legacy", "model_window_memory_v1"])
+    .default("legacy"),
   // Accepted chat requests, not currency or upstream HTTP-attempt accounting.
   LLM_USER_DAILY_REQUEST_LIMIT: z.coerce
     .number()
@@ -353,6 +356,22 @@ export function validateVerificationDeliveryConfig(
 export function validateCreditReservationConfig(
   config: z.infer<typeof serverConfigSchema>,
 ) {
+  if (
+    !["legacy", "model_window_memory_v1"].includes(
+      config.AI_CONTEXT_STRATEGY,
+    ) ||
+    (config.AI_CONTEXT_STRATEGY === "legacy" &&
+      config.LLM_MAX_INPUT_BYTES > 262144) ||
+    (config.AI_CONTEXT_STRATEGY === "model_window_memory_v1" &&
+      (config.AI_CUSTOMER_BILLING_MODE !== "postpay_actual_v1" ||
+        config.AI_ASSISTANT_MODES !== "enabled" ||
+        config.AI_MINIMUM_FIXED_FEE !== "enabled" ||
+        config.GIGACHAT_MODEL !== "GigaChat-3-Ultra" ||
+        config.GIGACHAT_SCOPE !== "GIGACHAT_API_PERS"))
+  )
+    throw new Error(
+      "Model-window memory requires its explicit three-mode postpay profile; legacy input caps remain unchanged",
+    );
   if (
     !["legacy", "postpay_actual_v1"].includes(config.AI_CUSTOMER_BILLING_MODE)
   )

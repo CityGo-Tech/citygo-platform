@@ -5,9 +5,15 @@ import {
   PDF_MATERIAL_TIMEOUT_MS,
   type PdfMaterialText,
 } from "./pdf-material-limits";
+import {
+  CHAT_MAX_CHARACTERS,
+  CHAT_CHARACTER_LIMIT_LABEL,
+  chatCharacterCount,
+  chatTextError,
+} from "@citygo/contracts";
 
-export const TEXT_MATERIAL_MAX_BYTES = 64 * 1024;
-export const TEXT_MESSAGE_MAX_LENGTH = 4000;
+export const TEXT_MATERIAL_MAX_BYTES = 1024 * 1024;
+export const TEXT_MESSAGE_MAX_LENGTH = CHAT_MAX_CHARACTERS;
 
 export type TextMaterialScope = {
   userId: string;
@@ -44,30 +50,32 @@ export function sameTextMaterialScope(
 }
 
 function validText(text: string, limit = TEXT_MESSAGE_MAX_LENGTH) {
+  if (text.length > limit * 2 || chatCharacterCount(text) > limit)
+    throw new Error(
+      limit === TEXT_MESSAGE_MAX_LENGTH
+        ? `В материале больше ${CHAT_CHARACTER_LIMIT_LABEL} символов. Сократите текст материала.`
+        : "В материале больше 200 000 символов. Выберите меньший документ.",
+    );
   if (!text.trim())
     throw new Error("В материале нет текста. Выберите другой TXT-файл.");
   for (const point of text) {
-    const code = point.charCodeAt(0);
-    if ((code < 32 && ![9, 10, 13].includes(code)) || code === 127)
+    const code = point.codePointAt(0)!;
+    if (
+      (code < 32 && ![9, 10, 13].includes(code)) ||
+      code === 127 ||
+      (code >= 0xd800 && code <= 0xdfff)
+    )
       throw new Error(
         "В файле есть нетекстовые данные. Выберите обычный TXT-файл в UTF-8.",
       );
   }
-  if (text.length > limit)
-    throw new Error(
-      limit === TEXT_MESSAGE_MAX_LENGTH
-        ? "В материале больше 4000 символов. Сократите текст материала."
-        : "В PDF больше 200 000 символов. Выберите меньший документ.",
-    );
 }
 
 export function composeTextMaterial(draft: string, material: string) {
   validText(material);
   const result = (draft ? draft + "\n\n" : "") + "Материал:\n" + material;
-  if (result.length > TEXT_MESSAGE_MAX_LENGTH)
-    throw new Error(
-      "Вопрос и материал вместе превышают 4000 символов. Сократите текст перед добавлением.",
-    );
+  const error = chatTextError(result);
+  if (error) throw new Error(error);
   return result;
 }
 
@@ -126,7 +134,7 @@ export function createTextMaterialResource(options: {
           throw new Error(
             pdf
               ? "PDF больше 8 МБ. Выберите меньший документ."
-              : "Файл больше 64 КБ. Выберите меньший TXT-файл.",
+              : "Файл больше 1 МБ. Выберите меньший TXT-файл.",
           );
         if (pdf)
           timer = setTimeout(
@@ -148,7 +156,7 @@ export function createTextMaterialResource(options: {
           throw new Error(
             pdf
               ? "PDF больше 8 МБ. Выберите меньший документ."
-              : "Файл больше 64 КБ. Выберите меньший TXT-файл.",
+              : "Файл больше 1 МБ. Выберите меньший TXT-файл.",
           );
         if (pdf) {
           if (
@@ -186,7 +194,9 @@ export function createTextMaterialResource(options: {
             "Не удалось прочитать UTF-8. Сохраните файл как обычный TXT в UTF-8.",
           );
         }
-        validText(text);
+        // Keep a larger preview intact. The user explicitly chooses the text
+        // that fits their question; confirmation never slices either draft.
+        validText(text, PDF_MATERIAL_MAX_TEXT);
         publish({ phase: "preview", filename: file.name, text });
       } catch (cause) {
         if (!active() || selected !== generation) return;

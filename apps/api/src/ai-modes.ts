@@ -72,6 +72,7 @@ export function createAssistantModes(
   injected: ModeProviders = {},
 ) {
   if (config.AI_ASSISTANT_MODES !== "enabled") return null;
+  const memoryContext = config.AI_CONTEXT_STRATEGY === "model_window_memory_v1";
   const minimumAccountRef =
     config.AI_MINIMUM_FIXED_FEE === "enabled"
       ? minimumAccountReference(config.GIGACHAT_CREDENTIALS)
@@ -133,12 +134,14 @@ export function createAssistantModes(
       model,
     })!;
     const routeFields = {
-      version: "ai-mode-route-v1",
+      version: memoryContext ? "ai-mode-route-memory-v1" : "ai-mode-route-v1",
       provider: basePolicy.provider,
       model,
       recipient: basePolicy.recipient,
       routing: basePolicy.routing,
-      data: "Передаются инструкции помощника, параметры переезда и история выбранного диалога, включая новый вопрос и предыдущие ответы. Не отправляйте документы, платёжные данные и другие секреты.",
+      data: memoryContext
+        ? "Передаются инструкции помощника, параметры переезда, новый вопрос, до ста завершённых пар сообщений выбранного диалога и выбранные дословные фрагменты более ранних сообщений пользователя из того же диалога. У фрагментов сохраняются источники; это не передача всей переписки. Не отправляйте документы, платёжные данные и другие секреты."
+        : "Передаются инструкции помощника, параметры переезда и история выбранного диалога, включая новый вопрос и предыдущие ответы. Не отправляйте документы, платёжные данные и другие секреты.",
     };
     const policy: AiPolicy = {
       id: hash({ ...routeFields, notice: config.AI_MODES_DATA_NOTICE ?? null }),
@@ -175,14 +178,18 @@ export function createAssistantModes(
     };
   });
   const disclosure = {
-    version: "ai-assistant-modes-v1",
+    version: memoryContext
+      ? "ai-assistant-modes-memory-v1"
+      : "ai-assistant-modes-v1",
     provider: "routerai" as const,
     model: "citygo/assistant-modes-v1",
     recipient: "RouterAI (OpenAI, DeepSeek) и GigaChat",
     routing:
       "Получатель определяется выбранным режимом. Максимум: RouterAI → OpenAI, фильтр us. Баланс: RouterAI → DeepSeek, фильтр cn. Минимум: прямой API GigaChat. Фильтр страны не подтверждает место хранения данных; RouterAI предупреждает о резервной обработке вне списка only.",
     data:
-      "Передаются инструкции помощника, параметры переезда и история выбранного диалога, включая новый вопрос и предыдущие ответы. Не отправляйте документы, платёжные данные и другие секреты. " +
+      (memoryContext
+        ? "Передаются инструкции помощника, параметры переезда, новый вопрос, до ста завершённых пар выбранного диалога и выбранные дословные фрагменты более ранних сообщений пользователя того же диалога с источниками. Память не означает передачу всей переписки и не переносится между диалогами. Не отправляйте документы, платёжные данные и другие секреты. "
+        : "Передаются инструкции помощника, параметры переезда и история выбранного диалога, включая новый вопрос и предыдущие ответы. Не отправляйте документы, платёжные данные и другие секреты. ") +
       (config.AI_MODES_DATA_NOTICE ??
         "Сроки хранения и удаления у получателей требуют отдельной проверки.") +
       " Доступны режимы «Максимум», «Баланс» и «Минимум». Выбранный режим действует на следующее отправленное сообщение.",
@@ -195,7 +202,7 @@ export function createAssistantModes(
     ...disclosure,
   };
   const catalogId = hash({
-    version: "ai-mode-catalog-v1",
+    version: memoryContext ? "ai-mode-catalog-memory-v1" : "ai-mode-catalog-v1",
     policyId: policy.id,
     routes: specifications.map(({ id, execution, upstream, country }) => ({
       id,
@@ -303,6 +310,7 @@ export function createAssistantModes(
   // Recreate the bootstrap policy and execution without the mode notice or
   // protocol fields. A retained grant covers only this exact original route.
   const originalBalanced =
+    !memoryContext &&
     config.LLM_PROVIDER === "routerai" &&
     config.ROUTERAI_MODEL === assistantModeModels.balanced &&
     config.ROUTERAI_UPSTREAM === "deepseek" &&

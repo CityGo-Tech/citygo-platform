@@ -5,7 +5,7 @@ import {
   createAssistantContextResource,
   type AssistantContextView,
 } from "./assistant-context-state";
-import type { AssistantContextPreview } from "@citygo/contracts";
+import type { AiModeId, AssistantContextPreview } from "@citygo/contracts";
 const value: AssistantContextPreview = {
   userId: "1",
   threadId: "2",
@@ -33,6 +33,7 @@ function deferred<T>() {
 }
 function setup(
   read: (signal: AbortSignal) => Promise<AssistantContextPreview>,
+  mode: { aiMode?: AiModeId; aiModeCatalogId?: string } = {},
 ) {
   const session = new AbortController();
   const scope = {
@@ -40,6 +41,7 @@ function setup(
     threadId: "2",
     draft: "Новый вопрос",
     signal: session.signal,
+    ...mode,
   };
   let current = { ...scope, enabled: true };
   const views: AssistantContextView[] = [];
@@ -76,6 +78,106 @@ test("opening preview only reads once; double click shares work and completion p
   assert.deepEqual(f.views.at(-1), { phase: "ready", value });
   assert.equal(f.denied(), 0);
   f.action.dispose();
+});
+
+const modeScope = {
+  aiMode: "maximum" as const,
+  aiModeCatalogId: "b".repeat(64),
+};
+function withMemory(mode: AiModeId = "maximum"): AssistantContextPreview {
+  const quote =
+    "Работаю у станции Тестовая; переезжаю с семьёй 🧳. <img src=x>";
+  return {
+    ...value,
+    memory: {
+      fragments: [
+        {
+          messageId: "9007199254740993",
+          content: quote,
+          start: 7,
+          end: 7 + [...quote].length,
+          sourceSha256: "a".repeat(64),
+        },
+      ],
+      complete: false,
+      indexComplete: false,
+      indexedMessages: 3,
+    },
+    contextBudget: {
+      strategy: "model_window_memory_v1",
+      mode,
+      contextWindowTokens: 1000000,
+      maxInputTokens: 991808,
+      maxOutputTokens: 4096,
+      framingReserve: 4096,
+      inputTextTokens: 1200,
+      verification: "conservative_utf8",
+      needsProviderCheck: true,
+      mandatoryFits: true,
+    },
+  };
+}
+
+test("a memory preview preserves exact source quotes, bigint identity and partial-coverage metadata", async () => {
+  const response = withMemory();
+  const f = setup(async () => response, modeScope);
+  await f.action.load();
+  assert.deepEqual(f.views.at(-1), { phase: "ready", value: response });
+  assert.equal(f.denied(), 0);
+  f.action.dispose();
+});
+
+test("mode and catalog replacement suppress late success and auth errors without another read or private publication", async () => {
+  for (const change of ["mode", "catalog"] as const)
+    for (const status of [200, 401, 403]) {
+      const next = deferred<AssistantContextPreview>();
+      let calls = 0;
+      const f = setup(async () => {
+        calls++;
+        const result = await next.promise;
+        if (status !== 200) throw new ApiError(status, "OLD_PRIVATE_CONTEXT");
+        return result;
+      }, modeScope);
+      const pending = f.action.load();
+      f.setCurrent(
+        change === "mode"
+          ? { aiMode: "balanced" }
+          : { aiModeCatalogId: "c".repeat(64) },
+      );
+      next.resolve(withMemory());
+      await pending;
+      await f.action.load();
+      assert.equal(calls, 1);
+      assert.deepEqual(f.views, [{ phase: "loading" }]);
+      assert.equal(f.denied(), 0);
+      f.action.dispose();
+    }
+});
+
+test("a current-mode response cannot reuse a different mode budget and a new scope can load independently", async () => {
+  const wrong = setup(async () => withMemory("balanced"), modeScope);
+  await wrong.action.load();
+  assert.deepEqual(wrong.views.at(-1), {
+    phase: "error",
+    message: "Не удалось показать контекст. Попробуйте ещё раз.",
+  });
+  assert.equal(wrong.denied(), 0);
+  assert.equal(
+    wrong.views.some((view) => view.phase === "ready"),
+    false,
+  );
+  wrong.action.dispose();
+  const response = withMemory("balanced");
+  const replacement = setup(async () => response, {
+    aiMode: "balanced",
+    aiModeCatalogId: "c".repeat(64),
+  });
+  await replacement.action.load();
+  assert.deepEqual(replacement.views.at(-1), {
+    phase: "ready",
+    value: response,
+  });
+  replacement.action.dispose();
 });
 test("close, expired session, changed owner/conversation and changed draft reject late private context", async () => {
   for (const change of ["close", "abort", "owner", "thread", "draft"]) {

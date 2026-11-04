@@ -137,7 +137,7 @@ try {
   compose(["up", "-d", "--wait", "--wait-timeout", "90", "postgres"]);
   compose(["run", "--rm", "--no-deps", "migrator"]);
   const migrations = psql("select count(*) from citygo_migrations");
-  assert.equal(migrations, "46");
+  assert.equal(migrations, "47");
   compose(["run", "--rm", "--no-deps", "migrator"]);
   assert.equal(psql("select count(*) from citygo_migrations"), migrations);
   compose([
@@ -173,6 +173,14 @@ try {
     ),
     "f",
     "Consent evidence is append-only and unavailable to the worker",
+  );
+  assert.equal(psql("select count(*) from conversation_memory_fragments"), "0");
+  assert.equal(
+    psql(
+      "select has_table_privilege('citygo_api','conversation_memory_fragments','SELECT') and has_table_privilege('citygo_api','conversation_memory_fragments','INSERT') and has_table_privilege('citygo_backup','conversation_memory_fragments','SELECT') and not has_table_privilege('citygo_api','conversation_memory_fragments','UPDATE') and not has_table_privilege('citygo_api','conversation_memory_fragments','DELETE') and not has_table_privilege('citygo_api','conversation_memory_fragments','TRUNCATE') and not has_table_privilege('citygo_worker','conversation_memory_fragments','SELECT') and not has_table_privilege('citygo_worker','conversation_memory_fragments','INSERT') and not has_table_privilege('citygo_worker','conversation_memory_fragments','UPDATE') and not has_table_privilege('citygo_worker','conversation_memory_fragments','DELETE') and not has_table_privilege('citygo_worker','conversation_memory_fragments','TRUNCATE')",
+    ),
+    "t",
+    "Private conversation quotations start empty with append-only API access and no worker access",
   );
   compose(["up", "-d", "--wait", "--wait-timeout", "120", "api", "web"]);
   const url = "http://" + compose(["port", "web", "3000"]).trim();

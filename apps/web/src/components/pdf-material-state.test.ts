@@ -65,7 +65,7 @@ function fixture(
 }
 
 test("a long PDF stays complete and editable; confirmation refuses overflow until the user chooses an excerpt", async () => {
-  const text = "Материал для переезда ".repeat(400);
+  const text = "Материал для переезда ".repeat(5000);
   const f = fixture(async () => ({ text, pages: 2 }));
   await f.resource.select(pdfFile());
   assert.deepEqual(f.views.at(-1), {

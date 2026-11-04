@@ -1,23 +1,48 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import { DomainError, type Repository } from "@citygo/db";
+import {
+  DomainError,
+  type Repository,
+  type ConversationMemory,
+} from "@citygo/db";
 import { instructions, profileContext, routeAgent } from "@citygo/agents";
 import {
   assistantContextInputSchema,
   assistantContextPreviewSchema,
   profileSchema,
+  type AssistantContextInput,
 } from "@citygo/contracts";
 import { buildConversationContext } from "./conversation-context.js";
+import { previewModelConversationContext } from "./model-conversation-context.js";
 
 /** Preview only: no provider, lease, hold, message insert, grant or AI quota. */
 export function registerAssistantContext(
   app: FastifyInstance,
   repo: Repository,
-  authenticate: (request: FastifyRequest) => Promise<{ id: string }>,
+  authenticate: (
+    request: FastifyRequest,
+  ) => Promise<{ id: string; currentAiConsentRequired?: boolean }>,
   maxInputBytes: number,
+  modelContext?: {
+    memory: ConversationMemory;
+    resolve: (
+      user: { id: string; currentAiConsentRequired?: boolean },
+      input: AssistantContextInput,
+    ) => {
+      mode: "maximum" | "balanced" | "minimum";
+      maxInputBytes: number;
+      maxOutputTokens: number;
+    };
+  },
 ) {
   app.post(
     "/v1/ai/context-preview",
-    { config: { rateLimit: { max: 30, timeWindow: 60_000 } } },
+    {
+      bodyLimit: 2 * 1024 * 1024,
+      onRequest: async (request) => {
+        await authenticate(request);
+      },
+      config: { rateLimit: { max: 30, timeWindow: 60_000 } },
+    },
     async (request, reply) => {
       reply.header("Cache-Control", "no-store");
       const user = await authenticate(request);
@@ -27,6 +52,7 @@ export function registerAssistantContext(
       const snapshot = await repo.conversationContextSnapshot(
         user.id,
         parsed.data.threadId,
+        modelContext && parsed.data.contextVersion ? 8388608 : undefined,
       );
       const profile = profileSchema.nullable().safeParse(snapshot.profile);
       if (!profile.success)
@@ -43,7 +69,7 @@ export function registerAssistantContext(
       const nextId = (
         BigInt(snapshot.messages.at(-1)?.id ?? "0") + 1n
       ).toString();
-      const context = buildConversationContext({
+      const contextInput = {
         instructions: instructions(agentKey),
         profile: profileContext(profile.data),
         history: [
@@ -52,7 +78,29 @@ export function registerAssistantContext(
         ],
         currentQuestion: question,
         maxInputBytes,
-      });
+      };
+      const selection = modelContext?.resolve(user, parsed.data);
+      const extended =
+        selection && modelContext && parsed.data.contextVersion
+          ? previewModelConversationContext({
+              ...contextInput,
+              ...selection,
+              memory: snapshot.thread
+                ? await modelContext.memory.snapshot(
+                    user.id,
+                    snapshot.thread.id,
+                    question,
+                    { readOnly: true },
+                  )
+                : {
+                    fragments: [],
+                    complete: true,
+                    indexComplete: true,
+                    indexedMessages: 0,
+                  },
+            })
+          : null;
+      const context = extended ?? buildConversationContext(contextInput);
       const result = assistantContextPreviewSchema.parse({
         userId: user.id,
         threadId: snapshot.thread?.id ?? null,
@@ -66,7 +114,10 @@ export function registerAssistantContext(
         agentKey,
         closed: snapshot.thread?.closed ?? false,
         draftIncluded: Boolean(draft),
-        messages: context.messages.slice(1, -1),
+        messages: extended?.recentMessages ?? context.messages.slice(1, -1),
+        ...(extended
+          ? { memory: extended.memory, contextBudget: extended.budget }
+          : {}),
       });
       // Do not publish text to a session revoked while the snapshot read waited.
       const current = await authenticate(request);

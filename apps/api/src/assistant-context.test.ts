@@ -202,7 +202,7 @@ for (const postgres of [false, true])
         "Even super admins cannot read this route as another owner",
       );
       assert.equal((await call("9223372036854775807")).statusCode, 404);
-      assert.equal((await call(thread, "x".repeat(4001))).statusCode, 400);
+      assert.equal((await call(thread, "x".repeat(100001))).statusCode, 400);
       assert.equal(providerCalls, 0);
       assert.deepEqual(await financialState(db), before);
       const storedProfile = {

@@ -29,7 +29,7 @@ test("reset and literal disposable rewinds retain a real accepted mode snapshot 
     (select count(*)::int from pg_sequences where schemaname='public') as sequences,
     (select count(*)::int from citygo_migrations) as migrations`)
     ).rows,
-    [{ tables: 79, sequences: 23, migrations: 46 }],
+    [{ tables: 80, sequences: 23, migrations: 47 }],
   );
   const repo = new Repository(db),
     user = await repo.register("retained-mode@example.test", "synthetic-hash");

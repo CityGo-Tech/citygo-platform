@@ -41,7 +41,7 @@ const migrations = readdirSync(migrationDirectory)
 const withoutTransaction = (sql) =>
   sql.replace(/^begin;\s*/i, "").replace(/commit;\s*$/i, "");
 
-test("18→46 rehearsal rejects a production project before fixture I/O", async () => {
+test("18→47 rehearsal rejects a production project before fixture I/O", async () => {
   const unexpected = () => assert.fail("No I/O before ownership guards");
   await assert.rejects(
     releaseUpgrade18Smoke({
@@ -55,11 +55,11 @@ test("18→46 rehearsal rejects a production project before fixture I/O", async 
   );
 });
 
-test("literal schema-18 fixture preserves budgets/orders/holds, rolls back late ACLs and reapplies only 19–46", async (t) => {
+test("literal schema-18 fixture preserves budgets/orders/holds, rolls back late ACLs and reapplies only 19–47", async (t) => {
   const db = new PGlite();
   t.after(() => db.close());
   await db.waitReady;
-  assert.equal(migrations.length, 46);
+  assert.equal(migrations.length, 47);
   assert.equal(migrations[17].name, "0018_payment_refunds.sql");
   assert.deepEqual(
     migrations.slice(18).map(({ name }) => name),
@@ -92,6 +92,7 @@ test("literal schema-18 fixture preserves budgets/orders/holds, rolls back late 
       "0044_conversation_titles.sql",
       "0045_ai_balance_request_cost_limit.sql",
       "0046_postpay_actual.sql",
+      "0047_conversation_memory.sql",
     ],
   );
   await db.exec(
@@ -118,6 +119,55 @@ test("literal schema-18 fixture preserves budgets/orders/holds, rolls back late 
     });
   await apply(migrations);
   const defaultBudget = (await db.query("select * from ai_budget")).rows;
+  const memoryUser = (
+    await db.query(
+      "insert into users(auth_subject) values('upgrade18-memory-canary') returning id",
+    )
+  ).rows[0].id;
+  const memoryThread = (
+    await db.query(
+      "insert into agent_threads(user_id,agent_key) values($1,'coordinator') returning id",
+      [memoryUser],
+    )
+  ).rows[0].id;
+  const memoryMessage = (
+    await db.query(
+      "insert into messages(thread_id,role,content) values($1,'user','Synthetic original memory quotation.') returning id",
+      [memoryThread],
+    )
+  ).rows[0].id;
+  await db.query(
+    `insert into conversation_memory_fragments(message_id,ordinal,user_id,thread_id,source_sha256,start_offset,end_offset,content)
+     select id,0,$2,thread_id,encode(sha256(convert_to(content,'UTF8')),'hex'),0,char_length(content),content
+     from messages where id=$1`,
+    [memoryMessage, memoryUser],
+  );
+  await assert.rejects(
+    db.exec(upgrade18RewindSql()),
+    /Conversation memory cannot be rewound/,
+  );
+  await db.exec("rollback");
+  assert.deepEqual(
+    (
+      await db.query(`select
+      (select count(*)::int from conversation_memory_fragments) as quotations,
+      (select count(*)::int from citygo_migrations) as migrations,
+      to_regclass('payment_admission') is not null as admission,
+      to_regclass('messages_memory_sources_idx') is not null as source_index,
+      exists(select 1 from pg_proc where proname='citygo_guard_conversation_memory_fragment') as guard`)
+    ).rows,
+    [
+      {
+        quotations: 1,
+        migrations: 47,
+        admission: true,
+        source_index: true,
+        guard: true,
+      },
+    ],
+    "A populated private cache rejects rewind before historical DDL",
+  );
+  await db.query("delete from users where id=$1", [memoryUser]);
   const confirmationUser = (
     await db.query(
       "insert into users(auth_subject) values('upgrade18-confirmation-canary') returning id",
@@ -142,7 +192,7 @@ test("literal schema-18 fixture preserves budgets/orders/holds, rolls back late 
       to_regclass('payment_admission') is not null as admission,
       exists(select 1 from pg_proc where proname='citygo_guard_account_email_verification_proof') as guard`)
     ).rows,
-    [{ confirmation: 1, migrations: 46, admission: true, guard: true }],
+    [{ confirmation: 1, migrations: 47, admission: true, guard: true }],
   );
   await db.query("delete from account_email_confirmation_challenges");
   await db.query("delete from users where id=$1", [confirmationUser]);
@@ -164,7 +214,7 @@ test("literal schema-18 fixture preserves budgets/orders/holds, rolls back late 
       to_regclass('payment_admission') is not null as admission,
       exists(select 1 from pg_proc where proname='citygo_guard_password_recovery') as guard`)
     ).rows,
-    [{ recovery: 1, migrations: 46, admission: true, guard: true }],
+    [{ recovery: 1, migrations: 47, admission: true, guard: true }],
     "Rejected rewind retains recovery history and rolls back earlier DDL",
   );
   // Remove only this synthetic in-memory test row before the existing empty
@@ -173,6 +223,15 @@ test("literal schema-18 fixture preserves budgets/orders/holds, rolls back late 
     recoveryId,
   ]);
   await db.exec(upgrade18RewindSql());
+  assert.deepEqual(
+    (
+      await db.query(
+        "select to_regclass('conversation_memory_fragments')::text as quotations,to_regclass('messages_memory_sources_idx')::text as source_index,exists(select 1 from pg_proc where proname in ('citygo_guard_conversation_memory_fragment','citygo_reject_conversation_memory_update')) as guard",
+      )
+    ).rows,
+    [{ quotations: null, source_index: null, guard: false }],
+    "Empty rewind removes the actual 0047 structures, not only its journal entry",
+  );
   assert.deepEqual(
     (
       await db.query(
@@ -277,6 +336,29 @@ test("literal schema-18 fixture preserves budgets/orders/holds, rolls back late 
   assert.deepEqual(await history(), historyBefore);
 
   await apply(migrations.slice(18));
+  assert.deepEqual(
+    (
+      await db.query(`select
+      (select count(*)::int from conversation_memory_fragments) as quotations,
+      has_table_privilege('citygo_api','conversation_memory_fragments','SELECT') as can_read,
+      has_table_privilege('citygo_api','conversation_memory_fragments','INSERT') as can_append,
+      has_table_privilege('citygo_api','conversation_memory_fragments','UPDATE') as can_rewrite,
+      has_table_privilege('citygo_api','conversation_memory_fragments','DELETE') as can_delete,
+      has_table_privilege('citygo_worker','conversation_memory_fragments','SELECT') as worker_read,
+      has_table_privilege('citygo_backup','conversation_memory_fragments','SELECT') as backup_read`)
+    ).rows,
+    [
+      {
+        quotations: 0,
+        can_read: true,
+        can_append: true,
+        can_rewrite: false,
+        can_delete: false,
+        worker_read: false,
+        backup_read: true,
+      },
+    ],
+  );
   assert.deepEqual(
     (
       await db.query(

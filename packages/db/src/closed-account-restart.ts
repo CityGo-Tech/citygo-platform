@@ -10,6 +10,7 @@ const tables = [
   "human_support_replies",
   "human_support_reads",
   "conversation_titles",
+  "conversation_memory_fragments",
   "service_consent_events",
   "personal_plan_checklists",
   "personal_plan_item_history",
@@ -92,6 +93,7 @@ const retainedTables = [
   "human_support_replies",
   "human_support_reads",
   "conversation_titles",
+  "conversation_memory_fragments",
   "service_consent_events",
   "personal_plan_checklists",
   "personal_plan_item_history",
@@ -341,6 +343,11 @@ async function inspect(tx: Sql, options: Options) {
     blockers.push({
       code: "CONVERSATION_TITLES_REQUIRE_REVIEW",
       count: snapshot.counts.conversation_titles,
+    });
+  if (snapshot.counts.conversation_memory_fragments)
+    blockers.push({
+      code: "CONVERSATION_MEMORY_REQUIRES_REVIEW",
+      count: snapshot.counts.conversation_memory_fragments,
     });
   if (
     snapshot.counts.human_support_requests ||

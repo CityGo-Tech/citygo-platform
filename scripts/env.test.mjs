@@ -27,6 +27,7 @@ const canaries = {
   AI_CREDIT_RESERVATION_MODE: "fixed5_overdraft",
   AI_REQUEST_COST_LIMIT_MODE: "user_balance",
   AI_CUSTOMER_BILLING_MODE: "postpay_actual_v1",
+  AI_CONTEXT_STRATEGY: "model_window_memory_v1",
   AI_ASSISTANT_MODES: "enabled",
   AI_MINIMUM_FIXED_FEE: "enabled",
   AI_MAXIMUM_REASONING_EFFORT: "medium",

@@ -6,6 +6,8 @@ import type {
   ResultDiscussionParams,
   ResultDiscussionSource,
 } from "@citygo/contracts";
+import { CHAT_CHARACTER_LIMIT_LABEL, chatTextProblem } from "@citygo/contracts";
+import { ChatTextarea } from "./chat-textarea";
 import { Button, Card, SelectField } from "@citygo/ui-web";
 import { assistantCatalog } from "./assistant-conversations";
 import {
@@ -189,15 +191,14 @@ export function ResultDiscussionDialog({
               </label>
               {!initialResultDiscussionDraft(state.source) && (
                 <p>
-                  Результат длиннее 4000 символов. Вставьте только нужный
-                  фрагмент.
+                  Результат длиннее {CHAT_CHARACTER_LIMIT_LABEL} символов.
+                  Вставьте только нужный фрагмент.
                 </p>
               )}
-              <textarea
+              <ChatTextarea
                 id="result-discussion-text"
                 className="ym-hide-content ym-disable-keys"
                 rows={7}
-                maxLength={4000}
                 value={text}
                 disabled={pending || disabled}
                 onChange={(event) => {
@@ -224,7 +225,11 @@ export function ResultDiscussionDialog({
           ) : (
             <Button
               disabled={
-                pending || disabled || state?.phase !== "ready" || !text.trim()
+                pending ||
+                disabled ||
+                state?.phase !== "ready" ||
+                !text.trim() ||
+                chatTextProblem(text) !== null
               }
               onClick={() => void prepare()}
             >

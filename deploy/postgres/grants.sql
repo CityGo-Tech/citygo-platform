@@ -97,6 +97,9 @@ grant select, insert on human_support_reads to citygo_api;
 grant select on conversation_titles to citygo_api;
 grant insert(thread_id,user_id,title) on conversation_titles to citygo_api;
 grant update(title,revision) on conversation_titles to citygo_api;
+-- Exact original user quotations are private and append-only. The source guard
+-- rejects forged owner/thread/hash/content; Worker has no memory access.
+grant select,insert on conversation_memory_fragments to citygo_api;
 grant update (through_reply_id,read_at) on human_support_reads to citygo_api;
 grant update (status,revision,updated_at,closed_at) on human_support_requests to citygo_api;
 -- Each admitted request retains one server-selected public mode profile.

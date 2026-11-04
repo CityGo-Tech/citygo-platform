@@ -88,7 +88,7 @@ test("message-history pages preserve bigint IDs and require strict ascending uni
     );
 });
 
-test("older cursor is the first message of a full 100-message page, never an invented offset", () => {
+test("older cursor is the first message of a nonempty bounded page, including byte-limited pages", () => {
   const value = page(Array.from({ length: 100 }, (_, i) => String(i + 1)));
   assert.deepEqual(conversationMessagesResponseSchema.parse(value), value);
   assert.deepEqual(
@@ -99,10 +99,11 @@ test("older cursor is the first message of a full 100-message page, never an inv
     conversationMessagesResponseSchema.parse(page([])),
     page([]),
   );
+  const short = { ...page(["1", "2"]), nextCursor: "1" };
+  assert.deepEqual(conversationMessagesResponseSchema.parse(short), short);
   for (const invalid of [
     { ...value, nextCursor: "2" },
     { ...page([]), nextCursor: "1" },
-    { ...page(["1"]), nextCursor: "1" },
     { ...value, messages: [...value.messages, message("101")] },
     { ...value, nextCursor: 1 },
   ])

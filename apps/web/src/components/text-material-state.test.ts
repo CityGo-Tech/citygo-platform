@@ -75,18 +75,19 @@ test("UTF-8 preview keeps the real filename and exact draft; only explicit confi
   f.resource.dispose();
 });
 
-test("the composed 4000-character limit includes the exact current question, separators and material heading", () => {
-  assert.equal(composeTextMaterial("q", "x".repeat(3987)).length, 4000);
-  assert.equal(composeTextMaterial("", "x".repeat(3990)).length, 4000);
+test("the composed Unicode limit includes the exact current question, separators and material heading", () => {
+  assert.equal(composeTextMaterial("q", "x".repeat(99987)).length, 100000);
+  assert.equal(composeTextMaterial("", "x".repeat(99990)).length, 100000);
+  assert.equal(composeTextMaterial("", "😀".repeat(99990)).length, 199990);
+  assert.throws(() => composeTextMaterial("q", "x".repeat(99988)), /100 000/);
   assert.throws(
-    () => composeTextMaterial("q", "x".repeat(3988)),
-    /вместе превышают 4000/,
+    () => composeTextMaterial("", "x".repeat(100001)),
+    /больше 100 000/,
   );
-  assert.throws(() => composeTextMaterial("", "x".repeat(4001)), /больше 4000/);
   assert.throws(() => composeTextMaterial("q", "  \n"), /нет текста/);
 });
 
-test("extension, empty size, invalid size and 64-KB metadata fail before a buffer is read", async () => {
+test("extension, empty size, invalid size and 1-MiB metadata fail before a buffer is read", async () => {
   for (const metadata of [
     { name: "resume.docx", size: 20 },
     { name: "resume.txt.docx", size: 20 },
@@ -121,7 +122,7 @@ test("invalid UTF-8, NUL/control bytes, empty text and overlong text never enter
     file("text\u0000secret"),
     file("text\u0001secret"),
     file("  \r\n"),
-    file("x".repeat(4001)),
+    file("x".repeat(200001)),
     {
       name: "wrong-size.txt",
       size: 1,
@@ -268,7 +269,7 @@ test("confirmation uses current draft edits, checks their combined length and ke
   await f.resource.select(file("x".repeat(100)));
   f.state.context = {
     ...f.state.context,
-    draft: "Новая формулировка ".repeat(220),
+    draft: "Новая формулировка ".repeat(6000),
   };
   assert.equal(f.resource.confirm(), false);
   assert.deepEqual(f.state.applied, []);
@@ -285,11 +286,28 @@ test("confirmation uses current draft edits, checks their combined length and ke
 test("overlong edited previews report an error without truncating or clearing either draft", async () => {
   const f = fixture();
   await f.resource.select(file("Материал"));
-  const edited = "🧳".repeat(2001);
+  const edited = "🧳".repeat(100001);
   f.resource.edit(edited);
   assert.equal(f.resource.confirm(), false);
   assert.ok(f.state.view.phase === "preview" && f.state.view.text === edited);
   assert.equal(f.state.context.draft, "Мой вопрос");
   assert.deepEqual(f.state.applied, []);
+  f.resource.dispose();
+});
+
+test("TXT beyond the message limit stays complete in preview until an explicit shorter selection", async () => {
+  const f = fixture("Мой вопрос"),
+    text = "Я".repeat(100001);
+  await f.resource.select(file(text));
+  assert.ok(f.state.view.phase === "preview" && f.state.view.text === text);
+  assert.equal(f.resource.confirm(), false);
+  assert.ok(f.state.view.phase === "preview" && f.state.view.text === text);
+  assert.equal(f.state.context.draft, "Мой вопрос");
+  assert.deepEqual(f.state.applied, []);
+  f.resource.edit("Выбранный фрагмент");
+  assert.equal(f.resource.confirm(), true);
+  assert.deepEqual(f.state.applied, [
+    "Мой вопрос\n\nМатериал:\nВыбранный фрагмент",
+  ]);
   f.resource.dispose();
 });

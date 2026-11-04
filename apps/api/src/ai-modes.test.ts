@@ -27,6 +27,53 @@ const fixedSettings = {
     "synthetic-client:synthetic-secret",
   ).toString("base64"),
 };
+
+test("source-bound memory gets new consent and execution identities without changing routes, prices or legacy approvals", () => {
+  const settings = {
+    ...fixedSettings,
+    AI_CUSTOMER_BILLING_MODE: "postpay_actual_v1",
+    LLM_MAX_INPUT_BYTES: "65536",
+    ROUTERAI_MAX_OUTPUT_TOKENS: "4096",
+  };
+  const legacy = createAssistantModes(readConfig(settings))!;
+  const memory = createAssistantModes(
+    readConfig({
+      ...settings,
+      LLM_MAX_INPUT_BYTES: "8388608",
+      AI_CONTEXT_STRATEGY: "model_window_memory_v1",
+    }),
+  )!;
+  assert.equal(legacy.policy.version, "ai-assistant-modes-v1");
+  assert.equal(memory.policy.version, "ai-assistant-modes-memory-v1");
+  assert.notEqual(memory.policy.id, legacy.policy.id);
+  assert.notEqual(memory.catalogId, legacy.catalogId);
+  assert.deepEqual(memory.modeCatalog().options, legacy.modeCatalog().options);
+  assert.match(memory.policy.data, /ста завершённых пар/);
+  assert.match(
+    memory.policy.data,
+    /более ранних сообщений пользователя того же диалога/,
+  );
+  assert.equal(memory.legacyBalancedCompatibility, undefined);
+  for (const [index, route] of memory.routes.entries()) {
+    const before = legacy.routes[index]!;
+    assert.equal(route.id, before.id);
+    assert.equal(route.model, before.model);
+    assert.equal(route.providerName, before.providerName);
+    assert.equal(
+      route.execution.maxOutputTokens,
+      before.execution.maxOutputTokens,
+    );
+    assert.deepEqual(route.fixedFee, before.fixedFee);
+    assert.notEqual(route.policy.id, before.policy.id);
+    assert.notEqual(route.execution.key, before.execution.key);
+  }
+  assert.deepEqual(
+    createAssistantModes(readConfig(settings))!.routes.map(
+      ({ execution }) => execution,
+    ),
+    legacy.routes.map(({ execution }) => execution),
+  );
+});
 test("retained consent selects only the exact bootstrap Balanced route and requires one real opt-in for other modes", (t) => {
   const fetch = t.mock.method(globalThis, "fetch", async () => {
     throw Error("Network forbidden");

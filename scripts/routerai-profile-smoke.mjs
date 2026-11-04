@@ -55,6 +55,7 @@ export async function routerAiProfileSmoke({
       { LLM_MAX_INPUT_BYTES: "8192" },
     ],
     ["postpay-context64-v1", "postpay-context64-profile.fixture.json"],
+    ["postpay-memory-v1", "postpay-memory-profile.fixture.json"],
   ])
     await mountedProfileSmoke({
       project,
@@ -138,6 +139,9 @@ async function mountedProfileSmoke({
           "AI_ASSISTANT_MODES",
           "AI_MAXIMUM_REASONING_EFFORT",
           "AI_MODES_DATA_NOTICE",
+          ...(profile.AI_CONTEXT_STRATEGY === "model_window_memory_v1"
+            ? ["AI_CONTEXT_STRATEGY"]
+            : []),
           ...(profile.AI_MINIMUM_FIXED_FEE === "enabled"
             ? ["GIGACHAT_MODEL", "GIGACHAT_SCOPE"]
             : []),
@@ -277,6 +281,39 @@ async function mountedProfileSmoke({
              assert.deepEqual(route.policy,other.routes[index].policy);
              assert.notEqual(route.execution.key,other.routes[index].execution.key);
              if (route.id!=='minimum') assert.equal(route.execution.maxOutputTokens,4096);
+           }
+         }
+         if (${JSON.stringify(marker)}==='postpay-memory-v1') {
+           assert.equal(config.AI_CONTEXT_STRATEGY,'model_window_memory_v1');
+           assert.equal(config.LLM_MAX_INPUT_BYTES,8388608);
+           assert.equal(config.ROUTERAI_MAX_OUTPUT_TOKENS,4096);
+           assert.equal(config.AI_MAXIMUM_REASONING_EFFORT,'medium');
+           assert.equal(config.AI_CUSTOMER_BILLING_MODE,'postpay_actual_v1');
+           assert.equal(config.AI_REQUEST_COST_LIMIT_MODE,'operator_ceiling');
+           assert.equal(config.AI_CREDIT_MODE,'routerai_citygo_10x');
+           assert.equal(config.AI_CREDIT_RESERVATION_MODE,'fixed5_overdraft');
+           assert.equal(config.YOOKASSA_FISCAL_PROFILE,'citygo_service_full_payment_v1');
+           assert.equal(config.PHONE_VERIFICATION_MODE,'prosto_sms');
+           const legacyConfig={...config,AI_CONTEXT_STRATEGY:'legacy',LLM_MAX_INPUT_BYTES:65536};
+           const legacyDraft=createAssistantModes(legacyConfig);
+           const legacy=createAssistantModes({...legacyConfig,AI_MODES_PRODUCTION_POLICY_ID:legacyDraft.policy.id});
+           assert.equal(modes.policy.version,'ai-assistant-modes-memory-v1');
+           assert.equal(legacy.policy.version,'ai-assistant-modes-v1');
+           assert.notEqual(modes.policy.id,legacy.policy.id);
+           assert.notEqual(modes.catalogId,legacy.catalogId);
+           assert.deepEqual(modes.modeCatalog().options,legacy.modeCatalog().options);
+           assert.equal(modes.legacyBalancedCompatibility,undefined);
+           for (const [index,route] of modes.routes.entries()) {
+             const old=legacy.routes[index];
+             assert.equal(route.execution.maxInputBytes,8388608);
+             assert.equal(route.execution.maxOutputTokens,old.execution.maxOutputTokens);
+             assert.deepEqual(route.fixedFee,old.fixedFee);
+             assert.equal(route.policy.model,old.policy.model);
+             assert.equal(route.policy.provider,old.policy.provider);
+             assert.equal(route.policy.recipient,old.policy.recipient);
+             assert.equal(route.policy.routing,old.policy.routing);
+             assert.notEqual(route.policy.id,old.policy.id);
+             assert.notEqual(route.execution.key,old.execution.key);
            }
          }
          assert.equal(modes.productionApproved,true);

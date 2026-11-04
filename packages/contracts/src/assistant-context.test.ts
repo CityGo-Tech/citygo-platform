@@ -27,7 +27,7 @@ test("context preview keeps opaque IDs and unknown profile fields, accepting onl
   );
   for (const value of [
     { threadId: "../1", draft: "" },
-    { threadId: "1", draft: "x".repeat(4001) },
+    { threadId: "1", draft: "x".repeat(100001) },
     { threadId: "1", draft: "", userId: "2" },
     { threadId: "1", draft: "", confirmed: true },
   ])

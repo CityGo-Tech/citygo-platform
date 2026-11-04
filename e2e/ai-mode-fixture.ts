@@ -53,6 +53,7 @@ export async function fixture(
   ];
   const state = {
     owner: "101",
+    catalogId,
     authenticated: true,
     sends: [] as Send[],
     dashboardReads: 0,
@@ -148,7 +149,7 @@ export async function fixture(
       ...(!options.legacy
         ? {
             modes: {
-              catalogId,
+              catalogId: state.catalogId,
               defaultMode: "balanced" as const,
               options: [
                 {

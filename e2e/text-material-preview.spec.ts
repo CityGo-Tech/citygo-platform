@@ -280,7 +280,7 @@ test("invalid files and combined overflow remain local, preserve the question an
 }) => {
   const state = await fixture(context);
   await page.goto("/");
-  const question = "В".repeat(3950);
+  const question = "В".repeat(99950);
   await composer(page).fill(question);
   await entry(page).click();
   for (const invalid of [
@@ -291,8 +291,8 @@ test("invalid files and combined overflow remain local, preserve the question an
     },
     {
       name: "large.txt",
-      buffer: Buffer.alloc(65537, 65),
-      error: "Файл больше 64 КБ",
+      buffer: Buffer.alloc(1024 * 1024 + 1, 65),
+      error: "Файл больше 1 МБ",
     },
     {
       name: "invalid.txt",
@@ -306,8 +306,8 @@ test("invalid files and combined overflow remain local, preserve the question an
     },
     {
       name: "long.txt",
-      buffer: Buffer.from("Я".repeat(4001)),
-      error: "больше 4000 символов",
+      buffer: Buffer.from("Я".repeat(200001)),
+      error: "больше 200 000 символов",
     },
   ]) {
     await upload(page).setInputFiles({
@@ -332,7 +332,7 @@ test("invalid files and combined overflow remain local, preserve the question an
     .getByRole("button", { name: "Добавить в сообщение", exact: true })
     .click();
   await expect(page.getByRole("dialog").getByRole("alert")).toContainText(
-    "Вопрос и материал вместе превышают 4000",
+    "до 100 000 символов",
   );
   await expect(preview(page)).toHaveValue("М".repeat(100));
   await page

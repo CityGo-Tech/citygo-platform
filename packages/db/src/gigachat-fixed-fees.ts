@@ -300,8 +300,8 @@ export class GigaChatFixedFees {
         [fee.holdId, outcome, operationId],
       );
     }
-    // Errors are free to the customer. Unknown remote execution still occupies
-    // provider capacity until the conservative deadline; no blind model retry.
+    // Errors are free to the customer, but an uncertain upstream operation
+    // retains personal-provider capacity until the bounded existing deadline.
     await tx.query(
       `update gigachat_account_leases set lease_token=null,hold_id=null,expires_at=null
  where account_ref=$1 and hold_id=$2 and lease_token=$3 and expires_at<=clock_timestamp()`,

@@ -87,13 +87,13 @@ test("reviewed text appends once without replacing or normalizing the existing d
     assistantHandoffDraft("<script>plain text</script>"),
     "<script>plain text</script>",
   );
-  assert.equal(assistantHandoffDraft("😀".repeat(2000)).length, 4000);
-  assert.equal(assistantHandoffDraft("x", "y".repeat(3997)).length, 4000);
+  assert.equal(assistantHandoffDraft("😀".repeat(100000)).length, 200000);
+  assert.equal(assistantHandoffDraft("x", "y".repeat(99997)).length, 100000);
   for (const [text, draft] of [
     [" ", ""],
-    ["x".repeat(4001), ""],
-    ["😀".repeat(2001), ""],
-    ["x", "y".repeat(3998)],
+    ["x".repeat(100001), ""],
+    ["😀".repeat(100001), ""],
+    ["x", "y".repeat(99998)],
   ])
     assert.throws(() => assistantHandoffDraft(text!, draft!));
 });

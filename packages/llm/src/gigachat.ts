@@ -3,9 +3,19 @@ import type {
   ModelStreamEvent,
   StreamingProvider,
   ModelRetryGuard,
+  ModelInputTokenCounts,
 } from "./provider.js";
 import { readChatCompletion } from "./chat-completion.js";
-import { createGigaPost, gigaChatUrl, type GigaPost } from "./gigachat-http.js";
+import {
+  createGigaPost,
+  gigaChatUrl,
+  gigaTokenCountUrl,
+  type GigaPost,
+} from "./gigachat-http.js";
+import {
+  gigaTokenCountBody,
+  readGigaTokenCounts,
+} from "./gigachat-token-count.js";
 import {
   GigaTokenCache,
   gigaScopes,
@@ -53,6 +63,42 @@ export class GigaChatProvider implements StreamingProvider {
       this.post,
       options.now,
     );
+  }
+
+  async countInputTokens(
+    instructions: string,
+    messages: ModelMessage[],
+    signal: AbortSignal,
+  ): Promise<ModelInputTokenCounts> {
+    const deadline = AbortSignal.any([
+      signal,
+      AbortSignal.timeout(Math.min(this.options.timeoutMs ?? 60000, 10000)),
+    ]);
+    try {
+      deadline.throwIfAborted();
+      const { body, input } = gigaTokenCountBody(
+        this.model,
+        instructions,
+        messages,
+      );
+      const token = await this.tokens.get(deadline);
+      deadline.throwIfAborted();
+      const response = await this.post(gigaTokenCountUrl, {
+        signal: deadline,
+        headers: {
+          Authorization: `Bearer ${token.value}`,
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body,
+      });
+      // No automatic counter POST retry, generation, attempt guard or billing
+      // callback. A later explicit action may obtain fresh authorization.
+      if (response.status === 401) this.tokens.invalidate(token);
+      return await readGigaTokenCounts(response, input, deadline);
+    } catch {
+      throw new Error("GigaChat token count failed or was interrupted");
+    }
   }
 
   async *stream(

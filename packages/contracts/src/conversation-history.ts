@@ -52,12 +52,12 @@ export const conversationMessagesResponseSchema = z
       });
     if (
       page.nextCursor !== null &&
-      (page.messages.length !== 100 || page.nextCursor !== page.messages[0]?.id)
+      (page.messages.length === 0 || page.nextCursor !== page.messages[0]?.id)
     )
       ctx.addIssue({
         code: "custom",
         path: ["nextCursor"],
-        message: "Older messages require a full page and its first ID",
+        message: "Older messages require a nonempty page and its first ID",
       });
   });
 export type ConversationMessagesPage = z.infer<

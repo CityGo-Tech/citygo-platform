@@ -50,8 +50,10 @@ test("expired, future, corrupt and oversized drafts are discarded; disabled stor
   for (const raw of [
     "{",
     JSON.stringify({ text: 123, savedAt: 1000 }),
-    JSON.stringify({ text: "x".repeat(4001), savedAt: 1000 }),
-    "x".repeat(25001),
+    JSON.stringify({ text: "x".repeat(100001), savedAt: 1000 }),
+    JSON.stringify({ text: "broken\ud800", savedAt: 1000 }),
+    JSON.stringify({ text: "broken\0text", savedAt: 1000 }),
+    "x".repeat(1200257),
   ]) {
     s.setItem("citygo:chat-draft:v1:101:20", raw);
     assert.equal(readChatDraft("101", "20", s, 1001), "");
@@ -59,7 +61,7 @@ test("expired, future, corrupt and oversized drafts are discarded; disabled stor
   }
   assert.equal(writeChatDraft("101\n", "20", "A", s), false);
   assert.equal(writeChatDraft("101", "9223372036854775808", "A", s), false);
-  assert.equal(writeChatDraft("101", "20", "x".repeat(4001), s), false);
+  assert.equal(writeChatDraft("101", "20", "x".repeat(100001), s), false);
   const denied = {
     ...s,
     getItem() {
@@ -76,4 +78,17 @@ test("expired, future, corrupt and oversized drafts are discarded; disabled stor
   assert.equal(writeChatDraft("101", "20", "A", denied), false);
   assert.doesNotThrow(() => clearChatDrafts(denied));
   assert.equal(writeChatDraft("101", "20", "A", null), false);
+});
+
+test("long Unicode drafts round-trip exactly; a rejected edit cannot resurrect an older question", () => {
+  const s = storage(),
+    text = "😀".repeat(100000);
+  assert.equal(writeChatDraft("101", "20", text, s, 1000), true);
+  assert.equal(readChatDraft("101", "20", s, 1001), text);
+  assert.equal(writeChatDraft("101", "20", text + "x", s, 1002), false);
+  assert.equal(readChatDraft("101", "20", s, 1003), "");
+  assert.equal(s.length, 0);
+  writeChatDraft("101", "20", "Earlier", s, 1004);
+  assert.equal(writeChatDraft("101", "20", "broken\ud800", s, 1005), false);
+  assert.equal(s.length, 0);
 });

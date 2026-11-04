@@ -10,6 +10,7 @@ const tables = [
   "human_support_replies",
   "human_support_reads",
   "conversation_titles",
+  "conversation_memory_fragments",
   "service_consent_events",
   "personal_plan_checklists",
   "personal_plan_item_history",
@@ -124,6 +125,7 @@ const protectedEmpty = [
   "human_support_replies",
   "human_support_reads",
   "conversation_titles",
+  "conversation_memory_fragments",
   // User-chosen steps and their tombstones need a separate erasure review.
   "personal_plan_checklists",
   "personal_plan_item_history",
@@ -418,6 +420,11 @@ async function inspect(tx: Sql, options: Options) {
       code: "CONVERSATION_TITLES_REQUIRE_REVIEW",
       count: snapshot.counts.conversation_titles,
     });
+  if (snapshot.counts.conversation_memory_fragments)
+    blockers.push({
+      code: "CONVERSATION_MEMORY_REQUIRES_REVIEW",
+      count: snapshot.counts.conversation_memory_fragments,
+    });
   if (
     snapshot.counts.human_support_requests ||
     snapshot.counts.human_support_replies
@@ -630,6 +637,9 @@ export class FreshAccountReset {
       // The empty FK child must join the old parent TRUNCATE for PostgreSQL,
       // but this grants no erasure of live titles or their retained revisions.
       if (
+        snapshot.counts.conversation_memory_fragments !== 0 ||
+        (await tx.query("select 1 from conversation_memory_fragments limit 1"))
+          .rows.length !== 0 ||
         snapshot.counts.conversation_titles !== 0 ||
         (await tx.query("select 1 from conversation_titles limit 1")).rows
           .length

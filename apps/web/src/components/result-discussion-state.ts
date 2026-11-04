@@ -1,6 +1,7 @@
 import { ApiError } from "@citygo/api-client";
 import {
   agentKeys,
+  chatTextError,
   resultDiscussionSourceSchema,
   type AgentKey,
   type ResultDiscussionParams,
@@ -17,10 +18,8 @@ export function resultDiscussionDraft(text: string, existing = "") {
   const reviewed = text.trim();
   if (!reviewed) throw new Error("Добавьте текст для обсуждения.");
   const result = (existing ? existing + "\n\n" : "") + reviewed;
-  if (result.length > 4000)
-    throw new Error(
-      "Текст вместе с черновиком помощника превышает 4000 символов. Сократите фрагмент или сначала проверьте черновик.",
-    );
+  const error = chatTextError(result);
+  if (error) throw new Error(error);
   for (const point of result) {
     const code = point.codePointAt(0)!;
     if (

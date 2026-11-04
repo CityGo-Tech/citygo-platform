@@ -22,6 +22,7 @@ import {
   aiControlResponseSchema,
   routerAiCostMicros,
   dashboardResponseSchema,
+  conversationDetailResponseSchema,
   type AiCredit,
   type AiModeId,
 } from "@citygo/contracts";
@@ -44,6 +45,7 @@ async function fixture(
     postpay?: boolean;
     postgres?: boolean;
     initialKopeks?: number;
+    memory?: boolean;
   } = {},
 ) {
   const minimum = options.minimum !== undefined;
@@ -94,9 +96,24 @@ async function fixture(
   const minimumGate = new Promise<void>((resolve) => {
     releaseMinimum = resolve;
   });
-  const control = { blockMinimum: false };
+  let markCounterStarted!: () => void;
+  let releaseCounter!: () => void;
+  const counterStarted = new Promise<void>((resolve) => {
+    markCounterStarted = resolve;
+  });
+  const counterGate = new Promise<void>((resolve) => {
+    releaseCounter = resolve;
+  });
+  const control = {
+    blockMinimum: false,
+    blockCounter: false,
+    failCounter: false,
+    overCounter: false,
+    counterCalls: 0,
+  };
   t.after(async () => {
     releaseMinimum();
+    releaseCounter();
     await cleanup.app?.close();
     for (const peer of peers) await peer.close();
     await ownerDb.close();
@@ -205,6 +222,28 @@ async function fixture(
     modeProviders.minimum = {
       name: "gigachat",
       model: "GigaChat-3-Ultra",
+      ...(options.memory
+        ? {
+            async countInputTokens(
+              _instructions: string,
+              messages: ModelMessage[],
+            ) {
+              control.counterCalls++;
+              markCounterStarted();
+              if (control.blockCounter) await counterGate;
+              if (control.failCounter)
+                throw new Error("synthetic-private-counter-detail");
+              return {
+                instructions: 1000,
+                messages: messages.map((message, index) =>
+                  control.overCounter && index === messages.length - 1
+                    ? 128000
+                    : [...message.content].length,
+                ),
+              };
+            },
+          }
+        : {}),
       async *stream(_instructions, messages, _signal, guard) {
         assert.equal(guard?.billing, undefined);
         let held = "0";
@@ -335,6 +374,13 @@ async function fixture(
       ? {
           ROUTERAI_DATA_NOTICE: "Synthetic original recipient notice.",
           LLM_MAX_INPUT_BYTES: "8192",
+          ROUTERAI_MAX_OUTPUT_TOKENS: "4096",
+        }
+      : {}),
+    ...(options.memory
+      ? {
+          AI_CONTEXT_STRATEGY: "model_window_memory_v1",
+          LLM_MAX_INPUT_BYTES: "8388608",
           ROUTERAI_MAX_OUTPUT_TOKENS: "4096",
         }
       : {}),
@@ -527,8 +573,295 @@ async function fixture(
     control,
     minimumStarted,
     releaseMinimum,
+    counterStarted,
+    releaseCounter,
   };
 }
+
+for (const postgres of [false, true])
+  test(
+    `long messages and source memory retain three-mode postpay without holds (${postgres ? "PostgreSQL" : "PGlite"})`,
+    { skip: postgres && !process.env.TEST_DATABASE_URL },
+    async (t) => {
+      const f = await fixture(t, {
+        minimum: "fixed",
+        postpay: true,
+        memory: true,
+        postgres,
+      });
+      const original =
+        "Работаю на проспекте Вернадского, 17. У меня двое детей. Доход 180 тысяч.";
+      await f.db.query(
+        "insert into messages(thread_id,role,content,metadata) values($1,'user',$2,'{\"status\":\"complete\"}')",
+        [f.threadId, original],
+      );
+      await f.db.query(
+        "insert into messages(thread_id,role,content,metadata) values($1,'assistant','Первый ответ','{\"status\":\"complete\"}')",
+        [f.threadId],
+      );
+      for (let n = 0; n < 55; n++) {
+        await f.db.query(
+          "insert into messages(thread_id,role,content,metadata) values($1,'user',$2,'{\"status\":\"complete\"}'),($1,'assistant','Продолжаем','{\"status\":\"complete\"}')",
+          [f.threadId, "Другой вопрос " + n],
+        );
+      }
+      const count = async (table: string) =>
+        Number(
+          (
+            await f.db.query<{ n: number }>(
+              `select count(*)::int as n from ${table}`,
+            )
+          ).rows[0]!.n,
+        );
+      const previewInput = {
+        threadId: f.threadId,
+        draft: "Где искать жильё с учётом работы и детей?",
+        aiMode: "minimum",
+        aiModeCatalogId: f.modes.catalogId,
+        contextVersion: "model_window_memory_v1",
+      };
+      const beforePreview = [
+        await count("messages"),
+        await count("conversation_memory_fragments"),
+        await count("ai_model_attempts"),
+      ];
+      const preview = await f.call(
+        "POST",
+        "/v1/ai/context-preview",
+        f.token,
+        previewInput,
+      );
+      assert.equal(preview.statusCode, 200, preview.body);
+      assert.equal(preview.json().contextBudget.mode, "minimum");
+      assert.equal(preview.json().contextBudget.needsProviderCheck, true);
+      assert.equal(preview.json().memory.indexComplete, false);
+      assert.equal(f.control.counterCalls, 0);
+      assert.deepEqual(
+        [
+          await count("messages"),
+          await count("conversation_memory_fragments"),
+          await count("ai_model_attempts"),
+        ],
+        beforePreview,
+      );
+      const invalid = await f.send("maximum", "🙂".repeat(100001));
+      assert.equal(invalid.statusCode, 400);
+      assert.equal(f.calls.length, 0);
+      const requestIds = new Map<AiModeId, ReturnType<typeof randomUUID>>();
+      for (const mode of ["maximum", "balanced", "minimum"] as const) {
+        const text = "Я".repeat(100000);
+        const request = randomUUID();
+        requestIds.set(mode, request);
+        const response = await f.send(mode, text, request);
+        assert.equal(response.statusCode, 200, response.body);
+        assert.match(response.body, /"type":"done"/);
+        const received = f.calls.at(-1)!;
+        assert.equal(received.mode, mode);
+        assert.equal(received.held, "0");
+        assert.equal(received.messages.at(-1)?.content, text);
+        assert.ok(
+          received.messages.some((message) =>
+            message.content.includes(original),
+          ),
+          "original facts survive outside the recent 100 stored messages",
+        );
+        assert.equal((await f.balance()).heldMicros, 0);
+      }
+      assert.equal(f.control.counterCalls, 1);
+      assert.equal((await f.balance()).spentMicros, 6_000_000);
+      const replay = await f.send(
+        "minimum",
+        "Я".repeat(100000),
+        requestIds.get("minimum")!,
+      );
+      assert.equal(replay.statusCode, 409);
+      assert.equal(f.calls.length, 3);
+      assert.equal(f.control.counterCalls, 1);
+      assert.equal((await f.balance()).spentMicros, 6_000_000);
+      assert.equal(await count("ai_model_attempts"), 3);
+      assert.equal(
+        (await f.db.query("select 1 from ai_credit_entries where kind='hold'"))
+          .rows.length,
+        0,
+      );
+      const after = await f.call(
+        "GET",
+        `/v1/conversations/${f.threadId}`,
+        f.token,
+      );
+      assert.equal(after.statusCode, 200, after.body);
+      const board = conversationDetailResponseSchema.parse(after.json());
+      assert.equal(board.thread!.messages.at(-2)!.content, "Я".repeat(100000));
+      const sources = await f.db.query(
+        "select 1 from conversation_memory_fragments where thread_id=$1 and content like '%Вернадского%'",
+        [f.threadId],
+      );
+      assert.equal(sources.rows.length, 1);
+    },
+  );
+
+for (const outcome of ["timeout", "over-window"] as const)
+  test(`long-message ${outcome} preflight never generates, debits or blocks other modes; personal capacity expires automatically`, async (t) => {
+    const f = await fixture(t, {
+      minimum: "fixed",
+      postpay: true,
+      memory: true,
+    });
+    const before = await f.balance();
+    f.control.failCounter = outcome === "timeout";
+    f.control.overCounter = outcome === "over-window";
+    const failed = await f.send("minimum", "Я".repeat(100000));
+    assert.match(failed.body, /"type":"error"/);
+    assert.doesNotMatch(failed.body, /synthetic-private-counter-detail/);
+    assert.equal(f.calls.length, 0);
+    assert.equal((await f.balance()).availableMicros, before.availableMicros);
+    assert.equal(
+      (await f.db.query("select 1 from ai_model_attempts")).rows.length,
+      1,
+    );
+    assert.equal(
+      (
+        await f.db.query(
+          "select 1 from gigachat_account_leases where expires_at>clock_timestamp()",
+        )
+      ).rows.length,
+      1,
+    );
+    const busy = await f.send("minimum", "Повтор до окончания срока очереди");
+    assert.match(busy.body, /"type":"error"/);
+    assert.equal(
+      f.control.counterCalls,
+      1,
+      "no second upstream count while personal slot is busy",
+    );
+    const lease = (
+      await f.db.query<{ bounded: boolean }>(
+        "select expires_at<=clock_timestamp()+interval '90 seconds' as bounded from gigachat_account_leases",
+      )
+    ).rows[0]!;
+    assert.equal(lease.bounded, true);
+    const next = await f.send("balanced", "Продолжаем после проверки размера");
+    assert.match(next.body, /"type":"done"/);
+    assert.equal(f.calls.length, 1);
+    assert.equal((await f.balance()).spentMicros, 1_000_000);
+    assert.equal((await f.balance()).heldMicros, 0);
+  });
+
+for (const postgres of [false, true])
+  test(
+    `GigaChat token preflight shares one provider slot across different users without another generation or hold (${postgres ? "PostgreSQL" : "PGlite"})`,
+    { skip: postgres && !process.env.TEST_DATABASE_URL },
+    async (t) => {
+      const f = await fixture(t, {
+        minimum: "fixed",
+        postpay: true,
+        memory: true,
+        postgres,
+      });
+      const registration = await f.call("POST", "/v1/auth/register", "", {
+        email: randomUUID() + "@example.test",
+        password: "123456",
+        consents: await syntheticConsentsFor(f.app),
+      });
+      assert.equal(registration.statusCode, 200, registration.body);
+      const otherToken = registration.cookies[0]!.value;
+      const otherBoard = dashboardResponseSchema.parse(
+        (await f.call("GET", "/v1/dashboard", otherToken)).json(),
+      );
+      await f.ledger.topUpConfirmed(otherBoard.user.id, randomUUID(), {
+        providerPaymentId: "synthetic-preflight-" + randomUUID(),
+        merchantId: "synthetic-shop",
+        paidKopeks: 10000,
+        currency: "RUB",
+        test: false,
+        verifiedAt: new Date().toISOString(),
+        verification: "server_get_succeeded",
+      });
+      const start = await f.call(
+        "POST",
+        "/v1/conversations/start",
+        otherToken,
+        { agentKey: "housing" },
+      );
+      assert.equal(start.statusCode, 200, start.body);
+      const otherThread = start.json<{ id: string }>().id;
+      const sendOther = () =>
+        f.call("POST", `/v1/threads/${otherThread}/messages`, otherToken, {
+          text: "Вопрос другого владельца",
+          requestId: randomUUID(),
+          aiMode: "minimum",
+          aiModeCatalogId: f.modes.catalogId,
+          policyId: f.modes.policy.id,
+          creditReservationMode: "fixed5_overdraft",
+        });
+      f.control.blockCounter = true;
+      const first = f.send(
+        "minimum",
+        "Первый владелец проверяет длинное сообщение",
+      );
+      await f.counterStarted;
+      try {
+        const refused = await sendOther();
+        assert.match(refused.body, /"type":"error"/);
+        assert.equal(f.control.counterCalls, 1);
+        assert.equal(f.calls.length, 0);
+        assert.equal((await f.balance()).heldMicros, 0);
+      } finally {
+        f.control.blockCounter = false;
+        f.releaseCounter();
+      }
+      assert.match((await first).body, /"type":"done"/);
+      assert.match((await sendOther()).body, /"type":"done"/);
+      assert.equal(f.control.counterCalls, 2);
+      assert.equal(f.calls.length, 2);
+      const otherBalance = (
+        await f.call("GET", "/v1/ai/credit", otherToken)
+      ).json<AiCredit>();
+      assert.equal(otherBalance.spentMicros, 3000000);
+      assert.equal(otherBalance.heldMicros, 0);
+    },
+  );
+
+test("large-body authentication and privacy checks run before parsing; unrelated routes retain their small limits", async (t) => {
+  const f = await fixture(t, { minimum: "fixed", postpay: true, memory: true });
+  const large = JSON.stringify({
+    threadId: f.threadId,
+    draft: "🙂".repeat(100000),
+    contextVersion: "model_window_memory_v1",
+  });
+  const response = await f.app.inject({
+    method: "POST",
+    url: "/v1/ai/context-preview",
+    headers: {
+      origin: "http://localhost:3000",
+      "content-type": "application/json",
+    },
+    payload: large,
+  });
+  assert.equal(response.statusCode, 401);
+  const allowed = await f.call(
+    "POST",
+    "/v1/ai/context-preview",
+    f.token,
+    JSON.parse(large),
+  );
+  assert.equal(allowed.statusCode, 200, allowed.body);
+  const badCatalog = await f.call("POST", "/v1/ai/context-preview", f.token, {
+    threadId: f.threadId,
+    draft: "Вопрос",
+    contextVersion: "model_window_memory_v1",
+    aiMode: "maximum",
+    aiModeCatalogId: "a".repeat(64),
+  });
+  assert.equal(badCatalog.statusCode, 409);
+  const unrelated = await f.call("POST", "/v1/auth/login", "", {
+    email: "nobody@example.test",
+    password: "x".repeat(20000),
+  });
+  assert.equal(unrelated.statusCode, 413);
+  assert.equal(f.calls.length, 0);
+  assert.equal(f.control.counterCalls, 0);
+});
 
 test("HTTP administrative AI catalog accepts three modes plus retained Balanced compatibility without expanding budget rules or charging", async (t) => {
   const f = await fixture(t, { legacy: true, minimum: "fixed" });
