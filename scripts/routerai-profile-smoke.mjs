@@ -14,7 +14,7 @@ export async function routerAiProfileSmoke({
   docker,
   psql,
 }) {
-  for (const [marker, fixture] of [
+  for (const [marker, fixture, fixtureOverrides] of [
     ["routerai-credit-v1", "routerai-profile.fixture.json"],
     ["routerai-citygo-10x-v1", "routerai-citygo-10x-profile.fixture.json"],
     [
@@ -49,6 +49,12 @@ export async function routerAiProfileSmoke({
       "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-unlimited-assistant-modes-gigachat-flat3-v1",
       "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-unlimited-assistant-modes-gigachat-flat3-profile.fixture.json",
     ],
+    [
+      "postpay-actual-v1",
+      "postpay-context64-profile.fixture.json",
+      { LLM_MAX_INPUT_BYTES: "8192" },
+    ],
+    ["postpay-context64-v1", "postpay-context64-profile.fixture.json"],
   ])
     await mountedProfileSmoke({
       project,
@@ -58,6 +64,7 @@ export async function routerAiProfileSmoke({
       psql,
       marker,
       fixture,
+      fixtureOverrides,
     });
 }
 
@@ -69,6 +76,7 @@ async function mountedProfileSmoke({
   psql,
   marker,
   fixture,
+  fixtureOverrides = {},
 }) {
   assert.match(project, /^citygo-pilot-test-[a-f0-9]{12}$/);
   const network = `${project}_database`;
@@ -76,9 +84,12 @@ async function mountedProfileSmoke({
     docker(["network", "inspect", "--format", "{{.Internal}}", network]).trim(),
     "true",
   );
-  const profile = JSON.parse(
-    readFileSync(join(root, "deploy/fixtures", fixture), "utf8"),
-  );
+  // v14 and v15 use the same synthetic private document, changing only the
+  // explicitly reviewed input cap. No real credentials or approval are loaded.
+  const profile = {
+    ...JSON.parse(readFileSync(join(root, "deploy/fixtures", fixture), "utf8")),
+    ...fixtureOverrides,
+  };
   profile.DATABASE_URL = JSON.parse(
     readFileSync(join(directory, "api.json"), "utf8"),
   ).DATABASE_URL;
@@ -245,6 +256,29 @@ async function mountedProfileSmoke({
          assert.equal(config.LLM_REQUEST_TIMEOUT_MS,60000);
          assert.equal(config.GIGACHAT_CA_BUNDLE_FILE,'/app/certs/russian-trusted-root.crt');
          const modes=createAssistantModes(config);
+         if (['postpay-actual-v1','postpay-context64-v1'].includes(${JSON.stringify(marker)})) {
+           const expectedInput = ${marker === "postpay-context64-v1" ? 65536 : 8192};
+           assert.equal(config.LLM_MAX_INPUT_BYTES,expectedInput);
+           assert.equal(config.ROUTERAI_MAX_OUTPUT_TOKENS,4096);
+           assert.equal(config.AI_MAXIMUM_REASONING_EFFORT,'medium');
+           assert.equal(config.AI_CUSTOMER_BILLING_MODE,'postpay_actual_v1');
+           assert.equal(config.AI_REQUEST_COST_LIMIT_MODE,'operator_ceiling');
+           assert.equal(config.AI_CREDIT_MODE,'routerai_citygo_10x');
+           assert.equal(config.YOOKASSA_FISCAL_PROFILE,'citygo_service_full_payment_v1');
+           assert.equal(config.PHONE_VERIFICATION_MODE,'prosto_sms');
+           assert.equal(config.AI_CREDIT_RESERVATION_MODE,'fixed5_overdraft');
+           const other=createAssistantModes({...config,LLM_MAX_INPUT_BYTES:expectedInput===8192?65536:8192});
+           assert.equal(other.policy.id,modes.policy.id);
+           assert.notEqual(other.catalogId,modes.catalogId);
+           assert.deepEqual(other.modeCatalog().options,modes.modeCatalog().options);
+           for (const [index,route] of modes.routes.entries()) {
+             assert.equal(route.execution.maxInputBytes,expectedInput);
+             assert.equal(route.execution.maxOutputTokens,other.routes[index].execution.maxOutputTokens);
+             assert.deepEqual(route.policy,other.routes[index].policy);
+             assert.notEqual(route.execution.key,other.routes[index].execution.key);
+             if (route.id!=='minimum') assert.equal(route.execution.maxOutputTokens,4096);
+           }
+         }
          assert.equal(modes.productionApproved,true);
          assert.deepEqual(modes.modeCatalog().options.map(({id,available})=>({id,available})),[
            {id:'maximum',available:true},{id:'balanced',available:true},{id:'minimum',available:true}]);
@@ -270,7 +304,7 @@ async function mountedProfileSmoke({
         routingBefore,
       );
     }
-    if (marker.includes("-postbox-email")) {
+    if (profile.EMAIL_REGISTRATION_MODE === "required") {
       const emailProof = docker([
         "exec",
         id,
@@ -296,17 +330,7 @@ async function mountedProfileSmoke({
       ])
         assert.equal(psql(`select count(*) from ${table}`), "0");
     }
-    if (
-      marker.endsWith("-postbox-email-smsru-v1") ||
-      marker.endsWith("-postbox-email-prostosms-v1") ||
-      marker.endsWith("-postbox-email-prostosms-unlimited-v1") ||
-      marker.endsWith(
-        "-postbox-email-prostosms-unlimited-assistant-modes-v1",
-      ) ||
-      marker.endsWith(
-        "-postbox-email-prostosms-unlimited-assistant-modes-gigachat-flat3-v1",
-      )
-    ) {
+    if (["sms_ru", "prosto_sms"].includes(profile.PHONE_VERIFICATION_MODE)) {
       const phoneProof = docker([
         "exec",
         id,
