@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { nativeWebSearchInstructionsProfile } from "@citygo/agents";
 import type { AiExecution, AiPolicy } from "@citygo/contracts";
 import {
   effectiveLlmLimits,
@@ -11,6 +12,7 @@ import { modelContextBudget } from "./model-context-budget.js";
 // never a claim that native tool charges can already be accepted.
 export const maximumWebSearchCandidateProfile = Object.freeze({
   version: "routerai-native-web-search-candidate-v1",
+  instructionsProfile: nativeWebSearchInstructionsProfile,
   engine: "native",
   maxResults: 5,
   transport: "non-streaming",

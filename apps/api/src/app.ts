@@ -1,5 +1,6 @@
 import { PostpayCharges } from "@citygo/db";
 import { chatDeltaChunks } from "./chat-delta-chunks.js";
+import { assistantInstructionOptions } from "./assistant-instruction-options.js";
 import {
   PostpayReconciler,
   type PostpayReconcileScheduler,
@@ -1147,6 +1148,23 @@ export async function buildApp(options: {
         }
       : undefined,
     (request) => drain.run(() => authenticate(request)),
+    config.AI_MAXIMUM_WEB_SEARCH === "routerai_native_candidate_v1" && modes
+      ? (user, input) => {
+          if (
+            input.aiModeCatalogId !== undefined &&
+            input.aiModeCatalogId !== modes.modeCatalog(user).catalogId
+          )
+            throw new DomainError(
+              409,
+              "Режимы работы изменились. Обновите страницу.",
+              "AI_MODE_CHANGED",
+            );
+          return assistantInstructionOptions(
+            config,
+            input.aiMode ?? "balanced",
+          );
+        }
+      : undefined,
   );
   registerResultDiscussionApi(app, options.db, authenticate);
   app.post("/v1/conversations/start", async (request) => {
@@ -1636,7 +1654,10 @@ export async function buildApp(options: {
           let modelContext: ReturnType<typeof buildConversationContext>;
           try {
             const contextInput = {
-              instructions: instructions(routing.to),
+              instructions: instructions(
+                routing.to,
+                assistantInstructionOptions(config, selectedMode?.id),
+              ),
               profile: profileContext(reservation.profile),
               history: reservation.messages,
               currentQuestion: input.text,

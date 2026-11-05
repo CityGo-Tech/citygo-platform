@@ -5,6 +5,7 @@ import { readConfig } from "@citygo/config";
 import { connectDatabase, migrate } from "@citygo/db";
 import {
   CONTRACT_VERSION_HEADER,
+  assistantContextPreviewSchema,
   conversationMessagesResponseSchema,
   conversationDetailResponseSchema,
   dashboardResponseSchema,
@@ -15,6 +16,8 @@ import type { StreamingProvider } from "@citygo/llm";
 import { buildApp } from "./app.js";
 import { createAssistantModes, type ModeProviders } from "./ai-modes.js";
 import { syntheticConsentsFor } from "./test-service-consents.js";
+import { conservativeTextTokens } from "./model-context-budget.js";
+import { instructions } from "@citygo/agents";
 
 const model = "openai/gpt-6.1-sol";
 const answer =
@@ -39,7 +42,11 @@ function streamEvents(body: string) {
     .map((line) => streamEventSchema.parse(JSON.parse(line.slice(6))));
 }
 
-async function fixture(t: TestContext, injected?: StreamingProvider) {
+async function fixture(
+  t: TestContext,
+  injected?: StreamingProvider,
+  memory = false,
+) {
   // Isolated PGlite, synthetic credentials/consents and intercepted HTTPS only.
   // No environment files, real accounts, TEST_DATABASE_URL or paid transport.
   const db = await connectDatabase("pglite://:memory:");
@@ -116,6 +123,14 @@ async function fixture(t: TestContext, injected?: StreamingProvider) {
     AI_MAXIMUM_WEB_SEARCH: "routerai_native_candidate_v1",
     AI_MODES_DATA_NOTICE: "Synthetic native search recipients only.",
     ROUTERAI_MAX_OUTPUT_TOKENS: "4096",
+    ...(memory
+      ? {
+          AI_CONTEXT_STRATEGY: "model_window_memory_v1",
+          LLM_MAX_INPUT_BYTES: "8388608",
+          GIGACHAT_MODEL: "GigaChat-3-Ultra",
+          GIGACHAT_SCOPE: "GIGACHAT_API_PERS",
+        }
+      : {}),
   });
   const modeProviders: ModeProviders = injected ? { maximum: injected } : {};
   const modes = createAssistantModes(config, modeProviders)!;
@@ -201,6 +216,7 @@ async function fixture(t: TestContext, injected?: StreamingProvider) {
   };
   return {
     db,
+    modes,
     response,
     requests,
     fetch,
@@ -237,6 +253,12 @@ test("native search answer and server-owned citations survive history and app re
     answer,
   );
   assert.equal(f.fetch.mock.callCount(), 1);
+  const system = (
+    f.requests[0]!.messages as { role: string; content: string }[]
+  )[0]!;
+  assert.equal(system.role, "system");
+  assert.match(system.content, /доступен нативный веб-поиск/);
+  assert.doesNotMatch(system.content, /нет веб-поиска/);
   const before = await f.history();
   const saved = before.at(-1)!;
   assert.equal(saved.role, "assistant");
@@ -404,5 +426,52 @@ test("one large native answer is split into bounded Unicode-safe downstream fram
     ).rows[0]!.count,
     "1",
   );
+  await f.noCustomerMoney();
+});
+
+test("native search preview uses the same candidate instructions and conservative count as its single real intercepted send", async (t) => {
+  const f = await fixture(t, undefined, true);
+  const draft = "Проверьте актуальные условия городского транспорта.";
+  const previews = [];
+  for (const mode of ["maximum", "balanced"] as const) {
+    const reply = await f.call("POST", "/v1/ai/context-preview", f.token, {
+      threadId: f.threadId,
+      draft,
+      aiMode: mode,
+      aiModeCatalogId: f.modes.catalogId,
+      contextVersion: "model_window_memory_v1",
+    });
+    assert.equal(reply.statusCode, 200, reply.body);
+    previews.push(assistantContextPreviewSchema.parse(reply.json()));
+  }
+  assert.equal(f.fetch.mock.callCount(), 0, "both previews are fully offline");
+  assert.equal(previews[0]!.contextBudget!.mode, "maximum");
+  assert.equal(previews[1]!.contextBudget!.mode, "balanced");
+  const sent = await f.send(draft);
+  assert.equal(sent.statusCode, 200, sent.body);
+  assert.equal(streamEvents(sent.body).at(-1)?.type, "done", sent.body);
+  const messages = f.requests[0]!.messages as {
+    role: string;
+    content: string;
+  }[];
+  assert.match(messages[0]!.content, /доступен нативный веб-поиск/);
+  const exactConservativeInput = messages.reduce(
+    (sum, row) => sum + conservativeTextTokens(row.content),
+    0,
+  );
+  assert.equal(
+    previews[0]!.contextBudget!.inputTextTokens,
+    exactConservativeInput,
+  );
+  const promptDifference =
+    conservativeTextTokens(
+      instructions("support", { webSearch: "routerai_native_candidate_v1" }),
+    ) - conservativeTextTokens(instructions("support"));
+  assert.equal(
+    previews[0]!.contextBudget!.inputTextTokens -
+      previews[1]!.contextBudget!.inputTextTokens,
+    promptDifference,
+  );
+  assert.equal(f.fetch.mock.callCount(), 1);
   await f.noCustomerMoney();
 });
