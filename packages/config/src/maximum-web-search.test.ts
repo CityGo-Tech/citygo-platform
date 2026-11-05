@@ -18,6 +18,39 @@ const postpayTest = {
   AI_REQUEST_COST_LIMIT_MODE: "operator_ceiling",
 };
 
+test("production-capable native search is opt-in to the complete three-mode memory postpay shape", () => {
+  const settings = {
+    ...postpayTest,
+    AI_MAXIMUM_WEB_SEARCH: "routerai_native_postpay_v1",
+    AI_CONTEXT_STRATEGY: "model_window_memory_v1",
+    LLM_MAX_INPUT_BYTES: "8388608",
+    AI_MINIMUM_FIXED_FEE: "enabled",
+    GIGACHAT_MODEL: "GigaChat-3-Ultra",
+    GIGACHAT_SCOPE: "GIGACHAT_API_PERS",
+  };
+  const config = readConfig(settings);
+  assert.equal(config.AI_MAXIMUM_WEB_SEARCH, "routerai_native_postpay_v1");
+  assert.doesNotThrow(() =>
+    validateMaximumWebSearchConfig({ ...config, NODE_ENV: "production" }),
+  );
+  for (const changed of [
+    { NODE_ENV: "development" },
+    { AI_ASSISTANT_MODES: "disabled" },
+    { AI_CREDIT_MODE: "disabled" },
+    { AI_CUSTOMER_BILLING_MODE: "legacy" },
+    { AI_CREDIT_RESERVATION_MODE: "full" },
+    { AI_REQUEST_COST_LIMIT_MODE: "user_balance" },
+    { AI_CONTEXT_STRATEGY: "legacy" },
+    { AI_MINIMUM_FIXED_FEE: "disabled" },
+    { GIGACHAT_MODEL: "other" },
+    { GIGACHAT_SCOPE: "GIGACHAT_API_CORP" },
+  ])
+    assert.throws(
+      () => readConfig({ ...settings, ...changed }),
+      /explicit three-mode memory CityGo10x profile/,
+    );
+});
+
 test("native total-cost settlement is an explicit test-only postpay profile, never a candidate upgrade", () => {
   const config = readConfig(postpayTest);
   assert.equal(config.AI_MAXIMUM_WEB_SEARCH, "routerai_native_postpay_test_v1");

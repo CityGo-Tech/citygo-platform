@@ -22,6 +22,7 @@ import {
   createAiExecution,
   maximumWebSearchCandidateProfile,
   maximumWebSearchPostpayTestProfile,
+  maximumWebSearchPostpayProfile,
 } from "./ai-execution.js";
 import { productionProviderAllowed } from "./ai-production.js";
 
@@ -84,8 +85,12 @@ export function createAssistantModes(
     config.AI_MAXIMUM_WEB_SEARCH === "routerai_native_candidate_v1";
   const maximumWebSearchPostpayTest =
     config.AI_MAXIMUM_WEB_SEARCH === "routerai_native_postpay_test_v1";
+  const maximumWebSearchPostpay =
+    config.AI_MAXIMUM_WEB_SEARCH === "routerai_native_postpay_v1";
   const maximumWebSearchConfigured =
-    maximumWebSearchCandidate || maximumWebSearchPostpayTest;
+    maximumWebSearchCandidate ||
+    maximumWebSearchPostpayTest ||
+    maximumWebSearchPostpay;
   const memoryContext = config.AI_CONTEXT_STRATEGY === "model_window_memory_v1";
   const minimumAccountRef =
     config.AI_MINIMUM_FIXED_FEE === "enabled"
@@ -149,15 +154,19 @@ export function createAssistantModes(
     })!;
     const webSearch =
       id === "maximum" && maximumWebSearchConfigured
-        ? maximumWebSearchPostpayTest
-          ? maximumWebSearchPostpayTestProfile
-          : maximumWebSearchCandidateProfile
+        ? maximumWebSearchPostpay
+          ? maximumWebSearchPostpayProfile
+          : maximumWebSearchPostpayTest
+            ? maximumWebSearchPostpayTestProfile
+            : maximumWebSearchCandidateProfile
         : undefined;
     const routeFields = {
       version: webSearch
-        ? maximumWebSearchPostpayTest
-          ? "ai-mode-route-web-search-postpay-test-v1"
-          : "ai-mode-route-web-search-candidate-v1"
+        ? maximumWebSearchPostpay
+          ? "ai-mode-route-web-search-postpay-v1"
+          : maximumWebSearchPostpayTest
+            ? "ai-mode-route-web-search-postpay-test-v1"
+            : "ai-mode-route-web-search-candidate-v1"
         : memoryContext
           ? "ai-mode-route-memory-v1"
           : "ai-mode-route-v1",
@@ -167,9 +176,11 @@ export function createAssistantModes(
       routing:
         basePolicy.routing +
         (webSearch
-          ? maximumWebSearchPostpayTest
-            ? " Тестовый профиль нативного веб-поиска RouterAI: до пяти результатов, не потоковый ответ. Проверяется постоплата полной стоимости по total_cost; production и автоматическое подключение транспорта запрещены."
-            : " Кандидат нативного веб-поиска RouterAI: до пяти результатов, не потоковый ответ. Полный состав стоимости поиска ещё не подтверждён; списание пользователю запрещено."
+          ? maximumWebSearchPostpay
+            ? " Нативный веб-поиск RouterAI: до пяти результатов, не потоковый ответ. Инструмент может не вызываться для каждого ответа; ссылки сохраняются только из проверенных аннотаций провайдера. Постоплата учитывает полную стоимость запроса по total_cost."
+            : maximumWebSearchPostpayTest
+              ? " Тестовый профиль нативного веб-поиска RouterAI: до пяти результатов, не потоковый ответ. Проверяется постоплата полной стоимости по total_cost; production и автоматическое подключение транспорта запрещены."
+              : " Кандидат нативного веб-поиска RouterAI: до пяти результатов, не потоковый ответ. Полный состав стоимости поиска ещё не подтверждён; списание пользователю запрещено."
           : ""),
       data:
         (memoryContext
@@ -226,9 +237,11 @@ export function createAssistantModes(
   });
   const disclosure = {
     version: maximumWebSearchConfigured
-      ? maximumWebSearchPostpayTest
-        ? "ai-assistant-modes-web-search-postpay-test-v1"
-        : "ai-assistant-modes-web-search-candidate-v1"
+      ? maximumWebSearchPostpay
+        ? "ai-assistant-modes-web-search-postpay-v1"
+        : maximumWebSearchPostpayTest
+          ? "ai-assistant-modes-web-search-postpay-test-v1"
+          : "ai-assistant-modes-web-search-candidate-v1"
       : memoryContext
         ? "ai-assistant-modes-memory-v1"
         : "ai-assistant-modes-v1",
@@ -245,9 +258,11 @@ export function createAssistantModes(
         "Сроки хранения и удаления у получателей требуют отдельной проверки.") +
       " Доступны режимы «Максимум», «Баланс» и «Минимум». Выбранный режим действует на следующее отправленное сообщение." +
       (maximumWebSearchConfigured
-        ? maximumWebSearchPostpayTest
-          ? " В тестовом профиле режима «Максимум» провайдер может формировать поисковые запросы из вопроса и контекста и передавать их внешней поисковой системе. Нативный поиск: до пяти результатов, не потоковый ответ; полная стоимость проверяется в изолированной постоплате. Production не разрешён."
-          : " В кандидате режима «Максимум» провайдер может формировать поисковые запросы из вопроса и контекста и передавать их внешней поисковой системе. Нативный поиск: до пяти результатов, не потоковый ответ; списание пользователю запрещено до проверки полного состава стоимости."
+        ? maximumWebSearchPostpay
+          ? " В режиме «Максимум» провайдер может формировать поисковые запросы из вопроса и контекста и передавать их внешней поисковой системе. Инструмент может не вызываться для каждого ответа. Структурированные ссылки не являются независимым доказательством поиска или достоверности источника. Постоплата включает полную стоимость запроса с поиском, если он использован."
+          : maximumWebSearchPostpayTest
+            ? " В тестовом профиле режима «Максимум» провайдер может формировать поисковые запросы из вопроса и контекста и передавать их внешней поисковой системе. Нативный поиск: до пяти результатов, не потоковый ответ; полная стоимость проверяется в изолированной постоплате. Production не разрешён."
+            : " В кандидате режима «Максимум» провайдер может формировать поисковые запросы из вопроса и контекста и передавать их внешней поисковой системе. Нативный поиск: до пяти результатов, не потоковый ответ; списание пользователю запрещено до проверки полного состава стоимости."
         : ""),
   };
   const policy: AiPolicy = {
@@ -259,9 +274,11 @@ export function createAssistantModes(
   };
   const catalogId = hash({
     version: maximumWebSearchConfigured
-      ? maximumWebSearchPostpayTest
-        ? "ai-mode-catalog-web-search-postpay-test-v1"
-        : "ai-mode-catalog-web-search-candidate-v1"
+      ? maximumWebSearchPostpay
+        ? "ai-mode-catalog-web-search-postpay-v1"
+        : maximumWebSearchPostpayTest
+          ? "ai-mode-catalog-web-search-postpay-test-v1"
+          : "ai-mode-catalog-web-search-candidate-v1"
       : memoryContext
         ? "ai-mode-catalog-memory-v1"
         : "ai-mode-catalog-v1",
@@ -313,6 +330,12 @@ export function createAssistantModes(
                         engine: "native" as const,
                         maxResults: 5 as const,
                       },
+                      ...(maximumWebSearchPostpay
+                        ? {
+                            nativeWebReceiptPolicy:
+                              "routerai-native-total-cost-postpay-v1" as const,
+                          }
+                        : {}),
                     }
                   : { protocol: "responses" as const }
                 : {}),

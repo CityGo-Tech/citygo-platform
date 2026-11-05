@@ -15,6 +15,7 @@ export function assistantInstructionOptions(
     [
       "routerai_native_candidate_v1",
       "routerai_native_postpay_test_v1",
+      "routerai_native_postpay_v1",
     ].includes(config.AI_MAXIMUM_WEB_SEARCH) &&
     mode === "maximum"
     ? { webSearch: "routerai_native_candidate_v1" }

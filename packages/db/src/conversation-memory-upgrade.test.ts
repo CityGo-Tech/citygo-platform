@@ -78,7 +78,7 @@ test("schema46→47 preserves every existing row, accounting snapshot and migrat
   await migrate(db);
   assert.equal(
     (await db.query("select * from citygo_migrations")).rows.length,
-    48,
+    49,
   );
   assert.deepEqual(await snapshot(), before);
 });

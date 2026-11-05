@@ -149,6 +149,7 @@ export const serverConfigSchema = z.object({
       "disabled",
       "routerai_native_candidate_v1",
       "routerai_native_postpay_test_v1",
+      "routerai_native_postpay_v1",
     ])
     .default("disabled"),
   AI_MAXIMUM_REASONING_EFFORT: z
@@ -363,11 +364,30 @@ export function validateVerificationDeliveryConfig(
 }
 
 // Also checked by mode constructors for explicitly injected config. The paid
-// local profile exercises settlement only with separately injected adapters.
+// local test profile still needs separately injected adapters; the production
+// profile is a distinct explicit opt-in with its own versioned approvals.
 export function validateMaximumWebSearchConfig(
   config: z.infer<typeof serverConfigSchema>,
 ) {
   if (config.AI_MAXIMUM_WEB_SEARCH === "disabled") return;
+  if (config.AI_MAXIMUM_WEB_SEARCH === "routerai_native_postpay_v1") {
+    if (
+      !["test", "production"].includes(config.NODE_ENV) ||
+      config.AI_ASSISTANT_MODES !== "enabled" ||
+      config.AI_CREDIT_MODE !== "routerai_citygo_10x" ||
+      config.AI_CUSTOMER_BILLING_MODE !== "postpay_actual_v1" ||
+      config.AI_CREDIT_RESERVATION_MODE !== "fixed5_overdraft" ||
+      config.AI_REQUEST_COST_LIMIT_MODE !== "operator_ceiling" ||
+      config.AI_CONTEXT_STRATEGY !== "model_window_memory_v1" ||
+      config.AI_MINIMUM_FIXED_FEE !== "enabled" ||
+      config.GIGACHAT_MODEL !== "GigaChat-3-Ultra" ||
+      config.GIGACHAT_SCOPE !== "GIGACHAT_API_PERS"
+    )
+      throw new Error(
+        "Native search postpay requires its explicit three-mode memory CityGo10x profile",
+      );
+    return;
+  }
   if (config.AI_MAXIMUM_WEB_SEARCH === "routerai_native_postpay_test_v1") {
     if (
       config.NODE_ENV !== "test" ||

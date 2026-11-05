@@ -578,4 +578,37 @@ class PostpayMemoryCutover(RouterAiCutover):
             self.assertIs(result["finish"][key], False)
 
 
+
+
+
+@unittest.skipUnless(sys.platform.startswith("linux"), "Linux protected native-search atomic cutover")
+class PostpayNativeSearchCutover(RouterAiCutover):
+    profile = s.POSTPAY_NATIVE_SEARCH_PROFILE
+    marker = "postpay-native-search-v1"
+
+    def test_v17_pins_native_search_and_never_opens_traffic_or_money(self):
+        result = self.finish()
+        value = json.loads(self.api.read_bytes())
+        spec = json.loads(self.plan["files"]["compose.json"])
+        self.assertEqual(s.approval(self.start_approval.path.read_bytes(), time.time())["version"], 17)
+        self.assertEqual(value["AI_MAXIMUM_WEB_SEARCH"], "routerai_native_postpay_v1")
+        self.assertEqual(value["AI_CONTEXT_STRATEGY"], "model_window_memory_v1")
+        self.assertEqual(value["LLM_MAX_INPUT_BYTES"], "8388608")
+        self.assertEqual(value["AI_CUSTOMER_BILLING_MODE"], "postpay_actual_v1")
+        self.assertEqual(value["AI_REQUEST_COST_LIMIT_MODE"], "operator_ceiling")
+        self.assertEqual(value["AI_MINIMUM_FIXED_FEE"], "enabled")
+        self.assertEqual(value["YOOKASSA_FISCAL_PROFILE"], "citygo_service_full_payment_v1")
+        self.assertEqual(value["PHONE_VERIFICATION_MODE"], "prosto_sms")
+        self.assertEqual(spec["services"]["api"]["environment"]["CITYGO_AI_PROFILE"], self.marker)
+        for service in spec["services"].values():
+            self.assertNotIn("AI_MAXIMUM_WEB_SEARCH", service.get("environment", {}))
+        for key in s.EMAIL_PRIVATE_KEYS | s.PROSTOSMS_PRIVATE_KEYS | {"GIGACHAT_CREDENTIALS", "ROUTERAI_API_KEY"}:
+            self.assertNotIn(value[key], self.plan["files"]["compose.json"].decode())
+            self.assertNotIn(value[key], json.dumps(result))
+        self.assertTrue(self.host.closed)
+        self.assertFalse((self.state / w.ADMISSION).exists())
+        for key in ("traffic_authorized", "worker_authorized", "restart_authorized"):
+            self.assertIs(result["finish"][key], False)
+
+
 if __name__ == "__main__": unittest.main()

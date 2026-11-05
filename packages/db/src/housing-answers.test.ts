@@ -1276,9 +1276,9 @@ test("upgrade 0011 → current preserves populated records and is replay-safe", 
   )
     .filter((name) => name.endsWith(".sql"))
     .sort();
-  assert.equal(expectedMigrations.length, 48);
+  assert.equal(expectedMigrations.length, 49);
   assert.equal(expectedMigrations[24], "0025_assistant_conversations.sql");
-  assert.equal(expectedMigrations.at(-1), "0048_native_search_postpay.sql");
+  assert.equal(expectedMigrations.at(-1), "0049_native_search_production.sql");
   assert.deepEqual(
     (await db.query("select name from citygo_migrations order by name")).rows,
     expectedMigrations.map((name) => ({ name })),

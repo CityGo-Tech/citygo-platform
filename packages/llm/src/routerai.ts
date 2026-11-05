@@ -22,8 +22,10 @@ type RouterAIOptions = {
   maxOutputTokens?: number;
   reasoningEffort?: "low" | "medium" | "high" | "xhigh" | "max";
   webSearch?: { engine: "native"; maxResults: 5 };
-  // Explicit injected-transport test policy, never inferred from a response.
-  nativeWebReceiptPolicy?: "routerai-native-total-cost-postpay-test-v1";
+  // Explicit receipt policies, never inferred from a response or URL count.
+  nativeWebReceiptPolicy?:
+    | "routerai-native-total-cost-postpay-test-v1"
+    | "routerai-native-total-cost-postpay-v1";
   fetch?: typeof fetch;
 };
 
@@ -40,13 +42,16 @@ export class RouterAIInsufficientFundsError extends Error {
 export class RouterAIProvider implements StreamingProvider {
   readonly name = "routerai" as const;
   private readonly protocol: "responses" | undefined;
-  private readonly nativeWebReceiptPolicy?: "routerai-native-total-cost-postpay-test-v1";
+  private readonly nativeWebReceiptPolicy?: RouterAIOptions["nativeWebReceiptPolicy"];
   private readonly nativeWebOptions:
     | Readonly<
         Pick<
           RouterAIOptions,
           "fetch" | "timeoutMs" | "maxOutputTokens" | "reasoningEffort"
-        >
+        > & {
+          completionPolicy:
+            "required-sources-v1" | "optional-validated-sources-v1";
+        }
       >
     | undefined;
   constructor(
@@ -104,19 +109,37 @@ export class RouterAIProvider implements StreamingProvider {
         timeoutMs: options.timeoutMs,
         maxOutputTokens: options.maxOutputTokens,
         reasoningEffort: options.reasoningEffort,
+        completionPolicy:
+          options.nativeWebReceiptPolicy ===
+          "routerai-native-total-cost-postpay-v1"
+            ? "optional-validated-sources-v1"
+            : "required-sources-v1",
       });
     }
     if (options.nativeWebReceiptPolicy !== undefined) {
       if (
-        options.nativeWebReceiptPolicy !==
-          "routerai-native-total-cost-postpay-test-v1" ||
+        ![
+          "routerai-native-total-cost-postpay-test-v1",
+          "routerai-native-total-cost-postpay-v1",
+        ].includes(options.nativeWebReceiptPolicy) ||
         !this.nativeWebOptions ||
-        typeof this.nativeWebOptions.fetch !== "function"
+        (options.nativeWebReceiptPolicy ===
+          "routerai-native-total-cost-postpay-test-v1" &&
+          typeof this.nativeWebOptions.fetch !== "function") ||
+        (options.fetch !== undefined && typeof options.fetch !== "function")
       )
-        throw new Error(
-          "Native postpay tests require explicit injected transport",
-        );
+        throw new Error("Unsupported RouterAI native postpay receipt profile");
       this.nativeWebReceiptPolicy = options.nativeWebReceiptPolicy;
+      if (
+        options.nativeWebReceiptPolicy ===
+        "routerai-native-total-cost-postpay-v1"
+      )
+        this.nativeWebOptions = Object.freeze({
+          ...this.nativeWebOptions,
+          // Capture the selected transport once. Later mutation of options or
+          // ambient fetch cannot change completion/receipt routing semantics.
+          fetch: this.nativeWebOptions.fetch ?? fetch,
+        });
     }
   }
 
@@ -358,6 +381,7 @@ export class RouterAIProvider implements StreamingProvider {
         response.body,
         deadline,
         recordGeneration,
+        options.completionPolicy,
       );
       deadline.throwIfAborted();
       yield { type: "delta", text: result.text };
@@ -366,7 +390,7 @@ export class RouterAIProvider implements StreamingProvider {
         type: "complete",
         model: "openai/gpt-6.1-sol",
         ...(result.usage ? { usage: result.usage } : {}),
-        webSources: result.webSources,
+        ...(result.webSources ? { webSources: result.webSources } : {}),
       };
     } finally {
       await response.body?.cancel().catch(() => {});
@@ -379,11 +403,11 @@ export class RouterAIProvider implements StreamingProvider {
     signal: AbortSignal,
   ): Promise<RouterAiCharge> {
     // The original unbillable candidate remains closed before GET. A separate
-    // injected-transport test profile can read the provider's whole total_cost;
-    // it never derives a tool fee from tokens, links or a public price list.
-    const nativeReceipt =
-      this.nativeWebReceiptPolicy ===
-      "routerai-native-total-cost-postpay-test-v1";
+    // versioned test or production profile can read the whole total_cost;
+    // neither derives a tool fee from tokens, links or a public price list.
+    const nativeReceipt = this.nativeWebReceiptPolicy !== undefined;
+    const optionalNativeSearch =
+      this.nativeWebReceiptPolicy === "routerai-native-total-cost-postpay-v1";
     if (this.nativeWebOptions && !nativeReceipt)
       throw new Error("RouterAI cost could not be confirmed");
     try {
@@ -480,7 +504,9 @@ export class RouterAIProvider implements StreamingProvider {
               ? "responses"
               : "chat/completions") ||
         data.source !== "api" ||
-        data.has_web_search !== nativeReceipt ||
+        (optionalNativeSearch
+          ? typeof data.has_web_search !== "boolean"
+          : data.has_web_search !== nativeReceipt) ||
         (nativeReceipt &&
           Object.hasOwn(data, "currency") &&
           data.currency !== "RUB")

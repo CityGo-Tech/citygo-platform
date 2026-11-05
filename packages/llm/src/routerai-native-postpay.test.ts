@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { RouterAIProvider } from "./routerai.js";
+import type { ModelStreamEvent } from "./provider.js";
 
 const reference = "8973ee40-f9b5-4f27-9c17-624a66087fab";
 const generation = "gen-native-postpay-synthetic";
 const model = "openai/gpt-6.1-sol";
 const policy = "routerai-native-total-cost-postpay-test-v1" as const;
+const productionPolicy = "routerai-native-total-cost-postpay-v1" as const;
 const url = "https://routerai.ru/api/v1/generation?id=" + generation;
 const rejected = /^Error: RouterAI cost could not be confirmed$/;
 function receipt(
@@ -278,4 +280,209 @@ test("redirected or alternate successful endpoint responses are refused and a pr
     rejected,
   );
   assert.equal(calls, 0);
+});
+
+test("production receipt policy accepts either explicit search boolean and uses the same exact full total", async () => {
+  for (const hasWebSearch of [true, false]) {
+    let calls = 0;
+    const provider = new RouterAIProvider("synthetic-only", model, {
+      ...options(async () => {
+        calls++;
+        return receipt("7.39182831114", { has_web_search: hasWebSearch });
+      }),
+      nativeWebReceiptPolicy: productionPolicy,
+    });
+    const value = await read(provider);
+    assert.equal(value.costRub, "7.39182831114");
+    assert.equal(value.amountMicros, 7_391_828);
+    assert.equal(calls, 1);
+  }
+  for (const flag of [undefined, null, "true", 0]) {
+    const provider = new RouterAIProvider("synthetic-only", model, {
+      ...options(async () => receipt("1", { has_web_search: flag })),
+      nativeWebReceiptPolicy: productionPolicy,
+    });
+    await assert.rejects(read(provider), rejected);
+  }
+});
+
+test("production native completion may omit sources, but every present annotation is validated regardless of receipt flag", async () => {
+  const citation = {
+    type: "url_citation",
+    url_citation: { url: "https://www.mos.ru/", title: "Москва" },
+  };
+  for (const annotations of [undefined, [], [citation]]) {
+    for (const flag of [true, false]) {
+      let posts = 0,
+        gets = 0,
+        recorded = 0;
+      const provider = new RouterAIProvider("synthetic-only", model, {
+        ...options(async (_target, init) => {
+          if (init?.method === "GET") {
+            gets++;
+            return receipt("1.25", { has_web_search: flag });
+          }
+          posts++;
+          return Response.json({
+            id: generation,
+            object: "chat.completion",
+            model,
+            choices: [
+              {
+                index: 0,
+                finish_reason: "stop",
+                message: {
+                  role: "assistant",
+                  content: "Синтетический завершённый ответ.",
+                  ...(annotations === undefined ? {} : { annotations }),
+                },
+              },
+            ],
+          });
+        }),
+        nativeWebReceiptPolicy: productionPolicy,
+      });
+      const events: ModelStreamEvent[] = [];
+      for await (const event of provider.stream(
+        "Synthetic instructions",
+        [{ role: "user", content: "Synthetic question" }],
+        new AbortController().signal,
+        {
+          beforeRetry: async () => {
+            throw Error("Retry forbidden");
+          },
+          billing: {
+            reference,
+            onGeneration: async (id) => {
+              assert.equal(id, generation);
+              recorded++;
+            },
+          },
+        },
+      ))
+        events.push(event);
+      const completion = events.at(-1)!;
+      assert.equal(completion.type, "complete");
+      assert.deepEqual(
+        completion.type === "complete" ? completion.webSources : undefined,
+        annotations?.length
+          ? {
+              version: "routerai_native_v1",
+              citations: [{ url: "https://www.mos.ru/", title: "Москва" }],
+            }
+          : undefined,
+      );
+      assert.equal((await read(provider)).costRub, "1.25");
+      assert.deepEqual([posts, gets, recorded], [1, 1, 1]);
+    }
+  }
+});
+
+test("optional sources do not forgive malformed present metadata or weaken the old test completion", async () => {
+  for (const annotations of [
+    null,
+    "",
+    {},
+    [{ type: "other" }],
+    [
+      {
+        type: "url_citation",
+        url_citation: { url: "http://localhost/", title: "Unsafe" },
+      },
+    ],
+  ]) {
+    let posts = 0;
+    const provider = new RouterAIProvider("synthetic-only", model, {
+      ...options(async () => {
+        posts++;
+        return Response.json({
+          id: generation,
+          model,
+          choices: [
+            {
+              index: 0,
+              finish_reason: "stop",
+              message: {
+                role: "assistant",
+                content: "Synthetic answer",
+                annotations,
+              },
+            },
+          ],
+        });
+      }),
+      nativeWebReceiptPolicy: productionPolicy,
+    });
+    const published: ModelStreamEvent[] = [];
+    await assert.rejects(async () => {
+      for await (const event of provider.stream(
+        "Synthetic",
+        [],
+        new AbortController().signal,
+      ))
+        published.push(event);
+    });
+    assert.equal(posts, 1);
+    assert.deepEqual(published, []);
+  }
+  for (const annotations of [undefined, []]) {
+    const provider = new RouterAIProvider(
+      "synthetic-only",
+      model,
+      options(async () =>
+        Response.json({
+          id: generation,
+          model,
+          choices: [
+            {
+              index: 0,
+              finish_reason: "stop",
+              message: {
+                role: "assistant",
+                content: "Synthetic answer",
+                annotations,
+              },
+            },
+          ],
+        }),
+      ),
+    );
+    await assert.rejects(async () => {
+      for await (const event of provider.stream(
+        "Synthetic",
+        [],
+        new AbortController().signal,
+      ))
+        assert.fail(
+          "A strict test completion without citations must not publish " +
+            event.type,
+        );
+    });
+  }
+});
+
+test("production policy captures ambient transport once; mutating a strict profile cannot upgrade it", async (t) => {
+  let selected = 0,
+    forbidden = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    selected++;
+    return receipt("1.25", { has_web_search: false });
+  });
+  const provider = new RouterAIProvider("synthetic-only", model, {
+    ...options(globalThis.fetch),
+    fetch: undefined,
+    nativeWebReceiptPolicy: productionPolicy,
+  });
+  t.mock.method(globalThis, "fetch", async () => {
+    forbidden++;
+    throw Error("Wrong ambient transport");
+  });
+  assert.equal((await read(provider)).costRub, "1.25");
+  const strictOptions = options(async () =>
+    receipt("1.25", { has_web_search: false }),
+  );
+  const strict = new RouterAIProvider("synthetic-only", model, strictOptions);
+  Object.assign(strictOptions, { nativeWebReceiptPolicy: productionPolicy });
+  await assert.rejects(read(strict), rejected);
+  assert.deepEqual([selected, forbidden], [1, 0]);
 });

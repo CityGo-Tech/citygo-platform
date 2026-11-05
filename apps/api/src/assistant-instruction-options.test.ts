@@ -58,3 +58,32 @@ test("explicit postpay-test Maximum shares the same offline/send instruction cho
     /test-only CityGo10x profile/,
   );
 });
+
+test("production-capable memory Maximum shares native instructions and preserves other mode prompts", () => {
+  const config = readConfig({
+    NODE_ENV: "test",
+    LLM_PROVIDER: "routerai",
+    AI_ASSISTANT_MODES: "enabled",
+    AI_MAXIMUM_WEB_SEARCH: "routerai_native_postpay_v1",
+    AI_CONTEXT_STRATEGY: "model_window_memory_v1",
+    LLM_MAX_INPUT_BYTES: "8388608",
+    AI_CREDIT_MODE: "routerai_citygo_10x",
+    AI_CUSTOMER_BILLING_MODE: "postpay_actual_v1",
+    AI_CREDIT_RESERVATION_MODE: "fixed5_overdraft",
+    AI_MINIMUM_FIXED_FEE: "enabled",
+    GIGACHAT_MODEL: "GigaChat-3-Ultra",
+    GIGACHAT_SCOPE: "GIGACHAT_API_PERS",
+  });
+  assert.deepEqual(assistantInstructionOptions(config, "maximum"), {
+    webSearch: "routerai_native_candidate_v1",
+  });
+  assert.deepEqual(
+    assistantInstructionOptions(
+      { ...config, NODE_ENV: "production" },
+      "maximum",
+    ),
+    { webSearch: "routerai_native_candidate_v1" },
+  );
+  for (const mode of [undefined, "balanced", "minimum"] as const)
+    assert.equal(assistantInstructionOptions(config, mode), undefined);
+});

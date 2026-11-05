@@ -251,7 +251,7 @@ class Validation(unittest.TestCase):
                           s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_UNLIMITED_PROFILE,
                           s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_UNLIMITED_ASSISTANT_MODES_PROFILE,
                           s.CITYGO_10X_YOOKASSA_LIVE_CN_FISCAL_OVERDRAFT_EMAIL_PROSTO_UNLIMITED_ASSISTANT_MODES_GIGACHAT_FLAT3_PROFILE,
-                          s.POSTPAY_ACTUAL_PROFILE, s.POSTPAY_CONTEXT64_PROFILE, s.POSTPAY_MEMORY_PROFILE})
+                          s.POSTPAY_ACTUAL_PROFILE, s.POSTPAY_CONTEXT64_PROFILE, s.POSTPAY_MEMORY_PROFILE, s.POSTPAY_NATIVE_SEARCH_PROFILE})
         for key in value:
             missing = dict(value); del missing[key]
             with self.subTest(missing=key), self.assertRaises(b.BackupError): validate(missing)
@@ -889,7 +889,66 @@ class Validation(unittest.TestCase):
         self.assertNotIn("secrets", spec["services"]["web"])
 
 
+    def test_native_search_v17_is_hash_bound_and_cannot_reinterpret_memory_v16(self):
+        profile = s.POSTPAY_NATIVE_SEARCH_PROFILE
+        value = routerai_fixture(profile)
+        previous = routerai_fixture(s.POSTPAY_MEMORY_PROFILE)
+        self.assertEqual(value, {**previous, "AI_MAXIMUM_WEB_SEARCH": "routerai_native_postpay_v1", "AI_MODES_DATA_NOTICE": "Synthetic offline native-web-search production-profile fixture only, not an operator notice or release approval. No provider requests or customer charges are permitted."})
+        self.assertEqual(s.PROFILE_VERSIONS[profile], 17)
+        for profiles in (s.CLOSED_ONLY_PROFILES, s.ASSISTANT_MODES_PROFILES, s.PROSTOSMS_UNLIMITED_PROFILES):
+            self.assertIn(profile, profiles)
+        def validate(data, selected=profile):
+            with patch.object(t, "read_file", return_value=encoded(data)):
+                return s.api_secret("/unused", selected)
+        self.assertEqual(validate(value), encoded(value))
+        for key in value:
+            missing = dict(value); del missing[key]
+            with self.subTest(missing=key), self.assertRaises(b.BackupError): validate(missing)
+        for change in ({"AI_MAXIMUM_WEB_SEARCH": "disabled"}, {"AI_MAXIMUM_WEB_SEARCH": "routerai_native_candidate_v1"},
+                       {"AI_MAXIMUM_WEB_SEARCH": "routerai_native_postpay_test_v1"}, {"AI_MAXIMUM_WEB_SEARCH": "unknown"},
+                       {"AI_CONTEXT_STRATEGY": "legacy"}, {"LLM_MAX_INPUT_BYTES": "65536"},
+                       {"AI_CUSTOMER_BILLING_MODE": "legacy"}, {"AI_REQUEST_COST_LIMIT_MODE": "user_balance"},
+                       {"AI_MINIMUM_FIXED_FEE": "disabled"}, {"AI_MAXIMUM_REASONING_EFFORT": "high"},
+                       {"YOOKASSA_FISCAL_PROFILE": "disabled"}, {"PHONE_SMS_GLOBAL_TOTAL_LIMIT": "1"}):
+            with self.subTest(change=change), self.assertRaises(b.BackupError): validate({**value, **change})
+        for old in set(s.PROFILE_VERSIONS) - {profile}:
+            before = {"DATABASE_URL": value["DATABASE_URL"]} if old == s.PROFILE else routerai_fixture(old)
+            self.assertEqual(validate(before, old), encoded(before))
+            with self.subTest(old=old), self.assertRaises(b.BackupError): validate(value, old)
+            with self.subTest(flag=old), self.assertRaises(b.BackupError):
+                validate({**before, "AI_MAXIMUM_WEB_SEARCH": value["AI_MAXIMUM_WEB_SEARCH"]}, old)
+        with self.assertRaises(b.BackupError): validate(previous)
+
+    def test_native_search_v17_rejects_ambient_controls_and_old_version_permission(self):
+        profile = s.POSTPAY_NATIVE_SEARCH_PROFILE
+        self.assertEqual(s.profile_environment(profile), {"LLM_PROVIDER": "routerai", "CITYGO_AI_PROFILE": "postpay-native-search-v1"})
+        image = {"local_id": "sha256:" + "c" * 64, "config_id": "sha256:" + "c" * 64}
+        container = preparation_fixture.container("api"); container["Image"] = image["local_id"]; container["State"]["Dead"] = False
+        current = detail(container, "api", image, "/tmp/api.json", profile)
+        args = ("api", image, "citygo-fixture", ORIGIN, "/tmp/api.json", {"web_api": WEB_NETWORK, "database": "e" * 64})
+        s.runtime(current, *args, profile)
+        for key in ("AI_MAXIMUM_WEB_SEARCH", "LLM_MAX_INPUT_BYTES", "AI_CONTEXT_STRATEGY", "AI_CUSTOMER_BILLING_MODE"):
+            bad = copy.deepcopy(current); bad["Config"]["Env"].append(key + "=synthetic-hidden")
+            with self.subTest(ambient=key), self.assertRaises(b.BackupError): s.runtime(bad, *args, profile)
+        with self.assertRaises(b.BackupError): s.runtime(current, *args, s.POSTPAY_MEMORY_PROFILE)
+        now = int(time.time())
+        permission = {"version": 17, "purpose": "citygo-release-start", "profile": profile,
+                      "migration_approval_sha256": "a" * 64, "api_secret_sha256": "b" * 64,
+                      "web_network_id": WEB_NETWORK, "approved_at": now - 1, "expires_at": now + 100,
+                      "allow_start": True, "allow_traffic": False}
+        self.assertEqual(s.approval(encoded(permission), now), permission)
+        with self.assertRaises(b.BackupError): s.approval(encoded({**permission, "version": 16}), now)
+        spec = s.compose_spec("citygo-fixture", ORIGIN, {"api": image, "web": image}, "/tmp/api.json", profile)
+        self.assertEqual(spec["services"]["api"]["restart"], "no")
+        self.assertNotIn("ports", spec["services"]["api"])
+        self.assertNotIn("secrets", spec["services"]["web"])
+
+
+
 def routerai_fixture(profile=s.ROUTERAI_PROFILE):
+    if profile == s.POSTPAY_NATIVE_SEARCH_PROFILE:
+        return json.loads((Path(__file__).resolve().parent.parent / "fixtures" /
+                           "postpay-native-search-profile.fixture.json").read_bytes())
     if profile == s.POSTPAY_MEMORY_PROFILE:
         return json.loads((Path(__file__).resolve().parent.parent / "fixtures" /
                            "postpay-memory-profile.fixture.json").read_bytes())

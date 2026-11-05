@@ -6,6 +6,7 @@ import {
   createAiExecution,
   maximumWebSearchCandidateProfile,
   maximumWebSearchPostpayTestProfile,
+  maximumWebSearchPostpayProfile,
 } from "./ai-execution.js";
 
 const candidateSettings = {
@@ -178,4 +179,51 @@ test("postpay-test search has a distinct exact execution descriptor while normal
       ),
     /test-only CityGo10x profile/,
   );
+});
+
+test("opt-in native postpay binds optional validated completion and full-total receipt semantics in a separate execution", () => {
+  const config = readConfig({
+    ...candidateSettings,
+    AI_MAXIMUM_WEB_SEARCH: "routerai_native_postpay_v1",
+    AI_CREDIT_MODE: "routerai_citygo_10x",
+    AI_CUSTOMER_BILLING_MODE: "postpay_actual_v1",
+    AI_CREDIT_RESERVATION_MODE: "fixed5_overdraft",
+    AI_MINIMUM_FIXED_FEE: "enabled",
+    GIGACHAT_CREDENTIALS: Buffer.from(
+      "synthetic-client:synthetic-secret",
+    ).toString("base64"),
+  });
+  const maximum = createAssistantModes(config)!.routes[0]!;
+  const profile = {
+    protocol: "chat/completions" as const,
+    requestTimeoutMs: 60_000,
+    reasoningEffort: "medium",
+    webSearch: maximumWebSearchPostpayProfile,
+  };
+  assert.deepEqual(
+    createAiExecution(maximum.config, maximum.policy, profile),
+    maximum.execution,
+  );
+  assert.equal(maximum.policy.version, "ai-mode-route-web-search-postpay-v1");
+  for (const webSearch of [
+    maximumWebSearchCandidateProfile,
+    maximumWebSearchPostpayTestProfile,
+    {
+      ...maximumWebSearchPostpayProfile,
+      completionPolicy: "required-sources-v1",
+    },
+    {
+      ...maximumWebSearchPostpayProfile,
+      receiptPolicy: "routerai-native-total-cost-postpay-test-v1",
+    },
+    { ...maximumWebSearchPostpayProfile, extra: true },
+  ])
+    assert.throws(
+      () =>
+        createAiExecution(maximum.config, maximum.policy, {
+          ...profile,
+          webSearch,
+        } as typeof profile),
+      /exact postpay Maximum profile/,
+    );
 });

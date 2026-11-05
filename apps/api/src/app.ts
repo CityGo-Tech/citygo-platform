@@ -276,9 +276,12 @@ export async function buildApp(options: {
   const modes = createAssistantModes(config, options.modeProviders);
   const nativeWebProfile =
     config.AI_MAXIMUM_WEB_SEARCH === "routerai_native_candidate_v1" ||
-    config.AI_MAXIMUM_WEB_SEARCH === "routerai_native_postpay_test_v1";
+    config.AI_MAXIMUM_WEB_SEARCH === "routerai_native_postpay_test_v1" ||
+    config.AI_MAXIMUM_WEB_SEARCH === "routerai_native_postpay_v1";
   const nativeWebSourcesAllowed = () => {
     validateMaximumWebSearchConfig(config);
+    if (config.AI_MAXIMUM_WEB_SEARCH === "routerai_native_postpay_v1")
+      return config.AI_CREDIT_MODE === "routerai_citygo_10x" && postpayMode;
     return (
       config.NODE_ENV !== "production" &&
       ((config.AI_MAXIMUM_WEB_SEARCH === "routerai_native_candidate_v1" &&
@@ -701,8 +704,13 @@ export async function buildApp(options: {
       );
       if (nativePostpayMigration.rows.length !== 1)
         throw new Error("Pending native-search postpay migration");
+      const nativeProductionMigration = await options.db.query(
+        "select name from citygo_migrations where name='0049_native_search_production.sql'",
+      );
+      if (nativeProductionMigration.rows.length !== 1)
+        throw new Error("Pending native-search production migration");
       const nativePostpayGuard = await options.db.query(
-        "select 1 from pg_trigger t join pg_proc p on p.oid=t.tgfoid where t.tgrelid='ai_postpay_attempts'::regclass and t.tgname='ai_postpay_guard' and t.tgenabled='O' and not t.tgisinternal and p.oid='public.citygo_guard_postpay_attempt()'::regprocedure and not p.prosecdef and position('ai-mode-route-web-search-postpay-test-v1' in pg_get_functiondef(p.oid))>0",
+        "select 1 from pg_trigger t join pg_proc p on p.oid=t.tgfoid where t.tgrelid='ai_postpay_attempts'::regclass and t.tgname='ai_postpay_guard' and t.tgenabled='O' and not t.tgisinternal and p.oid='public.citygo_guard_postpay_attempt()'::regprocedure and not p.prosecdef and position('ai-mode-route-web-search-postpay-test-v1' in pg_get_functiondef(p.oid))>0 and position('ai-mode-route-web-search-postpay-v1' in pg_get_functiondef(p.oid))>0",
       );
       if (nativePostpayGuard.rows.length !== 1)
         throw new Error("Native-search postpay guard is unavailable");
@@ -1794,6 +1802,7 @@ export async function buildApp(options: {
           if (!content.trim()) throw new Error("Empty response");
           if (
             nativeWebProfile &&
+            config.AI_MAXIMUM_WEB_SEARCH !== "routerai_native_postpay_v1" &&
             selectedMode?.id === "maximum" &&
             !completedWebSources
           )

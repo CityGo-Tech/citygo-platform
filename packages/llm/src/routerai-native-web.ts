@@ -36,7 +36,16 @@ export async function readNativeWebResponse(
   body: ReadableStream<Uint8Array>,
   signal: AbortSignal,
   onGeneration: (id: unknown) => Promise<void>,
-): Promise<{ text: string; usage?: ModelUsage; webSources: WebSources }> {
+  completionPolicy:
+    | "required-sources-v1"
+    | "optional-validated-sources-v1" = "required-sources-v1",
+): Promise<{ text: string; usage?: ModelUsage; webSources?: WebSources }> {
+  if (
+    !["required-sources-v1", "optional-validated-sources-v1"].includes(
+      completionPolicy,
+    )
+  )
+    throw invalid();
   const reader = body.getReader(),
     chunks: Uint8Array[] = [];
   let bytes = 0;
@@ -91,14 +100,19 @@ export async function readNativeWebResponse(
     message.content.length > 128000 ||
     /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(
       message.content,
-    ) ||
-    !Array.isArray(message.annotations) ||
-    !message.annotations.length ||
-    message.annotations.length > 256
+    )
+  )
+    throw invalid();
+  const annotations =
+    message.annotations === undefined ? [] : message.annotations;
+  if (
+    !Array.isArray(annotations) ||
+    (completionPolicy === "required-sources-v1" && !annotations.length) ||
+    annotations.length > 256
   )
     throw invalid();
   const sources = new Map<string, WebSources["citations"][number]>();
-  for (const raw of message.annotations) {
+  for (const raw of annotations) {
     const annotation = object(raw);
     if (annotation.type !== "url_citation") throw invalid();
     const source = object(annotation.url_citation);
@@ -116,12 +130,18 @@ export async function readNativeWebResponse(
     if (!sources.has(citation.url)) sources.set(citation.url, citation);
     if (sources.size > 10) throw invalid();
   }
-  const webSources = validateWebSourcesForAnswer(
-    { version: "routerai_native_v1", citations: [...sources.values()] },
-    message.content,
-  );
+  const webSources = sources.size
+    ? validateWebSourcesForAnswer(
+        { version: "routerai_native_v1", citations: [...sources.values()] },
+        message.content,
+      )
+    : undefined;
   const usage =
     result.usage === undefined ? undefined : readUsage(result.usage);
   signal.throwIfAborted();
-  return { text: message.content, ...(usage ? { usage } : {}), webSources };
+  return {
+    text: message.content,
+    ...(usage ? { usage } : {}),
+    ...(webSources ? { webSources } : {}),
+  };
 }

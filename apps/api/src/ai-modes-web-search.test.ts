@@ -338,3 +338,98 @@ test("native postpay-test Maximum requires an injected charge reader even when a
   );
   assert.equal(fetch.mock.callCount(), 0);
 });
+
+test("opt-in native postpay autowires only its approved profile and preserves unchanged Balanced/Minimum identities", async (t) => {
+  let gets = 0;
+  const reference = "880f8601-9447-4db1-a2d8-a93a71aa91ec";
+  const id = "gen-production-mode-synthetic";
+  t.mock.method(
+    globalThis,
+    "fetch",
+    async (url: RequestInfo | URL, init?: RequestInit) => {
+      gets++;
+      assert.equal(url, "https://routerai.ru/api/v1/generation?id=" + id);
+      assert.equal(init?.method, "GET");
+      return Response.json({
+        data: {
+          id,
+          session_id: reference,
+          model: "openai/gpt-6.1-sol",
+          provider: "openai",
+          api: "chat/completions",
+          source: "api",
+          has_web_search: false,
+          total_cost: 1.25,
+        },
+      });
+    },
+  );
+  const config = readConfig({
+    NODE_ENV: "test",
+    LLM_PROVIDER: "routerai",
+    ROUTERAI_API_KEY: "synthetic-key-not-a-live-credential",
+    AI_ASSISTANT_MODES: "enabled",
+    AI_MODES_DATA_NOTICE: "Synthetic same notice for identity comparison.",
+    AI_MAXIMUM_WEB_SEARCH: "routerai_native_postpay_v1",
+    AI_CONTEXT_STRATEGY: "model_window_memory_v1",
+    LLM_MAX_INPUT_BYTES: "8388608",
+    AI_CREDIT_MODE: "routerai_citygo_10x",
+    AI_CUSTOMER_BILLING_MODE: "postpay_actual_v1",
+    AI_CREDIT_RESERVATION_MODE: "fixed5_overdraft",
+    AI_MINIMUM_FIXED_FEE: "enabled",
+    GIGACHAT_MODEL: "GigaChat-3-Ultra",
+    GIGACHAT_SCOPE: "GIGACHAT_API_PERS",
+  });
+  const modes = createAssistantModes(config)!;
+  const maximum = modes.routes[0]!;
+  assert.equal(maximum.protocol, "chat/completions");
+  assert.equal(maximum.policy.version, "ai-mode-route-web-search-postpay-v1");
+  assert(maximum.provider?.readCharge);
+  assert.equal(
+    gets,
+    0,
+    "construction never performs a receipt lookup or generation",
+  );
+  const ordinary = createAssistantModes({
+    ...config,
+    AI_MAXIMUM_WEB_SEARCH: "disabled",
+  })!;
+  assert.notEqual(modes.policy.id, ordinary.policy.id);
+  assert.notEqual(modes.catalogId, ordinary.catalogId);
+  assert.notEqual(maximum.execution.key, ordinary.routes[0]!.execution.key);
+  for (const id of ["balanced", "minimum"] as const) {
+    const actual = modes.routes.find((route) => route.id === id)!;
+    const old = ordinary.routes.find((route) => route.id === id)!;
+    assert.deepEqual(actual.policy, old.policy);
+    assert.deepEqual(actual.execution, old.execution);
+  }
+  assert.equal(
+    createAssistantModes({
+      ...config,
+      NODE_ENV: "production",
+      AI_MODES_PRODUCTION_POLICY_ID: undefined,
+    })!.routes[0]!.provider,
+    undefined,
+  );
+  assert(
+    createAssistantModes({
+      ...config,
+      NODE_ENV: "production",
+      AI_MODES_PRODUCTION_POLICY_ID: modes.policy.id,
+    })!.routes[0]!.provider,
+  );
+  t.mock.method(globalThis, "fetch", async () => {
+    throw Error("Late ambient transport must not replace the selected one");
+  });
+  assert.equal(
+    (
+      await maximum.provider.readCharge(
+        id,
+        reference,
+        new AbortController().signal,
+      )
+    ).costRub,
+    "1.25",
+  );
+  assert.equal(gets, 1);
+});
