@@ -7,6 +7,54 @@ const candidate = {
   AI_MAXIMUM_WEB_SEARCH: "routerai_native_candidate_v1",
 };
 
+const postpayTest = {
+  NODE_ENV: "test",
+  LLM_PROVIDER: "routerai",
+  AI_ASSISTANT_MODES: "enabled",
+  AI_MAXIMUM_WEB_SEARCH: "routerai_native_postpay_test_v1",
+  AI_CREDIT_MODE: "routerai_citygo_10x",
+  AI_CUSTOMER_BILLING_MODE: "postpay_actual_v1",
+  AI_CREDIT_RESERVATION_MODE: "fixed5_overdraft",
+  AI_REQUEST_COST_LIMIT_MODE: "operator_ceiling",
+};
+
+test("native total-cost settlement is an explicit test-only postpay profile, never a candidate upgrade", () => {
+  const config = readConfig(postpayTest);
+  assert.equal(config.AI_MAXIMUM_WEB_SEARCH, "routerai_native_postpay_test_v1");
+  assert.equal(config.AI_CUSTOMER_BILLING_MODE, "postpay_actual_v1");
+  for (const changed of [
+    { NODE_ENV: "production" },
+    { NODE_ENV: "development" },
+    { AI_ASSISTANT_MODES: "disabled" },
+    { AI_CREDIT_MODE: "disabled" },
+    { AI_CREDIT_MODE: "routerai_at_cost" },
+    { AI_CUSTOMER_BILLING_MODE: "legacy" },
+    { AI_CREDIT_RESERVATION_MODE: "full" },
+    { AI_REQUEST_COST_LIMIT_MODE: "user_balance" },
+  ]) {
+    assert.throws(
+      () => readConfig({ ...postpayTest, ...changed }),
+      /test-only CityGo10x profile/,
+    );
+    assert.throws(
+      () =>
+        validateMaximumWebSearchConfig({
+          ...config,
+          ...changed,
+        } as typeof config),
+      /test-only CityGo10x profile/,
+    );
+  }
+  assert.throws(
+    () =>
+      readConfig({
+        ...postpayTest,
+        AI_MAXIMUM_WEB_SEARCH: "routerai_native_candidate_v1",
+      }),
+    /unbillable non-production candidate/,
+  );
+});
+
 test("native search defaults off and cannot become a paid or production profile", () => {
   assert.equal(readConfig({}).AI_MAXIMUM_WEB_SEARCH, "disabled");
   for (const environment of ["test", "development"])

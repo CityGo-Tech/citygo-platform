@@ -41,7 +41,7 @@ const migrations = readdirSync(migrationDirectory)
 const withoutTransaction = (sql) =>
   sql.replace(/^begin;\s*/i, "").replace(/commit;\s*$/i, "");
 
-test("18→47 rehearsal rejects a production project before fixture I/O", async () => {
+test("18→48 rehearsal rejects a production project before fixture I/O", async () => {
   const unexpected = () => assert.fail("No I/O before ownership guards");
   await assert.rejects(
     releaseUpgrade18Smoke({
@@ -55,11 +55,11 @@ test("18→47 rehearsal rejects a production project before fixture I/O", async 
   );
 });
 
-test("literal schema-18 fixture preserves budgets/orders/holds, rolls back late ACLs and reapplies only 19–47", async (t) => {
+test("literal schema-18 fixture preserves budgets/orders/holds, rolls back late ACLs and reapplies only 19–48", async (t) => {
   const db = new PGlite();
   t.after(() => db.close());
   await db.waitReady;
-  assert.equal(migrations.length, 47);
+  assert.equal(migrations.length, 48);
   assert.equal(migrations[17].name, "0018_payment_refunds.sql");
   assert.deepEqual(
     migrations.slice(18).map(({ name }) => name),
@@ -93,6 +93,7 @@ test("literal schema-18 fixture preserves budgets/orders/holds, rolls back late 
       "0045_ai_balance_request_cost_limit.sql",
       "0046_postpay_actual.sql",
       "0047_conversation_memory.sql",
+      "0048_native_search_postpay.sql",
     ],
   );
   await db.exec(
@@ -159,7 +160,7 @@ test("literal schema-18 fixture preserves budgets/orders/holds, rolls back late 
     [
       {
         quotations: 1,
-        migrations: 47,
+        migrations: 48,
         admission: true,
         source_index: true,
         guard: true,
@@ -192,7 +193,7 @@ test("literal schema-18 fixture preserves budgets/orders/holds, rolls back late 
       to_regclass('payment_admission') is not null as admission,
       exists(select 1 from pg_proc where proname='citygo_guard_account_email_verification_proof') as guard`)
     ).rows,
-    [{ confirmation: 1, migrations: 47, admission: true, guard: true }],
+    [{ confirmation: 1, migrations: 48, admission: true, guard: true }],
   );
   await db.query("delete from account_email_confirmation_challenges");
   await db.query("delete from users where id=$1", [confirmationUser]);
@@ -214,7 +215,7 @@ test("literal schema-18 fixture preserves budgets/orders/holds, rolls back late 
       to_regclass('payment_admission') is not null as admission,
       exists(select 1 from pg_proc where proname='citygo_guard_password_recovery') as guard`)
     ).rows,
-    [{ recovery: 1, migrations: 47, admission: true, guard: true }],
+    [{ recovery: 1, migrations: 48, admission: true, guard: true }],
     "Rejected rewind retains recovery history and rolls back earlier DDL",
   );
   // Remove only this synthetic in-memory test row before the existing empty

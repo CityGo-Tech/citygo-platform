@@ -85,6 +85,7 @@ import {
 import {
   readConfig,
   effectiveLlmLimits,
+  validateMaximumWebSearchConfig,
   validateCreditReservationConfig,
   validateVerificationDeliveryConfig,
 } from "@citygo/config";
@@ -273,6 +274,21 @@ export async function buildApp(options: {
   const providers: ProviderMap = { ...options.providers };
   if (options.provider) providers[options.provider.name] = options.provider;
   const modes = createAssistantModes(config, options.modeProviders);
+  const nativeWebProfile =
+    config.AI_MAXIMUM_WEB_SEARCH === "routerai_native_candidate_v1" ||
+    config.AI_MAXIMUM_WEB_SEARCH === "routerai_native_postpay_test_v1";
+  const nativeWebSourcesAllowed = () => {
+    validateMaximumWebSearchConfig(config);
+    return (
+      config.NODE_ENV !== "production" &&
+      ((config.AI_MAXIMUM_WEB_SEARCH === "routerai_native_candidate_v1" &&
+        config.AI_CREDIT_MODE === "disabled") ||
+        (config.AI_MAXIMUM_WEB_SEARCH === "routerai_native_postpay_test_v1" &&
+          config.NODE_ENV === "test" &&
+          config.AI_CREDIT_MODE === "routerai_citygo_10x" &&
+          postpayMode))
+    );
+  };
   const control = createAiControl(config, providers, modes);
   const repo = new Repository(
     options.db,
@@ -680,6 +696,16 @@ export async function buildApp(options: {
       );
       if (postpayMigration.rows.length !== 1)
         throw new Error("Pending postpay migration");
+      const nativePostpayMigration = await options.db.query(
+        "select name from citygo_migrations where name='0048_native_search_postpay.sql'",
+      );
+      if (nativePostpayMigration.rows.length !== 1)
+        throw new Error("Pending native-search postpay migration");
+      const nativePostpayGuard = await options.db.query(
+        "select 1 from pg_trigger t join pg_proc p on p.oid=t.tgfoid where t.tgrelid='ai_postpay_attempts'::regclass and t.tgname='ai_postpay_guard' and t.tgenabled='O' and not t.tgisinternal and p.oid='public.citygo_guard_postpay_attempt()'::regprocedure and not p.prosecdef and position('ai-mode-route-web-search-postpay-test-v1' in pg_get_functiondef(p.oid))>0",
+      );
+      if (nativePostpayGuard.rows.length !== 1)
+        throw new Error("Native-search postpay guard is unavailable");
       await options.db.query(
         "select id,state,response_complete,reconcile_token from ai_postpay_attempts limit 0",
       );
@@ -1144,7 +1170,7 @@ export async function buildApp(options: {
         }
       : undefined,
     (request) => drain.run(() => authenticate(request)),
-    config.AI_MAXIMUM_WEB_SEARCH === "routerai_native_candidate_v1" && modes
+    nativeWebProfile && modes
       ? (user, input) => {
           if (
             input.aiModeCatalogId !== undefined &&
@@ -1743,10 +1769,7 @@ export async function buildApp(options: {
               };
               if (event.webSources !== undefined) {
                 if (
-                  config.AI_MAXIMUM_WEB_SEARCH !==
-                    "routerai_native_candidate_v1" ||
-                  config.NODE_ENV === "production" ||
-                  config.AI_CREDIT_MODE !== "disabled" ||
+                  !nativeWebSourcesAllowed() ||
                   selectedMode?.id !== "maximum" ||
                   provider.name !== "routerai" ||
                   provider.model !== "openai/gpt-6.1-sol" ||
@@ -1770,7 +1793,7 @@ export async function buildApp(options: {
           if (!completed) throw new Error("Provider stream interrupted");
           if (!content.trim()) throw new Error("Empty response");
           if (
-            config.AI_MAXIMUM_WEB_SEARCH === "routerai_native_candidate_v1" &&
+            nativeWebProfile &&
             selectedMode?.id === "maximum" &&
             !completedWebSources
           )

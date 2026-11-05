@@ -5,6 +5,7 @@ import { createAssistantModes } from "./ai-modes.js";
 import {
   createAiExecution,
   maximumWebSearchCandidateProfile,
+  maximumWebSearchPostpayTestProfile,
 } from "./ai-execution.js";
 
 const candidateSettings = {
@@ -106,4 +107,75 @@ test("enabling a local candidate never makes arbitrary Chat Maximum a model-wind
         }),
       /unbillable non-production candidate/,
     );
+});
+
+test("postpay-test search has a distinct exact execution descriptor while normal paid memory rules remain", () => {
+  const config = readConfig({
+    ...candidateSettings,
+    AI_MAXIMUM_WEB_SEARCH: "routerai_native_postpay_test_v1",
+    AI_CREDIT_MODE: "routerai_citygo_10x",
+    AI_CUSTOMER_BILLING_MODE: "postpay_actual_v1",
+    AI_CREDIT_RESERVATION_MODE: "fixed5_overdraft",
+    AI_MINIMUM_FIXED_FEE: "enabled",
+    GIGACHAT_CREDENTIALS: Buffer.from(
+      "synthetic-client:synthetic-secret",
+    ).toString("base64"),
+  });
+  const maximum = createAssistantModes(config)!.routes[0]!;
+  const profile = {
+    protocol: "chat/completions" as const,
+    requestTimeoutMs: 60_000,
+    reasoningEffort: "medium",
+    webSearch: maximumWebSearchPostpayTestProfile,
+  };
+  assert.equal(
+    maximum.policy.version,
+    "ai-mode-route-web-search-postpay-test-v1",
+  );
+  assert.deepEqual(
+    createAiExecution(maximum.config, maximum.policy, profile),
+    maximum.execution,
+  );
+  assert.equal(
+    maximum.provider,
+    undefined,
+    "a keyless/config-only test profile cannot generate",
+  );
+  for (const changed of [
+    { webSearch: maximumWebSearchCandidateProfile },
+    {
+      webSearch: {
+        ...maximumWebSearchPostpayTestProfile,
+        billing: "unverified-unbillable",
+      },
+    },
+    { protocol: "responses" as const },
+    { webSearch: { ...maximumWebSearchPostpayTestProfile, extra: true } },
+  ])
+    assert.throws(
+      () =>
+        createAiExecution(maximum.config, maximum.policy, {
+          ...profile,
+          ...changed,
+        } as typeof profile),
+      /exact postpay-test Maximum profile/,
+    );
+  assert.throws(
+    () =>
+      createAiExecution(
+        maximum.config,
+        { ...maximum.policy, version: "ai-mode-route-web-search-candidate-v1" },
+        profile,
+      ),
+    /exact postpay-test Maximum profile/,
+  );
+  assert.throws(
+    () =>
+      createAiExecution(
+        { ...maximum.config, NODE_ENV: "production" },
+        maximum.policy,
+        profile,
+      ),
+    /test-only CityGo10x profile/,
+  );
 });

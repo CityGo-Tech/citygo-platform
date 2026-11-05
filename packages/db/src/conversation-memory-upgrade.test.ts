@@ -38,7 +38,7 @@ test("schema46→47 preserves every existing row, accounting snapshot and migrat
     return result;
   };
   const before = await snapshot();
-  await migrate(db);
+  await applyFixtureMigration(db, "0047_conversation_memory.sql");
   assert.deepEqual(await snapshot(), before);
   assert.equal(
     (await db.query("select * from conversation_memory_fragments")).rows.length,
@@ -76,5 +76,9 @@ test("schema46→47 preserves every existing row, accounting snapshot and migrat
   );
   assert.deepEqual(await snapshot(), before);
   await migrate(db);
+  assert.equal(
+    (await db.query("select * from citygo_migrations")).rows.length,
+    48,
+  );
   assert.deepEqual(await snapshot(), before);
 });

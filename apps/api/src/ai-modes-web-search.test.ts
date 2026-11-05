@@ -3,6 +3,7 @@ import test from "node:test";
 import { readConfig } from "@citygo/config";
 import { serviceAiProcessingSchema } from "@citygo/contracts";
 import { createAssistantModes } from "./ai-modes.js";
+import type { StreamingProvider } from "@citygo/llm";
 
 const goldenSettings = {
   NODE_ENV: "test",
@@ -267,4 +268,73 @@ test("Maximum candidate mode actually selects the pinned native non-streaming tr
     /cost could not be confirmed/,
   );
   assert.equal(fetch.mock.callCount(), 1);
+});
+
+test("native postpay-test Maximum requires an injected charge reader even when an API key is present", (t) => {
+  const fetch = t.mock.method(globalThis, "fetch", async () => {
+    throw Error("Network forbidden");
+  });
+  const settings = {
+    NODE_ENV: "test",
+    LLM_PROVIDER: "routerai",
+    ROUTERAI_API_KEY: "synthetic-key-do-not-use",
+    AI_ASSISTANT_MODES: "enabled",
+    AI_MAXIMUM_WEB_SEARCH: "routerai_native_postpay_test_v1",
+    AI_CREDIT_MODE: "routerai_citygo_10x",
+    AI_CUSTOMER_BILLING_MODE: "postpay_actual_v1",
+    AI_CREDIT_RESERVATION_MODE: "fixed5_overdraft",
+  };
+  const config = readConfig(settings);
+  const withoutAdapter = createAssistantModes(config)!;
+  const maximum = withoutAdapter.routes.find(({ id }) => id === "maximum")!;
+  assert.equal(maximum.provider, undefined);
+  assert.equal(maximum.protocol, "chat/completions");
+  assert.equal(
+    maximum.policy.version,
+    "ai-mode-route-web-search-postpay-test-v1",
+  );
+  assert.equal(
+    withoutAdapter.policy.version,
+    "ai-assistant-modes-web-search-postpay-test-v1",
+  );
+  const adapter: StreamingProvider = {
+    name: "routerai",
+    model: "openai/gpt-6.1-sol",
+    async *stream() {
+      yield { type: "complete", model: "openai/gpt-6.1-sol" };
+    },
+    async readCharge() {
+      throw Error("Synthetic lookup not called");
+    },
+  };
+  const injected = createAssistantModes(config, { maximum: adapter })!;
+  assert.equal(injected.routes[0]!.provider, adapter);
+  const missingReader = createAssistantModes(config, {
+    maximum: { ...adapter, readCharge: undefined },
+  })!;
+  assert.equal(missingReader.routes[0]!.provider, undefined);
+  const disabled = createAssistantModes(
+    readConfig({ ...settings, AI_MAXIMUM_WEB_SEARCH: "disabled" }),
+  )!;
+  assert.notEqual(injected.catalogId, disabled.catalogId);
+  assert.notEqual(injected.policy.id, disabled.policy.id);
+  assert.notEqual(
+    injected.routes[0]!.execution.key,
+    disabled.routes[0]!.execution.key,
+  );
+  for (const id of ["balanced", "minimum"] as const) {
+    const actual = injected.routes.find((route) => route.id === id)!;
+    const old = disabled.routes.find((route) => route.id === id)!;
+    assert.deepEqual(actual.policy, old.policy);
+    assert.deepEqual(actual.execution, old.execution);
+  }
+  assert.throws(
+    () =>
+      createAssistantModes(
+        { ...config, NODE_ENV: "production" },
+        { maximum: adapter },
+      ),
+    /test-only CityGo10x profile/,
+  );
+  assert.equal(fetch.mock.callCount(), 0);
 });

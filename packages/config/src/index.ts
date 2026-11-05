@@ -143,9 +143,13 @@ export const serverConfigSchema = z.object({
       .optional(),
   ),
   AI_MODES_DATA_NOTICE: optionalSetting.pipe(z.string().max(4000).optional()),
-  // Unbillable non-production candidate; no runtime or fee approval.
+  // Candidates only. Test-only postpay does not approve a production runtime.
   AI_MAXIMUM_WEB_SEARCH: z
-    .enum(["disabled", "routerai_native_candidate_v1"])
+    .enum([
+      "disabled",
+      "routerai_native_candidate_v1",
+      "routerai_native_postpay_test_v1",
+    ])
     .default("disabled"),
   AI_MAXIMUM_REASONING_EFFORT: z
     .enum(["low", "medium", "high", "xhigh", "max"])
@@ -358,12 +362,26 @@ export function validateVerificationDeliveryConfig(
     );
 }
 
-// Also checked by mode constructors for explicitly injected config. The native
-// search receipt has not yet established complete tool-inclusive billing.
+// Also checked by mode constructors for explicitly injected config. The paid
+// local profile exercises settlement only with separately injected adapters.
 export function validateMaximumWebSearchConfig(
   config: z.infer<typeof serverConfigSchema>,
 ) {
   if (config.AI_MAXIMUM_WEB_SEARCH === "disabled") return;
+  if (config.AI_MAXIMUM_WEB_SEARCH === "routerai_native_postpay_test_v1") {
+    if (
+      config.NODE_ENV !== "test" ||
+      config.AI_ASSISTANT_MODES !== "enabled" ||
+      config.AI_CREDIT_MODE !== "routerai_citygo_10x" ||
+      config.AI_CUSTOMER_BILLING_MODE !== "postpay_actual_v1" ||
+      config.AI_CREDIT_RESERVATION_MODE !== "fixed5_overdraft" ||
+      config.AI_REQUEST_COST_LIMIT_MODE !== "operator_ceiling"
+    )
+      throw new Error(
+        "Native search postpay requires its explicit test-only CityGo10x profile; production is not approved",
+      );
+    return;
+  }
   if (
     config.AI_MAXIMUM_WEB_SEARCH !== "routerai_native_candidate_v1" ||
     config.NODE_ENV === "production" ||

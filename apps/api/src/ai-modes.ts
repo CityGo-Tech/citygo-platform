@@ -21,6 +21,7 @@ import { createAiPolicy } from "./ai-policy.js";
 import {
   createAiExecution,
   maximumWebSearchCandidateProfile,
+  maximumWebSearchPostpayTestProfile,
 } from "./ai-execution.js";
 import { productionProviderAllowed } from "./ai-production.js";
 
@@ -81,6 +82,10 @@ export function createAssistantModes(
   if (config.AI_ASSISTANT_MODES !== "enabled") return null;
   const maximumWebSearchCandidate =
     config.AI_MAXIMUM_WEB_SEARCH === "routerai_native_candidate_v1";
+  const maximumWebSearchPostpayTest =
+    config.AI_MAXIMUM_WEB_SEARCH === "routerai_native_postpay_test_v1";
+  const maximumWebSearchConfigured =
+    maximumWebSearchCandidate || maximumWebSearchPostpayTest;
   const memoryContext = config.AI_CONTEXT_STRATEGY === "model_window_memory_v1";
   const minimumAccountRef =
     config.AI_MINIMUM_FIXED_FEE === "enabled"
@@ -143,12 +148,16 @@ export function createAssistantModes(
       model,
     })!;
     const webSearch =
-      id === "maximum" && maximumWebSearchCandidate
-        ? maximumWebSearchCandidateProfile
+      id === "maximum" && maximumWebSearchConfigured
+        ? maximumWebSearchPostpayTest
+          ? maximumWebSearchPostpayTestProfile
+          : maximumWebSearchCandidateProfile
         : undefined;
     const routeFields = {
       version: webSearch
-        ? "ai-mode-route-web-search-candidate-v1"
+        ? maximumWebSearchPostpayTest
+          ? "ai-mode-route-web-search-postpay-test-v1"
+          : "ai-mode-route-web-search-candidate-v1"
         : memoryContext
           ? "ai-mode-route-memory-v1"
           : "ai-mode-route-v1",
@@ -158,7 +167,9 @@ export function createAssistantModes(
       routing:
         basePolicy.routing +
         (webSearch
-          ? " Кандидат нативного веб-поиска RouterAI: до пяти результатов, не потоковый ответ. Полный состав стоимости поиска ещё не подтверждён; списание пользователю запрещено."
+          ? maximumWebSearchPostpayTest
+            ? " Тестовый профиль нативного веб-поиска RouterAI: до пяти результатов, не потоковый ответ. Проверяется постоплата полной стоимости по total_cost; production и автоматическое подключение транспорта запрещены."
+            : " Кандидат нативного веб-поиска RouterAI: до пяти результатов, не потоковый ответ. Полный состав стоимости поиска ещё не подтверждён; списание пользователю запрещено."
           : ""),
       data:
         (memoryContext
@@ -214,8 +225,10 @@ export function createAssistantModes(
     };
   });
   const disclosure = {
-    version: maximumWebSearchCandidate
-      ? "ai-assistant-modes-web-search-candidate-v1"
+    version: maximumWebSearchConfigured
+      ? maximumWebSearchPostpayTest
+        ? "ai-assistant-modes-web-search-postpay-test-v1"
+        : "ai-assistant-modes-web-search-candidate-v1"
       : memoryContext
         ? "ai-assistant-modes-memory-v1"
         : "ai-assistant-modes-v1",
@@ -231,8 +244,10 @@ export function createAssistantModes(
       (config.AI_MODES_DATA_NOTICE ??
         "Сроки хранения и удаления у получателей требуют отдельной проверки.") +
       " Доступны режимы «Максимум», «Баланс» и «Минимум». Выбранный режим действует на следующее отправленное сообщение." +
-      (maximumWebSearchCandidate
-        ? " В кандидате режима «Максимум» провайдер может формировать поисковые запросы из вопроса и контекста и передавать их внешней поисковой системе. Нативный поиск: до пяти результатов, не потоковый ответ; списание пользователю запрещено до проверки полного состава стоимости."
+      (maximumWebSearchConfigured
+        ? maximumWebSearchPostpayTest
+          ? " В тестовом профиле режима «Максимум» провайдер может формировать поисковые запросы из вопроса и контекста и передавать их внешней поисковой системе. Нативный поиск: до пяти результатов, не потоковый ответ; полная стоимость проверяется в изолированной постоплате. Production не разрешён."
+          : " В кандидате режима «Максимум» провайдер может формировать поисковые запросы из вопроса и контекста и передавать их внешней поисковой системе. Нативный поиск: до пяти результатов, не потоковый ответ; списание пользователю запрещено до проверки полного состава стоимости."
         : ""),
   };
   const policy: AiPolicy = {
@@ -243,8 +258,10 @@ export function createAssistantModes(
     ...disclosure,
   };
   const catalogId = hash({
-    version: maximumWebSearchCandidate
-      ? "ai-mode-catalog-web-search-candidate-v1"
+    version: maximumWebSearchConfigured
+      ? maximumWebSearchPostpayTest
+        ? "ai-mode-catalog-web-search-postpay-test-v1"
+        : "ai-mode-catalog-web-search-candidate-v1"
       : memoryContext
         ? "ai-mode-catalog-memory-v1"
         : "ai-mode-catalog-v1",
@@ -278,6 +295,9 @@ export function createAssistantModes(
         if (
           !provider &&
           specification.id !== "minimum" &&
+          // The new paid test path can only use a separately injected adapter;
+          // config and a stored key cannot create a generation transport.
+          !(specification.id === "maximum" && maximumWebSearchPostpayTest) &&
           config.ROUTERAI_API_KEY
         ) {
           provider = new RouterAIProvider(
@@ -287,7 +307,7 @@ export function createAssistantModes(
               upstream: specification.upstream!,
               country: specification.country,
               ...(specification.id === "maximum"
-                ? maximumWebSearchCandidate
+                ? maximumWebSearchConfigured
                   ? {
                       webSearch: {
                         engine: "native" as const,

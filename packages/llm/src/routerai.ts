@@ -22,6 +22,8 @@ type RouterAIOptions = {
   maxOutputTokens?: number;
   reasoningEffort?: "low" | "medium" | "high" | "xhigh" | "max";
   webSearch?: { engine: "native"; maxResults: 5 };
+  // Explicit injected-transport test policy, never inferred from a response.
+  nativeWebReceiptPolicy?: "routerai-native-total-cost-postpay-test-v1";
   fetch?: typeof fetch;
 };
 
@@ -38,6 +40,7 @@ export class RouterAIInsufficientFundsError extends Error {
 export class RouterAIProvider implements StreamingProvider {
   readonly name = "routerai" as const;
   private readonly protocol: "responses" | undefined;
+  private readonly nativeWebReceiptPolicy?: "routerai-native-total-cost-postpay-test-v1";
   private readonly nativeWebOptions:
     | Readonly<
         Pick<
@@ -102,6 +105,18 @@ export class RouterAIProvider implements StreamingProvider {
         maxOutputTokens: options.maxOutputTokens,
         reasoningEffort: options.reasoningEffort,
       });
+    }
+    if (options.nativeWebReceiptPolicy !== undefined) {
+      if (
+        options.nativeWebReceiptPolicy !==
+          "routerai-native-total-cost-postpay-test-v1" ||
+        !this.nativeWebOptions ||
+        typeof this.nativeWebOptions.fetch !== "function"
+      )
+        throw new Error(
+          "Native postpay tests require explicit injected transport",
+        );
+      this.nativeWebReceiptPolicy = options.nativeWebReceiptPolicy;
     }
   }
 
@@ -363,28 +378,37 @@ export class RouterAIProvider implements StreamingProvider {
     reference: string,
     signal: AbortSignal,
   ): Promise<RouterAiCharge> {
-    // Native plugin billing has not been independently verified. This candidate
-    // cannot turn a generation response or a guessed tool fee into a debit.
-    if (this.nativeWebOptions)
+    // The original unbillable candidate remains closed before GET. A separate
+    // injected-transport test profile can read the provider's whole total_cost;
+    // it never derives a tool fee from tokens, links or a public price list.
+    const nativeReceipt =
+      this.nativeWebReceiptPolicy ===
+      "routerai-native-total-cost-postpay-test-v1";
+    if (this.nativeWebOptions && !nativeReceipt)
       throw new Error("RouterAI cost could not be confirmed");
     try {
       creditGenerationIdSchema.parse(generationId);
       const deadline = AbortSignal.any([signal, AbortSignal.timeout(5000)]);
       deadline.throwIfAborted();
-      const response = await (this.options.fetch ?? fetch)(
-        `https://routerai.ru/api/v1/generation?id=${encodeURIComponent(generationId)}`,
-        {
-          method: "GET",
-          redirect: "error",
-          signal: deadline,
-          headers: {
-            Authorization: `Bearer ${this.apiKey}`,
-            Accept: "application/json",
-          },
+      const url = `https://routerai.ru/api/v1/generation?id=${encodeURIComponent(generationId)}`;
+      const transport = nativeReceipt
+        ? this.nativeWebOptions!.fetch!
+        : (this.options.fetch ?? fetch);
+      const response = await transport(url, {
+        method: "GET",
+        redirect: "error",
+        signal: deadline,
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+          Accept: "application/json",
         },
-      );
+      });
       if (
         !response.ok ||
+        (nativeReceipt &&
+          (response.status !== 200 ||
+            response.redirected ||
+            (response.url !== "" && response.url !== url))) ||
         !response.body ||
         response.headers.get("content-type")?.split(";")[0]?.trim() !==
           "application/json"
@@ -416,7 +440,11 @@ export class RouterAIProvider implements StreamingProvider {
       }
       // Node >=22.13 exposes the exact JSON number lexeme, before binary rounding.
       const envelope: unknown = JSON.parse(
-        Buffer.concat(chunks).toString("utf8"),
+        nativeReceipt
+          ? new TextDecoder("utf-8", { fatal: true }).decode(
+              Buffer.concat(chunks),
+            )
+          : Buffer.concat(chunks).toString("utf8"),
         (key: string, value: unknown, context?: { source?: string }) => {
           if (key !== "total_cost") return value;
           if (typeof value !== "number" || !context?.source)
@@ -443,12 +471,19 @@ export class RouterAIProvider implements StreamingProvider {
         typeof data.total_cost !== "string" ||
         data.id !== generationId ||
         data.session_id !== reference ||
-        data.model !== this.model ||
-        data.provider !== this.options.upstream ||
+        data.model !== (nativeReceipt ? "openai/gpt-6.1-sol" : this.model) ||
+        data.provider !== (nativeReceipt ? "openai" : this.options.upstream) ||
         data.api !==
-          (this.protocol === "responses" ? "responses" : "chat/completions") ||
+          (nativeReceipt
+            ? "chat/completions"
+            : this.protocol === "responses"
+              ? "responses"
+              : "chat/completions") ||
         data.source !== "api" ||
-        data.has_web_search !== false
+        data.has_web_search !== nativeReceipt ||
+        (nativeReceipt &&
+          Object.hasOwn(data, "currency") &&
+          data.currency !== "RUB")
       )
         throw new Error("Cost identity mismatch");
       return routerAiChargeSchema.parse({

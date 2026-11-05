@@ -19,10 +19,24 @@ export const maximumWebSearchCandidateProfile = Object.freeze({
   billing: "unverified-unbillable",
 } as const);
 
-type MaximumWebSearchCandidateProfile = typeof maximumWebSearchCandidateProfile;
+export const maximumWebSearchPostpayTestProfile = Object.freeze({
+  version: "routerai-native-web-search-postpay-test-v1",
+  instructionsProfile: nativeWebSearchInstructionsProfile,
+  engine: "native",
+  maxResults: 5,
+  transport: "non-streaming",
+  billing: "routerai-total-cost-postpay-test-v1",
+} as const);
 
-function exactWebSearchCandidate(value: MaximumWebSearchCandidateProfile) {
-  const entries = Object.entries(maximumWebSearchCandidateProfile);
+type MaximumWebSearchProfile =
+  | typeof maximumWebSearchCandidateProfile
+  | typeof maximumWebSearchPostpayTestProfile;
+
+function exactWebSearchProfile(
+  value: MaximumWebSearchProfile,
+  expected: MaximumWebSearchProfile,
+) {
+  const entries = Object.entries(expected);
   return (
     value !== null &&
     typeof value === "object" &&
@@ -39,25 +53,38 @@ export function createAiExecution(
     requestTimeoutMs: number;
     reasoningEffort?: string;
     billingProfile?: { pricingId: string };
-    webSearch?: MaximumWebSearchCandidateProfile;
+    webSearch?: MaximumWebSearchProfile;
   },
 ): AiExecution {
   validateMaximumWebSearchConfig(config);
   const webSearchCandidate = modeProfile?.webSearch !== undefined;
+  const postpayTest =
+    config.AI_MAXIMUM_WEB_SEARCH === "routerai_native_postpay_test_v1";
+  const expectedWebSearch = postpayTest
+    ? maximumWebSearchPostpayTestProfile
+    : maximumWebSearchCandidateProfile;
   if (
     webSearchCandidate &&
-    (!exactWebSearchCandidate(modeProfile.webSearch!) ||
-      config.AI_MAXIMUM_WEB_SEARCH !== "routerai_native_candidate_v1" ||
+    (!exactWebSearchProfile(modeProfile.webSearch!, expectedWebSearch) ||
+      ![
+        "routerai_native_candidate_v1",
+        "routerai_native_postpay_test_v1",
+      ].includes(config.AI_MAXIMUM_WEB_SEARCH) ||
       modeProfile.protocol !== "chat/completions" ||
       policy.provider !== "routerai" ||
       policy.model !== "openai/gpt-6.1-sol" ||
       config.ROUTERAI_MODEL !== "openai/gpt-6.1-sol" ||
       config.ROUTERAI_UPSTREAM !== "openai" ||
       config.ROUTERAI_COUNTRY !== "us" ||
-      policy.version !== "ai-mode-route-web-search-candidate-v1")
+      policy.version !==
+        (postpayTest
+          ? "ai-mode-route-web-search-postpay-test-v1"
+          : "ai-mode-route-web-search-candidate-v1"))
   )
     throw new Error(
-      "Native search requires the exact unbillable Maximum profile",
+      postpayTest
+        ? "Native search requires the exact postpay-test Maximum profile"
+        : "Native search requires the exact unbillable Maximum profile",
     );
   const limits = {
     maxInputBytes: config.LLM_MAX_INPUT_BYTES,
