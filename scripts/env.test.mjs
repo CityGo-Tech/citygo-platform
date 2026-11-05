@@ -31,6 +31,7 @@ const canaries = {
   AI_ASSISTANT_MODES: "enabled",
   AI_MINIMUM_FIXED_FEE: "enabled",
   AI_MAXIMUM_REASONING_EFFORT: "medium",
+  AI_MAXIMUM_WEB_SEARCH: "routerai_native_candidate_v1",
   AI_MODES_DATA_NOTICE: "Synthetic assistant modes public notice",
   AI_MODES_PRODUCTION_POLICY_ID: "b".repeat(64),
   YOOKASSA_MODE: "test",
@@ -175,6 +176,7 @@ test("API gets only known API settings; worker/migrator get no LLM or API settin
     "AI_CUSTOMER_BILLING_MODE",
     "AI_MINIMUM_FIXED_FEE",
     "AI_MAXIMUM_REASONING_EFFORT",
+    "AI_MAXIMUM_WEB_SEARCH",
     "AI_MODES_DATA_NOTICE",
     "AI_MODES_PRODUCTION_POLICY_ID",
   ])
@@ -221,6 +223,50 @@ test("API gets only known API settings; worker/migrator get no LLM or API settin
   for (const scope of ["worker", "migrator"]) {
     const env = serviceEnv(scope, { directory, inherited: canaries });
     assert.deepEqual(env, { DATABASE_URL: canaries.DATABASE_URL });
+  }
+});
+
+test("native-search candidate stays API-only across file, injected and explicit override boundaries", (t) => {
+  const flag = "AI_MAXIMUM_WEB_SEARCH";
+  const candidate = "routerai_native_candidate_v1";
+  const directory = fixture(t, {
+    ".env": `${flag}=disabled`,
+    ".env.api": `${flag}=${candidate}`,
+  });
+  assert.equal(
+    serviceEnv("api", { directory, inherited: {} })[flag],
+    candidate,
+  );
+  const inherited = { [flag]: "disabled" };
+  assert.equal(serviceEnv("api", { directory, inherited })[flag], "disabled");
+  assert.equal(
+    serviceEnv("api", {
+      directory,
+      inherited,
+      overrides: { [flag]: candidate },
+    })[flag],
+    candidate,
+  );
+  assert.deepEqual(inherited, { [flag]: "disabled" });
+  for (const scope of [
+    "web",
+    "build",
+    "mobile",
+    "worker",
+    "migrator",
+    "test",
+    "web-test",
+  ]) {
+    const env = serviceEnv(scope, {
+      directory,
+      inherited: { [flag]: candidate },
+      overrides: { [flag]: candidate },
+    });
+    assert.equal(
+      env[flag],
+      undefined,
+      `${scope} cannot acquire native-search configuration`,
+    );
   }
 });
 
