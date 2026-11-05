@@ -70,6 +70,10 @@ test("disabled search preserves recorded pre-change paid policy/catalog/executio
         modes.routes.map(({ execution }) => execution.key),
         fixture.executions,
       );
+      assert.deepEqual(
+        modes.routes.map(({ protocol }) => protocol),
+        ["responses", "chat/completions", "gigachat"],
+      );
     }
   }
   assert.equal(fetch.mock.callCount(), 0);
@@ -119,11 +123,14 @@ test("candidate changes only Maximum route identity and advertises disclosure wi
       old.execution.maxOutputTokens,
     );
     if (route.id === "maximum") {
+      assert.equal(route.protocol, "chat/completions");
+      assert.equal(old.protocol, "responses");
       assert.notEqual(route.policy.id, old.policy.id);
       assert.notEqual(route.execution.key, old.execution.key);
       assert.match(route.policy.routing, /пяти результатов.*не потоковый/);
       assert.equal(route.config.ROUTERAI_REASONING_EFFORT, "high");
     } else {
+      assert.equal(route.protocol, old.protocol);
       assert.deepEqual(route.policy, old.policy);
       assert.deepEqual(route.execution, old.execution);
     }
@@ -146,6 +153,30 @@ test("injected candidate configuration cannot bypass production or customer-char
       () => createAssistantModes({ ...config, ...changed }),
       /unbillable non-production candidate/,
     );
+});
+
+test("retained bootstrap Balanced route keeps its own Chat protocol and execution", () => {
+  const modes = createAssistantModes(
+    readConfig({
+      ...goldenSettings,
+      AI_CUSTOMER_BILLING_MODE: "legacy",
+      ROUTERAI_API_KEY: "synthetic-router-key",
+      ROUTERAI_MODEL: "deepseek/deepseek-v4-pro-0813",
+      ROUTERAI_UPSTREAM: "deepseek",
+      ROUTERAI_COUNTRY: "cn",
+      ROUTERAI_DATA_NOTICE: "Synthetic original recipient notice.",
+      LLM_MAX_INPUT_BYTES: "8192",
+    }),
+  )!;
+  const legacy = modes.catalogRoute("balanced", {
+    currentAiConsentRequired: true,
+  });
+  assert.ok(legacy);
+  assert.equal(legacy.protocol, "chat/completions");
+  assert.deepEqual(
+    legacy.execution,
+    modes.legacyBalancedCompatibility!.execution,
+  );
 });
 
 // This fixture exercises the real mode constructor through an intercepted

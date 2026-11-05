@@ -1,4 +1,8 @@
 import { PostpayCharges } from "@citygo/db";
+import {
+  selectPostpayRouterAdapter,
+  type PostpayRouterProfile,
+} from "./postpay-router-profile.js";
 import { chatDeltaChunks } from "./chat-delta-chunks.js";
 import { assistantInstructionOptions } from "./assistant-instruction-options.js";
 import {
@@ -367,32 +371,24 @@ export async function buildApp(options: {
     const charge = await postpay.get(userId, id);
     if (charge.state === "settled") return true;
     if (!charge.generation_id || !charge.dispatched) return false;
-    const candidates = [
+    const candidates: PostpayRouterProfile[] = [
       ...(modes?.routes.map((route) => ({
         adapter: route.provider,
         upstream: route.upstream,
-        protocol: route.id === "maximum" ? "responses" : "chat/completions",
+        protocol: route.protocol,
         executionKey: route.execution.key,
         policyId: route.policy.id,
       })) ?? []),
       {
         adapter: providers.routerai,
         upstream: config.ROUTERAI_UPSTREAM,
-        protocol: "chat/completions",
+        protocol: "chat/completions" as const,
         executionKey: null,
         policyId: null,
       },
     ];
-    const adapter = candidates.find(
-      (profile) =>
-        profile.adapter?.name === "routerai" &&
-        profile.adapter.model === charge.model &&
-        profile.upstream === charge.upstream &&
-        profile.protocol === charge.protocol &&
-        profile.executionKey === charge.execution_key &&
-        profile.policyId === charge.policy_id,
-    )?.adapter;
-    if (!adapter?.readCharge) return false;
+    const adapter = selectPostpayRouterAdapter(candidates, charge);
+    if (!adapter) return false;
     signal.throwIfAborted();
     const receipt = await adapter.readCharge(
       charge.generation_id,
@@ -1615,9 +1611,7 @@ export async function buildApp(options: {
               ? {
                   protocol: fixedFee
                     ? ("gigachat" as const)
-                    : selectedMode?.id === "maximum"
-                      ? ("responses" as const)
-                      : ("chat/completions" as const),
+                    : (selectedMode?.protocol ?? ("chat/completions" as const)),
                 }
               : {}),
             ...(fixedFee ? { fixedFee } : {}),

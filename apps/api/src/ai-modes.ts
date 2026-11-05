@@ -176,15 +176,18 @@ export function createAssistantModes(
       }),
       ...routeFields,
     };
+    // Keep the runtime route and the descriptor hashed into the execution key
+    // bound to the same protocol; a mode label is not a transport identity.
+    const protocol =
+      id === "maximum"
+        ? webSearch
+          ? ("chat/completions" as const)
+          : ("responses" as const)
+        : id === "balanced"
+          ? ("chat/completions" as const)
+          : ("gigachat" as const);
     const execution = createAiExecution(routeConfig, policy, {
-      protocol:
-        id === "maximum"
-          ? webSearch
-            ? "chat/completions"
-            : "responses"
-          : id === "balanced"
-            ? "chat/completions"
-            : "gigachat",
+      protocol,
       requestTimeoutMs:
         id === "minimum"
           ? config.LLM_REQUEST_TIMEOUT_MS
@@ -204,6 +207,7 @@ export function createAssistantModes(
       model,
       upstream,
       country,
+      protocol,
       config: routeConfig,
       policy,
       execution,
@@ -392,6 +396,7 @@ export function createAssistantModes(
           model: assistantModeModels.balanced,
           upstream: config.ROUTERAI_UPSTREAM,
           country: config.ROUTERAI_COUNTRY,
+          protocol: "chat/completions" as const,
           config,
           policy: originalBalanced,
           execution: originalExecution,
