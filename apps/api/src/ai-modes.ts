@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
-import type { readConfig } from "@citygo/config";
+import {
+  validateMaximumWebSearchConfig,
+  type readConfig,
+} from "@citygo/config";
 import {
   aiModeIds,
   aiModeLabels,
@@ -15,7 +18,10 @@ import {
   type StreamingProvider,
 } from "@citygo/llm";
 import { createAiPolicy } from "./ai-policy.js";
-import { createAiExecution } from "./ai-execution.js";
+import {
+  createAiExecution,
+  maximumWebSearchCandidateProfile,
+} from "./ai-execution.js";
 import { productionProviderAllowed } from "./ai-production.js";
 
 type Config = ReturnType<typeof readConfig>;
@@ -71,7 +77,10 @@ export function createAssistantModes(
   config: Config,
   injected: ModeProviders = {},
 ) {
+  validateMaximumWebSearchConfig(config);
   if (config.AI_ASSISTANT_MODES !== "enabled") return null;
+  const maximumWebSearchCandidate =
+    config.AI_MAXIMUM_WEB_SEARCH === "routerai_native_candidate_v1";
   const memoryContext = config.AI_CONTEXT_STRATEGY === "model_window_memory_v1";
   const minimumAccountRef =
     config.AI_MINIMUM_FIXED_FEE === "enabled"
@@ -133,24 +142,46 @@ export function createAssistantModes(
       name: providerName,
       model,
     })!;
+    const webSearch =
+      id === "maximum" && maximumWebSearchCandidate
+        ? maximumWebSearchCandidateProfile
+        : undefined;
     const routeFields = {
-      version: memoryContext ? "ai-mode-route-memory-v1" : "ai-mode-route-v1",
+      version: webSearch
+        ? "ai-mode-route-web-search-candidate-v1"
+        : memoryContext
+          ? "ai-mode-route-memory-v1"
+          : "ai-mode-route-v1",
       provider: basePolicy.provider,
       model,
       recipient: basePolicy.recipient,
-      routing: basePolicy.routing,
-      data: memoryContext
-        ? "Передаются инструкции помощника, параметры переезда, новый вопрос, до ста завершённых пар сообщений выбранного диалога и выбранные дословные фрагменты более ранних сообщений пользователя из того же диалога. У фрагментов сохраняются источники; это не передача всей переписки. Не отправляйте документы, платёжные данные и другие секреты."
-        : "Передаются инструкции помощника, параметры переезда и история выбранного диалога, включая новый вопрос и предыдущие ответы. Не отправляйте документы, платёжные данные и другие секреты.",
+      routing:
+        basePolicy.routing +
+        (webSearch
+          ? " Кандидат нативного веб-поиска RouterAI: до пяти результатов, не потоковый ответ. Полный состав стоимости поиска ещё не подтверждён; списание пользователю запрещено."
+          : ""),
+      data:
+        (memoryContext
+          ? "Передаются инструкции помощника, параметры переезда, новый вопрос, до ста завершённых пар сообщений выбранного диалога и выбранные дословные фрагменты более ранних сообщений пользователя из того же диалога. У фрагментов сохраняются источники; это не передача всей переписки. Не отправляйте документы, платёжные данные и другие секреты."
+          : "Передаются инструкции помощника, параметры переезда и история выбранного диалога, включая новый вопрос и предыдущие ответы. Не отправляйте документы, платёжные данные и другие секреты.") +
+        (webSearch
+          ? " Провайдер может формировать поисковые запросы из текста вашего вопроса и переданного контекста и передавать их внешней поисковой системе для поиска источников в интернете."
+          : ""),
     };
     const policy: AiPolicy = {
-      id: hash({ ...routeFields, notice: config.AI_MODES_DATA_NOTICE ?? null }),
+      id: hash({
+        ...routeFields,
+        notice: config.AI_MODES_DATA_NOTICE ?? null,
+        ...(webSearch ? { webSearch } : {}),
+      }),
       ...routeFields,
     };
     const execution = createAiExecution(routeConfig, policy, {
       protocol:
         id === "maximum"
-          ? "responses"
+          ? webSearch
+            ? "chat/completions"
+            : "responses"
           : id === "balanced"
             ? "chat/completions"
             : "gigachat",
@@ -162,6 +193,7 @@ export function createAssistantModes(
       ...(id !== "minimum" && routeConfig.ROUTERAI_REASONING_EFFORT
         ? { reasoningEffort: routeConfig.ROUTERAI_REASONING_EFFORT }
         : {}),
+      ...(webSearch ? { webSearch } : {}),
       ...(id === "minimum" && minimumPricingId
         ? { billingProfile: { pricingId: minimumPricingId } }
         : {}),
@@ -178,9 +210,11 @@ export function createAssistantModes(
     };
   });
   const disclosure = {
-    version: memoryContext
-      ? "ai-assistant-modes-memory-v1"
-      : "ai-assistant-modes-v1",
+    version: maximumWebSearchCandidate
+      ? "ai-assistant-modes-web-search-candidate-v1"
+      : memoryContext
+        ? "ai-assistant-modes-memory-v1"
+        : "ai-assistant-modes-v1",
     provider: "routerai" as const,
     model: "citygo/assistant-modes-v1",
     recipient: "RouterAI (OpenAI, DeepSeek) и GigaChat",
@@ -192,7 +226,10 @@ export function createAssistantModes(
         : "Передаются инструкции помощника, параметры переезда и история выбранного диалога, включая новый вопрос и предыдущие ответы. Не отправляйте документы, платёжные данные и другие секреты. ") +
       (config.AI_MODES_DATA_NOTICE ??
         "Сроки хранения и удаления у получателей требуют отдельной проверки.") +
-      " Доступны режимы «Максимум», «Баланс» и «Минимум». Выбранный режим действует на следующее отправленное сообщение.",
+      " Доступны режимы «Максимум», «Баланс» и «Минимум». Выбранный режим действует на следующее отправленное сообщение." +
+      (maximumWebSearchCandidate
+        ? " В кандидате режима «Максимум» провайдер может формировать поисковые запросы из вопроса и контекста и передавать их внешней поисковой системе. Нативный поиск: до пяти результатов, не потоковый ответ; списание пользователю запрещено до проверки полного состава стоимости."
+        : ""),
   };
   const policy: AiPolicy = {
     id: hash({
@@ -202,7 +239,11 @@ export function createAssistantModes(
     ...disclosure,
   };
   const catalogId = hash({
-    version: memoryContext ? "ai-mode-catalog-memory-v1" : "ai-mode-catalog-v1",
+    version: maximumWebSearchCandidate
+      ? "ai-mode-catalog-web-search-candidate-v1"
+      : memoryContext
+        ? "ai-mode-catalog-memory-v1"
+        : "ai-mode-catalog-v1",
     policyId: policy.id,
     routes: specifications.map(({ id, execution, upstream, country }) => ({
       id,
@@ -242,7 +283,14 @@ export function createAssistantModes(
               upstream: specification.upstream!,
               country: specification.country,
               ...(specification.id === "maximum"
-                ? { protocol: "responses" as const }
+                ? maximumWebSearchCandidate
+                  ? {
+                      webSearch: {
+                        engine: "native" as const,
+                        maxResults: 5 as const,
+                      },
+                    }
+                  : { protocol: "responses" as const }
                 : {}),
               reasoningEffort: specification.config.ROUTERAI_REASONING_EFFORT,
               timeoutMs:

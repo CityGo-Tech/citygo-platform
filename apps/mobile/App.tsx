@@ -49,6 +49,7 @@ import { createMobileAiModeConsent } from "./src/ai-mode-consent";
 import { mobileWebDestination, defaultMobileWebUrl } from "./src/web-links";
 import { MobileServiceConsents } from "./src/service-consents";
 import { MobilePersonalPlan, type MobilePlanAccess } from "./src/personal-plan";
+import { MobileMessageSources } from "./src/message-sources";
 import {
   changeServiceConsent,
   createServiceConsentForm,
@@ -1149,6 +1150,12 @@ export default function App() {
                         {m.role === "user" ? "Вы" : m.agentKey}
                       </Text>
                       <Text>{m.content || "Ответ не получен"}</Text>
+                      <MobileMessageSources
+                        message={m}
+                        ticket={recoverySession}
+                        open={(url) => Linking.openURL(url)}
+                        onOpenError={setError}
+                      />
                       {m.status === "interrupted" && (
                         <Text>{messageInterruptionLabel(m)}</Text>
                       )}

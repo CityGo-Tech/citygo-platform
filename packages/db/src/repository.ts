@@ -36,6 +36,7 @@ import type {
 } from "@citygo/contracts";
 import {
   LEGACY_AT_COST_TARIFF,
+  validateWebSourcesForAnswer,
   conversationIdSchema,
   conversationListQuerySchema,
   conversationHistoryIdSchema,
@@ -1478,6 +1479,8 @@ export class Repository {
     generation?: ModelGeneration;
     holdId: string;
   }) {
+    if (input.generation?.webSources !== undefined)
+      fail(400, "Источники поиска не соответствуют провайдеру ответа.");
     input = {
       ...input,
       requestId: input.requestId.toLowerCase(),
@@ -1580,6 +1583,30 @@ export class Repository {
     creditHoldId?: string,
     failureCode?: Message["failureCode"],
   ) {
+    if (generation?.webSources !== undefined) {
+      if (
+        !complete ||
+        !modelResponse ||
+        generation.provider !== "routerai" ||
+        generation.requestedModel !== "openai/gpt-6.1-sol" ||
+        generation.model !== "openai/gpt-6.1-sol"
+      )
+        fail(
+          400,
+          "Источники допустимы только для завершённого ответа с поиском",
+        );
+      try {
+        generation = {
+          ...generation,
+          webSources: validateWebSourcesForAnswer(
+            generation.webSources,
+            content,
+          ),
+        };
+      } catch {
+        fail(400, "Не удалось проверить источники ответа");
+      }
+    }
     if (
       failureCode != null &&
       (failureCode !== "AI_CREDIT_EXHAUSTED" ||

@@ -1,7 +1,33 @@
 import { createHash } from "node:crypto";
 import type { AiExecution, AiPolicy } from "@citygo/contracts";
-import { effectiveLlmLimits, type readConfig } from "@citygo/config";
+import {
+  effectiveLlmLimits,
+  validateMaximumWebSearchConfig,
+  type readConfig,
+} from "@citygo/config";
 import { modelContextBudget } from "./model-context-budget.js";
+
+// Exact versioned descriptor: these fields are part of the execution key,
+// never a claim that native tool charges can already be accepted.
+export const maximumWebSearchCandidateProfile = Object.freeze({
+  version: "routerai-native-web-search-candidate-v1",
+  engine: "native",
+  maxResults: 5,
+  transport: "non-streaming",
+  billing: "unverified-unbillable",
+} as const);
+
+type MaximumWebSearchCandidateProfile = typeof maximumWebSearchCandidateProfile;
+
+function exactWebSearchCandidate(value: MaximumWebSearchCandidateProfile) {
+  const entries = Object.entries(maximumWebSearchCandidateProfile);
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    Object.keys(value).length === entries.length &&
+    entries.every(([key, expected]) => Reflect.get(value, key) === expected)
+  );
+}
 
 export function createAiExecution(
   config: ReturnType<typeof readConfig>,
@@ -11,8 +37,26 @@ export function createAiExecution(
     requestTimeoutMs: number;
     reasoningEffort?: string;
     billingProfile?: { pricingId: string };
+    webSearch?: MaximumWebSearchCandidateProfile;
   },
 ): AiExecution {
+  validateMaximumWebSearchConfig(config);
+  const webSearchCandidate = modeProfile?.webSearch !== undefined;
+  if (
+    webSearchCandidate &&
+    (!exactWebSearchCandidate(modeProfile.webSearch!) ||
+      config.AI_MAXIMUM_WEB_SEARCH !== "routerai_native_candidate_v1" ||
+      modeProfile.protocol !== "chat/completions" ||
+      policy.provider !== "routerai" ||
+      policy.model !== "openai/gpt-6.1-sol" ||
+      config.ROUTERAI_MODEL !== "openai/gpt-6.1-sol" ||
+      config.ROUTERAI_UPSTREAM !== "openai" ||
+      config.ROUTERAI_COUNTRY !== "us" ||
+      policy.version !== "ai-mode-route-web-search-candidate-v1")
+  )
+    throw new Error(
+      "Native search requires the exact unbillable Maximum profile",
+    );
   const limits = {
     maxInputBytes: config.LLM_MAX_INPUT_BYTES,
     maxOutputTokens: effectiveLlmLimits(config, policy.provider, policy.model)
@@ -21,7 +65,8 @@ export function createAiExecution(
   let contextBudget: ReturnType<typeof modelContextBudget> | undefined;
   if (config.AI_CONTEXT_STRATEGY === "model_window_memory_v1") {
     const mode =
-      modeProfile?.protocol === "responses" &&
+      (modeProfile?.protocol === "responses" ||
+        (modeProfile?.protocol === "chat/completions" && webSearchCandidate)) &&
       policy.provider === "routerai" &&
       policy.model === "openai/gpt-6.1-sol"
         ? "maximum"

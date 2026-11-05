@@ -143,6 +143,10 @@ export const serverConfigSchema = z.object({
       .optional(),
   ),
   AI_MODES_DATA_NOTICE: optionalSetting.pipe(z.string().max(4000).optional()),
+  // Unbillable non-production candidate; no runtime or fee approval.
+  AI_MAXIMUM_WEB_SEARCH: z
+    .enum(["disabled", "routerai_native_candidate_v1"])
+    .default("disabled"),
   AI_MAXIMUM_REASONING_EFFORT: z
     .enum(["low", "medium", "high", "xhigh", "max"])
     .default("medium"),
@@ -265,6 +269,7 @@ export const serverConfigSchema = z.object({
 });
 export function readConfig(env: NodeJS.ProcessEnv = process.env) {
   const config = serverConfigSchema.parse(env);
+  validateMaximumWebSearchConfig(config);
   validateCreditReservationConfig(config);
   validatePaymentConfig(config);
   validateVerificationDeliveryConfig(config);
@@ -353,9 +358,34 @@ export function validateVerificationDeliveryConfig(
     );
 }
 
+// Also checked by mode constructors for explicitly injected config. The native
+// search receipt has not yet established complete tool-inclusive billing.
+export function validateMaximumWebSearchConfig(
+  config: z.infer<typeof serverConfigSchema>,
+) {
+  if (config.AI_MAXIMUM_WEB_SEARCH === "disabled") return;
+  if (
+    config.AI_MAXIMUM_WEB_SEARCH !== "routerai_native_candidate_v1" ||
+    config.NODE_ENV === "production" ||
+    config.AI_CREDIT_MODE !== "disabled" ||
+    config.AI_CUSTOMER_BILLING_MODE !== "legacy" ||
+    config.AI_CREDIT_RESERVATION_MODE !== "full" ||
+    config.AI_REQUEST_COST_LIMIT_MODE !== "operator_ceiling" ||
+    config.AI_MINIMUM_FIXED_FEE !== "disabled"
+  )
+    throw new Error(
+      "Maximum web search is an unbillable non-production candidate only; production and customer charging are not approved",
+    );
+}
+
 export function validateCreditReservationConfig(
   config: z.infer<typeof serverConfigSchema>,
 ) {
+  // This is the only memory compatibility exception: a local, explicitly
+  // unbillable search candidate. It cannot reuse or enable a paid runtime.
+  validateMaximumWebSearchConfig(config);
+  const unbillableSearchCandidate =
+    config.AI_MAXIMUM_WEB_SEARCH === "routerai_native_candidate_v1";
   if (
     !["legacy", "model_window_memory_v1"].includes(
       config.AI_CONTEXT_STRATEGY,
@@ -363,9 +393,10 @@ export function validateCreditReservationConfig(
     (config.AI_CONTEXT_STRATEGY === "legacy" &&
       config.LLM_MAX_INPUT_BYTES > 262144) ||
     (config.AI_CONTEXT_STRATEGY === "model_window_memory_v1" &&
-      (config.AI_CUSTOMER_BILLING_MODE !== "postpay_actual_v1" ||
+      ((!unbillableSearchCandidate &&
+        (config.AI_CUSTOMER_BILLING_MODE !== "postpay_actual_v1" ||
+          config.AI_MINIMUM_FIXED_FEE !== "enabled")) ||
         config.AI_ASSISTANT_MODES !== "enabled" ||
-        config.AI_MINIMUM_FIXED_FEE !== "enabled" ||
         config.GIGACHAT_MODEL !== "GigaChat-3-Ultra" ||
         config.GIGACHAT_SCOPE !== "GIGACHAT_API_PERS"))
   )

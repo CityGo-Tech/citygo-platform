@@ -6,6 +6,7 @@ import type {
 } from "./provider.js";
 import { readChatCompletion } from "./chat-completion.js";
 import { readResponse } from "./responses.js";
+import { readNativeWebResponse } from "./routerai-native-web.js";
 import {
   creditGenerationIdSchema,
   routerAiChargeSchema,
@@ -20,6 +21,7 @@ type RouterAIOptions = {
   timeoutMs?: number;
   maxOutputTokens?: number;
   reasoningEffort?: "low" | "medium" | "high" | "xhigh" | "max";
+  webSearch?: { engine: "native"; maxResults: 5 };
   fetch?: typeof fetch;
 };
 
@@ -36,6 +38,14 @@ export class RouterAIInsufficientFundsError extends Error {
 export class RouterAIProvider implements StreamingProvider {
   readonly name = "routerai" as const;
   private readonly protocol: "responses" | undefined;
+  private readonly nativeWebOptions:
+    | Readonly<
+        Pick<
+          RouterAIOptions,
+          "fetch" | "timeoutMs" | "maxOutputTokens" | "reasoningEffort"
+        >
+      >
+    | undefined;
   constructor(
     private readonly apiKey: string,
     readonly model: string,
@@ -61,6 +71,38 @@ export class RouterAIProvider implements StreamingProvider {
       )
     )
       throw new Error("ROUTERAI_REASONING_EFFORT is not supported");
+    if (options.webSearch !== undefined) {
+      const search: unknown = options.webSearch;
+      if (
+        !search ||
+        typeof search !== "object" ||
+        Array.isArray(search) ||
+        Object.keys(search).length !== 2 ||
+        options.webSearch.engine !== "native" ||
+        options.webSearch.maxResults !== 5 ||
+        model !== "openai/gpt-6.1-sol" ||
+        options.upstream !== "openai" ||
+        options.country !== "us" ||
+        options.protocol !== undefined ||
+        (options.maxOutputTokens !== undefined &&
+          (!Number.isSafeInteger(options.maxOutputTokens) ||
+            options.maxOutputTokens < 1 ||
+            options.maxOutputTokens > 32768)) ||
+        (options.timeoutMs !== undefined &&
+          (!Number.isSafeInteger(options.timeoutMs) ||
+            options.timeoutMs < 1 ||
+            options.timeoutMs > 240000))
+      )
+        throw new Error("Unsupported RouterAI native search profile");
+      // Pin the candidate at construction. Mutating the caller's options object
+      // cannot change its model, endpoint, routing, plugin or receipt policy.
+      this.nativeWebOptions = Object.freeze({
+        fetch: options.fetch,
+        timeoutMs: options.timeoutMs,
+        maxOutputTokens: options.maxOutputTokens,
+        reasoningEffort: options.reasoningEffort,
+      });
+    }
   }
 
   async *stream(
@@ -71,10 +113,18 @@ export class RouterAIProvider implements StreamingProvider {
   ): AsyncIterable<ModelStreamEvent> {
     const deadline = AbortSignal.any([
       signal,
-      AbortSignal.timeout(this.options.timeoutMs ?? 60000),
+      AbortSignal.timeout(
+        this.nativeWebOptions
+          ? (this.nativeWebOptions.timeoutMs ?? 60000)
+          : (this.options.timeoutMs ?? 60000),
+      ),
     ]);
     try {
       deadline.throwIfAborted();
+      if (this.nativeWebOptions) {
+        yield* this.nativeWebStream(instructions, messages, deadline, guard);
+        return;
+      }
       const responses = this.protocol === "responses";
       const recipient = responses
         ? "https://routerai.ru/api/v1/responses"
@@ -225,11 +275,98 @@ export class RouterAIProvider implements StreamingProvider {
     }
   }
 
+  private async *nativeWebStream(
+    instructions: string,
+    messages: ModelMessage[],
+    signal: AbortSignal,
+    guard?: ModelRetryGuard,
+  ): AsyncIterable<ModelStreamEvent> {
+    const options = this.nativeWebOptions!;
+    const deadline = AbortSignal.any([
+      signal,
+      AbortSignal.timeout(options.timeoutMs ?? 60000),
+    ]);
+    deadline.throwIfAborted();
+    let generationId: string | undefined;
+    const recordGeneration = async (value: unknown) => {
+      const id = creditGenerationIdSchema.parse(value);
+      if (generationId && generationId !== id)
+        throw new Error("Generation identity changed");
+      if (!generationId) {
+        await guard?.billing?.onGeneration(id);
+        generationId = id;
+      }
+    };
+    const recipient = "https://routerai.ru/api/v1/chat/completions";
+    const response = await (options.fetch ?? fetch)(recipient, {
+      method: "POST",
+      redirect: "error",
+      signal: deadline,
+      headers: {
+        Authorization: `Bearer ${this.apiKey}`,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({
+        model: "openai/gpt-6.1-sol",
+        messages: [
+          { role: "system", content: instructions },
+          ...messages.map(({ role, content }) => ({ role, content })),
+        ],
+        stream: false,
+        max_tokens: options.maxOutputTokens ?? 1400,
+        ...(options.reasoningEffort
+          ? { reasoning: { effort: options.reasoningEffort } }
+          : {}),
+        ...(guard?.billing ? { session_id: guard.billing.reference } : {}),
+        plugins: [{ id: "web", engine: "native", max_results: 5 }],
+        provider: { only: ["openai"], allow_fallbacks: false, country: "us" },
+      }),
+    });
+    try {
+      if (response.redirected || (response.url && response.url !== recipient))
+        throw new Error("Invalid RouterAI response recipient");
+      const headerId = response.headers.get("x-generation-id");
+      if (headerId) await recordGeneration(headerId);
+      if (response.status === 402) throw new RouterAIInsufficientFundsError();
+      if (
+        !response.ok ||
+        !response.body ||
+        response.headers
+          .get("content-type")
+          ?.split(";")[0]
+          ?.trim()
+          .toLowerCase() !== "application/json"
+      )
+        throw new Error("Invalid RouterAI native search HTTP response");
+      const result = await readNativeWebResponse(
+        response.body,
+        deadline,
+        recordGeneration,
+      );
+      deadline.throwIfAborted();
+      yield { type: "delta", text: result.text };
+      deadline.throwIfAborted();
+      yield {
+        type: "complete",
+        model: "openai/gpt-6.1-sol",
+        ...(result.usage ? { usage: result.usage } : {}),
+        webSources: result.webSources,
+      };
+    } finally {
+      await response.body?.cancel().catch(() => {});
+    }
+  }
+
   async readCharge(
     generationId: string,
     reference: string,
     signal: AbortSignal,
   ): Promise<RouterAiCharge> {
+    // Native plugin billing has not been independently verified. This candidate
+    // cannot turn a generation response or a guessed tool fee into a debit.
+    if (this.nativeWebOptions)
+      throw new Error("RouterAI cost could not be confirmed");
     try {
       creditGenerationIdSchema.parse(generationId);
       const deadline = AbortSignal.any([signal, AbortSignal.timeout(5000)]);

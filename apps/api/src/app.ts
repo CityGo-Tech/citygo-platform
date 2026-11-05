@@ -1,4 +1,5 @@
 import { PostpayCharges } from "@citygo/db";
+import { chatDeltaChunks } from "./chat-delta-chunks.js";
 import {
   PostpayReconciler,
   type PostpayReconcileScheduler,
@@ -49,6 +50,8 @@ import {
   supportsContractVersion,
   errorMetadata,
   errorCodeForStatus,
+  validateWebSourcesForAnswer,
+  type WebSources,
   type StreamEvent,
   type ModelGeneration,
   type AiPolicy,
@@ -1556,6 +1559,7 @@ export async function buildApp(options: {
       let content = "";
       let saved = false;
       let generation: ModelGeneration | undefined;
+      let completedWebSources: WebSources | undefined;
       let attemptNumber = 0;
       let attemptError: DomainError | undefined;
       let creditHoldId: string | null = null;
@@ -1722,17 +1726,47 @@ export async function buildApp(options: {
                 model: event.model,
                 ...(event.usage ? { usage: event.usage } : {}),
               };
+              if (event.webSources !== undefined) {
+                if (
+                  config.AI_MAXIMUM_WEB_SEARCH !==
+                    "routerai_native_candidate_v1" ||
+                  config.NODE_ENV === "production" ||
+                  config.AI_CREDIT_MODE !== "disabled" ||
+                  selectedMode?.id !== "maximum" ||
+                  provider.name !== "routerai" ||
+                  provider.model !== "openai/gpt-6.1-sol" ||
+                  event.model !== provider.model
+                )
+                  throw new Error("Unexpected native-search source metadata");
+                completedWebSources = validateWebSourcesForAnswer(
+                  event.webSources,
+                  content,
+                );
+              }
             } else {
               content += event.text;
               if (content.length > limits.maxOutputCharacters)
                 throw new Error("Response too large");
-              send({ type: "delta", text: event.text });
+              for (const text of chatDeltaChunks(event.text))
+                send({ type: "delta", text });
             }
           }
           signal.throwIfAborted();
           if (!completed) throw new Error("Provider stream interrupted");
           if (!content.trim()) throw new Error("Empty response");
+          if (
+            config.AI_MAXIMUM_WEB_SEARCH === "routerai_native_candidate_v1" &&
+            selectedMode?.id === "maximum" &&
+            !completedWebSources
+          )
+            throw new Error("Native-search candidate omitted source metadata");
         }
+        // Sources belong only to successful persistence. The interrupted path
+        // below retains the original generation without a trusted sources list.
+        const completedGeneration =
+          generation && completedWebSources
+            ? { ...generation, webSources: completedWebSources }
+            : generation;
         const messageId =
           fixedFee && creditHoldId
             ? await repo.finishGigaChat({
@@ -1743,7 +1777,7 @@ export async function buildApp(options: {
                 agent: routing.to,
                 content,
                 complete: true,
-                generation,
+                generation: completedGeneration,
                 holdId: creditHoldId,
               })
             : await repo.finishChat(
@@ -1754,7 +1788,7 @@ export async function buildApp(options: {
                 content,
                 true,
                 !routing.human,
-                generation,
+                completedGeneration,
                 creditHoldId ?? undefined,
               );
         saved = true;

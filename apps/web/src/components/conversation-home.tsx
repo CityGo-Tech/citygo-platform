@@ -593,7 +593,14 @@ export function ConversationHome(props: JourneyProps) {
                     {message.role === "user" ? (
                       <p>{message.content}</p>
                     ) : (
-                      <AssistantMessage content={message.content} />
+                      <AssistantMessage
+                        content={message.content}
+                        webSources={
+                          message.status === "complete"
+                            ? message.generation?.webSources
+                            : undefined
+                        }
+                      />
                     )}
                     {message.status === "interrupted" && (
                       <small>
