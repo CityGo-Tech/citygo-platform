@@ -1,5 +1,9 @@
 import { z } from "zod";
 import {
+  webSourcesSchema,
+  validateWebSourcesForAnswer,
+} from "./web-sources.js";
+import {
   conversationCustomTitleSchema,
   conversationTitleRevisionSchema,
 } from "./conversation-titles.js";
@@ -266,6 +270,7 @@ export const dashboardResponseSchema = z.object({
                   provider: aiProviderIdSchema,
                   requestedModel: text,
                   model: text.optional(),
+                  webSources: webSourcesSchema.optional(),
                   usage: z
                     .object({ inputTokens: count, outputTokens: count })
                     .optional(),
@@ -283,7 +288,27 @@ export const dashboardResponseSchema = z.object({
                 (message.role === "assistant" &&
                   message.status === "interrupted" &&
                   !message.generation),
-            ),
+            )
+            .refine((message) => {
+              if (message.generation?.webSources === undefined) return true;
+              if (
+                message.role !== "assistant" ||
+                message.status !== "complete" ||
+                message.generation.provider !== "routerai" ||
+                message.generation.requestedModel !== "openai/gpt-6.1-sol" ||
+                message.generation.model !== "openai/gpt-6.1-sol"
+              )
+                return false;
+              try {
+                validateWebSourcesForAnswer(
+                  message.generation.webSources,
+                  message.content,
+                );
+                return true;
+              } catch {
+                return false;
+              }
+            }, "Web sources require an exact completed native-search answer"),
         )
         .max(1000),
     })

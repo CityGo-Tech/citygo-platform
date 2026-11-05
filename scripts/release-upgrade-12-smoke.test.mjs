@@ -52,13 +52,13 @@ test("the upgrade rehearsal rejects a production project before Docker or databa
   );
 });
 
-test("literal 12-era fixture rewinds current 47, rolls back late ACL failure and reapplies without losing data", async (t) => {
+test("literal 12-era fixture rewinds current 49, rolls back late ACL failure and reapplies without losing data", async (t) => {
   const db = new PGlite();
   t.after(() => db.close());
   await db.waitReady;
-  assert.equal(migrations.length, 47);
+  assert.equal(migrations.length, 49);
   assert.equal(migrations[11].name, "0012_housing_answer_history.sql");
-  assert.equal(migrations.at(-1).name, "0047_conversation_memory.sql");
+  assert.equal(migrations.at(-1).name, "0049_native_search_production.sql");
   await db.exec(
     "create role citygo_api; create role citygo_worker; create role citygo_backup; create table citygo_migrations(name text primary key,checksum text not null)",
   );
@@ -137,7 +137,7 @@ test("literal 12-era fixture rewinds current 47, rolls back late ACL failure and
       [
         {
           quotations: 1,
-          migrations: 47,
+          migrations: 49,
           admission: true,
           source_index: true,
           guard: true,
@@ -172,7 +172,7 @@ test("literal 12-era fixture rewinds current 47, rolls back late ACL failure and
       to_regclass('payment_admission') is not null as admission,
       exists(select 1 from pg_proc where proname='citygo_guard_account_email_verification_proof') as guard`)
     ).rows,
-    [{ confirmation: 1, migrations: 47, admission: true, guard: true }],
+    [{ confirmation: 1, migrations: 49, admission: true, guard: true }],
   );
   // Only this in-memory fixture's canary is removed; populated real history
   // remains a hard stop for every disposable rewind and reset helper.
@@ -196,7 +196,7 @@ test("literal 12-era fixture rewinds current 47, rolls back late ACL failure and
       to_regclass('payment_admission') is not null as admission,
       exists(select 1 from pg_proc where proname='citygo_guard_password_recovery') as guard`)
     ).rows,
-    [{ recovery: 1, migrations: 47, admission: true, guard: true }],
+    [{ recovery: 1, migrations: 49, admission: true, guard: true }],
     "Rejected rewind retains recovery history and rolls back earlier DDL",
   );
   // Remove only this synthetic in-memory test row before the existing empty

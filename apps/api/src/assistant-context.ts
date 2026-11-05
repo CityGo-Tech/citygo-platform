@@ -4,7 +4,12 @@ import {
   type Repository,
   type ConversationMemory,
 } from "@citygo/db";
-import { instructions, profileContext, routeAgent } from "@citygo/agents";
+import {
+  instructions,
+  profileContext,
+  routeAgent,
+  type AssistantInstructionOptions,
+} from "@citygo/agents";
 import {
   assistantContextInputSchema,
   assistantContextPreviewSchema,
@@ -34,6 +39,10 @@ export function registerAssistantContext(
     };
   },
   authenticateBeforeBody = authenticate,
+  instructionOptionsFor?: (
+    user: { id: string; currentAiConsentRequired?: boolean },
+    input: AssistantContextInput,
+  ) => AssistantInstructionOptions | undefined,
 ) {
   app.post(
     "/v1/ai/context-preview",
@@ -72,7 +81,10 @@ export function registerAssistantContext(
         BigInt(snapshot.messages.at(-1)?.id ?? "0") + 1n
       ).toString();
       const contextInput = {
-        instructions: instructions(agentKey),
+        instructions: instructions(
+          agentKey,
+          instructionOptionsFor?.(user, parsed.data),
+        ),
         profile: profileContext(profile.data),
         history: [
           ...snapshot.messages,

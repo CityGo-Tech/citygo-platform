@@ -1685,6 +1685,124 @@ test("v16 requires its explicit memory profile without changing legacy profiles 
       );
 });
 
+test("v17 native search is separately mounted and cannot enter an older profile or ambient scope", (t) => {
+  const directory = fixture(t);
+  const read = (file) =>
+    JSON.parse(readFileSync(join(root, "deploy/fixtures", file), "utf8"));
+  const marker = "postpay-native-search-v1";
+  const value = read("postpay-native-search-profile.fixture.json");
+  const previous = read("postpay-memory-profile.fixture.json");
+  assert.deepEqual(value, {
+    ...previous,
+    AI_MAXIMUM_WEB_SEARCH: "routerai_native_postpay_v1",
+    AI_MODES_DATA_NOTICE:
+      "Synthetic offline native-web-search production-profile fixture only, not an operator notice or release approval. No provider requests or customer charges are permitted.",
+  });
+  mkdirSync(join(directory, "certs"));
+  copyFileSync(
+    join(root, "deploy/certificates/russian-trusted-root.crt"),
+    join(directory, "certs/russian-trusted-root.crt"),
+  );
+  const spec = (data, profile = marker, mode = "api", ambient = {}) => {
+    writeFileSync(join(directory, "api.json"), JSON.stringify(data));
+    return containerSpec(
+      mode,
+      {
+        CITYGO_MOUNTED_CONFIG: "1",
+        CITYGO_AI_PROFILE: profile,
+        LLM_PROVIDER: "routerai",
+        ...ambient,
+      },
+      directory,
+      directory,
+    );
+  };
+  const env = spec(value).env;
+  for (const [key, setting] of Object.entries(value))
+    assert.equal(env[key], setting);
+  for (const key of Object.keys(value)) {
+    const missing = { ...value };
+    delete missing[key];
+    assert.throws(() => spec(missing), /Invalid mounted/);
+  }
+  for (const change of [
+    { AI_MAXIMUM_WEB_SEARCH: "disabled" },
+    { AI_MAXIMUM_WEB_SEARCH: "routerai_native_candidate_v1" },
+    { AI_MAXIMUM_WEB_SEARCH: "routerai_native_postpay_test_v1" },
+    { AI_MAXIMUM_WEB_SEARCH: "unknown" },
+    { AI_CONTEXT_STRATEGY: "legacy" },
+    { LLM_MAX_INPUT_BYTES: "65536" },
+    { AI_CUSTOMER_BILLING_MODE: "legacy" },
+    { AI_REQUEST_COST_LIMIT_MODE: "user_balance" },
+    { AI_CREDIT_RESERVATION_MODE: "full" },
+    { AI_MINIMUM_FIXED_FEE: "disabled" },
+    { AI_MAXIMUM_REASONING_EFFORT: "high" },
+    { ROUTERAI_MAX_OUTPUT_TOKENS: "8192" },
+    { YOOKASSA_FISCAL_PROFILE: "disabled" },
+    { PHONE_SMS_GLOBAL_TOTAL_LIMIT: "1" },
+    { OPENAI_API_KEY: "synthetic-forbidden" },
+  ])
+    assert.throws(() => spec({ ...value, ...change }), /Invalid mounted/);
+  for (const [oldMarker, file, override] of [
+    ["routerai-credit-v1", "routerai-profile.fixture.json"],
+    ["routerai-citygo-10x-v1", "routerai-citygo-10x-profile.fixture.json"],
+    ...liveMountedProfiles.map(([oldMarker, file]) => [oldMarker, file]),
+    [
+      "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-unlimited-assistant-modes-v1",
+      "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-unlimited-assistant-modes-profile.fixture.json",
+    ],
+    [
+      "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-unlimited-assistant-modes-gigachat-flat3-v1",
+      "routerai-citygo-10x-yookassa-live-cn-fiscal-overdraft-postbox-email-prostosms-unlimited-assistant-modes-gigachat-flat3-profile.fixture.json",
+    ],
+    [
+      "postpay-actual-v1",
+      "postpay-context64-profile.fixture.json",
+      { LLM_MAX_INPUT_BYTES: "8192" },
+    ],
+    ["postpay-context64-v1", "postpay-context64-profile.fixture.json"],
+    ["postpay-memory-v1", "postpay-memory-profile.fixture.json"],
+  ]) {
+    const old = { ...read(file), ...override };
+    assert.doesNotThrow(() => spec(old, oldMarker));
+    assert.throws(() => spec(value, oldMarker), /Invalid mounted/);
+    assert.throws(
+      () =>
+        spec(
+          { ...old, AI_MAXIMUM_WEB_SEARCH: value.AI_MAXIMUM_WEB_SEARCH },
+          oldMarker,
+        ),
+      /Invalid mounted/,
+    );
+    assert.throws(
+      () =>
+        spec(old, oldMarker, "api", {
+          AI_MAXIMUM_WEB_SEARCH: value.AI_MAXIMUM_WEB_SEARCH,
+        }),
+      /Invalid mounted verification/,
+    );
+  }
+  assert.throws(() => spec(previous), /Invalid mounted/);
+  assert.throws(
+    () =>
+      spec(value, marker, "api", {
+        AI_MAXIMUM_WEB_SEARCH: value.AI_MAXIMUM_WEB_SEARCH,
+      }),
+    /Invalid mounted verification/,
+  );
+  for (const mode of ["web", "worker", "migrate", "migrate-release"])
+    assert.throws(
+      () => spec(value, marker, mode),
+      /Invalid container AI profile/,
+    );
+  for (const scope of ["web", "build", "mobile", "worker", "migrator"])
+    assert.equal(
+      serviceEnv(scope, { directory, inherited: env, loadFiles: false })
+        .AI_MAXIMUM_WEB_SEARCH,
+      undefined,
+    );
+});
+
 test("all mounted profiles, including disabled, refuse ambient verification prefixes", (t) => {
   const directory = fixture(t);
   for (const mode of ["api", "worker", "migrate"])
@@ -1709,6 +1827,7 @@ test("all mounted profiles, including disabled, refuse ambient verification pref
       "AI_MODES_DATA_NOTICE",
       "AI_MODES_PRODUCTION_POLICY_ID",
       "AI_CONTEXT_STRATEGY",
+      "AI_MAXIMUM_WEB_SEARCH",
     ])
       assert.throws(
         () =>

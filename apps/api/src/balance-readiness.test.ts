@@ -33,6 +33,8 @@ async function fixture(t: TestContext, oldSchema = 0) {
           44: "0044_conversation_titles.sql",
           45: "0045_ai_balance_request_cost_limit.sql",
           46: "0046_postpay_actual.sql",
+          47: "0047_conversation_memory.sql",
+          48: "0048_native_search_postpay.sql",
         } as Record<number, string>
       )[oldSchema],
     );
@@ -65,7 +67,7 @@ async function fixture(t: TestContext, oldSchema = 0) {
   return { db, app };
 }
 
-test("readiness rejects actual schema44 under legacy default and turns ready only after applying47 without creating money or model attempts", async (t) => {
+test("readiness rejects actual schema44 under legacy default and turns ready only after applying49 without creating money or model attempts", async (t) => {
   const f = await fixture(t, 44);
   const before = (
     await f.db.query(
@@ -97,7 +99,7 @@ test("readiness rejects actual schema44 under legacy default and turns ready onl
   assert.deepEqual(current.json(), { status: "ok" });
   assert.equal(
     (await f.db.query("select name from citygo_migrations")).rows.length,
-    47,
+    49,
   );
   assert.deepEqual(
     (
@@ -221,3 +223,196 @@ for (const table of [
       503,
     );
   });
+
+test("readiness rejects schema47 and a forged48 receipt with the historical postpay guard", async (t) => {
+  const f = await fixture(t, 47);
+  assert.equal(
+    (await f.app.inject({ method: "GET", url: "/ready" })).statusCode,
+    503,
+  );
+  await migrate(f.db);
+  assert.equal(
+    (await f.app.inject({ method: "GET", url: "/ready" })).statusCode,
+    200,
+  );
+  const oldSource = await readFile(
+    new URL(
+      "../../../packages/db/migrations/0046_postpay_actual.sql",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const oldGuard =
+    /create function citygo_guard_postpay_attempt\(\) returns trigger[\s\S]*?\$\$;/.exec(
+      oldSource,
+    );
+  assert.ok(
+    oldGuard,
+    "Use the exact historical trigger rather than a second implementation",
+  );
+  await f.db.exec(
+    oldGuard[0].replace("create function", "create or replace function"),
+  );
+  assert.equal(
+    (
+      await f.db.query(
+        "select name from citygo_migrations where name='0048_native_search_postpay.sql'",
+      )
+    ).rows.length,
+    1,
+  );
+  assert.equal(
+    (await f.app.inject({ method: "GET", url: "/ready" })).statusCode,
+    503,
+  );
+  await f.db.exec(
+    await readFile(
+      new URL(
+        "../../../packages/db/migrations/0048_native_search_postpay.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  );
+  assert.equal(
+    (await f.app.inject({ method: "GET", url: "/ready" })).statusCode,
+    503,
+  );
+  await f.db.exec(
+    await readFile(
+      new URL(
+        "../../../packages/db/migrations/0049_native_search_production.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  );
+  assert.equal(
+    (await f.app.inject({ method: "GET", url: "/ready" })).statusCode,
+    200,
+  );
+  await f.db.exec(
+    "alter table ai_postpay_attempts disable trigger ai_postpay_guard",
+  );
+  assert.equal(
+    (await f.app.inject({ method: "GET", url: "/ready" })).statusCode,
+    503,
+  );
+  await f.db.exec(
+    "alter table ai_postpay_attempts enable trigger ai_postpay_guard",
+  );
+  assert.equal(
+    (await f.app.inject({ method: "GET", url: "/ready" })).statusCode,
+    200,
+  );
+});
+
+test("readiness rejects actual48 and a forged49 receipt with the exact48 guard", async (t) => {
+  const f = await fixture(t, 48);
+  const baseline = (
+    await f.db.query(
+      "select (select count(*)::int from users) as users,(select count(*)::int from ai_credit_entries) as entries,(select count(*)::int from ai_model_attempts) as attempts",
+    )
+  ).rows;
+  assert.equal(
+    (await f.app.inject({ method: "GET", url: "/ready" })).statusCode,
+    503,
+  );
+  const name = "0049_native_search_production.sql";
+  const source = await readFile(
+    new URL("../../../packages/db/migrations/" + name, import.meta.url),
+    "utf8",
+  );
+  await f.db.query(
+    "insert into citygo_migrations(name,checksum) values($1,$2)",
+    [
+      name,
+      createHash("sha256")
+        .update(source.replaceAll("\r\n", "\n"))
+        .digest("hex"),
+    ],
+  );
+  assert.equal(
+    (await f.app.inject({ method: "GET", url: "/ready" })).statusCode,
+    503,
+  );
+  await f.db.exec(source);
+  assert.equal(
+    (await f.app.inject({ method: "GET", url: "/ready" })).statusCode,
+    200,
+  );
+  const exact48 = await readFile(
+    new URL(
+      "../../../packages/db/migrations/0048_native_search_postpay.sql",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  await f.db.exec(exact48);
+  assert.equal(
+    (await f.app.inject({ method: "GET", url: "/ready" })).statusCode,
+    503,
+  );
+  await f.db.exec(source);
+  assert.equal(
+    (await f.app.inject({ method: "GET", url: "/ready" })).statusCode,
+    200,
+  );
+  const definition = (
+    await f.db.query<{ definition: string }>(
+      "select pg_get_functiondef('public.citygo_guard_postpay_attempt()'::regprocedure) as definition",
+    )
+  ).rows[0]!.definition;
+  assert.ok(definition.includes("ai-mode-route-web-search-postpay-test-v1"));
+  await f.db.exec(
+    definition.replaceAll(
+      "ai-mode-route-web-search-postpay-test-v1",
+      "synthetic-removed-test-native-version",
+    ),
+  );
+  assert.equal(
+    (await f.app.inject({ method: "GET", url: "/ready" })).statusCode,
+    503,
+  );
+  await f.db.exec(source);
+  assert.equal(
+    (await f.app.inject({ method: "GET", url: "/ready" })).statusCode,
+    200,
+  );
+  await f.db.exec(
+    "alter table ai_postpay_attempts disable trigger ai_postpay_guard",
+  );
+  assert.equal(
+    (await f.app.inject({ method: "GET", url: "/ready" })).statusCode,
+    503,
+  );
+  await f.db.exec(
+    "alter table ai_postpay_attempts enable trigger ai_postpay_guard",
+  );
+  assert.equal(
+    (await f.app.inject({ method: "GET", url: "/ready" })).statusCode,
+    200,
+  );
+  await f.db.exec(
+    "alter function public.citygo_guard_postpay_attempt() security definer",
+  );
+  assert.equal(
+    (await f.app.inject({ method: "GET", url: "/ready" })).statusCode,
+    503,
+  );
+  await f.db.exec(
+    "alter function public.citygo_guard_postpay_attempt() security invoker",
+  );
+  assert.equal(
+    (await f.app.inject({ method: "GET", url: "/ready" })).statusCode,
+    200,
+  );
+  assert.deepEqual(
+    (
+      await f.db.query(
+        "select (select count(*)::int from users) as users,(select count(*)::int from ai_credit_entries) as entries,(select count(*)::int from ai_model_attempts) as attempts",
+      )
+    ).rows,
+    baseline,
+  );
+});

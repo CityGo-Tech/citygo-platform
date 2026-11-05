@@ -1,7 +1,61 @@
 import { createHash } from "node:crypto";
+import { nativeWebSearchInstructionsProfile } from "@citygo/agents";
 import type { AiExecution, AiPolicy } from "@citygo/contracts";
-import { effectiveLlmLimits, type readConfig } from "@citygo/config";
+import {
+  effectiveLlmLimits,
+  validateMaximumWebSearchConfig,
+  type readConfig,
+} from "@citygo/config";
 import { modelContextBudget } from "./model-context-budget.js";
+
+// Exact versioned descriptor: these fields are part of the execution key,
+// never a claim that native tool charges can already be accepted.
+export const maximumWebSearchCandidateProfile = Object.freeze({
+  version: "routerai-native-web-search-candidate-v1",
+  instructionsProfile: nativeWebSearchInstructionsProfile,
+  engine: "native",
+  maxResults: 5,
+  transport: "non-streaming",
+  billing: "unverified-unbillable",
+} as const);
+
+export const maximumWebSearchPostpayTestProfile = Object.freeze({
+  version: "routerai-native-web-search-postpay-test-v1",
+  instructionsProfile: nativeWebSearchInstructionsProfile,
+  engine: "native",
+  maxResults: 5,
+  transport: "non-streaming",
+  billing: "routerai-total-cost-postpay-test-v1",
+} as const);
+
+export const maximumWebSearchPostpayProfile = Object.freeze({
+  version: "routerai-native-web-search-postpay-v1",
+  instructionsProfile: nativeWebSearchInstructionsProfile,
+  engine: "native",
+  maxResults: 5,
+  transport: "non-streaming",
+  billing: "routerai-total-cost-postpay-v1",
+  completionPolicy: "optional-validated-sources-v1",
+  receiptPolicy: "routerai-native-total-cost-postpay-v1",
+} as const);
+
+type MaximumWebSearchProfile =
+  | typeof maximumWebSearchCandidateProfile
+  | typeof maximumWebSearchPostpayTestProfile
+  | typeof maximumWebSearchPostpayProfile;
+
+function exactWebSearchProfile(
+  value: MaximumWebSearchProfile,
+  expected: MaximumWebSearchProfile,
+) {
+  const entries = Object.entries(expected);
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    Object.keys(value).length === entries.length &&
+    entries.every(([key, expected]) => Reflect.get(value, key) === expected)
+  );
+}
 
 export function createAiExecution(
   config: ReturnType<typeof readConfig>,
@@ -11,8 +65,47 @@ export function createAiExecution(
     requestTimeoutMs: number;
     reasoningEffort?: string;
     billingProfile?: { pricingId: string };
+    webSearch?: MaximumWebSearchProfile;
   },
 ): AiExecution {
+  validateMaximumWebSearchConfig(config);
+  const webSearchCandidate = modeProfile?.webSearch !== undefined;
+  const postpayTest =
+    config.AI_MAXIMUM_WEB_SEARCH === "routerai_native_postpay_test_v1";
+  const postpay = config.AI_MAXIMUM_WEB_SEARCH === "routerai_native_postpay_v1";
+  const expectedWebSearch = postpay
+    ? maximumWebSearchPostpayProfile
+    : postpayTest
+      ? maximumWebSearchPostpayTestProfile
+      : maximumWebSearchCandidateProfile;
+  if (
+    webSearchCandidate &&
+    (!exactWebSearchProfile(modeProfile.webSearch!, expectedWebSearch) ||
+      ![
+        "routerai_native_candidate_v1",
+        "routerai_native_postpay_test_v1",
+        "routerai_native_postpay_v1",
+      ].includes(config.AI_MAXIMUM_WEB_SEARCH) ||
+      modeProfile.protocol !== "chat/completions" ||
+      policy.provider !== "routerai" ||
+      policy.model !== "openai/gpt-6.1-sol" ||
+      config.ROUTERAI_MODEL !== "openai/gpt-6.1-sol" ||
+      config.ROUTERAI_UPSTREAM !== "openai" ||
+      config.ROUTERAI_COUNTRY !== "us" ||
+      policy.version !==
+        (postpay
+          ? "ai-mode-route-web-search-postpay-v1"
+          : postpayTest
+            ? "ai-mode-route-web-search-postpay-test-v1"
+            : "ai-mode-route-web-search-candidate-v1"))
+  )
+    throw new Error(
+      postpay
+        ? "Native search requires the exact postpay Maximum profile"
+        : postpayTest
+          ? "Native search requires the exact postpay-test Maximum profile"
+          : "Native search requires the exact unbillable Maximum profile",
+    );
   const limits = {
     maxInputBytes: config.LLM_MAX_INPUT_BYTES,
     maxOutputTokens: effectiveLlmLimits(config, policy.provider, policy.model)
@@ -21,7 +114,8 @@ export function createAiExecution(
   let contextBudget: ReturnType<typeof modelContextBudget> | undefined;
   if (config.AI_CONTEXT_STRATEGY === "model_window_memory_v1") {
     const mode =
-      modeProfile?.protocol === "responses" &&
+      (modeProfile?.protocol === "responses" ||
+        (modeProfile?.protocol === "chat/completions" && webSearchCandidate)) &&
       policy.provider === "routerai" &&
       policy.model === "openai/gpt-6.1-sol"
         ? "maximum"

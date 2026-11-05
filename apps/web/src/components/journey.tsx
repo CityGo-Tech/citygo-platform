@@ -470,6 +470,11 @@ export function Journey(props: JourneyProps) {
                   {message.role === "assistant" ? (
                     <AssistantMessage
                       content={message.content || "Ответ не получен"}
+                      webSources={
+                        message.status === "complete"
+                          ? message.generation?.webSources
+                          : undefined
+                      }
                     />
                   ) : (
                     <p>{message.content || "Ответ не получен"}</p>

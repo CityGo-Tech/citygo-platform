@@ -216,3 +216,73 @@ test("legacy public preview identities remain exact and invalid memory routes fa
     assert.doesNotMatch(result.stderr, /ignored|postgresql|ECONNREFUSED/);
   }
 });
+
+test("native production preview is explicit, public-only and preserves disabled policy identity", () => {
+  const common = {
+    ...fixture,
+    NODE_ENV: "test",
+    LLM_PROVIDER: "disabled",
+    WEB_ORIGIN: "https://pilot.example.test",
+    GIGACHAT_CA_BUNDLE_FILE: undefined,
+  };
+  const expected = createAssistantModes(
+    readConfig({
+      ...common,
+      AI_MAXIMUM_WEB_SEARCH: "routerai_native_postpay_v1",
+    }),
+  )!.policy;
+  const actual = preview({
+    AI_CONTEXT_STRATEGY: "model_window_memory_v1",
+    AI_MAXIMUM_WEB_SEARCH: "routerai_native_postpay_v1",
+    LLM_PROVIDER: "routerai",
+    AI_MODES_PRODUCTION_POLICY_ID: "ignored-private-approval-canary",
+  });
+  assert.equal(actual.status, 0, actual.stderr);
+  assert.equal(actual.stderr, "");
+  assert.deepEqual(JSON.parse(actual.stdout), expected);
+  assert.equal(expected.version, "ai-assistant-modes-web-search-postpay-v1");
+  assert.doesNotMatch(
+    actual.stdout,
+    /ignored|postgresql|canary|Server listening/,
+  );
+  const disabled = preview({
+    AI_CONTEXT_STRATEGY: "model_window_memory_v1",
+    AI_MAXIMUM_WEB_SEARCH: "disabled",
+  });
+  assert.equal(disabled.status, 0, disabled.stderr);
+  assert.deepEqual(
+    JSON.parse(disabled.stdout),
+    createAssistantModes(
+      readConfig({
+        ...common,
+        AI_MAXIMUM_WEB_SEARCH: "disabled",
+      }),
+    )!.policy,
+  );
+  assert.notEqual(JSON.parse(disabled.stdout).id, expected.id);
+});
+
+test("public preview refuses candidate, test-only and unknown search capabilities", () => {
+  for (const capability of [
+    "routerai_native_candidate_v1",
+    "routerai_native_postpay_test_v1",
+    "inferred-native-capability-canary",
+  ]) {
+    const result = preview({
+      AI_CONTEXT_STRATEGY: "model_window_memory_v1",
+      AI_MAXIMUM_WEB_SEARCH: capability,
+    });
+    assert.equal(result.status, 1);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /invalid values are hidden/);
+    assert.doesNotMatch(
+      result.stderr,
+      /canary|ignored|postgresql|ECONNREFUSED/,
+    );
+  }
+  const missingMemory = preview({
+    AI_MAXIMUM_WEB_SEARCH: "routerai_native_postpay_v1",
+  });
+  assert.equal(missingMemory.status, 1);
+  assert.equal(missingMemory.stdout, "");
+});

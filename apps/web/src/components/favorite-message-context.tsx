@@ -211,7 +211,14 @@ export function FavoriteMessageContext({
             {message.role === "user" ? (
               <p>{message.content}</p>
             ) : (
-              <AssistantMessage content={message.content} />
+              <AssistantMessage
+                content={message.content}
+                webSources={
+                  message.status === "complete"
+                    ? message.generation?.webSources
+                    : undefined
+                }
+              />
             )}
             {message.status === "interrupted" && <small>Ответ прерван</small>}
           </article>

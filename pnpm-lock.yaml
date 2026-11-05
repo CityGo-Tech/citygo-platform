@@ -399,6 +399,9 @@ importers:
 
   packages/ui-web:
     dependencies:
+      '@citygo/contracts':
+        specifier: workspace:*
+        version: link:../contracts
       '@citygo/design-tokens':
         specifier: workspace:*
         version: link:../design-tokens

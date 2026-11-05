@@ -269,6 +269,22 @@
 .cg-assistant-message .cg-assistant-plain {
   white-space: pre-wrap;
 }
+.cg-assistant-sources {
+  margin-top: 16px;
+}
+.cg-assistant-sources a {
+  display: grid;
+  gap: 4px;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid var(--cg-color-control-border);
+  border-radius: 12px;
+}
+.cg-assistant-source-host {
+  color: var(--cg-color-muted);
+  font-size: 0.9em;
+  text-decoration: none;
+}
 @media (prefers-reduced-motion: reduce) {
   .cg-button {
     transition: none;

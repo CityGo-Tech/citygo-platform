@@ -56,6 +56,7 @@ export async function routerAiProfileSmoke({
     ],
     ["postpay-context64-v1", "postpay-context64-profile.fixture.json"],
     ["postpay-memory-v1", "postpay-memory-profile.fixture.json"],
+    ["postpay-native-search-v1", "postpay-native-search-profile.fixture.json"],
   ])
     await mountedProfileSmoke({
       project,
@@ -141,6 +142,9 @@ async function mountedProfileSmoke({
           "AI_MODES_DATA_NOTICE",
           ...(profile.AI_CONTEXT_STRATEGY === "model_window_memory_v1"
             ? ["AI_CONTEXT_STRATEGY"]
+            : []),
+          ...(profile.AI_MAXIMUM_WEB_SEARCH === "routerai_native_postpay_v1"
+            ? ["AI_MAXIMUM_WEB_SEARCH"]
             : []),
           ...(profile.AI_MINIMUM_FIXED_FEE === "enabled"
             ? ["GIGACHAT_MODEL", "GIGACHAT_SCOPE"]
@@ -315,6 +319,37 @@ async function mountedProfileSmoke({
              assert.notEqual(route.policy.id,old.policy.id);
              assert.notEqual(route.execution.key,old.execution.key);
            }
+         }
+         if (${JSON.stringify(marker)}==='postpay-native-search-v1') {
+           assert.equal(config.AI_MAXIMUM_WEB_SEARCH,'routerai_native_postpay_v1');
+           assert.equal(config.AI_CONTEXT_STRATEGY,'model_window_memory_v1');
+           assert.equal(config.LLM_MAX_INPUT_BYTES,8388608);
+           assert.equal(config.AI_CUSTOMER_BILLING_MODE,'postpay_actual_v1');
+           assert.equal(config.AI_REQUEST_COST_LIMIT_MODE,'operator_ceiling');
+           assert.equal(config.AI_MINIMUM_FIXED_FEE,'enabled');
+           assert.equal(config.YOOKASSA_FISCAL_PROFILE,'citygo_service_full_payment_v1');
+           assert.equal(config.PHONE_VERIFICATION_MODE,'prosto_sms');
+           const oldConfig={...config,AI_MAXIMUM_WEB_SEARCH:'disabled'};
+           const oldDraft=createAssistantModes(oldConfig);
+           const old=createAssistantModes({...oldConfig,AI_MODES_PRODUCTION_POLICY_ID:oldDraft.policy.id});
+           assert.equal(modes.policy.version,'ai-assistant-modes-web-search-postpay-v1');
+           assert.equal(old.policy.version,'ai-assistant-modes-memory-v1');
+           assert.notEqual(modes.policy.id,old.policy.id);
+           assert.notEqual(modes.catalogId,old.catalogId);
+           assert.deepEqual(modes.modeCatalog().options,old.modeCatalog().options);
+           const maximum=modes.routes[0];
+           assert.equal(maximum.protocol,'chat/completions');
+           assert.equal(maximum.policy.version,'ai-mode-route-web-search-postpay-v1');
+           assert.equal(maximum.execution.maxInputBytes,8388608);
+           assert.equal(maximum.execution.maxOutputTokens,4096);
+           assert.notEqual(maximum.execution.key,old.routes[0].execution.key);
+           for (const index of [1,2]) {
+             assert.deepEqual(modes.routes[index].policy,old.routes[index].policy);
+             assert.deepEqual(modes.routes[index].execution,old.routes[index].execution);
+             assert.deepEqual(modes.routes[index].fixedFee,old.routes[index].fixedFee);
+           }
+           assert.throws(()=>createAssistantModes({...config,AI_MAXIMUM_WEB_SEARCH:'routerai_native_postpay_test_v1'}));
+           assert.throws(()=>createAssistantModes({...config,AI_MAXIMUM_WEB_SEARCH:'routerai_native_candidate_v1'}));
          }
          assert.equal(modes.productionApproved,true);
          assert.deepEqual(modes.modeCatalog().options.map(({id,available})=>({id,available})),[

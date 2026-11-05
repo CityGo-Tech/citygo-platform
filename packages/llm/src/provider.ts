@@ -2,6 +2,7 @@ import type {
   AiProviderId,
   ModelUsage,
   RouterAiCharge,
+  WebSources,
 } from "@citygo/contracts";
 
 export type ModelMessage = { role: "user" | "assistant"; content: string };
@@ -13,7 +14,12 @@ export type ModelInputTokenCounts = {
 };
 export type ModelStreamEvent =
   | { type: "delta"; text: string }
-  | { type: "complete"; model: string; usage?: ModelUsage };
+  | {
+      type: "complete";
+      model: string;
+      usage?: ModelUsage;
+      webSources?: WebSources;
+    };
 
 // The caller reserves the first model attempt before entering stream(). Every
 // additional model HTTP attempt must await this guard before sending data.

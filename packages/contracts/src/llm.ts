@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { WebSources } from "./web-sources.js";
 
 export const aiProviderIds = ["openai", "routerai", "gigachat"] as const;
 export const aiProviderIdSchema = z.enum(aiProviderIds);
@@ -11,4 +12,6 @@ export type ModelGeneration = {
   // Only populated when the provider reports the actual model.
   model?: string;
   usage?: ModelUsage;
+  // Server-owned source annotations from a completed native-search response.
+  webSources?: WebSources;
 };

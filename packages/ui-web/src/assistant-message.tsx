@@ -1,5 +1,9 @@
 import { memo, type ReactNode } from "react";
 import Markdown, { type Components } from "react-markdown";
+import {
+  validateWebSourcesForAnswer,
+  type WebSources,
+} from "@citygo/contracts";
 
 // Treat model output as untrusted content, never as app navigation or HTML.
 function externalUrl(value: string): string | undefined {
@@ -84,9 +88,17 @@ const allowedElements = [
 /** Shared by live, saved and interrupted replies. User messages stay plain text. */
 export const AssistantMessage = memo(function AssistantMessage({
   content,
+  webSources,
 }: {
   content: string;
+  webSources?: WebSources;
 }) {
+  let sources: WebSources | undefined;
+  try {
+    if (webSources) sources = validateWebSourcesForAnswer(webSources, content);
+  } catch {
+    // A corrupt/older receipt must not become a clickable source or hide text.
+  }
   return (
     <div className="cg-assistant-message">
       {content.length > 32_000 ? (
@@ -103,6 +115,31 @@ export const AssistantMessage = memo(function AssistantMessage({
         >
           {content}
         </Markdown>
+      )}
+      {sources && (
+        <section
+          className="cg-assistant-sources ym-hide-content"
+          aria-label="Источники"
+        >
+          <strong>Источники</strong>
+          <ol>
+            {sources.citations.map((source, index) => (
+              <li key={index + ":" + source.url}>
+                <a
+                  href={source.url}
+                  target="_blank"
+                  rel="noopener noreferrer nofollow"
+                  referrerPolicy="no-referrer"
+                >
+                  <span>{source.title}</span>
+                  <span className="cg-assistant-source-host">
+                    {new URL(source.url).host}
+                  </span>
+                </a>
+              </li>
+            ))}
+          </ol>
+        </section>
       )}
     </div>
   );

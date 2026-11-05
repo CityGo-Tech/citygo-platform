@@ -284,7 +284,9 @@ test("saved customer phones are disclosed only to a current super-admin session,
   assert.equal((await listing()).statusCode, 403);
   await f.db.query("update users set role='admin' where id=$1", [f.user.id]);
   assert.equal((await listing()).statusCode, 403);
-  await f.db.query("update users set role='super_admin' where id=$1", [f.user.id]);
+  await f.db.query("update users set role='super_admin' where id=$1", [
+    f.user.id,
+  ]);
   const visible = await listing();
   assert.equal(visible.statusCode, 200, visible.body);
   assert.equal(visible.headers["cache-control"], "no-store");

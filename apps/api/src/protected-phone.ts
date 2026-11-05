@@ -6,7 +6,10 @@ import {
   hkdfSync,
   randomBytes,
 } from "node:crypto";
-import { creditUserIdSchema, russianMobilePhoneSchema } from "@citygo/contracts";
+import {
+  creditUserIdSchema,
+  russianMobilePhoneSchema,
+} from "@citygo/contracts";
 
 export type ProtectedPhoneBinding = {
   proofUserId: string;
@@ -31,10 +34,10 @@ export class ProtectedPhoneError extends Error {
 function aad(binding: ProtectedPhoneBinding): Buffer {
   if (
     !creditUserIdSchema.safeParse(binding.proofUserId).success ||
-    (binding.phoneKey.length !== 64 ||
-      !/^[a-f0-9]{64}$/.test(binding.phoneKey)) ||
-    (binding.sourceChallengeId.length !== 36 ||
-      !uuid.test(binding.sourceChallengeId))
+    binding.phoneKey.length !== 64 ||
+    !/^[a-f0-9]{64}$/.test(binding.phoneKey) ||
+    binding.sourceChallengeId.length !== 36 ||
+    !uuid.test(binding.sourceChallengeId)
   )
     throw new ProtectedPhoneError();
   return Buffer.from(

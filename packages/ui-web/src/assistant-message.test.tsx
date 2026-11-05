@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { AssistantMessage } from "./assistant-message.js";
+import type { WebSources } from "@citygo/contracts";
 
 const render = (content: string) =>
   renderToStaticMarkup(<AssistantMessage content={content} />);
@@ -87,4 +88,88 @@ test("large replies bypass the parser without losing content or interpreting HTM
   assert.ok(html.includes("x".repeat(32_001)));
   assert.match(html, /\*\*конец\*\*&lt;img src=x&gt;/);
   assert.doesNotMatch(html, /<img|<strong>/);
+});
+
+const webSources: WebSources = {
+  version: "routerai_native_v1",
+  citations: [
+    {
+      url: "https://example.com/housing?q=1",
+      title: '<img src=x onerror="alert(1)"> Источник 🏠',
+    },
+  ],
+};
+
+test("saved tool sources survive JSON readback as prominent escaped external links with visible destination", () => {
+  const saved = JSON.parse(
+    JSON.stringify({ content: "Ответ с источником.", webSources }),
+  );
+  const html = renderToStaticMarkup(<AssistantMessage {...saved} />);
+  assert.match(
+    html,
+    /<section class="cg-assistant-sources ym-hide-content" aria-label="Источники">/,
+  );
+  assert.match(html, /href="https:\/\/example.com\/housing\?q=1"/);
+  assert.match(
+    html,
+    /&lt;img src=x onerror=&quot;alert\(1\)&quot;&gt; Источник 🏠/,
+  );
+  assert.match(html, /cg-assistant-source-host">example.com/);
+  assert.match(html, /target="_blank"/);
+  assert.match(html, /rel="noopener noreferrer nofollow"/);
+  assert.match(html, /referrerPolicy="no-referrer"/i);
+  assert.doesNotMatch(
+    html,
+    /<(img|script|iframe)\b|Проверено|preload|prefetch/i,
+  );
+});
+
+test("Markdown source claims never become a source receipt and malformed receipts never hide the answer", () => {
+  const content =
+    '## Источники\n\n[Заявленный источник](https://example.com/claim)\n\n{"version":"routerai_native_v1","citations":[]}';
+  assert.doesNotMatch(
+    render(content),
+    /cg-assistant-sources|aria-label="Источники"/,
+  );
+  for (const invalid of [
+    { ...webSources, version: "model_markdown" },
+    {
+      ...webSources,
+      citations: [{ url: "javascript:alert(1)", title: "Источник" }],
+    },
+    {
+      ...webSources,
+      citations: [{ url: "https://localhost/private", title: "Источник" }],
+    },
+    {
+      ...webSources,
+      citations: [{ ...webSources.citations[0], title: "x\ny" }],
+    },
+  ]) {
+    const html = renderToStaticMarkup(
+      <AssistantMessage
+        content="Точный сохранённый ответ"
+        webSources={invalid as WebSources}
+      />,
+    );
+    assert.match(html, /Точный сохранённый ответ/);
+    assert.doesNotMatch(html, /cg-assistant-sources|<a\b|href=/);
+  }
+});
+
+test("sources remain separate from the large-answer parser fallback and absent from empty or legacy answers", () => {
+  const content = "x".repeat(32_001) + "**конец**<img src=x>";
+  const html = renderToStaticMarkup(
+    <AssistantMessage content={content} webSources={webSources} />,
+  );
+  assert.match(html, /cg-assistant-plain/);
+  assert.match(html, /cg-assistant-sources/);
+  assert.doesNotMatch(html, /<img/);
+  assert.doesNotMatch(
+    renderToStaticMarkup(
+      <AssistantMessage content="" webSources={webSources} />,
+    ),
+    /cg-assistant-sources/,
+  );
+  assert.doesNotMatch(render("Новый ответ без поиска"), /cg-assistant-sources/);
 });

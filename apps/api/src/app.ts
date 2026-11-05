@@ -1,5 +1,11 @@
 import { PostpayCharges } from "@citygo/db";
 import {
+  selectPostpayRouterAdapter,
+  type PostpayRouterProfile,
+} from "./postpay-router-profile.js";
+import { chatDeltaChunks } from "./chat-delta-chunks.js";
+import { assistantInstructionOptions } from "./assistant-instruction-options.js";
+import {
   PostpayReconciler,
   type PostpayReconcileScheduler,
 } from "./postpay-reconciler.js";
@@ -49,6 +55,8 @@ import {
   supportsContractVersion,
   errorMetadata,
   errorCodeForStatus,
+  validateWebSourcesForAnswer,
+  type WebSources,
   type StreamEvent,
   type ModelGeneration,
   type AiPolicy,
@@ -77,6 +85,7 @@ import {
 import {
   readConfig,
   effectiveLlmLimits,
+  validateMaximumWebSearchConfig,
   validateCreditReservationConfig,
   validateVerificationDeliveryConfig,
 } from "@citygo/config";
@@ -265,6 +274,24 @@ export async function buildApp(options: {
   const providers: ProviderMap = { ...options.providers };
   if (options.provider) providers[options.provider.name] = options.provider;
   const modes = createAssistantModes(config, options.modeProviders);
+  const nativeWebProfile =
+    config.AI_MAXIMUM_WEB_SEARCH === "routerai_native_candidate_v1" ||
+    config.AI_MAXIMUM_WEB_SEARCH === "routerai_native_postpay_test_v1" ||
+    config.AI_MAXIMUM_WEB_SEARCH === "routerai_native_postpay_v1";
+  const nativeWebSourcesAllowed = () => {
+    validateMaximumWebSearchConfig(config);
+    if (config.AI_MAXIMUM_WEB_SEARCH === "routerai_native_postpay_v1")
+      return config.AI_CREDIT_MODE === "routerai_citygo_10x" && postpayMode;
+    return (
+      config.NODE_ENV !== "production" &&
+      ((config.AI_MAXIMUM_WEB_SEARCH === "routerai_native_candidate_v1" &&
+        config.AI_CREDIT_MODE === "disabled") ||
+        (config.AI_MAXIMUM_WEB_SEARCH === "routerai_native_postpay_test_v1" &&
+          config.NODE_ENV === "test" &&
+          config.AI_CREDIT_MODE === "routerai_citygo_10x" &&
+          postpayMode))
+    );
+  };
   const control = createAiControl(config, providers, modes);
   const repo = new Repository(
     options.db,
@@ -363,32 +390,24 @@ export async function buildApp(options: {
     const charge = await postpay.get(userId, id);
     if (charge.state === "settled") return true;
     if (!charge.generation_id || !charge.dispatched) return false;
-    const candidates = [
+    const candidates: PostpayRouterProfile[] = [
       ...(modes?.routes.map((route) => ({
         adapter: route.provider,
         upstream: route.upstream,
-        protocol: route.id === "maximum" ? "responses" : "chat/completions",
+        protocol: route.protocol,
         executionKey: route.execution.key,
         policyId: route.policy.id,
       })) ?? []),
       {
         adapter: providers.routerai,
         upstream: config.ROUTERAI_UPSTREAM,
-        protocol: "chat/completions",
+        protocol: "chat/completions" as const,
         executionKey: null,
         policyId: null,
       },
     ];
-    const adapter = candidates.find(
-      (profile) =>
-        profile.adapter?.name === "routerai" &&
-        profile.adapter.model === charge.model &&
-        profile.upstream === charge.upstream &&
-        profile.protocol === charge.protocol &&
-        profile.executionKey === charge.execution_key &&
-        profile.policyId === charge.policy_id,
-    )?.adapter;
-    if (!adapter?.readCharge) return false;
+    const adapter = selectPostpayRouterAdapter(candidates, charge);
+    if (!adapter) return false;
     signal.throwIfAborted();
     const receipt = await adapter.readCharge(
       charge.generation_id,
@@ -680,6 +699,21 @@ export async function buildApp(options: {
       );
       if (postpayMigration.rows.length !== 1)
         throw new Error("Pending postpay migration");
+      const nativePostpayMigration = await options.db.query(
+        "select name from citygo_migrations where name='0048_native_search_postpay.sql'",
+      );
+      if (nativePostpayMigration.rows.length !== 1)
+        throw new Error("Pending native-search postpay migration");
+      const nativeProductionMigration = await options.db.query(
+        "select name from citygo_migrations where name='0049_native_search_production.sql'",
+      );
+      if (nativeProductionMigration.rows.length !== 1)
+        throw new Error("Pending native-search production migration");
+      const nativePostpayGuard = await options.db.query(
+        "select 1 from pg_trigger t join pg_proc p on p.oid=t.tgfoid where t.tgrelid='ai_postpay_attempts'::regclass and t.tgname='ai_postpay_guard' and t.tgenabled='O' and not t.tgisinternal and p.oid='public.citygo_guard_postpay_attempt()'::regprocedure and not p.prosecdef and position('ai-mode-route-web-search-postpay-test-v1' in pg_get_functiondef(p.oid))>0 and position('ai-mode-route-web-search-postpay-v1' in pg_get_functiondef(p.oid))>0",
+      );
+      if (nativePostpayGuard.rows.length !== 1)
+        throw new Error("Native-search postpay guard is unavailable");
       await options.db.query(
         "select id,state,response_complete,reconcile_token from ai_postpay_attempts limit 0",
       );
@@ -1144,6 +1178,23 @@ export async function buildApp(options: {
         }
       : undefined,
     (request) => drain.run(() => authenticate(request)),
+    nativeWebProfile && modes
+      ? (user, input) => {
+          if (
+            input.aiModeCatalogId !== undefined &&
+            input.aiModeCatalogId !== modes.modeCatalog(user).catalogId
+          )
+            throw new DomainError(
+              409,
+              "Режимы работы изменились. Обновите страницу.",
+              "AI_MODE_CHANGED",
+            );
+          return assistantInstructionOptions(
+            config,
+            input.aiMode ?? "balanced",
+          );
+        }
+      : undefined,
   );
   registerResultDiscussionApi(app, options.db, authenticate);
   app.post("/v1/conversations/start", async (request) => {
@@ -1556,6 +1607,7 @@ export async function buildApp(options: {
       let content = "";
       let saved = false;
       let generation: ModelGeneration | undefined;
+      let completedWebSources: WebSources | undefined;
       let attemptNumber = 0;
       let attemptError: DomainError | undefined;
       let creditHoldId: string | null = null;
@@ -1593,9 +1645,7 @@ export async function buildApp(options: {
               ? {
                   protocol: fixedFee
                     ? ("gigachat" as const)
-                    : selectedMode?.id === "maximum"
-                      ? ("responses" as const)
-                      : ("chat/completions" as const),
+                    : (selectedMode?.protocol ?? ("chat/completions" as const)),
                 }
               : {}),
             ...(fixedFee ? { fixedFee } : {}),
@@ -1632,7 +1682,10 @@ export async function buildApp(options: {
           let modelContext: ReturnType<typeof buildConversationContext>;
           try {
             const contextInput = {
-              instructions: instructions(routing.to),
+              instructions: instructions(
+                routing.to,
+                assistantInstructionOptions(config, selectedMode?.id),
+              ),
               profile: profileContext(reservation.profile),
               history: reservation.messages,
               currentQuestion: input.text,
@@ -1722,17 +1775,45 @@ export async function buildApp(options: {
                 model: event.model,
                 ...(event.usage ? { usage: event.usage } : {}),
               };
+              if (event.webSources !== undefined) {
+                if (
+                  !nativeWebSourcesAllowed() ||
+                  selectedMode?.id !== "maximum" ||
+                  provider.name !== "routerai" ||
+                  provider.model !== "openai/gpt-6.1-sol" ||
+                  event.model !== provider.model
+                )
+                  throw new Error("Unexpected native-search source metadata");
+                completedWebSources = validateWebSourcesForAnswer(
+                  event.webSources,
+                  content,
+                );
+              }
             } else {
               content += event.text;
               if (content.length > limits.maxOutputCharacters)
                 throw new Error("Response too large");
-              send({ type: "delta", text: event.text });
+              for (const text of chatDeltaChunks(event.text))
+                send({ type: "delta", text });
             }
           }
           signal.throwIfAborted();
           if (!completed) throw new Error("Provider stream interrupted");
           if (!content.trim()) throw new Error("Empty response");
+          if (
+            nativeWebProfile &&
+            config.AI_MAXIMUM_WEB_SEARCH !== "routerai_native_postpay_v1" &&
+            selectedMode?.id === "maximum" &&
+            !completedWebSources
+          )
+            throw new Error("Native-search candidate omitted source metadata");
         }
+        // Sources belong only to successful persistence. The interrupted path
+        // below retains the original generation without a trusted sources list.
+        const completedGeneration =
+          generation && completedWebSources
+            ? { ...generation, webSources: completedWebSources }
+            : generation;
         const messageId =
           fixedFee && creditHoldId
             ? await repo.finishGigaChat({
@@ -1743,7 +1824,7 @@ export async function buildApp(options: {
                 agent: routing.to,
                 content,
                 complete: true,
-                generation,
+                generation: completedGeneration,
                 holdId: creditHoldId,
               })
             : await repo.finishChat(
@@ -1754,7 +1835,7 @@ export async function buildApp(options: {
                 content,
                 true,
                 !routing.human,
-                generation,
+                completedGeneration,
                 creditHoldId ?? undefined,
               );
         saved = true;
