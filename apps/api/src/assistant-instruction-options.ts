@@ -9,6 +9,7 @@ import type { AssistantInstructionOptions } from "@citygo/agents";
 export function assistantInstructionOptions(
   config: ReturnType<typeof readConfig>,
   mode: AiModeId | undefined,
+  now: Date = new Date(),
 ): AssistantInstructionOptions | undefined {
   validateMaximumWebSearchConfig(config);
   return config.AI_ASSISTANT_MODES === "enabled" &&
@@ -18,6 +19,9 @@ export function assistantInstructionOptions(
       "routerai_native_postpay_v1",
     ].includes(config.AI_MAXIMUM_WEB_SEARCH) &&
     mode === "maximum"
-    ? { webSearch: "routerai_native_candidate_v1" }
+    ? {
+        webSearch: "routerai_native_candidate_v1",
+        currentDate: now.toISOString().slice(0, 10),
+      }
     : undefined;
 }

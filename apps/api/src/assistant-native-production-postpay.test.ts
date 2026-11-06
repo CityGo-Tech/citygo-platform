@@ -266,6 +266,19 @@ async function fixture(t: TestContext) {
     state.requests.push(payload);
     assert.equal(payload.model, model);
     assert.equal(payload.stream, false);
+    // The trusted clock and source-selection policy are already in the system
+    // prompt when sent; the shared context builder budgets these exact bytes.
+    assert.equal(payload.messages[0].role, "system");
+    assert.match(
+      payload.messages[0].content,
+      /Дата запроса \(UTC\): \d{4}-\d{2}-\d{2}\./,
+    );
+    assert.match(payload.messages[0].content, /действующую страницу услуги/);
+    assert.match(payload.messages[0].content, /продолжи нативный поиск/);
+    assert.match(
+      payload.messages[0].content,
+      /не является доказательством актуальности/,
+    );
     assert.deepEqual(payload.plugins, [
       { id: "web", engine: "native", max_results: 5 },
     ]);
