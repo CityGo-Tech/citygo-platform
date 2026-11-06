@@ -25,6 +25,7 @@ import {
   maximumWebSearchPostpayProfile,
 } from "./ai-execution.js";
 import { productionProviderAllowed } from "./ai-production.js";
+import { webSearchConsentProfile } from "./ai-web-search-consent.js";
 
 type Config = ReturnType<typeof readConfig>;
 const hash = (value: unknown) =>
@@ -194,7 +195,7 @@ export function createAssistantModes(
       id: hash({
         ...routeFields,
         notice: config.AI_MODES_DATA_NOTICE ?? null,
-        ...(webSearch ? { webSearch } : {}),
+        ...(webSearch ? { webSearch: webSearchConsentProfile(webSearch) } : {}),
       }),
       ...routeFields,
     };
