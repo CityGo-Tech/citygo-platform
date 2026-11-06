@@ -463,10 +463,15 @@ test("native search preview uses the same candidate instructions and conservativ
     previews[0]!.contextBudget!.inputTextTokens,
     exactConservativeInput,
   );
+  // Compare the preview against the exact server-owned prompt that was sent,
+  // including its request date. A capability-only prompt has no clock date.
+  assert.match(
+    messages[0]!.content,
+    /Дата запроса \(UTC\): \d{4}-\d{2}-\d{2}\./,
+  );
   const promptDifference =
-    conservativeTextTokens(
-      instructions("support", { webSearch: "routerai_native_candidate_v1" }),
-    ) - conservativeTextTokens(instructions("support"));
+    conservativeTextTokens(messages[0]!.content) -
+    conservativeTextTokens(instructions("support"));
   assert.equal(
     previews[0]!.contextBudget!.inputTextTokens -
       previews[1]!.contextBudget!.inputTextTokens,

@@ -216,6 +216,10 @@ test("opt-in native postpay binds optional validated completion and full-total r
       ...maximumWebSearchPostpayProfile,
       receiptPolicy: "routerai-native-total-cost-postpay-test-v1",
     },
+    {
+      ...maximumWebSearchPostpayProfile,
+      instructionsProfile: "routerai-native-web-search-instructions-v1",
+    },
     { ...maximumWebSearchPostpayProfile, extra: true },
   ])
     assert.throws(
