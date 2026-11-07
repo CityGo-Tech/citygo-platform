@@ -1010,6 +1010,7 @@ export async function buildApp(options: {
             await hashPassword(input.password),
             tokenHash(token),
             input.consents,
+            input.landingAttribution,
           );
           reply.setCookie(sessionName, token, cookieOptions);
           return {

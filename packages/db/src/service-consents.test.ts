@@ -474,11 +474,17 @@ test("schema29 to30 changes no existing choice/user/accounting/history and adds 
   assert.deepEqual(
     (
       await db.query(
-        "select to_jsonb(r)-'consent_choice'-'consent_policy'-'consent_policy_hash'-'consent_recorded_at' as value from email_registrations r",
+        "select to_jsonb(r)-'consent_choice'-'consent_policy'-'consent_policy_hash'-'consent_recorded_at'-'landing_attribution' as value from email_registrations r",
       )
     ).rows,
     legacy,
   );
+  assert.deepEqual(
+    (await db.query("select landing_attribution from email_registrations"))
+      .rows,
+    [{ landing_attribution: null }],
+  );
+  assert.deepEqual((await db.query("select * from user_acquisition")).rows, []);
   assert.deepEqual(
     (await db.query("select * from service_consent_events")).rows,
     [],

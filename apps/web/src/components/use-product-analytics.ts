@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useRef } from "react";
+import { clearBrowserLandingAttribution } from "./landing/landing-attribution";
 import { customerInteractionNameSchema } from "@citygo/contracts";
 import type { CustomerInteractionName } from "@citygo/contracts";
 import {
@@ -95,6 +96,7 @@ export function browserAnalyticsOptedOut(): boolean {
 /** Can be used by the legal page without introducing a registration checkbox. */
 export function setBrowserAnalyticsOptOut(value: boolean): void {
   try {
+    if (value) clearBrowserLandingAttribution();
     if (value) window.localStorage.setItem("citygo.analytics.optout", "1");
     else window.localStorage.removeItem("citygo.analytics.optout");
   } catch {
@@ -131,6 +133,7 @@ type AuthReceipt = {
   onceKey: string;
   at: number;
   cancel: () => void;
+  landingVersion?: "v1" | "v8";
 };
 
 function transientIdentityFailure(error: unknown): boolean {
@@ -155,6 +158,7 @@ export function useProductAnalytics(options: {
   surface: AnalyticsSurface;
   sessionSignal: AbortSignal;
   client: AnalyticsClient;
+  publicLandingVersion?: "v1" | "v8";
 }) {
   const { config, ownerId, role, blocked, sessionSignal, client } = options;
   const surface = useRef(options.surface);
@@ -206,7 +210,16 @@ export function useProductAnalytics(options: {
       config.enabled &&
       analyticsLocationAllowed(window.location) &&
       analyticsReferrerAllowed(document.referrer) &&
-      privateDomMasked();
+      (privateDomMasked() ||
+        (!!options.publicLandingVersion &&
+          window.location.pathname ===
+            "/landing/" + options.publicLandingVersion &&
+          !!document.querySelector(
+            `[data-citygo-public-landing="${options.publicLandingVersion}"]`,
+          ) &&
+          !document.querySelector(
+            "form, input, textarea, [contenteditable=true]",
+          )));
     const sendPending = () => {
       if (!current || !externalAllowed()) return;
       pending.drain((event, params, onceKey) => {
@@ -241,7 +254,16 @@ export function useProductAnalytics(options: {
         return;
       }
       for (const stage of registrationFlow.pending(sessionSignal, ownerId))
-        pending.add(stage.event, { surface: "register" }, stage.onceKey);
+        pending.add(
+          stage.event,
+          {
+            surface: "register",
+            ...(stage.landingVersion
+              ? { landingVersion: stage.landingVersion }
+              : {}),
+          },
+          stage.onceKey,
+        );
       if (!value || ownerId === null) {
         sendPending();
         return;
@@ -251,6 +273,9 @@ export function useProductAnalytics(options: {
         {
           surface:
             value.event === "registration_completed" ? "register" : "login",
+          ...(value.landingVersion
+            ? { landingVersion: value.landingVersion }
+            : {}),
         },
         value.onceKey,
       );
@@ -369,7 +394,12 @@ export function useProductAnalytics(options: {
         if (!valid()) return;
         const send = await loadMetrika();
         if (!send || !valid()) return;
-        current = createProductAnalytics(config, send, window.location);
+        current = createProductAnalytics(
+          config,
+          send,
+          window.location,
+          options.publicLandingVersion,
+        );
         if (!current.start(identity)) {
           current = null;
           return;
@@ -423,15 +453,16 @@ export function useProductAnalytics(options: {
     sessionSignal,
     client,
     registrationFlow,
+    options.publicLandingVersion,
   ]);
   useEffect(() => {
     recorder.current?.view(options.surface);
   }, [options.surface]);
   return {
-    beginRegistration(signal: AbortSignal) {
+    beginRegistration(signal: AbortSignal, landingVersion?: "v1" | "v8") {
       if (signal.aborted || browserAnalyticsOptedOut() || !config.enabled)
         return null;
-      const flow = registrationFlow.begin(signal);
+      const flow = registrationFlow.begin(signal, landingVersion);
       publishAuth.current();
       return flow;
     },
@@ -473,6 +504,11 @@ export function useProductAnalytics(options: {
       else registrationFlow.clear();
       const value: AuthReceipt = {
         event,
+        ...(event === "registration_completed" &&
+        flow &&
+        registrationFlow.landingVersion(flow)
+          ? { landingVersion: registrationFlow.landingVersion(flow) }
+          : {}),
         ownerId: user.id,
         signal,
         at: Date.now(),

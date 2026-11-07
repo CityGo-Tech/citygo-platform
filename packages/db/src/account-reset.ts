@@ -21,6 +21,7 @@ export type AccountResetPlan = {
 // An inventory, NOT a deletion whitelist. In particular, cascading users would
 // erase priced-attempt snapshots and can break credit/accounting foreign keys.
 const ownedTables = [
+  "user_acquisition",
   "human_support_requests",
   "human_support_replies",
   "human_support_reads",

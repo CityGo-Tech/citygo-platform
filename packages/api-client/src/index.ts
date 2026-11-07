@@ -3,6 +3,7 @@ import {
   chatMessageTextSchema,
   assistantContextPreviewSchema,
   type AssistantContextInput,
+  type LandingAttribution,
 } from "@citygo/contracts";
 import {
   conversationTitleSchema,
@@ -567,6 +568,7 @@ export function createClient(
       email: string,
       password: string,
       consents: ServiceConsentChoice,
+      landingAttribution?: LandingAttribution,
     ) =>
       request(
         "/v1/auth/email/register",
@@ -575,6 +577,7 @@ export function createClient(
           email,
           password,
           consents,
+          ...(landingAttribution !== undefined ? { landingAttribution } : {}),
         }),
       ),
     resendEmailRegistration: async (challengeId: string, proof: string) =>
@@ -663,6 +666,7 @@ export function createClient(
       email: string,
       password: string,
       consents?: ServiceConsentChoice,
+      landingAttribution?: LandingAttribution,
     ) =>
       request(
         "/v1/auth/" + mode,
@@ -672,6 +676,9 @@ export function createClient(
               email,
               password,
               consents,
+              ...(landingAttribution !== undefined
+                ? { landingAttribution }
+                : {}),
             })
           : { email, password },
       ),

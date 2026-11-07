@@ -6,6 +6,7 @@ import { DomainError } from "./errors.js";
 // registration, migrations, HTTP, or the accounting-preserving restart tool.
 // This inventory is deliberately not discovered into a deletion list.
 const tables = [
+  "user_acquisition",
   "human_support_requests",
   "human_support_replies",
   "human_support_reads",
@@ -161,6 +162,7 @@ const preserved = [
   ...protectedAdmission,
 ] as const;
 const erased = [
+  "user_acquisition",
   "agent_handoffs",
   "agent_threads",
   "ai_budget_daily",

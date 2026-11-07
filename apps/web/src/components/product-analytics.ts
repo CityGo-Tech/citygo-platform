@@ -1,6 +1,7 @@
 /** Explicit, content-free product analytics. The default is no collection. */
 export const productEvents = [
   "landing_viewed",
+  "landing_cta_clicked",
   "registration_started",
   "registration_code_sent",
   "registration_completed",
@@ -53,6 +54,7 @@ const assistants = [
 ] as const;
 export type ProductEventParams = {
   surface?: AnalyticsSurface;
+  landingVersion?: "v1" | "v8";
   mode?: "maximum" | "balanced" | "minimum";
   assistant?: (typeof assistants)[number];
 };
@@ -91,7 +93,19 @@ export function parseProductAnalyticsConfig(value: {
   };
 }
 
-/** Only the known, query-free Home route can contain the recorder. */
+const publicLandingPaths = ["/landing/v1", "/landing/v8"];
+const publicLandingAnchors = [
+  "#v1-top",
+  "#v8-top",
+  "#benefits",
+  "#scenarios",
+  "#how-it-works",
+  "#assistants",
+  "#demo",
+  "#gift",
+  "#faq",
+];
+/** Known public routes only. Product query/hash URLs remain excluded. */
 export function analyticsLocationAllowed(value: AnalyticsLocation): boolean {
   return (
     [
@@ -99,9 +113,10 @@ export function analyticsLocationAllowed(value: AnalyticsLocation): boolean {
       "https://app.xn--c1ajazlh.xn--p1ai",
       "https://xn--c1ajazlh.xn--p1ai",
     ].includes(value.origin) &&
-    value.pathname === "/" &&
     value.search === "" &&
-    value.hash === ""
+    ((value.pathname === "/" && value.hash === "") ||
+      (publicLandingPaths.includes(value.pathname) &&
+        (value.hash === "" || publicLandingAnchors.includes(value.hash))))
   );
 }
 
@@ -132,12 +147,16 @@ export function contentFreeParams(value: unknown): ProductEventParams | null {
     typeof value !== "object" ||
     Array.isArray(value) ||
     Object.keys(value).some(
-      (key) => !["surface", "mode", "assistant"].includes(key),
+      (key) =>
+        !["surface", "mode", "assistant", "landingVersion"].includes(key),
     )
   )
     return null;
   const params = value as Record<string, unknown>;
   if (
+    (params.landingVersion !== undefined &&
+      params.landingVersion !== "v1" &&
+      params.landingVersion !== "v8") ||
     (params.surface !== undefined &&
       !analyticsSurfaces.includes(params.surface as AnalyticsSurface)) ||
     (params.mode !== undefined && !modes.includes(params.mode as string)) ||
@@ -147,6 +166,8 @@ export function contentFreeParams(value: unknown): ProductEventParams | null {
     return null;
   // Construct a new allowlisted record; never copy extra/symbol properties.
   const clean: ProductEventParams = {};
+  if (params.landingVersion !== undefined)
+    clean.landingVersion = params.landingVersion as "v1" | "v8";
   if (params.surface !== undefined)
     clean.surface = params.surface as AnalyticsSurface;
   if (params.mode !== undefined)
@@ -180,6 +201,7 @@ export function createProductAnalytics(
   config: ProductAnalyticsConfig,
   send: YandexMetrika,
   location: AnalyticsLocation,
+  landingVersion?: "v1" | "v8",
 ) {
   let active = false;
   let surface: AnalyticsSurface | null = null;
@@ -203,6 +225,9 @@ export function createProductAnalytics(
         !Number.isSafeInteger(config.counterId) ||
         config.counterId < 1 ||
         !analyticsLocationAllowed(location) ||
+        (landingVersion !== undefined &&
+          landingVersion !== "v1" &&
+          landingVersion !== "v8") ||
         (identity !== null && !isAnalyticsIdentity(identity))
       )
         return false;
@@ -230,10 +255,13 @@ export function createProductAnalytics(
     view(next: AnalyticsSurface): boolean {
       if (!analyticsSurfaces.includes(next) || !active || next === surface)
         return false;
-      const sent = call("hit", location.origin + "/", {
+      const sent = call("hit", location.origin + location.pathname, {
         title: "CityGo",
         referer: "",
-        params: { surface: next },
+        params: {
+          surface: next,
+          ...(landingVersion ? { landingVersion } : {}),
+        },
       });
       if (sent) surface = next;
       return sent;
@@ -249,7 +277,10 @@ export function createProductAnalytics(
       // Correlation keys are memory-only and are NEVER sent to the collector.
       const key = onceKey === undefined ? null : name + ":" + onceKey;
       if (key !== null && (key.length > 200 || seen.has(key))) return false;
-      const sent = call("reachGoal", "citygo_" + name, params);
+      const sent = call("reachGoal", "citygo_" + name, {
+        ...params,
+        ...(landingVersion ? { landingVersion } : {}),
+      });
       if (sent && key !== null) {
         if (seen.size >= 200) seen.delete(seen.values().next().value!);
         seen.add(key);
@@ -290,6 +321,7 @@ export function createRegistrationProductFlow(now = Date.now) {
     challengeId?: string;
     preparedOwner?: string;
     transferred: boolean;
+    landingVersion?: "v1" | "v8";
   };
   let current: Flow | null = null;
   let sequence = 0;
@@ -302,15 +334,25 @@ export function createRegistrationProductFlow(now = Date.now) {
     return current;
   }
   return {
-    begin(signal: AbortSignal): RegistrationAnalyticsFlow | null {
+    begin(
+      signal: AbortSignal,
+      landingVersion?: "v1" | "v8",
+    ): RegistrationAnalyticsFlow | null {
       clear();
-      if (signal.aborted) return null;
+      if (
+        signal.aborted ||
+        (landingVersion !== undefined &&
+          landingVersion !== "v1" &&
+          landingVersion !== "v8")
+      )
+        return null;
       const handle = Object.freeze({ key: Symbol("registration-flow") });
       const flow: Flow = {
         handle,
         signal,
         at: now(),
         transferred: false,
+        ...(landingVersion ? { landingVersion } : {}),
         stages: [
           {
             event: "registration_started",
@@ -411,7 +453,17 @@ export function createRegistrationProductFlow(now = Date.now) {
         return [];
       return flow.stages
         .filter((stage) => !stage.submitted)
-        .map(({ event, onceKey }) => ({ event, onceKey }));
+        .map(({ event, onceKey }) => ({
+          event,
+          onceKey,
+          ...(flow.landingVersion
+            ? { landingVersion: flow.landingVersion }
+            : {}),
+        }));
+    },
+    landingVersion(handle: RegistrationAnalyticsFlow) {
+      const flow = fresh();
+      return flow?.handle === handle ? flow.landingVersion : undefined;
     },
     submitted(onceKey?: string) {
       const stage = fresh()?.stages.find((value) => value.onceKey === onceKey);

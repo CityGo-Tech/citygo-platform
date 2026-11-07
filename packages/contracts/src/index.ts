@@ -2,6 +2,7 @@ import { z } from "zod";
 export * from "./platform.js";
 export * from "./chat-limits.js";
 export * from "./email-registration.js";
+export * from "./landing-attribution.js";
 export * from "./account-profile.js";
 export * from "./service-consents.js";
 export * from "./password-recovery.js";

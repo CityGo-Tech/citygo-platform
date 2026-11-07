@@ -127,6 +127,7 @@ export function registerEmailRegistration(
       recipientKey: digest("registration-recipient", input.email),
       ipKey: digest("registration-ip", request.ip),
       consents: input.consents,
+      landingAttribution: input.landingAttribution,
     });
     await deliver(id, input.email, otp, codeHash, result.expiresAt);
     return {

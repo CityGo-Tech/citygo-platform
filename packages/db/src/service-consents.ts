@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { recordUserAcquisition } from "./landing-attribution.js";
 import {
   serviceConsentChoiceSchema,
   serviceConsentPolicy,
@@ -304,6 +305,7 @@ export class ServiceConsents {
     passwordHash: string,
     sessionHash: string,
     raw: unknown,
+    landingAttribution?: unknown,
   ) {
     return this.db.transaction(async (tx) => {
       const context = await readServiceConsentContext(tx, this.resolveAiPolicy);
@@ -326,6 +328,7 @@ export class ServiceConsents {
           [randomUUID()],
         )
       ).rows[0]!;
+      await recordUserAcquisition(tx, user.id, landingAttribution);
       await tx.query(
         "insert into user_credentials(user_id,email,password_hash) values ($1,$2,$3)",
         [user.id, email, passwordHash],
