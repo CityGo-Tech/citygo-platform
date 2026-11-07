@@ -80,6 +80,7 @@ function harness() {
     dispatchEvent: target.dispatchEvent.bind(target),
   };
   const doc = {
+    cookie: "",
     referrer: "",
     querySelector: () => (masked ? {} : null),
     createElement: () => ({ remove() {} }),
@@ -109,6 +110,12 @@ function harness() {
       if (name === "@citygo/contracts")
         return { customerInteractionNameSchema };
       if (name === "./product-analytics") return product;
+      if (name === "./landing/landing-attribution")
+        return {
+          clearBrowserLandingAttribution: () => {
+            doc.cookie = "";
+          },
+        };
       if (name === "react")
         return {
           useRef(value: unknown) {

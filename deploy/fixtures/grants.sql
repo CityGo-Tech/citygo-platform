@@ -10,6 +10,11 @@ revoke delete on ai_credit_charges from citygo_api;
 -- Match production consent evidence permissions despite the broad synthetic
 -- fixture grant above. The runtime must only read and append these records.
 revoke update, delete, truncate on service_consent_events from citygo_api;
+-- 0050 CHECK calls this invoker validator even for an unattributed SQL NULL.
+-- Match production's append/read-only first-touch boundary inside the fixture.
+revoke all on user_acquisition from citygo_api, citygo_worker;
+grant select, insert on user_acquisition to citygo_api;
+grant execute on function citygo_valid_landing_attribution(jsonb) to citygo_api;
 -- Match the production private memory index's append-only boundary.
 revoke update, delete, truncate on conversation_memory_fragments from citygo_api;
 grant select, delete on sessions, analytics_events to citygo_worker;

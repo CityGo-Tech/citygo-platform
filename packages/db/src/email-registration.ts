@@ -2,6 +2,8 @@ import { randomUUID, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import {
   serviceConsentChoiceSchema,
+  landingAttributionSchema,
+  type LandingAttribution,
   type ServiceConsentChoice,
   type ServiceConsentPolicy,
 } from "@citygo/contracts";
@@ -17,6 +19,7 @@ import {
 import type { Database, Sql } from "./index.js";
 import type { AccountInfo } from "./account-access.js";
 import { DomainError } from "./errors.js";
+import { recordUserAcquisition } from "./landing-attribution.js";
 
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
 const idSchema = z.uuid();
@@ -29,6 +32,7 @@ const beginSchema = z.strictObject({
   recipientKey: digest,
   ipKey: digest,
   consents: serviceConsentChoiceSchema,
+  landingAttribution: landingAttributionSchema.optional(),
 });
 const resendSchema = z.strictObject({
   id: idSchema,
@@ -61,6 +65,7 @@ type PendingRegistration = {
   consent_policy: ServiceConsentPolicy | null;
   consent_policy_hash: string | null;
   consent_recorded_at: string | null;
+  landing_attribution: LandingAttribution | null;
 };
 
 function invalid() {
@@ -111,7 +116,7 @@ async function pending(tx: Sql, id: string) {
        to_char(expires_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "expiresAt",
        expires_at<=clock_timestamp() as expired,consumed_user_id::text,
        consent_choice,consent_policy,consent_policy_hash,
-       consent_recorded_at::text
+       consent_recorded_at::text,landing_attribution
        from email_registrations where id=$1 for update`,
       [id],
     )
@@ -239,8 +244,8 @@ export class EmailRegistration {
       );
       return (
         await tx.query<{ id: string; expiresAt: string }>(
-          `insert into email_registrations(id,email,password_hash,proof_hash,code_hash,recipient_key,expires_at,consent_choice,consent_policy,consent_policy_hash,consent_recorded_at)
-           values ($1,$2,$3,$4,$5,$6,clock_timestamp()+interval '10 minutes',$7::jsonb,$8::jsonb,$9,clock_timestamp())
+          `insert into email_registrations(id,email,password_hash,proof_hash,code_hash,recipient_key,expires_at,consent_choice,consent_policy,consent_policy_hash,consent_recorded_at,landing_attribution)
+           values ($1,$2,$3,$4,$5,$6,clock_timestamp()+interval '10 minutes',$7::jsonb,$8::jsonb,$9,clock_timestamp(),$10::jsonb)
            returning id::text,to_char(expires_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "expiresAt"`,
           [
             input.id,
@@ -252,6 +257,9 @@ export class EmailRegistration {
             JSON.stringify(input.consents),
             JSON.stringify(context.policy),
             consentPolicyHash(context.policy),
+            input.landingAttribution
+              ? JSON.stringify(input.landingAttribution)
+              : null,
           ],
         )
       ).rows[0]!;
@@ -351,6 +359,7 @@ export class EmailRegistration {
           [randomUUID()],
         )
       ).rows[0]!;
+      await recordUserAcquisition(tx, user.id, current.landing_attribution);
       await tx.query(
         "insert into user_credentials(user_id,email,password_hash) values ($1,$2,$3)",
         [user.id, current.email, current.password_hash],

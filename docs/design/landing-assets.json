@@ -1,0 +1,378 @@
+{
+  "schema": "citygo-landing-assets-1",
+  "date": "2026-11-07",
+  "figmaFile": "VYGmmIbd0HcK6I9m5bUSpS",
+  "referenceNodes": {
+    "v1Desktop": "7:2",
+    "v1Mobile": "7:203",
+    "v8Desktop": "186:116",
+    "v8Mobile": "186:6"
+  },
+  "assets": [
+    {
+      "slot": "logo",
+      "repoPath": "apps/web/public/landing/brand-logo.png",
+      "runtimePath": "/landing/brand-logo.png",
+      "bytes": 52265,
+      "dimensions": {
+        "width": 768,
+        "height": 160,
+        "format": "PNG",
+        "mode": "RGBA"
+      },
+      "sha256": "db5525b2c37c932484c0a4e4816a869136f87c31ddb324ad67b8e6f064c7e907",
+      "figmaImageHash": "9f24d2394e7143bca96ab7a6c28114fe919358c5",
+      "usedNodes": [
+        {
+          "context": "desktop",
+          "sourceFile": "output/CityGo-Landing-Implementation-20261107/v1-desktop-figma.tsx",
+          "sourceLine": 72,
+          "nodeId": "I7:5;4:14",
+          "slotName": "Brand logo / transparent PNG",
+          "designGeometryPx": {
+            "width": 200,
+            "height": 41.667,
+            "objectFit": "contain"
+          }
+        },
+        {
+          "context": "desktop",
+          "sourceFile": "output/CityGo-Landing-Implementation-20261107/v1-desktop-figma.tsx",
+          "sourceLine": 106,
+          "nodeId": "I7:24;4:14",
+          "slotName": "Brand logo / transparent PNG",
+          "designGeometryPx": {
+            "width": 120,
+            "height": 25,
+            "objectFit": "contain"
+          }
+        },
+        {
+          "context": "desktop",
+          "sourceFile": "output/CityGo-Landing-Implementation-20261107/v1-desktop-figma.tsx",
+          "sourceLine": 271,
+          "nodeId": "I7:94;4:14",
+          "slotName": "Brand logo / transparent PNG",
+          "designGeometryPx": {
+            "width": 120,
+            "height": 25,
+            "objectFit": "contain"
+          }
+        },
+        {
+          "context": "desktop",
+          "sourceFile": "output/CityGo-Landing-Implementation-20261107/v1-desktop-figma.tsx",
+          "sourceLine": 544,
+          "nodeId": "I7:200;4:14",
+          "slotName": "Brand logo / transparent PNG",
+          "designGeometryPx": {
+            "width": 170,
+            "height": 35.417,
+            "objectFit": "contain"
+          }
+        },
+        {
+          "context": "mobile",
+          "sourceFile": "output/CityGo-Landing-Implementation-20261107/v1-mobile-figma.tsx",
+          "sourceLine": 72,
+          "nodeId": "I7:206;4:14",
+          "slotName": "Brand logo / transparent PNG",
+          "designGeometryPx": {
+            "width": 156,
+            "height": 32.5,
+            "objectFit": "contain"
+          }
+        },
+        {
+          "context": "mobile",
+          "sourceFile": "output/CityGo-Landing-Implementation-20261107/v1-mobile-figma.tsx",
+          "sourceLine": 101,
+          "nodeId": "I7:222;4:14",
+          "slotName": "Brand logo / transparent PNG",
+          "designGeometryPx": {
+            "width": 120,
+            "height": 25,
+            "objectFit": "contain"
+          }
+        },
+        {
+          "context": "mobile",
+          "sourceFile": "output/CityGo-Landing-Implementation-20261107/v1-mobile-figma.tsx",
+          "sourceLine": 365,
+          "nodeId": "I7:328;4:14",
+          "slotName": "Brand logo / transparent PNG",
+          "designGeometryPx": {
+            "width": 170,
+            "height": 35.417,
+            "objectFit": "contain"
+          }
+        }
+      ]
+    },
+    {
+      "slot": "coordinator",
+      "repoPath": "apps/web/public/landing/coordinator.jpg",
+      "runtimePath": "/landing/coordinator.jpg",
+      "bytes": 16146,
+      "dimensions": {
+        "width": 384,
+        "height": 384,
+        "format": "JPEG",
+        "mode": "RGB"
+      },
+      "sha256": "f995efe52643105a05eadef94f5541258da4313761cb152ab416f85e3afd76e0",
+      "figmaImageHash": "fcc0b7783eb0a0e53eaaabe35cfbe5fd4d615620",
+      "usedNodes": [
+        {
+          "context": "desktop",
+          "sourceFile": "output/CityGo-Landing-Implementation-20261107/v1-desktop-figma.tsx",
+          "sourceLine": 114,
+          "nodeId": "7:29",
+          "slotName": "Координатор CityGo",
+          "designGeometryPx": {
+            "width": 64,
+            "height": 64,
+            "objectFit": "cover"
+          }
+        },
+        {
+          "context": "desktop",
+          "sourceFile": "output/CityGo-Landing-Implementation-20261107/v1-desktop-figma.tsx",
+          "sourceLine": 279,
+          "nodeId": "7:99",
+          "slotName": "Координатор CityGo",
+          "designGeometryPx": {
+            "width": 64,
+            "height": 64,
+            "objectFit": "cover"
+          }
+        },
+        {
+          "context": "desktop",
+          "sourceFile": "output/CityGo-Landing-Implementation-20261107/v1-desktop-figma.tsx",
+          "sourceLine": 366,
+          "nodeId": "7:130",
+          "slotName": "Портрет / Координатор",
+          "designGeometryPx": {
+            "width": 254,
+            "height": 230,
+            "objectFit": "cover"
+          }
+        },
+        {
+          "context": "desktop",
+          "sourceFile": "output/CityGo-Landing-Implementation-20261107/v1-desktop-figma.tsx",
+          "sourceLine": 419,
+          "nodeId": "7:150",
+          "slotName": "Портрет координатора",
+          "designGeometryPx": {
+            "width": 180,
+            "height": 180,
+            "objectFit": "cover"
+          }
+        },
+        {
+          "context": "mobile",
+          "sourceFile": "output/CityGo-Landing-Implementation-20261107/v1-mobile-figma.tsx",
+          "sourceLine": 109,
+          "nodeId": "7:227",
+          "slotName": "Координатор CityGo",
+          "designGeometryPx": {
+            "width": 64,
+            "height": 64,
+            "objectFit": "cover"
+          }
+        },
+        {
+          "context": "mobile",
+          "sourceFile": "output/CityGo-Landing-Implementation-20261107/v1-mobile-figma.tsx",
+          "sourceLine": 246,
+          "nodeId": "7:279",
+          "slotName": "Портрет Координатор",
+          "designGeometryPx": {
+            "width": 70,
+            "height": 70,
+            "objectFit": "cover"
+          }
+        }
+      ]
+    },
+    {
+      "slot": "moscow",
+      "repoPath": "apps/web/public/landing/moscow-cc0-the-genji-2024.jpg",
+      "runtimePath": "/landing/moscow-cc0-the-genji-2024.jpg",
+      "bytes": 3637215,
+      "dimensions": {
+        "width": 4032,
+        "height": 3024,
+        "format": "JPEG",
+        "mode": "RGB"
+      },
+      "sha256": "ff20078f9421a8b1d9b51af29afe82993fe5c97356f01d8f7caae6a742827c89",
+      "figmaImageHash": "bd30d20657bd1287a47fc83352259393a29cb3f2",
+      "usedNodes": [
+        {
+          "context": "desktop",
+          "sourceFile": "output/CityGo-Landing-Implementation-20261107/v1-desktop-figma.tsx",
+          "sourceLine": 179,
+          "nodeId": "12:21",
+          "slotName": "Москва · фотография CC0, The Genji, май 2024",
+          "designGeometryPx": {
+            "width": 1440,
+            "height": 460,
+            "objectFit": "cover"
+          }
+        },
+        {
+          "context": "mobile",
+          "sourceFile": "output/CityGo-Landing-Implementation-20261107/v1-mobile-figma.tsx",
+          "sourceLine": 151,
+          "nodeId": "12:27",
+          "slotName": "Москва · фотография CC0, The Genji, май 2024",
+          "designGeometryPx": {
+            "width": 390,
+            "height": 360,
+            "objectFit": "cover"
+          }
+        }
+      ]
+    },
+    {
+      "slot": "housing",
+      "repoPath": "apps/web/public/landing/housing-assistant.jpg",
+      "runtimePath": "/landing/housing-assistant.jpg",
+      "bytes": 16393,
+      "dimensions": {
+        "width": 384,
+        "height": 384,
+        "format": "JPEG",
+        "mode": "RGB"
+      },
+      "sha256": "2fe74b466720b7340c1de201f7ba92f2371bba1c785110f5a21e11bb6f977eff",
+      "figmaImageHash": "2777f739a39fe9c392227bb399302b777cdada71",
+      "usedNodes": [
+        {
+          "context": "desktop",
+          "sourceFile": "output/CityGo-Landing-Implementation-20261107/v1-desktop-figma.tsx",
+          "sourceLine": 377,
+          "nodeId": "7:134",
+          "slotName": "Портрет / Жильё",
+          "designGeometryPx": {
+            "width": 254,
+            "height": 230,
+            "objectFit": "cover"
+          }
+        },
+        {
+          "context": "mobile",
+          "sourceFile": "output/CityGo-Landing-Implementation-20261107/v1-mobile-figma.tsx",
+          "sourceLine": 259,
+          "nodeId": "7:284",
+          "slotName": "Портрет Жильё",
+          "designGeometryPx": {
+            "width": 70,
+            "height": 70,
+            "objectFit": "cover"
+          }
+        }
+      ]
+    },
+    {
+      "slot": "work",
+      "repoPath": "apps/web/public/landing/work-assistant.jpg",
+      "runtimePath": "/landing/work-assistant.jpg",
+      "bytes": 16436,
+      "dimensions": {
+        "width": 384,
+        "height": 384,
+        "format": "JPEG",
+        "mode": "RGB"
+      },
+      "sha256": "4f8cc19e87b6cdb62ccf6281e8c814ef0f952eb3a38cbc6fb0d13ed4933fe67c",
+      "figmaImageHash": "1da9011013695c078621bde37abb57e5cbe74d13",
+      "usedNodes": [
+        {
+          "context": "desktop",
+          "sourceFile": "output/CityGo-Landing-Implementation-20261107/v1-desktop-figma.tsx",
+          "sourceLine": 388,
+          "nodeId": "7:138",
+          "slotName": "Портрет / Работа",
+          "designGeometryPx": {
+            "width": 254,
+            "height": 230,
+            "objectFit": "cover"
+          }
+        },
+        {
+          "context": "mobile",
+          "sourceFile": "output/CityGo-Landing-Implementation-20261107/v1-mobile-figma.tsx",
+          "sourceLine": 272,
+          "nodeId": "7:289",
+          "slotName": "Портрет Работа",
+          "designGeometryPx": {
+            "width": 70,
+            "height": 70,
+            "objectFit": "cover"
+          }
+        }
+      ]
+    },
+    {
+      "slot": "resume",
+      "repoPath": "apps/web/public/landing/resume-assistant.jpg",
+      "runtimePath": "/landing/resume-assistant.jpg",
+      "bytes": 19554,
+      "dimensions": {
+        "width": 384,
+        "height": 384,
+        "format": "JPEG",
+        "mode": "RGB"
+      },
+      "sha256": "96c7ad1eba3c50a677e7d43cab106ff0769b121fa5cd50c11fd55275be43814c",
+      "figmaImageHash": "4df2bf78c2756b7cf5ef075a782ae0509816f8b4",
+      "usedNodes": [
+        {
+          "context": "desktop",
+          "sourceFile": "output/CityGo-Landing-Implementation-20261107/v1-desktop-figma.tsx",
+          "sourceLine": 399,
+          "nodeId": "7:142",
+          "slotName": "Портрет / Резюме",
+          "designGeometryPx": {
+            "width": 254,
+            "height": 230,
+            "objectFit": "cover"
+          }
+        },
+        {
+          "context": "mobile",
+          "sourceFile": "output/CityGo-Landing-Implementation-20261107/v1-mobile-figma.tsx",
+          "sourceLine": 285,
+          "nodeId": "7:294",
+          "slotName": "Портрет Резюме",
+          "designGeometryPx": {
+            "width": 70,
+            "height": 70,
+            "objectFit": "cover"
+          }
+        }
+      ]
+    }
+  ],
+  "font": {
+    "path": "apps/web/src/app/fonts/Manrope.ttf",
+    "source": "Existing CityGo asset, reused through root next/font/local"
+  },
+  "video": {
+    "path": "apps/web/public/landing/citygo-demo.mp4",
+    "durationSeconds": 42,
+    "dimensions": [1080, 1920],
+    "source": "Owner's approved controlled demonstration v5, 2026-11-04; synthetic example, no customer testimonial"
+  },
+  "moscowPhoto": {
+    "title": "Skyline Moscow May 2024",
+    "author": "The Genji",
+    "source": "https://commons.wikimedia.org/wiki/File:Skyline_Moscow_May_2024.jpg",
+    "license": "CC0 1.0",
+    "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/"
+  }
+}

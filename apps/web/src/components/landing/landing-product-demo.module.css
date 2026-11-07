@@ -1,0 +1,137 @@
+.demo {
+  display: flex;
+  min-width: 0;
+  width: 100%;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--cg-space-comfortable, 20px);
+  padding: 23px;
+  border: 1px solid var(--cg-campaign-border, #dfe2ed);
+  border-radius: 28px;
+  background: #fff;
+  color: var(--cg-campaign-ink, #191a2d);
+  font-size: 16px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.demo p {
+  margin: 0;
+  color: inherit;
+  font-size: inherit;
+  line-height: inherit;
+}
+
+.navigation {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--cg-space-md, 16px);
+  min-width: 0;
+}
+
+.navigation > :first-child {
+  flex: 0 0 120px;
+  height: auto;
+}
+
+.navigation > span {
+  flex: 1;
+  min-width: 0;
+  color: var(--cg-campaign-muted, #60667d);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.divider {
+  height: 1px;
+  background: var(--cg-campaign-border, #dfe2ed);
+}
+
+.assistant {
+  display: flex;
+  gap: var(--cg-space-md, 16px);
+  align-items: flex-start;
+  min-width: 0;
+}
+
+.assistant > img {
+  width: 64px;
+  height: 64px;
+  flex: 0 0 64px;
+  border-radius: 20px;
+  object-fit: cover;
+}
+
+.assistant > p {
+  flex: 1;
+  min-width: 0;
+  font-weight: 700;
+}
+
+.bubble {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--cg-space-sm, 8px);
+  padding: var(--cg-space-md, 16px);
+  border-radius: 20px;
+}
+
+.question {
+  background: var(--cg-campaign-soft, #f1f3ff);
+  font-weight: 500;
+}
+
+.demo .label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--cg-campaign-primary, #4055d9);
+}
+
+.answer {
+  gap: var(--cg-space-compact, 12px);
+  background: var(--cg-campaign-canvas, #f7f8fc);
+}
+
+.answerMain {
+  font-weight: 700;
+}
+
+.demo .answerDetail {
+  color: var(--cg-campaign-muted, #60667d);
+  font-size: 15px;
+}
+
+.saved {
+  background: var(--cg-campaign-mint, #e5f3e9);
+  font-weight: 700;
+}
+
+.demo .savedLabel {
+  font-size: 11px;
+  color: var(--cg-campaign-primary, #4055d9);
+}
+
+.demo .savedTitle {
+  font-size: 17px;
+}
+
+.demo .caption {
+  color: var(--cg-campaign-muted, #60667d);
+  font-size: 11px;
+}
+
+@media (max-width: 359px) {
+  .demo {
+    padding: 19px;
+  }
+
+  .navigation {
+    gap: 12px;
+  }
+
+  .navigation > :first-child {
+    flex-basis: 100px;
+    max-width: 100px;
+  }
+}

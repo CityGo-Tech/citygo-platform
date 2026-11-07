@@ -1,5 +1,11 @@
 "use client";
 import { initialWebAiMode } from "../components/ai-mode-preference";
+import {
+  readBrowserLandingAttribution,
+  clearBrowserLandingAttribution,
+  consumeLandingLoginIntent,
+  browserAcquisitionAllowed,
+} from "../components/landing/landing-attribution";
 import { BalanceHistoryPanel } from "../components/balance-history";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
@@ -114,6 +120,10 @@ export default function Home() {
   );
   const [registration, setRegistration] =
     useState<PendingEmailRegistration | null>(null);
+  useEffect(() => {
+    if (consumeLandingLoginIntent()) setMode("login");
+    if (!browserAcquisitionAllowed()) clearBrowserLandingAttribution();
+  }, []);
   const registrationAnalytics = useRef<RegistrationAnalyticsFlow | null>(null);
   const authPending = useRef(false);
   const [passwordOpen, setPasswordOpen] = useState(false);
@@ -722,6 +732,8 @@ export default function Home() {
     if (mode === "register" && !consents) return;
     const data = new FormData(event.currentTarget);
     const authMode = mode;
+    const landingAttribution =
+      authMode === "register" ? readBrowserLandingAttribution() : undefined;
     const email = String(data.get("email"));
     let password = String(data.get("password"));
     data.delete("password");
@@ -730,6 +742,7 @@ export default function Home() {
     if (authMode === "register")
       registrationAnalytics.current = analytics.beginRegistration(
         session.capture().signal,
+        landingAttribution?.landingVersion,
       );
     authPending.current = true;
     void act(async (ticket) => {
@@ -752,6 +765,7 @@ export default function Home() {
               email,
               password,
               consents!,
+              landingAttribution,
             );
             ticket.check();
             setRegistration(
@@ -771,6 +785,7 @@ export default function Home() {
           email,
           password,
           consents,
+          landingAttribution,
         );
         ticket.check();
         accepted = true;
@@ -790,6 +805,7 @@ export default function Home() {
           ticket.signal,
           flow,
         );
+        clearBrowserLandingAttribution();
         await refresh(ticket);
       } catch (cause) {
         if (ticket.active() && !accepted)
@@ -865,6 +881,7 @@ export default function Home() {
           confirmed.signal,
           flow,
         );
+        clearBrowserLandingAttribution();
         setBusy(true);
         try {
           await refresh(confirmed);

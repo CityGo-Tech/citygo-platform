@@ -33,7 +33,7 @@ test("exact disposable rewinds reject populated personal-plan history and tombst
   await migrate(db);
   assert.equal(
     (await db.query("select name from citygo_migrations")).rows.length,
-    49,
+    50,
   );
   const owner = await new Repository(db).register(
     "plan-rewind@example.test",
@@ -73,7 +73,7 @@ test("exact disposable rewinds reject populated personal-plan history and tombst
       "utf8",
     );
     const match =
-      /psql\(\s*`(begin;\s*-- 0047 private memory[\s\S]*?commit)`/.exec(source);
+      /psql\(\s*`(begin;\s*-- 0050 can be rewound[\s\S]*?commit)`/.exec(source);
     assert.ok(match, "Execute the exact static fixture SQL, not a second copy");
     assert.equal(match[1]!.includes("${"), false);
     rewinds.push({ name: file, sql: match[1]! });

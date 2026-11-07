@@ -6,6 +6,7 @@ import type { AccountResetBlocker } from "./account-reset.js";
 // One operator-only transition before the FIRST administrator bootstrap. This
 // is not account deletion, a public erasure API, a migration, or a reset job.
 const tables = [
+  "user_acquisition",
   "human_support_requests",
   "human_support_replies",
   "human_support_reads",
@@ -155,6 +156,7 @@ const retainedTables = [
 // Deliberate FK order. Housing revisions/commands cascade only from their brief,
 // never from users or threads (which would also cascade accounting attempts).
 const erasedTables = [
+  "user_acquisition",
   "sessions",
   "user_credentials",
   "messages",

@@ -5,7 +5,6 @@ import { readFile, readdir } from "node:fs/promises";
 import {
   AccountProfile,
   AiCreditLedger,
-  EmailRegistration,
   PasswordRecovery,
   PhoneVerification,
   configurePhoneVerification,
@@ -15,7 +14,10 @@ import {
   migrate,
   type Database,
 } from "./index.js";
-import { syntheticServiceConsents } from "./test-service-consents.js";
+import {
+  syntheticServiceConsents,
+  seedPre50EmailRegistration,
+} from "./test-service-consents.js";
 const h = (s: string) => createHash("sha256").update(s).digest("hex");
 const status = (n: number) => (e: unknown) =>
   e instanceof DomainError && e.statusCode === n;
@@ -461,25 +463,17 @@ test("schema30 registration evidence upgrades unchanged; XOR and proof guards re
         .replace(/^begin;\s*/i, "")
         .replace(/commit;\s*$/i, ""),
     );
-  const r = new EmailRegistration(db),
-    input = {
-      id: randomUUID(),
-      email: "old-verified@example.test",
-      passwordHash: "old-hash",
-      proofHash: h("p"),
-      codeHash: h("c"),
-      recipientKey: h("r"),
-      ipKey: h("i"),
-      consents: syntheticServiceConsents,
-    };
-  await r.begin(input);
-  await r.markSent(input.id, input.codeHash);
-  const user = await r.confirm({
-    id: input.id,
-    proofHash: input.proofHash,
-    codeHash: input.codeHash,
-    sessionHash: h("old-session"),
-  });
+  const input = {
+    id: randomUUID(),
+    email: "old-verified@example.test",
+    passwordHash: "old-hash",
+    proofHash: h("p"),
+    codeHash: h("c"),
+    recipientKey: h("r"),
+    ipKey: h("i"),
+    consents: syntheticServiceConsents,
+  };
+  const user = await seedPre50EmailRegistration(db, input, h("old-session"));
   const before = (
     await db.query(
       "select user_id::text,registration_id::text,email,verified_at::text from account_email_verifications",

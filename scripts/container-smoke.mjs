@@ -137,7 +137,7 @@ try {
   compose(["up", "-d", "--wait", "--wait-timeout", "90", "postgres"]);
   compose(["run", "--rm", "--no-deps", "migrator"]);
   const migrations = psql("select count(*) from citygo_migrations");
-  assert.equal(migrations, "49");
+  assert.equal(migrations, "50");
   compose(["run", "--rm", "--no-deps", "migrator"]);
   assert.equal(psql("select count(*) from citygo_migrations"), migrations);
   compose([
@@ -193,6 +193,67 @@ try {
   assert.equal((await request("/")).status, 200);
   assert.equal((await request("/characters/housing-192.webp")).status, 200);
   assert.equal((await request("/figma/housing-navigator.png")).status, 200);
+  const landingV1 = await request("/landing/v1");
+  assert.equal(landingV1.status, 200);
+  assert.match(
+    await landingV1.text(),
+    /data-citygo-public-landing="v1"/,
+    "The built Web image serves the native public V1 page",
+  );
+  const landingLogo = await request("/landing/brand-logo.png");
+  assert.equal(landingLogo.status, 200);
+  assert.match(landingLogo.headers.get("content-type") ?? "", /^image\/png/);
+  assert.equal(
+    Buffer.from(await landingLogo.arrayBuffer())
+      .subarray(0, 8)
+      .toString("hex"),
+    "89504e470d0a1a0a",
+  );
+  const landingVideo = await request("/landing/citygo-demo.mp4", {
+    headers: { range: "bytes=0-31" },
+  });
+  assert.ok([200, 206].includes(landingVideo.status));
+  assert.match(landingVideo.headers.get("content-type") ?? "", /^video\/mp4/);
+  assert.equal(
+    Buffer.from(await landingVideo.arrayBuffer())
+      .subarray(4, 8)
+      .toString(),
+    "ftyp",
+    "The built Web image serves MP4 bytes rather than an HTML fallback",
+  );
+  const landingBridge = await fetch(
+    url +
+      "/landing/start?landing=v1&utm_source=vk&utm_campaign=container-smoke&utm_content=case&utm_term=discard-me&email=synthetic%40example.test&returnTo=https%3A%2F%2Funtrusted.example%2F",
+    { redirect: "manual", signal: AbortSignal.timeout(10000) },
+  );
+  assert.equal(landingBridge.status, 303);
+  const landingTarget = new URL(landingBridge.headers.get("location"), url);
+  assert.equal(landingTarget.origin, new URL(url).origin);
+  assert.equal(landingTarget.pathname, "/");
+  assert.equal(landingTarget.search, "");
+  assert.equal(landingTarget.hash, "");
+  assert.match(landingBridge.headers.get("cache-control") ?? "", /no-store/);
+  const landingCookies = landingBridge.headers
+    .getSetCookie()
+    .filter((value) => value.startsWith("citygo_landing_attribution="));
+  assert.equal(landingCookies.length, 1);
+  const landingCookie = landingCookies[0];
+  assert.deepEqual(
+    JSON.parse(
+      decodeURIComponent(
+        landingCookie
+          .split(";", 1)[0]
+          .slice("citygo_landing_attribution=".length),
+      ),
+    ),
+    {
+      landingVersion: "v1",
+      source: "vk",
+      campaignId: "container-smoke",
+      content: "case",
+    },
+    "Only bounded allowlisted acquisition fields survive the query-free bridge",
+  );
   assert.equal((await (await request("/api/ready")).json()).status, "ok");
   assert.equal((await request("/api/v1/dashboard")).status, 401);
   const credentials = {

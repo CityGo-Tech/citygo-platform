@@ -15,7 +15,10 @@ import {
   type PhoneVerificationContext,
   type PhoneVerificationPolicy,
 } from "./index.js";
-import { syntheticServiceConsents } from "./test-service-consents.js";
+import {
+  syntheticServiceConsents,
+  seedPre50EmailRegistration,
+} from "./test-service-consents.js";
 const hash = (s: string) => createHash("sha256").update(s).digest("hex");
 const status = (code: number) => (e: unknown) =>
   e instanceof DomainError && e.statusCode === code;
@@ -44,7 +47,10 @@ const confirm = (v: ReturnType<typeof input>) => ({
   proofHash: v.proofHash,
   codeHash: v.codeHash,
 });
-async function user(db: Database): Promise<PhoneVerificationContext> {
+async function user(
+  db: Database,
+  historical = false,
+): Promise<PhoneVerificationContext> {
   const id = randomUUID(),
     sessionTokenHash = hash(id),
     r = new EmailRegistration(db),
@@ -58,14 +64,18 @@ async function user(db: Database): Promise<PhoneVerificationContext> {
       recipientKey: hash(id),
       ipKey: hash(id + "ip"),
     };
-  await r.begin(v);
-  await r.markSent(v.id, v.codeHash);
-  const u = await r.confirm({
-    id: v.id,
-    proofHash: v.proofHash,
-    codeHash: v.codeHash,
-    sessionHash: sessionTokenHash,
-  });
+  const u = historical
+    ? await seedPre50EmailRegistration(db, v, sessionTokenHash)
+    : await (async () => {
+        await r.begin(v);
+        await r.markSent(v.id, v.codeHash);
+        return r.confirm({
+          id: v.id,
+          proofHash: v.proofHash,
+          codeHash: v.codeHash,
+          sessionHash: sessionTokenHash,
+        });
+      })();
   return { userId: u.id, sessionTokenHash };
 }
 async function unchanged(db: Database) {
@@ -381,7 +391,7 @@ test("schema31 exact proof backfills only a contact, while broken consumed evide
     );
   }
   await configurePhoneVerification(db, policy);
-  const ctx = await user(db),
+  const ctx = await user(db, true),
     v = input(),
     op = randomUUID();
   const fingerprint = (

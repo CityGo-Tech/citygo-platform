@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { landingAttributionSchema } from "./landing-attribution.js";
 import {
   accountUserSchema,
   registrationCredentialsSchema,
@@ -83,6 +84,7 @@ export type AiModesConsentChoice = z.infer<typeof aiModesConsentChoiceSchema>;
 export const registrationWithConsentsSchema =
   registrationCredentialsSchema.extend({
     consents: serviceConsentChoiceSchema,
+    landingAttribution: landingAttributionSchema.optional(),
   });
 export const serviceConsentStateSchema = z.strictObject({
   policy: serviceConsentPolicySchema,
