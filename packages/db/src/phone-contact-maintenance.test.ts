@@ -1,11 +1,10 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import test from "node:test";
 import {
   AccountReset,
   ClosedAccountRestart,
-  EmailRegistration,
   FreshAccountReset,
   PhoneContacts,
   PhoneVerification,
@@ -15,7 +14,11 @@ import {
   type PhoneVerificationPolicy,
 } from "./index.js";
 import { captureRestartRows } from "./closed-account-restart-fixture.js";
-import { syntheticServiceConsents } from "./test-service-consents.js";
+import {
+  applyFixtureMigration,
+  seedPre50EmailRegistration,
+  syntheticServiceConsents,
+} from "./test-service-consents.js";
 
 const hash = (value: string) =>
   createHash("sha256").update(value).digest("hex");
@@ -35,19 +38,20 @@ const policy: PhoneVerificationPolicy = {
 test("reset and exact disposable rewinds retain active and unlinked contact proof, operator receipts and the original gift", async (t) => {
   const db = await connectDatabase("pglite://:memory:");
   t.after(() => db.close());
-  await migrate(db);
-  assert.deepEqual(
-    (
-      await db.query(`select
-    (select count(*)::int from information_schema.tables where table_schema='public' and table_type='BASE TABLE') as tables,
-    (select count(*)::int from pg_sequences where schemaname='public') as sequences,
-    (select count(*)::int from citygo_migrations) as migrations`)
-    ).rows,
-    [{ tables: 80, sequences: 23, migrations: 49 }],
+  // A verified account created before0050 has no invented acquisition history.
+  // Upgrade it normally so the exact current rewind reaches the contact guard
+  // rather than its earlier acquisition guard. Never delete retained evidence.
+  await db.exec(
+    "create table citygo_migration_lock(id integer primary key); insert into citygo_migration_lock values(1); create table citygo_migrations(name text primary key,checksum text not null,applied_at timestamptz not null default now())",
   );
-  await configurePhoneVerification(db, policy);
-  const email = new EmailRegistration(db),
-    registration = {
+  const historical = (await readdir(new URL("../migrations/", import.meta.url)))
+    .filter(
+      (name) => name.endsWith(".sql") && name < "0050_landing_attribution.sql",
+    )
+    .sort();
+  assert.equal(historical.length, 49);
+  for (const name of historical) await applyFixtureMigration(db, name);
+  const registration = {
       consents: syntheticServiceConsents,
       id: randomUUID(),
       email: "retained-phone-contact@example.test",
@@ -56,17 +60,39 @@ test("reset and exact disposable rewinds retain active and unlinked contact proo
       codeHash: hash("email-code"),
       recipientKey: hash("email-recipient"),
       ipKey: hash("email-ip"),
-    };
-  await email.begin(registration);
-  await email.markSent(registration.id, registration.codeHash);
-  const sessionTokenHash = hash("synthetic-contact-session"),
-    account = await email.confirm({
-      id: registration.id,
-      proofHash: registration.proofHash,
-      codeHash: registration.codeHash,
-      sessionHash: sessionTokenHash,
-    }),
-    ctx = { userId: account.id, sessionTokenHash },
+    },
+    sessionTokenHash = hash("synthetic-contact-session"),
+    account = await seedPre50EmailRegistration(
+      db,
+      registration,
+      sessionTokenHash,
+    );
+  await migrate(db);
+  assert.deepEqual(
+    (
+      await db.query(`select
+    (select count(*)::int from information_schema.tables where table_schema='public' and table_type='BASE TABLE') as tables,
+    (select count(*)::int from pg_sequences where schemaname='public') as sequences,
+    (select count(*)::int from citygo_migrations) as migrations`)
+    ).rows,
+    [{ tables: 81, sequences: 23, migrations: 50 }],
+  );
+  assert.equal(
+    (await db.query("select 1 from user_acquisition")).rows.length,
+    0,
+    "0050 must not fabricate acquisition history for the verified legacy account",
+  );
+  assert.deepEqual(
+    (
+      await db.query(
+        "select landing_attribution from email_registrations where id=$1",
+        [registration.id],
+      )
+    ).rows,
+    [{ landing_attribution: null }],
+  );
+  await configurePhoneVerification(db, policy);
+  const ctx = { userId: account.id, sessionTokenHash },
     phone = new PhoneVerification(db, policy),
     challenge = {
       id: randomUUID(),
@@ -97,7 +123,7 @@ test("reset and exact disposable rewinds retain active and unlinked contact proo
       "utf8",
     );
     const match =
-      /psql\(\s*`(begin;\s*-- 0047 private memory[\s\S]*?commit)`/.exec(source);
+      /psql\(\s*`(begin;\s*-- 0050 can be rewound[\s\S]*?commit)`/.exec(source);
     assert.ok(
       match,
       "Exercise the exact guarded fixture SQL, not a second copy",

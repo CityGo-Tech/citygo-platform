@@ -8,10 +8,12 @@ import {
   Repository,
   ServiceConsents,
   connectDatabase,
-  migrate,
   type AiRequestModeSnapshot,
 } from "./index.js";
-import { applyFixtureMigration } from "./test-service-consents.js";
+import {
+  applyFixtureMigration,
+  seedPre50ConsentedAccount,
+} from "./test-service-consents.js";
 
 const nativeVersion = "ai-mode-route-web-search-postpay-test-v1";
 const h = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -86,7 +88,8 @@ async function fixture47(t: TestContext) {
   const consents = new ServiceConsents(db, () => common);
   const createOwner = async () => {
     const user = (
-      await consents.register(
+      await seedPre50ConsentedAccount(
+        db,
         randomUUID() + "@example.test",
         "synthetic-hash",
         h(randomUUID()),
@@ -95,6 +98,7 @@ async function fixture47(t: TestContext) {
           personalData: true,
           marketing: false,
         },
+        () => common,
       )
     ).id;
     await new AiCreditLedger(db).topUpConfirmed(user, randomUUID(), {
@@ -352,7 +356,8 @@ test("0049 upgrades48 without changing existing rows, function OID/security/ACL 
     beforeFunction = await metadata();
   assert.equal(beforeFunction.length, 1);
   assert.notEqual(beforeFunction[0]!.proacl, null);
-  await migrate(f.db);
+  // This is specifically the historical 48→49 boundary, not all later SQL.
+  await applyFixtureMigration(f.db, "0049_native_search_production.sql");
   assert.equal(
     (await f.db.query("select 1 from citygo_migrations")).rows.length,
     49,

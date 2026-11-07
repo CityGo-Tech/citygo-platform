@@ -218,7 +218,7 @@ test("disposable release rewind refuses populated verification data and rolls ba
       "utf8",
     );
     const rewind =
-      /psql\(\s*`(begin;\s*-- 0047 private memory[\s\S]*?commit)`/.exec(source);
+      /psql\(\s*`(begin;\s*-- 0050 can be rewound[\s\S]*?commit)`/.exec(source);
     assert.ok(rewind, "Use the exact static fixture rewind");
     assert.equal(rewind[1]!.includes("${"), false);
     await assert.rejects(

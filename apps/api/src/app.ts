@@ -709,6 +709,24 @@ export async function buildApp(options: {
       );
       if (nativeProductionMigration.rows.length !== 1)
         throw new Error("Pending native-search production migration");
+      // Both registration paths now bind first touch in the account-creation
+      // transaction. Never accept traffic on schema49 or a receipt-only schema.
+      const acquisitionMigration = await options.db.query(
+        "select name from citygo_migrations where name='0050_landing_attribution.sql'",
+      );
+      if (acquisitionMigration.rows.length !== 1)
+        throw new Error("Pending landing attribution migration");
+      await options.db.query(
+        "select landing_attribution from email_registrations limit 0",
+      );
+      await options.db.query(
+        "select user_id,landing_attribution,created_at from user_acquisition limit 0",
+      );
+      const acquisitionGuards = await options.db.query(
+        "select 1 from pg_trigger t join pg_proc p on p.oid=t.tgfoid where not t.tgisinternal and t.tgenabled='O' and not p.prosecdef and ((t.tgrelid='user_acquisition'::regclass and t.tgname='user_acquisition_identity' and p.oid='public.citygo_guard_user_acquisition()'::regprocedure) or (t.tgrelid='email_registrations'::regclass and t.tgname='email_registration_attribution_identity' and p.oid='public.citygo_guard_registration_attribution()'::regprocedure))",
+      );
+      if (acquisitionGuards.rows.length !== 2)
+        throw new Error("Landing attribution guards are unavailable");
       const nativePostpayGuard = await options.db.query(
         "select 1 from pg_trigger t join pg_proc p on p.oid=t.tgfoid where t.tgrelid='ai_postpay_attempts'::regclass and t.tgname='ai_postpay_guard' and t.tgenabled='O' and not t.tgisinternal and p.oid='public.citygo_guard_postpay_attempt()'::regprocedure and not p.prosecdef and position('ai-mode-route-web-search-postpay-test-v1' in pg_get_functiondef(p.oid))>0 and position('ai-mode-route-web-search-postpay-v1' in pg_get_functiondef(p.oid))>0",
       );

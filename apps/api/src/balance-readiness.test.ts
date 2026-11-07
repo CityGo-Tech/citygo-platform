@@ -35,6 +35,7 @@ async function fixture(t: TestContext, oldSchema = 0) {
           46: "0046_postpay_actual.sql",
           47: "0047_conversation_memory.sql",
           48: "0048_native_search_postpay.sql",
+          49: "0049_native_search_production.sql",
         } as Record<number, string>
       )[oldSchema],
     );
@@ -67,7 +68,7 @@ async function fixture(t: TestContext, oldSchema = 0) {
   return { db, app };
 }
 
-test("readiness rejects actual schema44 under legacy default and turns ready only after applying49 without creating money or model attempts", async (t) => {
+test("readiness rejects actual schema44 under legacy default and turns ready only after applying50 without creating money or model attempts", async (t) => {
   const f = await fixture(t, 44);
   const before = (
     await f.db.query(
@@ -99,7 +100,7 @@ test("readiness rejects actual schema44 under legacy default and turns ready onl
   assert.deepEqual(current.json(), { status: "ok" });
   assert.equal(
     (await f.db.query("select name from citygo_migrations")).rows.length,
-    49,
+    50,
   );
   assert.deepEqual(
     (
@@ -109,6 +110,38 @@ test("readiness rejects actual schema44 under legacy default and turns ready onl
     ).rows,
     before,
   );
+});
+
+test("readiness refuses schema49 and missing physical attribution guards/columns even with a50 receipt", async (t) => {
+  const f = await fixture(t, 49);
+  assert.equal((await f.app.inject({ url: "/ready" })).statusCode, 503);
+  assert.equal(
+    (await f.db.query("select 1 from citygo_migrations")).rows.length,
+    49,
+  );
+  await migrate(f.db);
+  assert.equal((await f.app.inject({ url: "/ready" })).statusCode, 200);
+  for (const [table, trigger] of [
+    ["user_acquisition", "user_acquisition_identity"],
+    ["email_registrations", "email_registration_attribution_identity"],
+  ]) {
+    await f.db.exec(`alter table ${table} disable trigger ${trigger}`);
+    assert.equal((await f.app.inject({ url: "/ready" })).statusCode, 503);
+    await f.db.exec(`alter table ${table} enable trigger ${trigger}`);
+    assert.equal((await f.app.inject({ url: "/ready" })).statusCode, 200);
+  }
+  await f.db.exec(
+    "alter table email_registrations drop column landing_attribution cascade",
+  );
+  assert.equal(
+    (
+      await f.db.query(
+        "select 1 from citygo_migrations where name='0050_landing_attribution.sql'",
+      )
+    ).rows.length,
+    1,
+  );
+  assert.equal((await f.app.inject({ url: "/ready" })).statusCode, 503);
 });
 
 test("readiness rejects actual schema46 until memory47 exists and checks its physical source guard", async (t) => {
@@ -337,6 +370,12 @@ test("readiness rejects actual48 and a forged49 receipt with the exact48 guard",
     503,
   );
   await f.db.exec(source);
+  assert.equal(
+    (await f.app.inject({ method: "GET", url: "/ready" })).statusCode,
+    503,
+    "The exact49 guard does not make schema49 ready for attribution-backed registration",
+  );
+  await migrate(f.db);
   assert.equal(
     (await f.app.inject({ method: "GET", url: "/ready" })).statusCode,
     200,

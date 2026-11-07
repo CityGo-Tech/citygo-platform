@@ -14,7 +14,10 @@ import {
   type PhoneVerificationContext,
   type PhoneVerificationPolicy,
 } from "./index.js";
-import { syntheticServiceConsents } from "./test-service-consents.js";
+import {
+  syntheticServiceConsents,
+  seedPre50EmailRegistration,
+} from "./test-service-consents.js";
 
 const hash = (value: string) =>
   createHash("sha256").update(value).digest("hex");
@@ -34,7 +37,10 @@ const policy: PhoneVerificationPolicy = {
 };
 const rejected = (code: number) => (error: unknown) =>
   error instanceof DomainError && error.statusCode === code;
-async function user(db: Database): Promise<PhoneVerificationContext> {
+async function user(
+  db: Database,
+  historical = false,
+): Promise<PhoneVerificationContext> {
   const identity = randomUUID(),
     sessionTokenHash = hash(identity),
     registration = new EmailRegistration(db),
@@ -48,14 +54,18 @@ async function user(db: Database): Promise<PhoneVerificationContext> {
       recipientKey: hash("recipient-" + identity),
       ipKey: hash("ip-" + identity),
     };
-  await registration.begin(input);
-  await registration.markSent(input.id, input.codeHash);
-  const account = await registration.confirm({
-    id: input.id,
-    proofHash: input.proofHash,
-    codeHash: input.codeHash,
-    sessionHash: sessionTokenHash,
-  });
+  const account = historical
+    ? await seedPre50EmailRegistration(db, input, sessionTokenHash)
+    : await (async () => {
+        await registration.begin(input);
+        await registration.markSent(input.id, input.codeHash);
+        return registration.confirm({
+          id: input.id,
+          proofHash: input.proofHash,
+          codeHash: input.codeHash,
+          sessionHash: sessionTokenHash,
+        });
+      })();
   return { userId: account.id, sessionTokenHash };
 }
 async function challenge(
@@ -420,7 +430,7 @@ test("schema35 migration leaves old contacts NULL and rejects retroactive protec
     );
   }
   await configurePhoneVerification(db, policy);
-  const ctx = await user(db),
+  const ctx = await user(db, true),
     phone = new PhoneVerification(db, policy),
     input = await challenge(phone, ctx),
     op = randomUUID();
