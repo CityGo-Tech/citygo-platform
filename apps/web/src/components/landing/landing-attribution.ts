@@ -5,6 +5,8 @@ export const landingCookie = "citygo_landing_attribution";
 export const landingIntentCookie = "citygo_landing_intent";
 export const landingCookieMaxAge = 60 * 60 * 24 * 30;
 export type LandingVersion = "v1" | "v8";
+export const landingTouchStorageKey = "citygo.landing.touch.v1";
+export const landingTouchMaxAge = 30 * 60 * 1000;
 const campaignSlug = /^[a-z0-9][a-z0-9._-]{0,79}$/;
 const fields = {
   utm_source: "source",
@@ -79,10 +81,16 @@ export function readBrowserLandingAttribution():
 }
 
 export function clearBrowserLandingAttribution(): void {
+  currentLanding = undefined;
   try {
     document.cookie = `${landingCookie}=; Path=/; Max-Age=0; SameSite=Lax`;
   } catch {
     // Optional acquisition data never controls registration.
+  }
+  try {
+    sessionStorage.removeItem(landingTouchStorageKey);
+  } catch {
+    // Storage is optional, including in privacy modes.
   }
 }
 
@@ -99,23 +107,88 @@ export function consumeLandingLoginIntent(): boolean {
   }
 }
 
-let currentLanding: LandingAttribution | undefined;
+type LandingTouch = { at: number; attribution: LandingAttribution };
+let currentLanding: LandingTouch | undefined;
+
+export function landingTouchExpiresAt(
+  version: LandingVersion,
+): number | undefined {
+  return currentLanding?.attribution.landingVersion === version
+    ? currentLanding.at + landingTouchMaxAge
+    : undefined;
+}
+
+export function parseLandingTouch(
+  raw: string | null,
+  version: LandingVersion,
+  now: number,
+): LandingTouch | undefined {
+  if (!raw || raw.length > 1000) return undefined;
+  try {
+    const value: unknown = JSON.parse(raw);
+    if (!value || typeof value !== "object") return undefined;
+    const item = value as Record<string, unknown>;
+    if (
+      Object.keys(item).sort().join(",") !== "at,attribution" ||
+      typeof item.at !== "number" ||
+      !Number.isSafeInteger(item.at) ||
+      item.at > now ||
+      now - item.at >= landingTouchMaxAge
+    )
+      return undefined;
+    const parsed = landingAttributionSchema.safeParse(item.attribution);
+    return parsed.success && parsed.data.landingVersion === version
+      ? { at: item.at, attribution: parsed.data }
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
 export function captureLandingAttribution(
   version: LandingVersion,
 ): LandingAttribution | undefined {
-  if (
-    !location.search &&
-    currentLanding?.landingVersion === version &&
-    browserAcquisitionAllowed()
-  )
-    return currentLanding;
-  currentLanding = browserAcquisitionAllowed()
-    ? landingAttributionFromSearch(
+  if (!browserAcquisitionAllowed()) {
+    clearBrowserLandingAttribution();
+    return undefined;
+  }
+  const now = Date.now();
+  if (!location.search) {
+    const memory = parseLandingTouch(
+      JSON.stringify(currentLanding) ?? null,
+      version,
+      now,
+    );
+    if (memory) return memory.attribution;
+    try {
+      const stored = parseLandingTouch(
+        sessionStorage.getItem(landingTouchStorageKey),
         version,
-        new URLSearchParams(location.search),
-      )
-    : undefined;
-  return currentLanding;
+        now,
+      );
+      if (stored) {
+        currentLanding = stored;
+        return stored.attribution;
+      }
+    } catch {
+      // The page and registration remain usable with unavailable storage.
+    }
+  }
+  currentLanding = {
+    at: now,
+    attribution: landingAttributionFromSearch(
+      version,
+      new URLSearchParams(location.search),
+    ),
+  };
+  try {
+    sessionStorage.setItem(
+      landingTouchStorageKey,
+      JSON.stringify(currentLanding),
+    );
+  } catch {
+    // Same-page links can still use the in-memory touch.
+  }
+  return currentLanding.attribution;
 }
 
 export function landingStartHref(
@@ -127,8 +200,10 @@ export function landingStartHref(
   if (intent === "login") target.searchParams.set("intent", "login");
   target.searchParams.set("landing", version);
   const attribution: LandingAttribution =
-    browserAcquisitionAllowed() && currentLanding?.landingVersion === version
-      ? currentLanding
+    browserAcquisitionAllowed() &&
+    currentLanding?.attribution.landingVersion === version &&
+    Date.now() - currentLanding.at < landingTouchMaxAge
+      ? currentLanding.attribution
       : { landingVersion: version };
   for (const [query, field] of Object.entries(fields)) {
     const value = attribution[field];
