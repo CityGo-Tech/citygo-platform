@@ -4,6 +4,7 @@ import {
   browserAcquisitionAllowed,
   captureLandingAttribution,
   landingStartHref,
+  landingTouchExpiresAt,
   type LandingVersion,
 } from "./landing-attribution";
 import { productOrigin } from "./landing-config";
@@ -40,12 +41,18 @@ export function LandingCta({
           : untrackedHref,
       );
     refresh();
+    const expiresAt = landingTouchExpiresAt(variant);
+    const expiryTimer =
+      expiresAt === undefined
+        ? undefined
+        : window.setTimeout(refresh, Math.max(0, expiresAt - Date.now()) + 5);
     window.addEventListener("storage", refresh);
     window.addEventListener("focus", refresh);
     window.addEventListener("pageshow", refresh);
     window.addEventListener("citygo:analytics-preference", refresh);
     document.addEventListener("visibilitychange", refresh);
     return () => {
+      if (expiryTimer !== undefined) window.clearTimeout(expiryTimer);
       window.removeEventListener("storage", refresh);
       window.removeEventListener("focus", refresh);
       window.removeEventListener("pageshow", refresh);
