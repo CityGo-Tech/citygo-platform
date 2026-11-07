@@ -200,6 +200,22 @@ try {
     /data-citygo-public-landing="v1"/,
     "The built Web image serves the native public V1 page",
   );
+  const landingV8 = await request("/landing/v8");
+  assert.equal(landingV8.status, 200);
+  assert.match(await landingV8.text(), /data-citygo-public-landing="v8"/);
+  for (const example of ["decision", "family", "income", "cost", "plan"]) {
+    const response = await request(`/landing/v8/examples/${example}`);
+    assert.equal(
+      response.status,
+      200,
+      `The built Web image serves the ${example} proof`,
+    );
+    assert.match(
+      await response.text(),
+      /<h2 id="example-question">Полный вопрос<\/h2>/,
+    );
+  }
+  assert.equal((await request("/landing/v8/examples/unknown")).status, 404);
   const landingLogo = await request("/landing/brand-logo.png");
   assert.equal(landingLogo.status, 200);
   assert.match(landingLogo.headers.get("content-type") ?? "", /^image\/png/);
