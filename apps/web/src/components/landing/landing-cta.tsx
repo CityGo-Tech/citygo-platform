@@ -27,11 +27,32 @@ export function LandingCta({
   const untrackedHref =
     productOrigin + (intent === "login" ? "/landing/start?intent=login" : "/");
   const [href, setHref] = useState(untrackedHref);
+  const currentHref = () =>
+    browserAcquisitionAllowed()
+      ? landingStartHref(productOrigin, variant, intent)
+      : untrackedHref;
   useEffect(() => {
     captureLandingAttribution(variant);
-    if (browserAcquisitionAllowed())
-      setHref(landingStartHref(productOrigin, variant, intent));
-  }, [variant, intent]);
+    const refresh = () =>
+      setHref(
+        browserAcquisitionAllowed()
+          ? landingStartHref(productOrigin, variant, intent)
+          : untrackedHref,
+      );
+    refresh();
+    window.addEventListener("storage", refresh);
+    window.addEventListener("focus", refresh);
+    window.addEventListener("pageshow", refresh);
+    window.addEventListener("citygo:analytics-preference", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.removeEventListener("storage", refresh);
+      window.removeEventListener("focus", refresh);
+      window.removeEventListener("pageshow", refresh);
+      window.removeEventListener("citygo:analytics-preference", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [variant, intent, untrackedHref]);
   return (
     <a
       href={href}
@@ -40,10 +61,20 @@ export function LandingCta({
       data-landing-cta={placement}
       data-landing-variant={variant}
       data-secondary={secondary || undefined}
+      onPointerDown={(event) => {
+        event.currentTarget.href = currentHref();
+      }}
+      onFocus={(event) => {
+        event.currentTarget.href = currentHref();
+      }}
+      onContextMenu={(event) => {
+        event.currentTarget.href = currentHref();
+      }}
+      onAuxClick={(event) => {
+        event.currentTarget.href = currentHref();
+      }}
       onClick={(event) => {
-        event.currentTarget.href = browserAcquisitionAllowed()
-          ? landingStartHref(productOrigin, variant, intent)
-          : untrackedHref;
+        event.currentTarget.href = currentHref();
         trackProductEvent("landing_cta_clicked", {
           surface: "landing",
           landingVersion: variant,

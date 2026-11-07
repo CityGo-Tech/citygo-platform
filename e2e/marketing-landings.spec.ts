@@ -120,6 +120,27 @@ async function submitRegistration(page: Page) {
   ).toBeVisible();
 }
 
+test("a live privacy change removes attribution from copied and non-primary CTA links", async ({
+  page,
+}) => {
+  await syntheticProduct(page);
+  await page.goto("/landing/v1?utm_source=vk&utm_campaign=privacy-v1");
+  const cta = page.locator("[data-landing-cta=hero]");
+  await expect(cta).toHaveAttribute("href", /utm_campaign=privacy-v1/);
+  await page.evaluate(() => {
+    localStorage.setItem("citygo.analytics.optout", "1");
+    dispatchEvent(new Event("citygo:analytics-preference"));
+  });
+  await expect(cta).toHaveAttribute(
+    "href",
+    "https://pilot.xn--c1ajazlh.xn--p1ai/",
+  );
+  await cta.dispatchEvent("contextmenu");
+  await expect(cta).not.toHaveAttribute("href", /utm_/);
+  await cta.dispatchEvent("pointerdown", { button: 1 });
+  await expect(cta).not.toHaveAttribute("href", /utm_/);
+});
+
 test("V1 renders its real assets, responsive content, anchors and user-started video", async ({
   page,
 }, info) => {
@@ -381,15 +402,13 @@ test("an existing acquisition cookie is cleared on product entry when optional a
   await page.addInitScript(() =>
     localStorage.setItem("citygo.analytics.optout", "1"),
   );
-  await page
-    .context()
-    .addCookies([
-      {
-        name: "citygo_landing_attribution",
-        value: encodeURIComponent(JSON.stringify({ landingVersion: "v1" })),
-        url: analyticsOrigin,
-      },
-    ]);
+  await page.context().addCookies([
+    {
+      name: "citygo_landing_attribution",
+      value: encodeURIComponent(JSON.stringify({ landingVersion: "v1" })),
+      url: analyticsOrigin,
+    },
+  ]);
   await page.goto(analyticsOrigin + "/");
   await expect
     .poll(() =>
