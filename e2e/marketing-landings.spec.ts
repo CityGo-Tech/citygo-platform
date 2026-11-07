@@ -334,7 +334,7 @@ test("the acquisition endpoint cannot redirect outside the product or persist pr
     { maxRedirects: 0 },
   );
   expect(response.status()).toBe(303);
-  expect(response.headers().location).toBe("http://localhost:3000/");
+  expect(response.headers().location).toBe("/");
   expect(response.headers()["cache-control"]).toContain("no-store");
   const headers = decodeURIComponent(response.headers()["set-cookie"] || "");
   expect(headers).toContain('"landingVersion":"v1"');

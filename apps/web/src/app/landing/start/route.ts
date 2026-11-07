@@ -8,7 +8,13 @@ import {
 
 /** Cross-domain CTA arrives here before the query-free product/auth page. */
 export function GET(request: NextRequest) {
-  const response = NextResponse.redirect(new URL("/", request.url), 303);
+  // A standalone Next server can expose its internal 0.0.0.0:3000 origin in
+  // request.url. A fixed relative target works behind either public hostname
+  // and cannot reflect Host/Forwarded or a caller-provided return URL.
+  const response = new NextResponse(null, {
+    status: 303,
+    headers: { Location: "/" },
+  });
   response.headers.set("Cache-Control", "private, no-store");
   response.headers.set("Referrer-Policy", "no-referrer");
   response.headers.set("X-Robots-Tag", "noindex, nofollow");

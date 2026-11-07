@@ -11,6 +11,7 @@ import {
   type Sql,
 } from "@citygo/db";
 import { readConfig } from "@citygo/config";
+import { CONTRACT_VERSION_HEADER } from "@citygo/contracts";
 import { buildApp } from "./app.js";
 import { syntheticServiceConsents } from "./test-service-consents.js";
 
@@ -134,7 +135,10 @@ async function fixture(t: TestContext, through = 50) {
   return { db, url: url.toString(), roles, closeBeforeDatabase };
 }
 
-async function runtimeDatabase(f: Awaited<ReturnType<typeof fixture>>) {
+async function runtimeDatabase(
+  f: Awaited<ReturnType<typeof fixture>>,
+  grantSet: "production" | "fixture" = "production",
+) {
   const suffix = randomUUID().replaceAll("-", "");
   const roleNames = {
     citygo_api: "cg_attr_api_" + suffix,
@@ -150,7 +154,12 @@ async function runtimeDatabase(f: Awaited<ReturnType<typeof fixture>>) {
   }
   const grants = (
     await readFile(
-      new URL("../../../deploy/postgres/grants.sql", import.meta.url),
+      new URL(
+        grantSet === "fixture"
+          ? "../../../deploy/fixtures/grants.sql"
+          : "../../../deploy/postgres/grants.sql",
+        import.meta.url,
+      ),
       "utf8",
     )
   )
@@ -228,6 +237,149 @@ function tagged(
       }),
   };
 }
+
+test(
+  "PostgreSQL actual fixture grants support HTTP legacy/null and OTP/attributed registration without relabel or Worker access",
+  pgOnly,
+  async (t) => {
+    const f = await fixture(t);
+    const { api, asRole, roleNames } = await runtimeDatabase(f, "fixture");
+    const legacyApp = await buildApp({
+      db: api,
+      testing: true,
+      config: readConfig({
+        NODE_ENV: "test",
+        LLM_PROVIDER: "disabled",
+        EMAIL_REGISTRATION_MODE: "disabled",
+      }),
+    });
+    f.closeBeforeDatabase.push(() => legacyApp.close());
+    const headers = {
+      origin: "http://localhost:3000",
+      [CONTRACT_VERSION_HEADER]: "1",
+      "x-citygo-client": "native",
+    };
+    const policy = (
+      await legacyApp.inject({ url: "/v1/auth/registration-policy" })
+    ).json<{ consentPolicy: { version: string } }>();
+    const consents = {
+      policyVersion: policy.consentPolicy.version,
+      personalData: true,
+      marketing: false,
+    };
+    const credentials = {
+      email: "synthetic-fixture-legacy@example.test",
+      password: "synthetic-fixture-password",
+      consents,
+    };
+    const denied = await legacyApp.inject({
+      method: "POST",
+      url: "/v1/auth/register",
+      headers,
+      payload: {
+        ...credentials,
+        consents: { ...consents, personalData: false },
+      },
+    });
+    assert.equal(denied.statusCode, 400);
+    const validationPermission = (
+      await api.query<{ allowed: boolean }>(
+        "select has_function_privilege(current_user,'public.citygo_valid_landing_attribution(jsonb)','EXECUTE') as allowed",
+      )
+    ).rows[0]?.allowed;
+    // Match the container smoke: no attribution argument means an immutable
+    // SQL NULL first touch. The CHECK still needs the exact validator EXECUTE.
+    const registered = await legacyApp.inject({
+      method: "POST",
+      url: "/v1/auth/register",
+      headers,
+      payload: credentials,
+    });
+    assert.equal(
+      registered.statusCode,
+      200,
+      registered.body + "; validator EXECUTE=" + validationPermission,
+    );
+    const first = registered.json<{ user: { id: string } }>().user;
+    assert.deepEqual(
+      (
+        await api.query(
+          "select user_id::text,landing_attribution from user_acquisition order by user_id",
+        )
+      ).rows,
+      [{ user_id: first.id, landing_attribution: null }],
+    );
+    let code = "";
+    const otpApp = await buildApp({
+      db: api,
+      testing: true,
+      config: readConfig({
+        NODE_ENV: "test",
+        LLM_PROVIDER: "disabled",
+        EMAIL_REGISTRATION_MODE: "required",
+        EMAIL_REGISTRATION_SECRET: "a".repeat(64),
+      }),
+      emailRegistrationDelivery: async (input) => {
+        code = input.code;
+      },
+    });
+    f.closeBeforeDatabase.push(() => otpApp.close());
+    const started = await otpApp.inject({
+      method: "POST",
+      url: "/v1/auth/email/register",
+      headers,
+      payload: {
+        ...credentials,
+        email: "synthetic-fixture-otp@example.test",
+        landingAttribution: attribution,
+      },
+    });
+    assert.equal(started.statusCode, 200, started.body);
+    const challenge = started.json<{ challengeId: string; proof: string }>();
+    await assert.rejects(
+      api.query(
+        "update email_registrations set landing_attribution=$1::jsonb where id=$2",
+        [JSON.stringify({ landingVersion: "v1" }), challenge.challengeId],
+      ),
+      (error) => sqlCode("42501")(error) || sqlCode("23514")(error),
+    );
+    const completed = await otpApp.inject({
+      method: "POST",
+      url: "/v1/auth/email/confirm",
+      headers,
+      payload: {
+        challengeId: challenge.challengeId,
+        proof: challenge.proof,
+        code,
+      },
+    });
+    assert.equal(completed.statusCode, 200, completed.body);
+    const second = completed.json<{ user: { id: string } }>().user;
+    for (const sql of [
+      "update user_acquisition set landing_attribution=null",
+      "delete from user_acquisition",
+      "truncate user_acquisition",
+    ])
+      await assert.rejects(api.exec(sql), sqlCode("42501"));
+    await assert.rejects(
+      asRole(roleNames.citygo_worker, (tx) =>
+        tx.query("select * from user_acquisition"),
+      ),
+      sqlCode("42501"),
+    );
+    assert.deepEqual(
+      (
+        await api.query(
+          "select user_id::text,landing_attribution from user_acquisition order by user_id",
+        )
+      ).rows,
+      [
+        { user_id: first.id, landing_attribution: null },
+        { user_id: second.id, landing_attribution: attribution },
+      ],
+    );
+  },
+);
 
 test(
   "PostgreSQL independent OTP confirmations wait on the account lock and bind the original first touch once",
