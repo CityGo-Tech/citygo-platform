@@ -111,6 +111,9 @@ const analyticsKeys = [
   "NEXT_PUBLIC_CITYGO_METRIKA_ENABLED",
   "NEXT_PUBLIC_CITYGO_METRIKA_COUNTER_ID",
   "NEXT_PUBLIC_CITYGO_METRIKA_WEBVISOR",
+  "NEXT_PUBLIC_CITYGO_AD_PIXELS_ENABLED",
+  "NEXT_PUBLIC_CITYGO_VK_PIXEL_ID",
+  "NEXT_PUBLIC_CITYGO_AVITO_COUNTER_ID",
 ];
 const webKeys = [
   "NODE_ENV",
@@ -137,7 +140,13 @@ const scopes = {
   worker: ["NODE_ENV", "DATABASE_URL"],
   migrator: ["NODE_ENV", "DATABASE_URL"],
   build: ["API_INTERNAL_URL", "CITYGO_WEB_STANDALONE", ...analyticsKeys],
-  test: ["TEST_DATABASE_URL", "PLAYWRIGHT_BROWSERS_PATH"],
+  test: [
+    "TEST_DATABASE_URL",
+    "PLAYWRIGHT_BROWSERS_PATH",
+    "CITYGO_METRIKA_E2E_ENABLED",
+    "CITYGO_METRIKA_E2E_COUNTER_ID",
+    "CITYGO_AD_PIXELS_E2E_ENABLED",
+  ],
   "web-test": [],
 };
 const fileScopes = new Set(["api", "web", "mobile", "worker", "migrator"]);
@@ -227,7 +236,7 @@ export function serviceEnv(
     ...pick(overrides, allowed),
   };
   if (["build", "web"].includes(scope)) {
-    for (const key of [analyticsKeys[0], analyticsKeys[2]])
+    for (const key of [analyticsKeys[0], analyticsKeys[2], analyticsKeys[3]])
       if (env[key] !== undefined && !["disabled", "enabled"].includes(env[key]))
         throw new Error("Invalid public analytics switch (value hidden)");
     const counter = env.NEXT_PUBLIC_CITYGO_METRIKA_COUNTER_ID;
@@ -244,6 +253,27 @@ export function serviceEnv(
       env.NEXT_PUBLIC_CITYGO_METRIKA_ENABLED !== "enabled"
     )
       throw new Error("Session replay requires enabled analytics");
+    for (const key of [
+      "NEXT_PUBLIC_CITYGO_VK_PIXEL_ID",
+      "NEXT_PUBLIC_CITYGO_AVITO_COUNTER_ID",
+    ])
+      if (
+        env[key] !== undefined &&
+        env[key] !== "" &&
+        !/^[1-9][0-9]{0,9}$/.test(env[key])
+      )
+        throw new Error("Invalid public advertising counter (value hidden)");
+    if (
+      env.NEXT_PUBLIC_CITYGO_AD_PIXELS_ENABLED === "enabled" &&
+      (env.NEXT_PUBLIC_CITYGO_METRIKA_ENABLED !== "enabled" ||
+        !(
+          env.NEXT_PUBLIC_CITYGO_VK_PIXEL_ID ||
+          env.NEXT_PUBLIC_CITYGO_AVITO_COUNTER_ID
+        ))
+    )
+      throw new Error(
+        "Advertising counters require enabled analytics and a public counter ID",
+      );
   }
   if (
     scope === "web" &&
@@ -261,7 +291,20 @@ export function serviceEnv(
       "pglite://" + resolve(directory, env.DATABASE_URL.slice(9));
   if (["build", "web", "web-test"].includes(scope))
     assertNoWebEnvFiles(directory);
-  if (scope === "test") env.NODE_ENV = "test";
+  if (scope === "test") {
+    for (const key of [
+      "CITYGO_METRIKA_E2E_ENABLED",
+      "CITYGO_AD_PIXELS_E2E_ENABLED",
+    ])
+      if (env[key] !== undefined && !["enabled", "disabled"].includes(env[key]))
+        throw new Error("Invalid test analytics expectation (value hidden)");
+    if (
+      env.CITYGO_METRIKA_E2E_COUNTER_ID !== undefined &&
+      !/^[1-9][0-9]{0,9}$/.test(env.CITYGO_METRIKA_E2E_COUNTER_ID)
+    )
+      throw new Error("Invalid test counter expectation (value hidden)");
+    env.NODE_ENV = "test";
+  }
   if (scope === "web-test") {
     env.NODE_ENV = "production";
     env.API_INTERNAL_URL = "http://127.0.0.1:4000";
