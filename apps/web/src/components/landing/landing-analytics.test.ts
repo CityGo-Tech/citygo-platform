@@ -131,3 +131,111 @@ test("the observed registration flow freezes version through OTP and owner trans
   assert.equal(flow.landingVersion(handle), undefined);
   assert.equal(flow.begin(next.signal, "private" as never), null);
 });
+
+test("public landing hits report only its validated campaign snapshot, not the incoming URL", () => {
+  for (const [version, source] of [
+    ["v1", "vk"],
+    ["v8", "avito"],
+  ] as const) {
+    const commands: unknown[][] = [];
+    const campaign = {
+      source,
+      medium: "cpc",
+      campaignId: "moscow_202611",
+      content: "family-01",
+    };
+    const tracker = createProductAnalytics(
+      { enabled: true, counterId: 113847047, webvisor: true },
+      (...args) => commands.push(args),
+      { origin, pathname: "/landing/" + version, search: "", hash: "" },
+      version,
+      { landingVersion: version, ...campaign },
+    );
+    assert.equal(tracker.start(), true);
+    tracker.view("landing");
+    tracker.event("landing_cta_clicked", { surface: "landing" });
+    assert.equal(
+      commands[1]?.[2],
+      `${origin}/landing/${version}?utm_source=${source}&utm_medium=cpc&utm_campaign=moscow_202611&utm_content=family-01`,
+    );
+    assert.deepEqual(commands[2]?.[3], {
+      surface: "landing",
+      landingVersion: version,
+      campaign,
+    });
+    assert.equal((commands[1]?.[3] as { referer: string }).referer, "");
+  }
+});
+
+test("invalid campaign metadata, wrong versions and product pages cannot add campaign data", () => {
+  const bad = [
+    { landingVersion: "v1", source: "private@example.test" },
+    { landingVersion: "v1", campaignId: "secret?token=private" },
+    { landingVersion: "v1", content: "x".repeat(81) },
+    { landingVersion: "v1", source: "vk", email: "private@example.test" },
+    { landingVersion: "v1", source: "vk", clickId: "private-click-id" },
+    { landingVersion: "v8", source: "avito" },
+  ];
+  for (const value of bad) {
+    const commands: unknown[][] = [];
+    const tracker = createProductAnalytics(
+      { enabled: true, counterId: 113847047, webvisor: true },
+      (...args) => commands.push(args),
+      { origin, pathname: "/landing/v1", search: "", hash: "" },
+      "v1",
+      value,
+    );
+    assert.equal(tracker.start(), true);
+    tracker.view("landing");
+    tracker.event("landing_viewed");
+    assert.equal(commands[1]?.[2], origin + "/landing/v1");
+    assert.deepEqual(commands[2]?.[3], { landingVersion: "v1" });
+  }
+  const commands: unknown[][] = [];
+  const tracker = createProductAnalytics(
+    { enabled: true, counterId: 113847047, webvisor: true },
+    (...args) => commands.push(args),
+    { origin, pathname: "/", search: "", hash: "" },
+    undefined,
+    { landingVersion: "v1", source: "vk", campaignId: "family-01" },
+  );
+  tracker.start();
+  tracker.view("register");
+  tracker.event("registration_completed", { surface: "register" });
+  assert.equal(commands[1]?.[2], origin + "/");
+  assert.deepEqual(commands[2]?.[3], { surface: "register" });
+  assert.equal(contentFreeParams({ campaign: { source: "vk" } }), null);
+});
+
+test("campaigns are immutable per collector and never bleed between sources", () => {
+  const commands: unknown[][] = [];
+  const attribution = {
+    landingVersion: "v1",
+    source: "vk",
+    campaignId: "work-01",
+  };
+  const make = (value: unknown) =>
+    createProductAnalytics(
+      { enabled: true, counterId: 113847047, webvisor: false },
+      (...args) => commands.push(args),
+      { origin, pathname: "/landing/v1", search: "", hash: "" },
+      "v1",
+      value,
+    );
+  const vk = make(attribution);
+  attribution.source = "avito";
+  attribution.campaignId = "family-02";
+  vk.start();
+  vk.view("landing");
+  vk.stop();
+  const avito = make(attribution);
+  avito.start();
+  avito.view("landing");
+  assert.deepEqual(
+    commands.filter((row) => row[1] === "hit").map((row) => row[2]),
+    [
+      origin + "/landing/v1?utm_source=vk&utm_campaign=work-01",
+      origin + "/landing/v1?utm_source=avito&utm_campaign=family-02",
+    ],
+  );
+});

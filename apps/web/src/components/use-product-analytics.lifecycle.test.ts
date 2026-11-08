@@ -612,3 +612,52 @@ test("a blocked SDK neither retries nor breaks first-party actions", async () =>
   assert.deepEqual(h.records, ["wallet_opened"]);
   h.dispose();
 });
+
+test("a public campaign reaches its clean landing collector without overriding privacy or role guards", async () => {
+  for (const reason of [
+    "allowed",
+    "disabled",
+    "admin",
+    "blocked",
+    "dnt",
+    "gpc",
+    "opt-out",
+  ]) {
+    const h = harness();
+    h.win.location.pathname = "/landing/v1";
+    h.options.ownerId = null;
+    h.options.role = undefined;
+    h.options.surface = "landing";
+    h.options.publicLandingVersion = "v1";
+    h.options.publicLandingAttribution = {
+      landingVersion: "v1",
+      source: "vk",
+      campaignId: "family-01",
+    };
+    if (reason === "disabled") h.options.config.enabled = false;
+    if (reason === "admin") {
+      h.options.ownerId = "101";
+      h.options.role = "admin";
+    }
+    if (reason === "blocked") h.options.blocked = true;
+    if (reason === "dnt") h.navigator.doNotTrack = "1";
+    if (reason === "gpc") h.navigator.globalPrivacyControl = true;
+    if (reason === "opt-out")
+      h.win.localStorage.setItem("citygo.analytics.optout", "1");
+    h.render();
+    await turn();
+    if (reason === "allowed") {
+      h.load();
+      await turn();
+      assert.equal(
+        h.commands.find((row) => row[1] === "hit")?.[2],
+        "https://pilot.xn--c1ajazlh.xn--p1ai/landing/v1?utm_source=vk&utm_campaign=family-01",
+      );
+      assert.equal(h.identityReads(), 0);
+    } else {
+      assert.equal(h.scripts.length, 0, reason);
+      assert.deepEqual(h.commands, [], reason);
+    }
+    h.dispose();
+  }
+});

@@ -189,6 +189,56 @@ test("the registration goal keeps the originally submitted version and excludes 
   expect(serialized).not.toContain("654321");
   expect(serialized).not.toContain("family-123");
   expect(state.outside).toEqual([]);
+  // Settle the real local image proxy before its request context is disposed.
+  await page.waitForLoadState("networkidle");
+});
+
+test("campaign visits report validated source labels while the address and private query stay clean", async ({
+  page,
+}) => {
+  test.skip(!enabledCollector(), "Requires the explicit fake-collector build");
+  const state = await syntheticProduct(page);
+  for (const source of ["vk", "avito"]) {
+    await page.goto(
+      analyticsOrigin +
+        `/landing/v1?utm_source=${source}&utm_medium=cpc&utm_campaign=family-123&utm_content=family-01&email=never-store%40example.test&rb_clickid=never-export-click`,
+    );
+    await expect(page).toHaveURL(analyticsOrigin + "/landing/v1");
+    await expect
+      .poll(() =>
+        page.evaluate((expectedSource) => {
+          const calls = JSON.parse(
+            localStorage.getItem("__landing_calls") || "[]",
+          ) as unknown[][];
+          return calls.some(
+            (row) =>
+              row[1] === "hit" &&
+              String(row[2]).includes("utm_source=" + expectedSource),
+          );
+        }, source),
+      )
+      .toBe(true);
+    await expect(page.locator("[data-landing-cta=hero]")).toHaveAttribute(
+      "href",
+      new RegExp("utm_source=" + source),
+    );
+  }
+  const calls = await page.evaluate(
+    () =>
+      JSON.parse(
+        localStorage.getItem("__landing_calls") || "[]",
+      ) as unknown[][],
+  );
+  const hits = calls.filter((row) => row[1] === "hit");
+  expect(
+    hits.map((row) => new URL(String(row[2])).searchParams.get("utm_source")),
+  ).toEqual(["vk", "avito"]);
+  const serialized = JSON.stringify(calls);
+  expect(serialized).not.toContain("never-store");
+  expect(serialized).not.toContain("never-export-click");
+  expect(serialized).not.toContain("rb_clickid");
+  expect(state.outside).toEqual([]);
+  await page.waitForLoadState("networkidle");
 });
 
 test("opt-out preserves registration without attribution; the header still opens the login form", async ({

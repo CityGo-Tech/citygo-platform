@@ -2,7 +2,10 @@
 import { useEffect, useRef } from "react";
 import { clearBrowserLandingAttribution } from "./landing/landing-attribution";
 import { customerInteractionNameSchema } from "@citygo/contracts";
-import type { CustomerInteractionName } from "@citygo/contracts";
+import type {
+  CustomerInteractionName,
+  LandingAttribution,
+} from "@citygo/contracts";
 import {
   analyticsLocationAllowed,
   analyticsReferrerAllowed,
@@ -159,6 +162,7 @@ export function useProductAnalytics(options: {
   sessionSignal: AbortSignal;
   client: AnalyticsClient;
   publicLandingVersion?: "v1" | "v8";
+  publicLandingAttribution?: LandingAttribution;
 }) {
   const { config, ownerId, role, blocked, sessionSignal, client } = options;
   const surface = useRef(options.surface);
@@ -399,6 +403,7 @@ export function useProductAnalytics(options: {
           send,
           window.location,
           options.publicLandingVersion,
+          options.publicLandingAttribution,
         );
         if (!current.start(identity)) {
           current = null;
@@ -454,6 +459,7 @@ export function useProductAnalytics(options: {
     client,
     registrationFlow,
     options.publicLandingVersion,
+    options.publicLandingAttribution,
   ]);
   useEffect(() => {
     recorder.current?.view(options.surface);

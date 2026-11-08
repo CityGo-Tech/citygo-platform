@@ -1,3 +1,5 @@
+import { landingAttributionSchema } from "@citygo/contracts";
+
 /** Explicit, content-free product analytics. The default is no collection. */
 export const productEvents = [
   "landing_viewed",
@@ -202,7 +204,36 @@ export function createProductAnalytics(
   send: YandexMetrika,
   location: AnalyticsLocation,
   landingVersion?: "v1" | "v8",
+  landingAttribution?: unknown,
 ) {
+  // Only the public landing may report its bounded operator campaign labels.
+  // Never reuse the incoming URL/query or propagate a previous page's labels.
+  const attribution = landingAttributionSchema.safeParse(landingAttribution);
+  const campaign: Record<string, string> = {};
+  const search = new URLSearchParams();
+  if (
+    landingVersion &&
+    location.pathname === "/landing/" + landingVersion &&
+    attribution.success &&
+    attribution.data.landingVersion === landingVersion
+  ) {
+    for (const [key, query] of [
+      ["source", "utm_source"],
+      ["medium", "utm_medium"],
+      ["campaignId", "utm_campaign"],
+      ["content", "utm_content"],
+    ] as const) {
+      const value = attribution.data[key];
+      if (value !== undefined) {
+        campaign[key] = value;
+        search.set(query, value);
+      }
+    }
+  }
+  const campaignParams = () =>
+    search.size ? { campaign: { ...campaign } } : {};
+  const pageUrl =
+    location.origin + location.pathname + (search.size ? "?" + search : "");
   let active = false;
   let surface: AnalyticsSurface | null = null;
   const seen = new Set<string>();
@@ -255,12 +286,13 @@ export function createProductAnalytics(
     view(next: AnalyticsSurface): boolean {
       if (!analyticsSurfaces.includes(next) || !active || next === surface)
         return false;
-      const sent = call("hit", location.origin + location.pathname, {
+      const sent = call("hit", pageUrl, {
         title: "CityGo",
         referer: "",
         params: {
           surface: next,
           ...(landingVersion ? { landingVersion } : {}),
+          ...campaignParams(),
         },
       });
       if (sent) surface = next;
@@ -280,6 +312,7 @@ export function createProductAnalytics(
       const sent = call("reachGoal", "citygo_" + name, {
         ...params,
         ...(landingVersion ? { landingVersion } : {}),
+        ...campaignParams(),
       });
       if (sent && key !== null) {
         if (seen.size >= 200) seen.delete(seen.values().next().value!);
