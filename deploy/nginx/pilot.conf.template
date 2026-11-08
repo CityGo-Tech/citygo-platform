@@ -2,6 +2,17 @@
 # Requires already-issued TLS certificate; bootstrap ACME is a separate step.
 limit_conn_zone $binary_remote_addr zone=citygo_per_ip:10m;
 log_format citygo_minimal '$status $request_time';
+# Only the empty advertising document may be framed by this same origin.
+# All product/admin/error pages retain DENY, including maintenance responses.
+map "$uri:$status" $citygo_frame_options {
+    default DENY;
+    /paid-pixels/frame.html:200 SAMEORIGIN;
+}
+map $uri $citygo_referrer_policy {
+    default strict-origin-when-cross-origin;
+    /paid-pixels/frame.html no-referrer;
+    /paid-pixels/frame.js no-referrer;
+}
 
 server {
     listen 80 default_server;
@@ -50,8 +61,8 @@ server {
     send_timeout 300s;
     limit_conn citygo_per_ip 40;
     add_header X-Content-Type-Options nosniff always;
-    add_header Referrer-Policy strict-origin-when-cross-origin always;
-    add_header X-Frame-Options DENY always;
+    add_header Referrer-Policy $citygo_referrer_policy always;
+    add_header X-Frame-Options $citygo_frame_options always;
     location / {
         # Fail closed until an operator explicitly admits traffic on the HOST.
         # No reload: each NEW request checks the marker, including keep-alive.
@@ -70,6 +81,9 @@ server {
         proxy_buffering off;
         proxy_request_buffering on;
         proxy_cache off;
+        # Emit one ingress policy instead of conflicting upstream DENY headers.
+        proxy_hide_header X-Frame-Options;
+        proxy_hide_header Referrer-Policy;
         # Preserve the application's own 503 body/contract when ingress is open.
         proxy_intercept_errors off;
         proxy_connect_timeout 5s;

@@ -51,6 +51,42 @@ test("maintenance preserves v1 legacy error and uses only server-generated reque
   assert.doesNotMatch(location, /proxy_pass|Retry-After/);
 });
 
+test("ingress allows framing only the empty paid document without bypassing maintenance", () => {
+  const config = renderNginx("pilot.example.test");
+  assert.match(
+    config,
+    /map "\$uri:\$status" \$citygo_frame_options \{\s*default DENY;\s*\/paid-pixels\/frame\.html:200 SAMEORIGIN;\s*\}/,
+  );
+  assert.match(
+    config,
+    /map \$uri \$citygo_referrer_policy \{\s*default strict-origin-when-cross-origin;\s*\/paid-pixels\/frame\.html no-referrer;\s*\/paid-pixels\/frame\.js no-referrer;\s*\}/,
+  );
+  const app = config.slice(
+    config.indexOf("    location / {\n"),
+    config.indexOf("    location @citygo_maintenance"),
+  );
+  assert.match(app, /proxy_hide_header X-Frame-Options;/);
+  assert.match(app, /proxy_hide_header Referrer-Policy;/);
+  assert.match(
+    config,
+    /add_header X-Frame-Options \$citygo_frame_options always;/,
+  );
+  assert.match(
+    config,
+    /add_header Referrer-Policy \$citygo_referrer_policy always;/,
+  );
+  assert.doesNotMatch(config, /location[^\n]*paid-pixels/);
+  assert.equal((config.match(/traffic-open/g) ?? []).length, 1);
+  const maintenance = config.slice(
+    config.indexOf("    location @citygo_maintenance"),
+  );
+  assert.match(maintenance, /add_header X-Frame-Options DENY always;/);
+  assert.match(
+    maintenance,
+    /add_header Referrer-Policy strict-origin-when-cross-origin always;/,
+  );
+});
+
 const headers = {
   "content-type": "application/json; charset=utf-8",
   "cache-control": "no-store",
