@@ -20,9 +20,11 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import { performance } from "node:perf_hooks";
 import { root, serviceEnv } from "./env.mjs";
 import { fixtureCertificate } from "../deploy/fixtures/web-switch-tls.mjs";
 import { renderWebSwitchNginx } from "../deploy/render-web-switch.mjs";
+import { classifyProbeFailures } from "./web-switch-transport.mjs";
 
 const images = {
   web: "sha256:751786e8bd0e5733fb77921167837cdad109ab4d21c09fc43f6dc8b5e844ea23",
@@ -105,8 +107,9 @@ function candidate(metadata, selectedImages, expectedSource) {
     expectedSource,
   );
 }
-function nginxConfig(slot) {
+function nginxConfig(slot, minimumKeepaliveSeconds = 0) {
   assert.ok(["blue", "green"].includes(slot));
+  assert.ok([0, 5].includes(minimumKeepaliveSeconds));
   return `worker_processes 2;
 pid /tmp/nginx.pid;
 error_log /dev/stderr notice;
@@ -121,6 +124,7 @@ http {
     ssl_certificate /fixture/cert.pem;
     ssl_certificate_key /fixture/key.pem;
     keepalive_timeout 30s;
+    keepalive_min_timeout ${minimumKeepaliveSeconds}s;
     client_body_timeout 15s;
     send_timeout 300s;
     location ^~ /_next/static/ {
@@ -187,7 +191,18 @@ export async function runRehearsal(selection) {
   const observations = [];
   const probeStarts = [];
   let phase = "preflight";
+  const timeline = [];
+  const requestTraces = [];
+  const markPhase = (name) => {
+    phase = name;
+    timeline.push({
+      phase,
+      wallTime: Date.now(),
+      monotonic: performance.now(),
+    });
+  };
   const requests = new Set();
+  const extraAgents = new Set();
   const docker = (args, options = {}) => {
     const result = spawnSync("docker", args, {
       cwd: root,
@@ -485,10 +500,42 @@ export async function runRehearsal(selection) {
     agent = new Agent({ keepAlive: true, maxSockets: 4, maxFreeSockets: 2 });
     function request(
       path,
-      { method = "GET", body, keepAlive = false, onChunk, slow = false } = {},
+      {
+        method = "GET",
+        body,
+        keepAlive = false,
+        onChunk,
+        slow = false,
+        transportAgent,
+        kind,
+        traceId = randomUUID(),
+      } = {},
     ) {
       let startBody;
       let finishBody;
+      const trace = {
+        id: traceId,
+        method,
+        path,
+        kind: kind ?? (keepAlive ? "keepalive" : "fresh"),
+        phaseAtStart: phase,
+        startedAt: Date.now(),
+        startedMonotonic: performance.now(),
+        requestFlushedAt: null,
+        responseHeadersAt: null,
+        responseBytes: 0,
+        finishedAt: null,
+        finishedMonotonic: null,
+        phaseAtFinish: null,
+        reusedSocket: false,
+        requestBytesWritten: 0,
+      };
+      requestTraces.push(trace);
+      const finishTrace = () => {
+        trace.finishedAt = Date.now();
+        trace.finishedMonotonic = performance.now();
+        trace.phaseAtFinish = phase;
+      };
       const promise = new Promise((resolveRequest, reject) => {
         const bytes =
           body === undefined ? null : Buffer.from(JSON.stringify(body));
@@ -500,12 +547,13 @@ export async function runRehearsal(selection) {
             path,
             method,
             ca,
-            agent: keepAlive ? agent : false,
+            agent: transportAgent ?? (keepAlive ? agent : false),
             headers: {
               host,
               cookie,
               origin,
-              ...(keepAlive ? {} : { connection: "close" }),
+              "x-rehearsal-request-id": traceId,
+              ...(keepAlive || transportAgent ? {} : { connection: "close" }),
               ...(bytes
                 ? {
                     "content-type": "application/json",
@@ -516,26 +564,61 @@ export async function runRehearsal(selection) {
             signal: AbortSignal.timeout(120000),
           },
           (response) => {
+            trace.responseHeadersAt = Date.now();
+            trace.status = response.statusCode;
             const chunks = [];
             response.on("data", (chunk) => {
+              trace.responseBytes += chunk.length;
               chunks.push(chunk);
               onChunk?.(Buffer.concat(chunks).toString());
             });
-            response.on("error", reject);
-            response.on("end", () =>
+            response.on("error", (error) => {
+              finishTrace();
+              error.transportTrace = trace;
+              reject(error);
+            });
+            response.on("end", () => {
+              finishTrace();
               resolveRequest({
                 status: response.statusCode,
                 headers: response.headers,
                 bytes: Buffer.concat(chunks),
                 body: Buffer.concat(chunks).toString(),
-              }),
-            );
+                transportTrace: trace,
+              });
+            });
           },
         );
         requests.add(request);
+        let assignedSocket;
+        let previousBytes = 0;
+        request.once("socket", (socket) => {
+          assignedSocket = socket;
+          previousBytes = socket.bytesWritten;
+          trace.reusedSocket = request.reusedSocket;
+          trace.socketAssignedAt = Date.now();
+          const address = () => {
+            trace.localPort = socket.localPort;
+            trace.remotePort = socket.remotePort;
+          };
+          address();
+          if (socket.connecting) socket.once("secureConnect", address);
+        });
+        request.once("finish", () => {
+          trace.requestFlushedAt = Date.now();
+          trace.reusedSocket = request.reusedSocket;
+          trace.requestBytesWritten = assignedSocket
+            ? assignedSocket.bytesWritten - previousBytes
+            : 0;
+        });
         request.once("close", () => requests.delete(request));
         request.on("error", (error) => {
+          finishTrace();
           error.reusedSocket = request.reusedSocket;
+          trace.reusedSocket = request.reusedSocket;
+          trace.error = String(error);
+          trace.code = error.code;
+          error.transportTrace = trace;
           reject(error);
         });
         if (slow) {
@@ -551,83 +634,14 @@ export async function runRehearsal(selection) {
       void promise.catch(() => {});
       return {
         promise,
+        trace,
         startBody: () => startBody(),
         finishBody: () => finishBody(),
       };
     }
     const call = (path, options) => request(path, options).promise;
-    await until(async () => {
-      try {
-        return (await call("/api/ready")).status === 200;
-      } catch {
-        return false;
-      }
-    }, "Nginx TLS did not become ready");
-    const login = await call("/api/rehearsal/login", {
-      method: "POST",
-      body: {},
-    });
-    assert.equal(login.status, 200);
-    assert.match(
-      login.headers["set-cookie"][0],
-      /__Host-citygo=.*Secure; HttpOnly; SameSite=Lax/,
-    );
-    probing = true;
-    phase = "blue-active";
-    const probeStarted = Date.now();
-    probes = (async () => {
-      const pending = new Set();
-      while (probing) {
-        const began = Date.now();
-        probeStarts.push(began - probeStarted);
-        const task = Promise.allSettled([
-          call("/api/rehearsal/probe"),
-          call("/api/rehearsal/probe", { keepAlive: true }),
-        ]).then((results) => {
-          for (const [index, result] of results.entries()) {
-            if (result.status !== "fulfilled" || result.value.status !== 200)
-              failures.push({
-                at: began - probeStarted,
-                phase,
-                kind: index === 0 ? "fresh" : "keepalive",
-                status:
-                  result.status === "fulfilled" ? result.value.status : null,
-                error:
-                  result.status === "fulfilled" ? null : String(result.reason),
-                code: result.status === "fulfilled" ? null : result.reason.code,
-                reusedSocket:
-                  result.status === "fulfilled"
-                    ? null
-                    : result.reason.reusedSocket,
-              });
-            else
-              observations.push({
-                at: began - probeStarted,
-                slot: result.value.headers["x-citygo-web-slot"],
-              });
-          }
-        });
-        pending.add(task);
-        void task.finally(() => pending.delete(task));
-        await delay(Math.max(0, 100 - (Date.now() - began)));
-      }
-      await Promise.all(pending);
-    })();
-    let streamBody = "";
-    const requestId = randomUUID();
-    const stream = call("/api/rehearsal/messages", {
-      method: "POST",
-      body: { requestId },
-      onChunk: (body) => {
-        streamBody = body;
-      },
-    });
     const stats = async () =>
       JSON.parse((await call("/api/rehearsal/stats")).body);
-    await until(
-      async () => (await stats()).dispatches === 1,
-      "SSE did not reach fixture",
-    );
     const workers = async () =>
       (
         await dockerAsync([
@@ -651,6 +665,267 @@ export async function runRehearsal(selection) {
           };
         })
         .filter((item) => item?.parent === 1);
+    const absent = (previous, current) =>
+      !previous.some((old) =>
+        current.some(
+          (live) => old.pid === live.pid && old.starttime === live.starttime,
+        ),
+      );
+    await until(async () => {
+      try {
+        return (await call("/api/ready")).status === 200;
+      } catch {
+        return false;
+      }
+    }, "Nginx TLS did not become ready");
+    const login = await call("/api/rehearsal/login", {
+      method: "POST",
+      body: {},
+    });
+    assert.equal(login.status, 200);
+    assert.match(
+      login.headers["set-cookie"][0],
+      /__Host-citygo=.*Secure; HttpOnly; SameSite=Lax/,
+    );
+    if (selection.idleReuseRegression) {
+      const cases = [];
+      for (const minimumKeepaliveSeconds of [0, 5]) {
+        markPhase(`idle-regression-${minimumKeepaliveSeconds}-configure`);
+        const previous = await workers();
+        writeFileSync(
+          join(directory, "nginx.conf"),
+          nginxConfig("blue", minimumKeepaliveSeconds),
+        );
+        await dockerAsync(["exec", nginx, "nginx", "-t"]);
+        await dockerAsync(["kill", "--signal", "HUP", nginx]);
+        await until(
+          async () => absent(previous, await workers()),
+          "Fixture configuration generation did not drain",
+        );
+
+        const before = await stats();
+        const activeStream = request("/api/rehearsal/messages", {
+          method: "POST",
+          body: { requestId: randomUUID() },
+          kind: "accepted-sse",
+        });
+        const activePost = request("/api/rehearsal/accepted-post", {
+          method: "POST",
+          body: { requestId: randomUUID() },
+          kind: "accepted-post",
+        });
+        await until(async () => {
+          const current = await stats();
+          return (
+            current.dispatches === before.dispatches + 1 &&
+            current.acceptedPosts === before.acceptedPosts + 1
+          );
+        }, "Fixture did not admit the controlled POST/SSE before HUP");
+
+        const idleAgent = new Agent({
+          keepAlive: true,
+          maxSockets: 1,
+          maxFreeSockets: 1,
+        });
+        extraAgents.add(idleAgent);
+        const prime = await call("/api/rehearsal/probe", {
+          transportAgent: idleAgent,
+          kind: "idle-prime",
+        });
+        assert.equal(prime.status, 200);
+        await until(
+          () => Object.values(idleAgent.freeSockets).flat().length === 1,
+          "Expected one primed idle TLS socket",
+        );
+        const oldWorkers = await workers();
+
+        // Deterministic client-long-task control: the independent Nginx event
+        // loops process HUP while this client's FIN/close callbacks cannot run.
+        // The following SINGLE GET then exercises the still-cached idle socket.
+        markPhase(`idle-regression-${minimumKeepaliveSeconds}-blocked-hup`);
+        const blockedStarted = performance.now();
+        docker(["kill", "--signal", "HUP", nginx]);
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1200);
+        const blockedClientMs = performance.now() - blockedStarted;
+        if (minimumKeepaliveSeconds)
+          assert.ok(
+            blockedClientMs < minimumKeepaliveSeconds * 1000,
+            "Client pause exceeded the compared minimum keep-alive interval",
+          );
+        markPhase(`idle-regression-${minimumKeepaliveSeconds}-single-reuse`);
+        const reused = request("/api/rehearsal/probe", {
+          transportAgent: idleAgent,
+          kind: "forced-idle-reuse",
+        });
+        const [outcome] = await Promise.allSettled([reused.promise]);
+        const current = await stats();
+        const admitted = current.requestAdmissions.some(
+          (entry) => entry.id === reused.trace.id,
+        );
+        const fresh = await call("/api/rehearsal/probe");
+        assert.equal(fresh.status, 200);
+        assert.equal(reused.trace.reusedSocket, true);
+        if (minimumKeepaliveSeconds === 0) {
+          assert.equal(
+            outcome.status,
+            "rejected",
+            "Negative control must reproduce the stale-idle-socket reset",
+          );
+          assert.equal(outcome.reason.code, "ECONNRESET");
+          assert.equal(reused.trace.responseHeadersAt, null);
+          assert.equal(
+            admitted,
+            false,
+            "The reset GET must never reach the fixture API",
+          );
+        } else {
+          assert.equal(outcome.status, "fulfilled");
+          assert.equal(outcome.value.status, 200);
+          assert.equal(admitted, true);
+        }
+        assert.equal(
+          current.dispatches,
+          before.dispatches + 1,
+          "The reused GET cannot create another generation",
+        );
+        assert.equal(
+          current.syntheticDebits,
+          before.syntheticDebits,
+          "No synthetic settlement occurs before the accepted SSE completes",
+        );
+        await controlAsync({ release: true });
+        const [stream, post] = await Promise.all([
+          activeStream.promise,
+          activePost.promise,
+        ]);
+        assert.equal(stream.status, 200);
+        assert.equal((stream.body.match(/"type":"done"/g) ?? []).length, 1);
+        assert.equal(post.status, 200);
+        const after = await stats();
+        const finalAdmission = after.requestAdmissions.find(
+          (entry) => entry.id === reused.trace.id,
+        );
+        assert.equal(
+          finalAdmission?.visits ?? 0,
+          minimumKeepaliveSeconds === 0 ? 0 : 1,
+          "The single reused GET cannot arrive late or be replayed",
+        );
+        assert.equal(after.dispatches, before.dispatches + 1);
+        assert.equal(after.syntheticDebits, before.syntheticDebits + 1);
+        assert.equal(after.completed, before.completed + 1);
+        assert.equal(after.acceptedPosts, before.acceptedPosts + 1);
+        assert.equal(
+          after.completedAcceptedPosts,
+          before.completedAcceptedPosts + 1,
+        );
+        assert.equal(after.cancelled, before.cancelled);
+        cases.push({
+          minimumKeepaliveSeconds,
+          blockedClientMs,
+          oldWorkers,
+          singleAttempt: reused.trace,
+          admittedToFixtureApi: admitted,
+          reusedGetApiAdmissions: admitted ? 1 : 0,
+          reusedGetExtraGenerations: current.dispatches - before.dispatches - 1,
+          reusedGetExtraSyntheticDebits:
+            current.syntheticDebits - before.syntheticDebits,
+          expectedResetObserved: minimumKeepaliveSeconds === 0,
+          acceptedPostCompletedOnce: true,
+          acceptedSseCompletedOnce: true,
+          syntheticDispatchesDelta: after.dispatches - before.dispatches,
+          syntheticDebitsDelta: after.syntheticDebits - before.syntheticDebits,
+          freshConnectionStatus: fresh.status,
+          retryCount: 0,
+        });
+        idleAgent.destroy();
+        extraAgents.delete(idleAgent);
+        await until(
+          async () => absent(oldWorkers, await workers()),
+          "Controlled old Nginx generation did not drain",
+        );
+      }
+      const result = {
+        kind: "citygo-disposable-idle-reuse-regression",
+        status: "passed",
+        fixture: id,
+        images,
+        source,
+        cases,
+        timeline,
+        retryCount: 0,
+        zeroHttpRetries: true,
+        actualProductionConfigurationChanged: false,
+        productionMitigationSelected: false,
+        comparisonProtectionIsFinite: true,
+        productionControllerInvoked: false,
+        realApiDatabaseAndMonetaryIntegrationTested: false,
+        evidenceDirectory: evidence,
+      };
+      writeFileSync(
+        join(evidence, "report.json"),
+        JSON.stringify(result, null, 2),
+      );
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+    probing = true;
+    markPhase("blue-active");
+    const probeStarted = Date.now();
+    probes = (async () => {
+      const pending = new Set();
+      while (probing) {
+        const began = Date.now();
+        probeStarts.push(began - probeStarted);
+        const task = Promise.allSettled([
+          call("/api/rehearsal/probe"),
+          call("/api/rehearsal/probe", { keepAlive: true }),
+        ]).then((results) => {
+          for (const [index, result] of results.entries()) {
+            if (result.status !== "fulfilled" || result.value.status !== 200)
+              failures.push({
+                at: began - probeStarted,
+                trace:
+                  result.status === "fulfilled"
+                    ? result.value.transportTrace
+                    : result.reason.transportTrace,
+                kind: index === 0 ? "fresh" : "keepalive",
+                status:
+                  result.status === "fulfilled" ? result.value.status : null,
+                error:
+                  result.status === "fulfilled" ? null : String(result.reason),
+                code: result.status === "fulfilled" ? null : result.reason.code,
+                reusedSocket:
+                  result.status === "fulfilled"
+                    ? null
+                    : result.reason.reusedSocket,
+              });
+            else
+              observations.push({
+                at: began - probeStarted,
+                kind: index === 0 ? "fresh" : "keepalive",
+                slot: result.value.headers["x-citygo-web-slot"],
+              });
+          }
+        });
+        pending.add(task);
+        void task.finally(() => pending.delete(task));
+        await delay(Math.max(0, 100 - (Date.now() - began)));
+      }
+      await Promise.all(pending);
+    })();
+    let streamBody = "";
+    const requestId = randomUUID();
+    const stream = call("/api/rehearsal/messages", {
+      method: "POST",
+      body: { requestId },
+      onChunk: (body) => {
+        streamBody = body;
+      },
+    });
+    await until(
+      async () => (await stats()).dispatches === 1,
+      "SSE did not reach fixture",
+    );
     const oldWorkers = await workers();
     assert.equal(oldWorkers.length, 2);
     // Preserve a truly silent response for >30s without shortening production timeouts.
@@ -670,9 +945,11 @@ export async function runRehearsal(selection) {
       "Nginx must buffer incomplete POST before upstream dispatch",
     );
     writeFileSync(join(directory, "nginx.conf"), nginxConfig("green"));
-    phase = "reload";
+    markPhase("reload-validation");
     await dockerAsync(["exec", nginx, "nginx", "-t"]);
+    markPhase("nginx-hup-requested");
     await dockerAsync(["kill", "--signal", "HUP", nginx]);
+    markPhase("nginx-hup-returned");
     const greenAddress =
       (await inspectAsync(green)).NetworkSettings.Networks[id].IPAddress +
       ":3000";
@@ -691,7 +968,7 @@ export async function runRehearsal(selection) {
     assert.equal(freshHtml.status, 200);
     assert.equal(freshHtml.headers["x-citygo-web-slot"], greenAddress);
     assert.match(freshHtml.body, /<!DOCTYPE html>/i);
-    phase = "green-confirmed-old-generation-active";
+    markPhase("green-confirmed-old-generation-active");
     const retainedWorkers = await workers();
     assert.ok(
       oldWorkers.some((old) =>
@@ -732,14 +1009,14 @@ export async function runRehearsal(selection) {
       "Old Nginx worker generation did not drain",
       45000,
     );
-    phase = "old-generation-drained";
+    markPhase("old-generation-drained");
     await dockerAsync(["kill", "--signal", "SIGTERM", blue]);
     await until(
       async () => !(await inspectAsync(blue)).State.Running,
       "Old Web did not stop after Nginx generation drained",
       45000,
     );
-    phase = "old-web-stopped";
+    markPhase("old-web-stopped");
     const stoppedBlue = await inspectAsync(blue);
     assert.equal(stoppedBlue.State.ExitCode, 0);
     assert.equal(stoppedBlue.State.OOMKilled, false);
@@ -774,6 +1051,13 @@ export async function runRehearsal(selection) {
     );
     probing = false;
     await probes;
+    const admissionSnapshot = await stats();
+    for (const failure of failures) {
+      failure.admittedToFixtureApi = admissionSnapshot.requestAdmissions.some(
+        (entry) => entry.id === failure.trace?.id,
+      );
+    }
+    const transport = classifyProbeFailures(failures, timeline);
     writeFileSync(
       join(evidence, "observations.json"),
       JSON.stringify(
@@ -783,8 +1067,10 @@ export async function runRehearsal(selection) {
           probeStarts,
           blueAddress,
           greenAddress,
-          syntheticCounters: final,
+          syntheticCounters: admissionSnapshot,
           oldWorkers,
+          timeline,
+          transport,
         },
         null,
         2,
@@ -792,9 +1078,13 @@ export async function runRehearsal(selection) {
     );
     // Stop probes before logout can intentionally invalidate their session.
     assert.deepEqual(
-      failures,
+      transport.unexpectedFailures,
       [],
-      "Continuous fresh/keep-alive probes must not fail",
+      "Fresh, admitted, uncertain or non-HUP probe failures cannot pass",
+    );
+    assert.ok(
+      admissionSnapshot.requestAdmissions.every((entry) => entry.visits === 1),
+      "Each admitted HTTP trace ID must occur exactly once; no request replay",
     );
     assert.ok(observations.length >= 600);
     assert.ok(observations.some((item) => item.slot === blueAddress));
@@ -807,11 +1097,27 @@ export async function runRehearsal(selection) {
     assert.equal((await call("/api/rehearsal/probe")).status, 401);
     const result = {
       ...rehearsalPlan(selection),
-      status: "passed",
+      status: transport.idleReuseResets.length
+        ? "passed-with-idle-connection-closure"
+        : "passed",
       fixture: id,
       actualImageSource: source,
       distinctReleaseTested: false,
       probes: observations.length,
+      probeAttempts: probeStarts.length * 2,
+      freshProbeSuccesses: observations.filter(
+        (entry) => entry.kind === "fresh",
+      ).length,
+      keepaliveProbeSuccesses: observations.filter(
+        (entry) => entry.kind === "keepalive",
+      ).length,
+      freshFailures: transport.freshFailures.length,
+      admittedFailures: transport.admittedFailures.length,
+      otherFailures: transport.otherFailures.length,
+      idleReuseResetCount: transport.idleReuseResets.length,
+      idleReuseResets: transport.idleReuseResets,
+      zeroHttpRetries: true,
+      allHttpAttemptsSucceeded: failures.length === 0,
       archivedAssets: inventory.length,
       maximumProbeStartGapMs: probeStarts.reduce(
         (maximum, item, index) =>
@@ -847,6 +1153,11 @@ export async function runRehearsal(selection) {
     for (const request of requests) request.destroy();
     if (probes) await probes.catch(() => {});
     agent?.destroy();
+    for (const extra of extraAgents) extra.destroy();
+    writeFileSync(
+      join(evidence, "request-traces.json"),
+      JSON.stringify({ timeline, requestTraces }, null, 2),
+    );
     for (const container of containers.reverse()) {
       const state = inspect(container);
       assert.equal(state.Config.Labels["citygo.rehearsal"], id);
@@ -916,6 +1227,15 @@ if (resolve(process.argv[1] ?? "") === fileURLToPath(import.meta.url)) {
     const values = {};
     for (const arg of args) {
       if (arg === "--disposable") continue;
+      if (arg === "--idle-reuse-regression") {
+        assert.equal(
+          values.idleReuseRegression,
+          undefined,
+          "Duplicate regression option",
+        );
+        values.idleReuseRegression = true;
+        continue;
+      }
       const match = arg.match(
         /^--(web-image|node-image|nginx-image|source-sha)=(.+)$/,
       );
@@ -930,6 +1250,7 @@ if (resolve(process.argv[1] ?? "") === fileURLToPath(import.meta.url)) {
         nginx: values["nginx-image"],
       },
       source: values["source-sha"],
+      idleReuseRegression: values.idleReuseRegression === true,
     });
   } else
     throw new Error(

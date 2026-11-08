@@ -8,6 +8,8 @@ on:
       - deploy/nginx/pilot-web-switch.conf.template
       - deploy/render-web-switch.mjs
       - deploy/fixtures/web-switch-*.mjs
+      - deploy/fixtures/web-switch-*.py
+      - deploy/fixtures/web-switch-*.Dockerfile
       - scripts/web-switch-*.mjs
 permissions:
   contents: read
@@ -28,7 +30,7 @@ jobs:
       - name: Verify controller and protected asset paths on disposable Linux
         run: sudo env TMPDIR=/root python3 -B -m unittest discover -s deploy/backup -p 'test_web_switch*.py' -v
       - name: Verify opt-in ingress without installing it
-        run: node --test scripts/web-switch-ingress.test.mjs
+        run: node --test scripts/web-switch-ingress.test.mjs scripts/web-switch-transport.test.mjs scripts/web-switch-controller-smoke.test.mjs
       - name: Prepare only disposable public image bases
         run: |
           docker pull node@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5
@@ -46,11 +48,22 @@ jobs:
             --node-image="$(docker image inspect node@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5 --format '{{.Id}}')" \
             --nginx-image="$(docker image inspect nginx@sha256:0985e772fb9f729e6fa0980da05fca5d9c468e870eed43071545afa9d2e27d94 --format '{{.Id}}')" \
             --source-sha="$(git rev-parse HEAD)"
+      - name: Reproduce stale idle connection without replaying accepted requests
+        run: |
+          node scripts/web-switch-smoke.mjs --disposable --idle-reuse-regression \
+            --web-image="$(docker image inspect citygo-web-switch:fixture --format '{{.Id}}')" \
+            --node-image="$(docker image inspect node@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5 --format '{{.Id}}')" \
+            --nginx-image="$(docker image inspect nginx@sha256:0985e772fb9f729e6fa0980da05fca5d9c468e870eed43071545afa9d2e27d94 --format '{{.Id}}')" \
+            --source-sha="$(git rev-parse HEAD)"
+      - name: Exercise the whole controller inside its own isolated Docker host
+        run: node scripts/web-switch-controller-smoke.mjs --disposable --allow-privileged-fixture --pull-public-bases
       - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: web-switch-rehearsal
-          path: .local/web-switch-smoke/
+          path: |
+            .local/web-switch-smoke/
+            .local/web-switch-controller-smoke/
           retention-days: 7
         # Synthetic data only. No registry publication, deploy credentials,
         # provider calls, runtime installation or autodeploy integration.

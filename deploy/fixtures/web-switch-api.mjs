@@ -8,6 +8,8 @@ const token = "synthetic-web-switch-session";
 const attempts = new Map();
 const messages = [];
 const pending = new Set();
+const admissions = new Map();
+const acceptedPosts = new Map();
 const state = {
   ready: true,
   loggedIn: false,
@@ -16,6 +18,8 @@ const state = {
   completed: 0,
   cancelled: 0,
   slowPosts: 0,
+  acceptedPosts: 0,
+  completedAcceptedPosts: 0,
   forwarding: [],
 };
 function json(response, status, body) {
@@ -34,6 +38,23 @@ function authenticated(request) {
 }
 const server = createServer(async (request, response) => {
   const path = new URL(request.url, "http://api").pathname;
+  const traceId = request.headers["x-rehearsal-request-id"];
+  if (typeof traceId === "string" && /^[a-f0-9-]{36}$/.test(traceId)) {
+    if (admissions.size >= 10000)
+      return json(response, 503, { error: "fixture-admission-limit" });
+    const entry = {
+      id: traceId,
+      method: request.method,
+      path,
+      receivedAt: Date.now(),
+      responseFinishedAt: null,
+      visits: (admissions.get(traceId)?.visits ?? 0) + 1,
+    };
+    admissions.set(traceId, entry);
+    response.once("finish", () => {
+      entry.responseFinishedAt = Date.now();
+    });
+  }
   const parts = [];
   for await (const part of request) {
     parts.push(part);
@@ -75,10 +96,29 @@ const server = createServer(async (request, response) => {
       ...state,
       messages,
       attempts: [...attempts.entries()],
+      requestAdmissions: [...admissions.values()],
     });
   if (path === "/rehearsal/slow-post") {
     state.slowPosts++;
     return json(response, 200, { accepted: state.slowPosts, body });
+  }
+  if (path === "/rehearsal/accepted-post") {
+    if (typeof body.requestId !== "string" || acceptedPosts.has(body.requestId))
+      return json(response, 409, { error: "fixture-post-already-accepted" });
+    state.acceptedPosts++;
+    acceptedPosts.set(body.requestId, false);
+    response.writeHead(200, { "content-type": "application/json" });
+    response.flushHeaders();
+    const finish = () => {
+      pending.delete(finish);
+      if (acceptedPosts.get(body.requestId) || response.destroyed) return;
+      acceptedPosts.set(body.requestId, true);
+      state.completedAcceptedPosts++;
+      response.end(JSON.stringify({ accepted: body.requestId }));
+    };
+    pending.add(finish);
+    response.once("close", () => pending.delete(finish));
+    return;
   }
   if (path !== "/rehearsal/messages")
     return json(response, 404, { error: "fixture-route" });
