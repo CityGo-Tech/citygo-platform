@@ -1,0 +1,156 @@
+# OPT-IN Web-only switching. Separate bootstrap; never installed by the legacy deploy.
+# Installed inside nginx http {} on the HOST. Render with render-web-switch.mjs.
+# Requires already-issued TLS certificate; bootstrap ACME is a separate step.
+limit_conn_zone $binary_remote_addr zone=citygo_per_ip:10m;
+log_format citygo_minimal '$status $request_time';
+# Only the empty advertising document may be framed by this same origin.
+# All product/admin/error pages retain DENY, including maintenance responses.
+map "$uri:$status" $citygo_frame_options {
+    default DENY;
+    /paid-pixels/frame.html:200 SAMEORIGIN;
+}
+map $uri $citygo_referrer_policy {
+    default strict-origin-when-cross-origin;
+    /paid-pixels/frame.html no-referrer;
+    /paid-pixels/frame.js no-referrer;
+}
+
+server {
+    listen 80 default_server;
+    server_name _;
+    access_log off;
+    error_log /var/log/nginx/citygo-error.log crit;
+    return 444;
+}
+server {
+    listen 80;
+    server_name __CITYGO_HOST__;
+    access_log off;
+    error_log /var/log/nginx/citygo-error.log crit;
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/lib/letsencrypt;
+        default_type text/plain;
+        try_files $uri =404;
+    }
+    location / { return 308 https://__CITYGO_HOST__$request_uri; }
+}
+server {
+    listen 443 ssl default_server;
+    server_name _;
+    access_log off;
+    error_log /var/log/nginx/citygo-error.log crit;
+    ssl_reject_handshake on;
+    return 444;
+}
+server {
+    listen 443 ssl;
+    server_name __CITYGO_HOST__;
+    ssl_certificate /etc/letsencrypt/live/__CITYGO_HOST__/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/__CITYGO_HOST__/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:citygo_tls:10m;
+    ssl_session_timeout 1d;
+    server_tokens off;
+    access_log /var/log/nginx/citygo-access.log citygo_minimal;
+    error_log /var/log/nginx/citygo-error.log crit;
+    # Chat accepts 100k Unicode characters, including escaped surrogate pairs.
+    # API retains smaller per-route limits for registration, payments and OTP.
+    client_max_body_size 2m;
+    client_body_timeout 15s;
+    client_header_timeout 15s;
+    keepalive_timeout 30s;
+    send_timeout 300s;
+    limit_conn citygo_per_ip 40;
+    add_header X-Content-Type-Options nosniff always;
+    add_header Referrer-Policy $citygo_referrer_policy always;
+    add_header X-Frame-Options $citygo_frame_options always;
+    location / {
+        # Fail closed until an operator explicitly admits traffic on the HOST.
+        # No reload: each NEW request checks the marker, including keep-alive.
+        open_file_cache off;
+        error_page 503 = @citygo_maintenance;
+        if (!-f /var/lib/citygo/ingress/traffic-open) { return 503; }
+        include /var/lib/citygo/ingress/web-upstream.conf;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host __CITYGO_HOST__;
+        proxy_set_header X-Forwarded-Host __CITYGO_HOST__;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header Forwarded "";
+        proxy_buffering off;
+        proxy_request_buffering on;
+        proxy_cache off;
+        # Emit one ingress policy instead of conflicting upstream DENY headers.
+        proxy_hide_header X-Frame-Options;
+        proxy_hide_header Referrer-Policy;
+        # Preserve the application's own 503 body/contract when ingress is open.
+        proxy_intercept_errors off;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+        proxy_next_upstream off;
+    }
+    # Append-only immutable chunks keep already-open tabs usable after retirement.
+    # The archive is root-owned and independently verified before each switch.
+    location ^~ /_next/static/ {
+        open_file_cache off;
+        error_page 503 = @citygo_maintenance;
+        if (!-f /var/lib/citygo/ingress/traffic-open) { return 503; }
+        root /var/lib/citygo/web-assets;
+        disable_symlinks on;
+        autoindex off;
+        try_files $uri =404;
+        expires 1y;
+        limit_except GET { deny all; }
+    }
+    # Controller read-only probe: never expose the internal slot to public clients.
+    location = /__citygo_web_slot {
+        allow 127.0.0.1;
+        allow ::1;
+        deny all;
+        limit_except GET { deny all; }
+        open_file_cache off;
+        error_page 503 = @citygo_maintenance;
+        if (!-f /var/lib/citygo/ingress/traffic-open) { return 503; }
+        rewrite ^ /api/ready? break;
+        include /var/lib/citygo/ingress/web-upstream.conf;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host __CITYGO_HOST__;
+        proxy_set_header X-Forwarded-Host __CITYGO_HOST__;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header Forwarded "";
+        proxy_buffering off;
+        proxy_request_buffering on;
+        proxy_cache off;
+        proxy_next_upstream off;
+        proxy_intercept_errors off;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+        proxy_hide_header X-CityGo-Web-Slot;
+        proxy_hide_header X-Frame-Options;
+        proxy_hide_header Referrer-Policy;
+        add_header X-CityGo-Web-Slot $upstream_addr always;
+        add_header Cache-Control no-store always;
+        add_header X-Content-Type-Options nosniff always;
+        add_header X-Frame-Options DENY always;
+        add_header Referrer-Policy no-referrer always;
+    }
+    location @citygo_maintenance {
+        default_type application/json;
+        charset utf-8;
+        charset_types application/json;
+        add_header Cache-Control no-store always;
+        add_header X-CityGo-Contract-Version 1 always;
+        add_header X-Request-Id $request_id always;
+        add_header X-Content-Type-Options nosniff always;
+        add_header Referrer-Policy strict-origin-when-cross-origin always;
+        add_header X-Frame-Options DENY always;
+        return 503 '{"error":"CityGo обновляется. Дождитесь завершения и проверьте историю перед повторной отправкой.","code":"SERVICE_UNAVAILABLE","contractVersion":"1","requestId":"$request_id","retryable":false}';
+    }
+}
