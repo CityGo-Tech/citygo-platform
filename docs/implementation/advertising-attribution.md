@@ -49,7 +49,7 @@ https://pilot.xn--c1ajazlh.xn--p1ai/landing/v1?utm_source=vk&utm_medium=cpc&utm_
 | Площадка  | ID        | Планируемая цель                |
 | --------- | --------- | ------------------------------- |
 | VK Ads    | `3812681` | `citygoRegistrationCompleted`   |
-| Avito Ads | `9506557` | `citygo_registration_completed` |
+| Avito Ads | `3496456` | `citygo_registration_completed` |
 
 Эти ID не являются секретами. В этом изменении их SDK **не устанавливаются**:
 нет скрытого изображения, `noscript`, placeholder-пикселя, новых build-флагов
