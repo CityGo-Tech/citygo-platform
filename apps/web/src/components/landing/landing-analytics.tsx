@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useMemo, useState, useRef } from "react";
+import type { LandingAttribution } from "@citygo/contracts";
 import {
   createClient,
   ApiError,
@@ -14,6 +15,7 @@ import {
 
 /** Public-only adapter; the product retains its private-DOM/session checks. */
 export function LandingAnalytics({ variant }: { variant: LandingVersion }) {
+  const [attribution, setAttribution] = useState<LandingAttribution>();
   const lifetime = useRef<AbortController | null>(null);
   const [idleSignal] = useState(() => new AbortController().signal);
   const [session, setSession] = useState<{
@@ -31,7 +33,7 @@ export function LandingAnalytics({ variant }: { variant: LandingVersion }) {
     [idleSignal],
   );
   useEffect(() => {
-    captureLandingAttribution(variant);
+    setAttribution(captureLandingAttribution(variant));
     // No raw query, search term, incoming URL or arbitrary fragment reaches
     // the SDK. Campaign slugs were extracted in memory before this cleanup.
     history.replaceState(history.state, "", location.pathname);
@@ -97,6 +99,7 @@ export function LandingAnalytics({ variant }: { variant: LandingVersion }) {
     sessionSignal: session.signal ?? idleSignal,
     client,
     publicLandingVersion: variant,
+    publicLandingAttribution: attribution,
   });
   return null;
 }
