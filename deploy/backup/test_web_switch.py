@@ -10,7 +10,7 @@ from unittest.mock import patch
 import web_switch as w
 
 
-def fixture():
+def fixture(version=1, *, same_web=False):
     """Executable schema example. Hashes/identities are deliberately synthetic."""
     files = {"/trusted/nginx.conf": b"trusted nginx configuration", "/trusted/api.json": b"existing protected config"}
     def file_pin(path, raw):
@@ -48,7 +48,7 @@ def fixture():
     old = container(4, "web", ip=w.SLOTS[3000], port=3000)
     new = container(5, "web", "b", ip=w.SLOTS[3001], port=3001)
     now = int(time.time())
-    value = {"version": 1, "purpose": "citygo-staged-web-switch-v1", "operation_id": "a" * 32,
+    value = {"version": version, "purpose": w.PLAN_PURPOSES[version], "operation_id": "a" * 32,
              "approved_at": now - 10, "expires_at": now + 3600, "origin": "https://pilot.example.test",
              "paths": {"state_dir": "/trusted/state", "coordination_dir": "/trusted/backup-state",
                        "nginx_config": "/trusted/nginx.conf", "upstream_include": "/trusted/web-upstream.conf",
@@ -70,6 +70,21 @@ def fixture():
         value["assets"][name] = file_pin("/trusted/" + name + ".json", w.wire({"chunks/a.js": {"sha256": "e" * 64, "size": 10}}))
     files[value["paths"]["traffic_marker"]] = b"open\n"
     files[value["paths"]["upstream_include"]] = w.upstream(3000)
+    if same_web:
+        records[new["id"]]["Image"] = old["image"]
+        records[new["id"]]["Config"]["Labels"]["org.opencontainers.image.revision"] = old["source_sha"]
+        new.update(image=old["image"], source_sha=old["source_sha"])
+        path = value["compatibility"]["new"]["path"]
+        compatibility = w.strict_json(files[path])
+        compatibility["source_sha"] = old["source_sha"]
+        value["compatibility"]["new"] = file_pin(path, w.wire(compatibility))
+    if version == 2:
+        for name, slot in value["slots"].items():
+            records[slot["container"]["id"]]["HostConfig"]["RestartPolicy"] = {
+                "Name": "no" if name == "old" else "unless-stopped", "MaximumRetryCount": 0}
+    if same_web or version == 2:
+        for slot in value["slots"].values():
+            slot["container"]["runtime_sha256"] = w.runtime_fingerprint(records[slot["container"]["id"]])
     plan = w.WebSwitchPlan(w.wire(value), Path("/trusted/plan.json"))
     return plan, FakeHost(plan, files, records)
 
@@ -548,6 +563,111 @@ class Protocol(unittest.TestCase):
         with patch.object(w, "load_plan", side_effect=ValueError("PRIVATE-CONFIG-SECRET")), contextlib.redirect_stderr(output):
             self.assertEqual(w.main(["verify", "--plan", "/trusted/plan.json"]), 1)
         self.assertEqual(output.getvalue(), '{"status": "failed-inspect-required"}\n')
+
+
+class DurableV2(unittest.TestCase):
+    def setUp(self):
+        self.plan, self.host = fixture(2)
+        patch.object(w.assets, "verify_public_compatibility", return_value={"preserved": 1}).start()
+        patch.object(w.assets, "verify_archive", return_value={"manifest_sha256": "e" * 64}).start()
+        self.addCleanup(patch.stopall)
+
+    def repin_policy(self, name, policy):
+        value = self.plan.values
+        pin = value["slots"][name]["container"]
+        self.host.records[pin["id"]]["HostConfig"]["RestartPolicy"] = copy.deepcopy(policy)
+        pin["runtime_sha256"] = w.runtime_fingerprint(self.host.records[pin["id"]])
+        self.plan = w.WebSwitchPlan(w.wire(value), self.plan.path)
+        self.host.plan = self.plan
+
+    def assert_unmutated(self):
+        self.assertEqual(self.host.files[self.plan.values["paths"]["upstream_include"]], w.upstream(3000))
+        self.assertEqual(self.host.journal, {})
+        self.assertFalse(any(event.startswith(("write:", "save:", "sigterm:")) or event == "hup" for event in self.host.events))
+
+    def cycle(self):
+        baseline = {pin["id"]: copy.deepcopy(self.host.records[pin["id"]]) for pin in
+                    [self.plan.values["baseline"][role] for role in ("api", "postgres")] + self.plan.values["baseline"]["jobs"]}
+        verified = w.verify(self.plan, _host=self.host)
+        self.assertEqual(verified["plan_version"], 2)
+        self.assertEqual(verified["purpose"], w.PLAN_PURPOSES[2])
+        self.assert_unmutated()
+        w.switch(self.plan, allow_switch=True, _host=self.host)
+        first = w.retire(self.plan, allow_stop=True, _host=self.host, _wait_seconds=0)
+        count = sum(event.startswith("sigterm:") for event in self.host.events)
+        self.assertEqual(first, w.retire(self.plan, allow_stop=True, _host=self.host, _wait_seconds=0))
+        self.assertEqual(count, 1)
+        self.assertEqual(sum(event.startswith("sigterm:") for event in self.host.events), 1)
+        new_id = self.plan.values["slots"]["new"]["container"]["id"]
+        self.assertEqual(self.host.records[new_id]["HostConfig"]["RestartPolicy"], {"Name": "unless-stopped", "MaximumRetryCount": 0})
+        self.assertTrue(self.host.records[new_id]["State"]["Running"])
+        self.assertNotIn(w.PENDING, self.host.journal)
+        for ident, expected in baseline.items():
+            self.assertEqual(self.host.records[ident], expected)
+
+    def test_v2_distinct_release_finishes_with_durable_active_web_and_idempotent_retire(self):
+        self.cycle()
+
+    def test_v2_same_digest_same_source_bootstrap_preserves_single_backend(self):
+        self.plan, self.host = fixture(2, same_web=True)
+        old, new = (self.plan.values["slots"][name]["container"] for name in ("old", "new"))
+        self.assertEqual(old["image"], new["image"])
+        self.assertEqual(old["source_sha"], new["source_sha"])
+        self.assertNotEqual(old["id"], new["id"])
+        self.cycle()
+
+    def test_v1_still_refuses_durable_target_even_with_exact_runtime_pin(self):
+        self.plan, self.host = fixture()
+        self.repin_policy("new", {"Name": "unless-stopped", "MaximumRetryCount": 0})
+        with self.assertRaisesRegex(w.WebSwitchError, "web-runtime-isolation"):
+            w.switch(self.plan, allow_switch=True, _host=self.host)
+        self.assert_unmutated()
+
+    def test_v2_rejects_wrong_fixed_policy_retry_counts_and_unknown_policy_fields(self):
+        invalid = [
+            ("old", {"Name": "unless-stopped", "MaximumRetryCount": 0}),
+            ("old", {"Name": "always", "MaximumRetryCount": 0}),
+            ("old", {"Name": "on-failure", "MaximumRetryCount": 0}),
+            ("new", {"Name": "no", "MaximumRetryCount": 0}),
+            ("new", {"Name": "always", "MaximumRetryCount": 0}),
+            ("new", {"Name": "on-failure", "MaximumRetryCount": 3}),
+            ("new", {"Name": "unless-stopped", "MaximumRetryCount": 1}),
+            ("old", {"Name": "no", "MaximumRetryCount": 1}),
+            ("new", {"Name": "unless-stopped", "MaximumRetryCount": False}),
+            ("new", {"Name": "unless-stopped", "MaximumRetryCount": "0"}),
+            ("new", {"Name": "unless-stopped", "MaximumRetryCount": 0, "extra": True}),
+            ("new", {"Name": "unless-stopped"}),
+            ("new", {"Name": "unknown", "MaximumRetryCount": 0}),
+        ]
+        for name, policy in invalid:
+            with self.subTest(slot=name, policy=policy):
+                self.plan, self.host = fixture(2)
+                self.repin_policy(name, policy)
+                with self.assertRaisesRegex(w.WebSwitchError, "web-runtime-isolation"):
+                    w.switch(self.plan, allow_switch=True, _host=self.host)
+                self.assert_unmutated()
+
+    def test_version_purpose_pair_and_no_extra_authority_fields(self):
+        value = self.plan.values
+        for version, purpose in ((1, w.PLAN_PURPOSES[2]), (2, w.PLAN_PURPOSES[1]), (3, w.PLAN_PURPOSES[2]), (True, w.PLAN_PURPOSES[1])):
+            bad = dict(value, version=version, purpose=purpose)
+            with self.assertRaisesRegex(w.WebSwitchError, "plan-purpose"):
+                w.validate(bad, int(time.time()))
+        for field in ("allow_restart", "restart_policy", "allow_active_restart"):
+            with self.assertRaisesRegex(w.WebSwitchError, "plan-schema"):
+                w.validate(dict(value, **{field: True}), int(time.time()))
+
+    def test_v2_active_policy_drift_blocks_retire_before_old_signal(self):
+        w.switch(self.plan, allow_switch=True, _host=self.host)
+        new_id = self.plan.values["slots"]["new"]["container"]["id"]
+        policy = self.host.records[new_id]["HostConfig"]["RestartPolicy"]
+        policy["Name"] = "always"
+        with self.assertRaisesRegex(w.WebSwitchError, "container-pin-changed"):
+            w.retire(self.plan, allow_stop=True, _host=self.host, _wait_seconds=0)
+        self.assertFalse(any(event.startswith("sigterm:") for event in self.host.events))
+        self.assertIn(w.PENDING, self.host.journal)
+        policy["Name"] = "unless-stopped"
+        self.assertEqual(w.retire(self.plan, allow_stop=True, _host=self.host, _wait_seconds=0)["phase"], "retired")
 
 
 if __name__ == "__main__":

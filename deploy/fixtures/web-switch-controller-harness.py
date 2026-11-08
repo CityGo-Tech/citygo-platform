@@ -27,6 +27,9 @@ ORIGIN = "https://" + HOSTNAME
 PROJECT = "citygo-controller-" + os.urandom(6).hex()
 DAEMON = None
 NODE, POSTGRES = sys.argv[-2:]
+FIXTURE_FLAGS = sys.argv[1:-2]
+assert set(FIXTURE_FLAGS) <= {"--wait-for-images", "--durable-v2"}
+DURABLE_V2 = "--durable-v2" in FIXTURE_FLAGS
 
 
 def write(path, raw, mode=0o600):
@@ -136,7 +139,9 @@ def main():
     web_network = docker("network", "create", "--subnet", "172.30.92.0/24", PROJECT + "-web").decode().strip()
     db_network = docker("network", "create", "--internal", "--subnet", "172.30.93.0/24", PROJECT + "-db").decode().strip()
     images, sources = {}, {}
-    for slot in ("old", "new"):
+    # V2 primary connection clones the approved live image, not a new app
+    # release. The original V1 rehearsal retains two distinct synthetic builds.
+    for slot in (("old",) if DURABLE_V2 else ("old", "new")):
         context = ROOT / ("build-" + slot)
         context.mkdir(mode=0o700)
         marker = "synthetic-controller-" + slot
@@ -153,13 +158,17 @@ def main():
         tag = PROJECT + ":" + slot
         docker("build", "--pull=false", "--network=none", "-t", tag, str(context), timeout=180)
         images[slot] = json.loads(docker("image", "inspect", tag))[0]["Id"]
-    assert images["old"] != images["new"] and sources["old"] != sources["new"]
+    if DURABLE_V2:
+        images["new"], sources["new"] = images["old"], sources["old"]
+    else:
+        assert images["old"] != images["new"] and sources["old"] != sources["new"]
     def labels(service):
         return ["--label", "com.docker.compose.project=" + PROJECT, "--label", "com.docker.compose.service=" + service]
     def app(service, slot, network, ip, port=None):
+        restart = "unless-stopped" if DURABLE_V2 and service == "web" and slot == "new" else "no"
         argv = ["run", "-d", "--pull=never", "--name", PROJECT + "-" + service + "-" + slot,
                 *labels(service), "--init", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges:true",
-                "--memory=768m", "--memory-swap=768m", "--restart=no", "--tmpfs", "/tmp:rw,size=16m,mode=1777",
+                "--memory=768m", "--memory-swap=768m", "--restart=" + restart, "--tmpfs", "/tmp:rw,size=16m,mode=1777",
                 "--network", network, "--ip", ip, "--stop-timeout", "30"]
         if service == "api":
             argv += ["--network-alias", "api", "--env", "TRUSTED_PROXY_CIDRS=172.30.92.10/32,172.30.92.20/32"]
@@ -244,7 +253,8 @@ def main():
     probe_host = w.Host.__new__(w.Host)
     master_process = probe_host.process(master)
     now = int(time.time())
-    value = {"version": 1, "purpose": "citygo-staged-web-switch-v1", "operation_id": os.urandom(16).hex(),
+    plan_version = 2 if DURABLE_V2 else 1
+    value = {"version": plan_version, "purpose": w.PLAN_PURPOSES[plan_version], "operation_id": os.urandom(16).hex(),
              "approved_at": now - 1, "expires_at": now + 3600, "origin": ORIGIN,
              "paths": {"state_dir": str(state), "coordination_dir": str(coordination), "nginx_config": "/etc/nginx/nginx.conf",
                        "upstream_include": str(ingress / "web-upstream.conf"), "traffic_marker": str(ingress / "traffic-open")},
@@ -378,6 +388,9 @@ def main():
         assert w.runtime_fingerprint(before[key]) == w.runtime_fingerprint(after[key])
     assert after["old"]["State"]["ExitCode"] == 0 and not after["old"]["State"]["Running"]
     assert next(iter(after["old"]["NetworkSettings"]["Networks"].values()))["IPAddress"] == ""
+    expected_new_policy = {"Name": "unless-stopped" if DURABLE_V2 else "no", "MaximumRetryCount": 0}
+    assert after["new"]["HostConfig"]["RestartPolicy"] == expected_new_policy
+    assert after["old"]["HostConfig"]["RestartPolicy"] == {"Name": "no", "MaximumRetryCount": 0}
     for name, entry in static.items():
         connection = w._TLS(HOSTNAME, timeout=5, context=ssl.create_default_context())
         connection.request("GET", "/_next/static/" + name, headers={"Host": HOSTNAME, "Connection": "close"})
@@ -398,6 +411,11 @@ def main():
               "State": after[key]["State"], "NetworkSettings": after[key]["NetworkSettings"]}))
     write(EVIDENCE / "controller-state.json", w.wire(w.inspect_pending(plan)))
     write(EVIDENCE / "receipt.json", w.wire({"version": 1, "productionHost": True, "retired": True,
+          "planVersion": plan_version, "purpose": w.PLAN_PURPOSES[plan_version], "sameWebBootstrap": DURABLE_V2,
+          "activeWebRestartPolicy": after["new"]["HostConfig"]["RestartPolicy"],
+          "oldWebRestartPolicy": after["old"]["HostConfig"]["RestartPolicy"],
+          "activeWebRuntimeUnchanged": w.runtime_fingerprint(before["new"]) == w.runtime_fingerprint(after["new"]),
+          "webRestartPolicies": {"old": after["old"]["HostConfig"]["RestartPolicy"], "new": after["new"]["HostConfig"]["RestartPolicy"]},
           "apiIsSynthetic": True, "billingTested": False, "webImages": images, "webSources": sources,
           "acceptedStreamCompleted": True, "baselineUnchanged": True, "rejects": rejected,
           "oldWebSigtermCount": 1, "prematureSigtermObserved": False,
@@ -406,7 +424,7 @@ def main():
           "resourceProof": "production Host reads VM /proc; outer 6GiB is a fixture budget, not a 4GiB production load test",
           "hostIsolation": "owned DinD network-none; no outer mounts/socket/ports", "actualSystemCA": True,
           "controllerSha256": w.digest((HERE / "web_switch.py").read_bytes()), "assetFileCount": len(static)}))
-    print("Whole production Host controller passed with distinct synthetic Web images", flush=True)
+    print("Whole production Host controller passed: " + ("V2 same-image durable canary" if DURABLE_V2 else "V1 distinct synthetic Web images"), flush=True)
 
 
 if __name__ == "__main__":

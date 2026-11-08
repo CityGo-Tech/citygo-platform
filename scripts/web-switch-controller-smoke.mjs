@@ -78,11 +78,19 @@ export async function runControllerSmoke(cliArgs = process.argv.slice(2)) {
         "--disposable",
         "--allow-privileged-fixture",
         "--pull-public-bases",
+        "--durable-v2",
       ].includes(a),
     ),
   );
+  const durableV2 = args.has("--durable-v2");
+  const selectedPlan = {
+    ...plan,
+    controllerPlanVersion: durableV2 ? 2 : 1,
+    syntheticDistinctWebReleases: !durableV2,
+    sameWebBootstrap: durableV2,
+  };
   if (args.has("--plan") || !args.has("--disposable")) {
-    console.log(JSON.stringify(plan, null, 2));
+    console.log(JSON.stringify(selectedPlan, null, 2));
   } else {
     assert.ok(
       args.has("--allow-privileged-fixture"),
@@ -96,7 +104,10 @@ export async function runControllerSmoke(cliArgs = process.argv.slice(2)) {
     const postgresTag = `citygo-controller-base-postgres:${token}`;
     const evidence = join(root, ".local", "web-switch-controller-smoke", name);
     mkdirSync(evidence, { recursive: true });
-    writeFileSync(join(evidence, "plan.json"), JSON.stringify(plan, null, 2));
+    writeFileSync(
+      join(evidence, "plan.json"),
+      JSON.stringify(selectedPlan, null, 2),
+    );
     let containerId, toolsId;
     const env = controllerFixtureEnv();
     const prefix = [];
@@ -493,6 +504,7 @@ export async function runControllerSmoke(cliArgs = process.argv.slice(2)) {
         `type=volume,source=${volume},target=/var/lib/docker`,
         toolsId,
         "--wait-for-images",
+        ...(durableV2 ? ["--durable-v2"] : []),
         nodeTag,
         postgresTag,
       ]);
@@ -564,7 +576,16 @@ export async function runControllerSmoke(cliArgs = process.argv.slice(2)) {
       );
       assert.equal(receipt.productionHost, true);
       assert.equal(receipt.retired, true);
-      assert.notEqual(receipt.webImages.old, receipt.webImages.new);
+      assert.equal(receipt.planVersion, durableV2 ? 2 : 1);
+      assert.equal(receipt.sameWebBootstrap, durableV2);
+      if (durableV2) {
+        assert.equal(receipt.webImages.old, receipt.webImages.new);
+        assert.equal(receipt.webSources.old, receipt.webSources.new);
+        assert.deepEqual(receipt.webRestartPolicies, {
+          old: { Name: "no", MaximumRetryCount: 0 },
+          new: { Name: "unless-stopped", MaximumRetryCount: 0 },
+        });
+      } else assert.notEqual(receipt.webImages.old, receipt.webImages.new);
       ownership.status = "passed";
       event("fixture", "verify-receipt", "after");
       console.log(JSON.stringify({ ...receipt, evidence }, null, 2));

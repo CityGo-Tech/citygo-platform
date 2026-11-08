@@ -33,6 +33,7 @@ SLOTS = {3000: "172.30.92.10", 3001: "172.30.92.20"}
 HEX = r"[0-9a-f]{64}"
 SHA = r"[0-9a-f]{40}"
 MAX_PLAN = 262144
+PLAN_PURPOSES = {1: "citygo-staged-web-switch-v1", 2: "citygo-staged-web-switch-v2"}
 
 
 class WebSwitchError(Exception):
@@ -103,8 +104,8 @@ def container_pin(value):
 def validate(value, now):
     keys(value, ("version", "purpose", "operation_id", "approved_at", "expires_at", "origin", "paths",
                  "files", "baseline", "slots", "compatibility", "assets", "nginx", "networks"))
-    require(type(value["version"]) is int and value["version"] == 1
-            and value["purpose"] == "citygo-staged-web-switch-v1", "plan-purpose")
+    require(type(value["version"]) is int and value["version"] in PLAN_PURPOSES
+            and value["purpose"] == PLAN_PURPOSES[value["version"]], "plan-purpose")
     require(matches(value["operation_id"], r"[0-9a-f]{32}"), "plan-operation")
     require(type(value["approved_at"]) is int and type(value["expires_at"]) is int
             and value["approved_at"] <= now < value["expires_at"] <= value["approved_at"] + 86400, "plan-expired")
@@ -522,12 +523,22 @@ def _containers(host, value, *, retired=False):
     require(set(env.get("TRUSTED_PROXY_CIDRS", "").split(",")) == {ip + "/32" for ip in SLOTS.values()}, "trusted-web-ips-not-bootstrapped")
     require(api["HostConfig"].get("Memory") == 768 * MIB
             and details[baseline["postgres"]["id"]]["HostConfig"].get("Memory") == 1024 * MIB, "runtime-memory-budget")
-    for slot in value["slots"].values():
+    for name, slot in value["slots"].items():
         item = details[slot["container"]["id"]]
         cfg = item["HostConfig"]
+        policy = cfg.get("RestartPolicy", {})
+        if value["version"] == 1:
+            # Preserve the original v1 contract, including its inspect shape.
+            valid_restart = policy.get("Name") == "no"
+        else:
+            # V2 alone authorizes one durable ACTIVE Web. Retired/old Web never
+            # automatically restarts; no arbitrary policy or retry authority.
+            valid_restart = (type(policy) is dict and set(policy) == {"Name", "MaximumRetryCount"}
+                             and policy["Name"] == ("no" if name == "old" else "unless-stopped")
+                             and type(policy["MaximumRetryCount"]) is int and policy["MaximumRetryCount"] == 0)
         require(cfg.get("Memory") == 768 * MIB and cfg.get("ReadonlyRootfs") is True
                 and cfg.get("Privileged") is False and cfg.get("Init") is True
-                and cfg.get("RestartPolicy", {}).get("Name") == "no"
+                and valid_restart
                 and cfg.get("PortBindings") == {"3000/tcp": [{"HostIp": "127.0.0.1", "HostPort": str(slot["port"])}]}, "web-runtime-isolation")
         if not (retired and slot == value["slots"]["old"]):
             require(item.get("NetworkSettings", {}).get("Ports") == {
@@ -571,8 +582,11 @@ def _verify(plan, host, *, retired=False, check_workers=True):
         if not (retired and name == "old"):
             host.probe(slot["port"])
     host.assert_plan()
-    return {"version": 1, "plan_sha256": plan.sha256, "operation_id": value["operation_id"],
-            "compatibility": compatibility, "assets": proof}
+    proof = {"version": 1, "plan_sha256": plan.sha256, "operation_id": value["operation_id"],
+             "compatibility": compatibility, "assets": proof}
+    if value["version"] == 2:
+        proof.update(plan_version=2, purpose=PLAN_PURPOSES[2])
+    return proof
 
 
 def verify(plan, *, _host=None):

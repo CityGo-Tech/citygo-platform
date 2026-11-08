@@ -11,6 +11,10 @@ on:
       - deploy/fixtures/web-switch-*.py
       - deploy/fixtures/web-switch-*.Dockerfile
       - scripts/web-switch-*.mjs
+      - scripts/web-bootstrap-*.mjs
+      - docs/runbooks/web-switch-bootstrap.md
+      - docs/runbooks/staged-web-switch.md
+      - docs/operations/web-*.md
 permissions:
   contents: read
 concurrency:
@@ -30,7 +34,9 @@ jobs:
       - name: Verify controller and protected asset paths on disposable Linux
         run: sudo env TMPDIR=/root python3 -B -m unittest discover -s deploy/backup -p 'test_web_switch*.py' -v
       - name: Verify opt-in ingress without installing it
-        run: node --test scripts/web-switch-ingress.test.mjs scripts/web-switch-transport.test.mjs scripts/web-switch-controller-smoke.test.mjs
+        run: node --test scripts/web-switch-ingress.test.mjs scripts/web-switch-transport.test.mjs scripts/web-switch-controller-smoke.test.mjs scripts/web-bootstrap-preparation.test.mjs
+      - name: Assemble an offline review kit without deployment authority
+        run: node scripts/web-bootstrap-preparation.mjs --prepare --host=pilot.xn--c1ajazlh.xn--p1ai
       - name: Prepare only disposable public image bases
         run: |
           docker pull node@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5
@@ -57,6 +63,8 @@ jobs:
             --source-sha="$(git rev-parse HEAD)"
       - name: Exercise the whole controller inside its own isolated Docker host
         run: node scripts/web-switch-controller-smoke.mjs --disposable --allow-privileged-fixture --pull-public-bases
+      - name: Exercise same-image bootstrap with durable V2 policy
+        run: node scripts/web-switch-controller-smoke.mjs --disposable --allow-privileged-fixture --pull-public-bases --durable-v2
       - uses: actions/upload-artifact@v7
         if: always()
         with:
@@ -64,6 +72,7 @@ jobs:
           path: |
             .local/web-switch-smoke/
             .local/web-switch-controller-smoke/
+            .local/web-bootstrap-preparation/
           retention-days: 7
         # Synthetic data only. No registry publication, deploy credentials,
         # provider calls, runtime installation or autodeploy integration.

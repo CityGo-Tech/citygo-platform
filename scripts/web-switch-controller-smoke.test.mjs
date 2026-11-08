@@ -3,7 +3,27 @@ import { test } from "node:test";
 import {
   controllerFixtureEnv,
   localDockerEndpoint,
+  runControllerSmoke,
 } from "./web-switch-controller-smoke.mjs";
+
+test("durable V2 has an inert same-image plan and still requires the explicit fixture permission", async () => {
+  const output = [];
+  const previous = console.log;
+  console.log = (value) => output.push(value);
+  try {
+    await runControllerSmoke(["--plan", "--durable-v2"]);
+  } finally {
+    console.log = previous;
+  }
+  const plan = JSON.parse(output[0]);
+  assert.equal(plan.controllerPlanVersion, 2);
+  assert.equal(plan.sameWebBootstrap, true);
+  assert.equal(plan.syntheticDistinctWebReleases, false);
+  await assert.rejects(
+    runControllerSmoke(["--disposable", "--durable-v2"]),
+    /Explicit disposable privileged fixture flag required/,
+  );
+});
 
 test("fixture Docker children cannot inherit credentials, remote daemon or altered trust", () => {
   const env = controllerFixtureEnv({
