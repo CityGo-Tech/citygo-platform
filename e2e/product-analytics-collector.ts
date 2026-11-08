@@ -1,3 +1,4 @@
+import { paidCollector } from "./paid-pixels-collector";
 import { expect, type Page } from "@playwright/test";
 
 export const analyticsOrigin = "https://pilot.xn--c1ajazlh.xn--p1ai";
@@ -7,6 +8,7 @@ export type CollectorCommand = [number, string, ...unknown[]];
 
 /** Real local built HTML/assets, strict synthetic APIs, delayed fake SDK only. */
 export async function delayedCollector(page: Page) {
+  const paid = await paidCollector(page);
   let sdkRequests = 0;
   let release!: () => void;
   const gate = new Promise<void>((done) => {
@@ -54,6 +56,7 @@ export async function delayedCollector(page: Page) {
     );
   return {
     release,
+    paid,
     sdkRequests: () => sdkRequests,
     commands,
     goals: async () =>

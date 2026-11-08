@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useRef } from "react";
+import { createPaidPixelBridge } from "./paid-pixels";
 import { clearBrowserLandingAttribution } from "./landing/landing-attribution";
 import { customerInteractionNameSchema } from "@citygo/contracts";
 import type {
@@ -14,6 +15,7 @@ import {
   createPendingProductEvents,
   createRegistrationProductFlow,
   createProductAnalytics,
+  publicAnalyticsPageUrl,
   isAnalyticsIdentity,
   type AnalyticsSurface,
   type ProductAnalyticsConfig,
@@ -136,6 +138,7 @@ type AuthReceipt = {
   onceKey: string;
   at: number;
   cancel: () => void;
+  paidSubmitted: boolean;
   landingVersion?: "v1" | "v8";
 };
 
@@ -203,6 +206,7 @@ export function useProductAnalytics(options: {
     let starting = false;
     let landingSent = false;
     let current: ReturnType<typeof createProductAnalytics> | null = null;
+    let paidPixels: ReturnType<typeof createPaidPixelBridge> | null = null;
     const pending = createPendingProductEvents();
     const active = () =>
       !disposed &&
@@ -231,7 +235,8 @@ export function useProductAnalytics(options: {
         const sent = current.event(event, params, onceKey);
         if (params?.surface) current.view(params.surface);
         if (sent) registrationFlow.submitted(onceKey);
-        if (sent && authReceipt.current?.onceKey === onceKey) {
+        const receipt = authReceipt.current;
+        if (sent && receipt && receipt.onceKey === onceKey) {
           clearAuth();
           registrationFlow.clear();
         }
@@ -257,6 +262,16 @@ export function useProductAnalytics(options: {
         registrationFlow.clear();
         return;
       }
+      if (
+        value &&
+        ownerId !== null &&
+        value.ownerId === ownerId &&
+        role === "user" &&
+        value.event === "registration_completed" &&
+        !value.paidSubmitted &&
+        paidPixels?.registrationCompleted(value.onceKey)
+      )
+        value.paidSubmitted = true;
       for (const stage of registrationFlow.pending(sessionSignal, ownerId))
         pending.add(
           stage.event,
@@ -303,6 +318,8 @@ export function useProductAnalytics(options: {
     function stop() {
       generation++;
       starting = false;
+      paidPixels?.stop();
+      paidPixels = null;
       current?.stop();
       if (recorder.current === current) recorder.current = null;
       current = null;
@@ -396,6 +413,20 @@ export function useProductAnalytics(options: {
           }
         }
         if (!valid()) return;
+        // SDK readiness is independent. Every provider still uses the same
+        // current-session, role, URL and optional-analytics privacy gate.
+        if (config.paidPixels?.enabled && !paidPixels && valid()) {
+          const bridge = createPaidPixelBridge(
+            config.paidPixels,
+            publicAnalyticsPageUrl(
+              window.location,
+              options.publicLandingVersion,
+              options.publicLandingAttribution,
+            ),
+          );
+          if (bridge.start()) paidPixels = bridge;
+          publishReceipt();
+        }
         const send = await loadMetrika();
         if (!send || !valid()) return;
         current = createProductAnalytics(
@@ -452,6 +483,9 @@ export function useProductAnalytics(options: {
     config.enabled,
     config.counterId,
     config.webvisor,
+    config.paidPixels?.enabled,
+    config.paidPixels?.vkPixelId,
+    config.paidPixels?.avitoCounterId,
     ownerId,
     role,
     blocked,
@@ -518,6 +552,7 @@ export function useProductAnalytics(options: {
         ownerId: user.id,
         signal,
         at: Date.now(),
+        paidSubmitted: false,
         onceKey: "auth:" + crypto.randomUUID(),
         cancel: () => {
           if (authReceipt.current === value) clearAuth();

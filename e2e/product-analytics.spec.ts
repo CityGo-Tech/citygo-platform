@@ -1,3 +1,4 @@
+import { paidCollector, paidPixelsEnabled } from "./paid-pixels-collector";
 import { clickAccountAction, clickWalletAction } from "./navigation-helper";
 import { expect, test, type Page } from "@playwright/test";
 import {
@@ -309,6 +310,7 @@ test("trusted-origin collector respects build flags, masks, late identity, opt-o
   const enabled = expected === "enabled";
   const origin = "https://pilot.xn--c1ajazlh.xn--p1ai";
   const state = await install(page);
+  const paid = await paidCollector(page);
   state.holdIdentity = true;
   let sdkRequests = 0;
   // These browser HTTPS requests are fulfilled only from the local test build.
@@ -510,6 +512,8 @@ test("trusted-origin collector respects build flags, masks, late identity, opt-o
   await expect(
     page.locator('script[src*="mc.yandex.ru"],script[src*="mc.yandex.com"]'),
   ).toHaveCount(0);
+  await expect(page.locator("iframe[data-citygo-paid-pixels]")).toHaveCount(0);
+  expect(paid.goals()).toEqual([]);
   expect(state.outside).toEqual([]);
   expect(state.unexpected).toEqual([]);
 });
@@ -646,6 +650,7 @@ for (const role of ["user", "admin"] as const) {
     await expect(toolbar(page)).toBeVisible();
     expect(state.registrationPosts).toBe(1);
     expect(state.confirmationPosts).toBe(1);
+    expect(collector.paid.goals()).toEqual([]);
     // Download may finish after the anonymous lifetime already ended. It must
     // neither revive that lifetime nor attribute the old queue to an admin.
     collector.release();
@@ -671,7 +676,65 @@ for (const role of ["user", "admin"] as const) {
       expect(state.identityReads).toBe(0);
       expect(await collector.commands()).toEqual([]);
     }
+    if (paidPixelsEnabled() && role === "user") {
+      await expect
+        .poll(() => collector.paid.goals())
+        .toEqual([
+          "avito:citygo_registration_completed",
+          "vk:citygoRegistrationCompleted",
+        ]);
+      expect(JSON.stringify(collector.paid.commands)).not.toMatch(
+        /new-user@example|synthetic-password|654321|private-contact|"101"/,
+      );
+    } else {
+      expect(collector.paid.goals()).toEqual([]);
+      await expect(page.locator("iframe[data-citygo-paid-pixels]")).toHaveCount(
+        0,
+      );
+    }
     expect(state.outside).toEqual([]);
     expect(state.unexpected).toEqual([]);
+    await page.waitForLoadState("networkidle");
+    await page.unrouteAll({ behavior: "wait" });
+    await page.context().unrouteAll({ behavior: "wait" });
+  });
+}
+
+for (const reason of ["admin", "dnt", "gpc", "opt-out"] as const) {
+  test(`paid counters never initialize for a current ${reason} session`, async ({
+    page,
+  }) => {
+    const state = await install(page, reason === "admin" ? "admin" : "user");
+    if (reason !== "admin")
+      await page.addInitScript((selected) => {
+        if (selected === "dnt")
+          Object.defineProperty(navigator, "doNotTrack", {
+            configurable: true,
+            value: "1",
+          });
+        if (selected === "gpc")
+          Object.defineProperty(navigator, "globalPrivacyControl", {
+            configurable: true,
+            value: true,
+          });
+        if (selected === "opt-out")
+          localStorage.setItem("citygo.analytics.optout", "1");
+      }, reason);
+    const collector = await delayedCollector(page);
+    collector.release();
+    await page.goto(analyticsOrigin + "/", { referer: "https://yandex.ru/" });
+    await expect(toolbar(page)).toBeVisible();
+    await clickWalletAction(page, "Телефон и подарок");
+    await expect(page.getByLabel("Российский мобильный номер")).toBeVisible();
+    await page.waitForLoadState("networkidle");
+    expect(collector.paid.sdkRequests()).toBe(0);
+    expect(collector.paid.commands).toEqual([]);
+    await expect(page.locator("iframe[data-citygo-paid-pixels]")).toHaveCount(
+      0,
+    );
+    expect(state.outside).toEqual([]);
+    expect(state.unexpected).toEqual([]);
+    await page.unrouteAll({ behavior: "wait" });
+    await page.context().unrouteAll({ behavior: "wait" });
   });
 }

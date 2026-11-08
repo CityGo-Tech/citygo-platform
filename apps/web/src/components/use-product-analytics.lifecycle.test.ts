@@ -32,6 +32,12 @@ type Options = Parameters<typeof useProductAnalytics>[0];
 function harness() {
   const commands: unknown[][] = [];
   const records: string[] = [];
+  const paidBridges: {
+    config: unknown;
+    url: string;
+    active: boolean;
+    goals: string[];
+  }[] = [];
   const timers: (() => void)[] = [];
   const scripts: {
     onload?: () => void;
@@ -110,6 +116,27 @@ function harness() {
       if (name === "@citygo/contracts")
         return { customerInteractionNameSchema };
       if (name === "./product-analytics") return product;
+      if (name === "./paid-pixels")
+        return {
+          createPaidPixelBridge(config: unknown, url: string) {
+            const value = { config, url, active: false, goals: [] as string[] };
+            paidBridges.push(value);
+            return {
+              start() {
+                value.active = true;
+                return true;
+              },
+              registrationCompleted(key: string) {
+                if (!value.active || value.goals.includes(key)) return false;
+                value.goals.push(key);
+                return true;
+              },
+              stop() {
+                value.active = false;
+              },
+            };
+          },
+        };
       if (name === "./landing/landing-attribution")
         return {
           clearBrowserLandingAttribution: () => {
@@ -178,6 +205,7 @@ function harness() {
     signal,
     commands,
     records,
+    paidBridges,
     scripts,
     timers,
     identityReads: () => identityReads,
@@ -658,6 +686,100 @@ test("a public campaign reaches its clean landing collector without overriding p
       assert.equal(h.scripts.length, 0, reason);
       assert.deepEqual(h.commands, [], reason);
     }
+    h.dispose();
+  }
+});
+
+test("paid receipt is independent of Yandex SDK readiness, ordinary goals do not dereference absent auth", async () => {
+  const h = harness();
+  h.options.config.paidPixels = {
+    enabled: true,
+    vkPixelId: 3812681,
+    avitoCounterId: 3496456,
+  };
+  h.options.ownerId = null;
+  h.options.role = undefined;
+  const analytics = h.render();
+  await turn();
+  assert.equal(h.paidBridges.length, 1);
+  const flow = analytics.beginRegistration(h.signal.signal);
+  analytics.registrationCodeSent(
+    flow,
+    "123e4567-e89b-42d3-a456-426614174001",
+    h.signal.signal,
+  );
+  const prepared = analytics.prepareRegistrationSuccess(
+    flow,
+    { id: "101", role: "user" },
+    h.signal.signal,
+    "123e4567-e89b-42d3-a456-426614174001",
+  );
+  h.signal.abort();
+  const next = new AbortController();
+  analytics.authSuccess(
+    "registration_completed",
+    { id: "101", role: "user" },
+    next.signal,
+    prepared,
+  );
+  h.options.ownerId = "101";
+  h.options.role = "user";
+  h.options.sessionSignal = next.signal;
+  h.render();
+  await turn();
+  assert.equal(h.commands.length, 0, "Yandex SDK has not loaded");
+  assert.equal(h.paidBridges.filter((x) => x.active).length, 1);
+  assert.equal(h.paidBridges.flatMap((x) => x.goals).length, 1);
+  h.render();
+  await turn();
+  assert.equal(h.paidBridges.flatMap((x) => x.goals).length, 1);
+  h.load();
+  await turn();
+  assert.doesNotThrow(() =>
+    product.trackProductEvent("wallet_opened", { surface: "wallet" }),
+  );
+  assert.doesNotThrow(() =>
+    product.trackProductEvent("phone_opened", { surface: "phone" }),
+  );
+  assert(goals(h).includes("citygo_wallet_opened"));
+  assert(goals(h).includes("citygo_phone_opened"));
+  h.win.localStorage.setItem("citygo.analytics.optout", "1");
+  h.win.dispatchEvent(new Event("citygo:analytics-preference"));
+  assert.equal(h.paidBridges.filter((x) => x.active).length, 0);
+  h.dispose();
+});
+
+test("paid SDKs share current-role, privacy and first-party identity gates", async () => {
+  for (const reason of [
+    "admin",
+    "blocked",
+    "dnt",
+    "gpc",
+    "opt-out",
+    "identity-rejected",
+    "identity-forbidden",
+  ]) {
+    const h = harness();
+    h.options.config.paidPixels = {
+      enabled: true,
+      vkPixelId: 3812681,
+      avitoCounterId: 3496456,
+    };
+    if (reason === "admin") h.options.role = "admin";
+    if (reason === "blocked") h.options.blocked = true;
+    if (reason === "dnt") h.navigator.doNotTrack = "1";
+    if (reason === "gpc") h.navigator.globalPrivacyControl = true;
+    if (reason === "opt-out")
+      h.win.localStorage.setItem("citygo.analytics.optout", "1");
+    if (reason === "identity-rejected" || reason === "identity-forbidden")
+      h.lookup(async () => {
+        throw Object.assign(new Error("Synthetic denied role"), {
+          status: reason === "identity-forbidden" ? 403 : 401,
+        });
+      });
+    h.render();
+    await turn();
+    assert.equal(h.paidBridges.length, 0, reason);
     h.dispose();
   }
 });

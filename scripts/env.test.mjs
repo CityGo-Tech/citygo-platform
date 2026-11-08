@@ -101,6 +101,9 @@ test("only reviewed public analytics settings reach Web/build, never API or work
     NEXT_PUBLIC_CITYGO_METRIKA_ENABLED: "enabled",
     NEXT_PUBLIC_CITYGO_METRIKA_COUNTER_ID: "105736701",
     NEXT_PUBLIC_CITYGO_METRIKA_WEBVISOR: "enabled",
+    NEXT_PUBLIC_CITYGO_AD_PIXELS_ENABLED: "enabled",
+    NEXT_PUBLIC_CITYGO_VK_PIXEL_ID: "3812681",
+    NEXT_PUBLIC_CITYGO_AVITO_COUNTER_ID: "3496456",
     NEXT_PUBLIC_OTHER_TRACKER: "unreviewed",
     POSTBOX_SECRET_ACCESS_KEY: "synthetic-secret",
   };
@@ -109,6 +112,9 @@ test("only reviewed public analytics settings reach Web/build, never API or work
     assert.equal(env.NEXT_PUBLIC_CITYGO_METRIKA_COUNTER_ID, "105736701");
     assert.equal(env.NEXT_PUBLIC_CITYGO_METRIKA_ENABLED, "enabled");
     assert.equal(env.NEXT_PUBLIC_CITYGO_METRIKA_WEBVISOR, "enabled");
+    assert.equal(env.NEXT_PUBLIC_CITYGO_AD_PIXELS_ENABLED, "enabled");
+    assert.equal(env.NEXT_PUBLIC_CITYGO_VK_PIXEL_ID, "3812681");
+    assert.equal(env.NEXT_PUBLIC_CITYGO_AVITO_COUNTER_ID, "3496456");
     assert.equal(env.NEXT_PUBLIC_OTHER_TRACKER, undefined);
     assert.equal(env.POSTBOX_SECRET_ACCESS_KEY, undefined);
   }
@@ -144,6 +150,10 @@ test("analytics public configuration cannot accept a URL, secret or ambiguous sw
     { NEXT_PUBLIC_CITYGO_METRIKA_COUNTER_ID: "0" },
     { NEXT_PUBLIC_CITYGO_METRIKA_WEBVISOR: "enabled" },
     { NEXT_PUBLIC_CITYGO_METRIKA_WEBVISOR: "synthetic-secret" },
+    { NEXT_PUBLIC_CITYGO_AD_PIXELS_ENABLED: "true" },
+    { NEXT_PUBLIC_CITYGO_AD_PIXELS_ENABLED: "enabled" },
+    { NEXT_PUBLIC_CITYGO_VK_PIXEL_ID: "https://invalid/synthetic-secret" },
+    { NEXT_PUBLIC_CITYGO_AVITO_COUNTER_ID: "0" },
   ]) {
     for (const scope of ["build", "web"])
       assert.throws(
@@ -493,6 +503,9 @@ test("Turbo caches only non-secret Web configuration and passes the test DB only
             "NEXT_PUBLIC_CITYGO_METRIKA_ENABLED",
             "NEXT_PUBLIC_CITYGO_METRIKA_COUNTER_ID",
             "NEXT_PUBLIC_CITYGO_METRIKA_WEBVISOR",
+            "NEXT_PUBLIC_CITYGO_AD_PIXELS_ENABLED",
+            "NEXT_PUBLIC_CITYGO_VK_PIXEL_ID",
+            "NEXT_PUBLIC_CITYGO_AVITO_COUNTER_ID",
           ]
         : [],
     );
@@ -731,4 +744,40 @@ test("root dev/start/migrate route only the required settings to each stage", (t
       assert.equal(web.NODE_ENV, api.NODE_ENV);
     }
   }
+});
+
+test("analytics E2E annotations are explicit test-only expectations, not runtime collection switches", (t) => {
+  const directory = fixture(t);
+  const expectations = {
+    CITYGO_METRIKA_E2E_ENABLED: "enabled",
+    CITYGO_METRIKA_E2E_COUNTER_ID: "113847047",
+    CITYGO_AD_PIXELS_E2E_ENABLED: "enabled",
+  };
+  const allowed = serviceEnv("test", { directory, inherited: expectations });
+  for (const [key, value] of Object.entries(expectations))
+    assert.equal(allowed[key], value);
+  for (const scope of [
+    "build",
+    "web",
+    "web-test",
+    "api",
+    "worker",
+    "migrator",
+    "mobile",
+  ])
+    for (const key of Object.keys(expectations))
+      assert.equal(
+        serviceEnv(scope, { directory, inherited: expectations })[key],
+        undefined,
+      );
+  for (const invalid of [
+    { CITYGO_METRIKA_E2E_ENABLED: "synthetic-secret" },
+    { CITYGO_AD_PIXELS_E2E_ENABLED: "true" },
+    { CITYGO_METRIKA_E2E_COUNTER_ID: "https://invalid/synthetic-secret" },
+  ])
+    assert.throws(
+      () => serviceEnv("test", { directory, inherited: invalid }),
+      (error) =>
+        error instanceof Error && !error.message.includes("synthetic-secret"),
+    );
 });

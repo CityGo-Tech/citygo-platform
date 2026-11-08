@@ -1,4 +1,5 @@
 import { landingAttributionSchema } from "@citygo/contracts";
+import { parsePaidPixelConfig, type PaidPixelConfig } from "./paid-pixels";
 
 /** Explicit, content-free product analytics. The default is no collection. */
 export const productEvents = [
@@ -64,6 +65,7 @@ export type ProductAnalyticsConfig = {
   enabled: boolean;
   counterId: number | null;
   webvisor: boolean;
+  paidPixels?: PaidPixelConfig;
 };
 export type AnalyticsLocation = {
   origin: string;
@@ -81,6 +83,9 @@ export function parseProductAnalyticsConfig(value: {
   enabled?: string;
   counterId?: string;
   webvisor?: string;
+  paidPixelsEnabled?: string;
+  vkPixelId?: string;
+  avitoCounterId?: string;
 }): ProductAnalyticsConfig {
   const counterId =
     typeof value.counterId === "string" &&
@@ -92,6 +97,15 @@ export function parseProductAnalyticsConfig(value: {
     enabled: value.enabled === "enabled" && counterId !== null,
     counterId,
     webvisor: value.webvisor === "enabled",
+    ...(value.paidPixelsEnabled === "enabled"
+      ? {
+          paidPixels: parsePaidPixelConfig({
+            enabled: value.paidPixelsEnabled,
+            vkPixelId: value.vkPixelId,
+            avitoCounterId: value.avitoCounterId,
+          }),
+        }
+      : {}),
   };
 }
 
@@ -199,9 +213,7 @@ export async function whenAnalyticsIdentityReady(
   }
 }
 
-export function createProductAnalytics(
-  config: ProductAnalyticsConfig,
-  send: YandexMetrika,
+function publicCampaignContext(
   location: AnalyticsLocation,
   landingVersion?: "v1" | "v8",
   landingAttribution?: unknown,
@@ -230,10 +242,34 @@ export function createProductAnalytics(
       }
     }
   }
-  const campaignParams = () =>
-    search.size ? { campaign: { ...campaign } } : {};
   const pageUrl =
     location.origin + location.pathname + (search.size ? "?" + search : "");
+  return { pageUrl, campaign };
+}
+
+export function publicAnalyticsPageUrl(
+  location: AnalyticsLocation,
+  landingVersion?: "v1" | "v8",
+  landingAttribution?: unknown,
+): string {
+  return publicCampaignContext(location, landingVersion, landingAttribution)
+    .pageUrl;
+}
+
+export function createProductAnalytics(
+  config: ProductAnalyticsConfig,
+  send: YandexMetrika,
+  location: AnalyticsLocation,
+  landingVersion?: "v1" | "v8",
+  landingAttribution?: unknown,
+) {
+  const { pageUrl, campaign } = publicCampaignContext(
+    location,
+    landingVersion,
+    landingAttribution,
+  );
+  const campaignParams = () =>
+    Object.keys(campaign).length ? { campaign: { ...campaign } } : {};
   let active = false;
   let surface: AnalyticsSurface | null = null;
   const seen = new Set<string>();
@@ -248,6 +284,7 @@ export function createProductAnalytics(
     }
   }
   return {
+    pageUrl,
     start(identity: string | null = null): boolean {
       if (active) return true;
       if (

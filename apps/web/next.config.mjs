@@ -33,6 +33,23 @@ const config = {
           { key: "X-Frame-Options", value: "DENY" },
         ],
       },
+      {
+        source: "/paid-pixels/:path*",
+        headers: [
+          { key: "X-Frame-Options", value: "SAMEORIGIN" },
+          { key: "Referrer-Policy", value: "no-referrer" },
+          { key: "Cache-Control", value: "no-store" },
+          {
+            key: "Content-Security-Policy",
+            value:
+              "default-src 'none'; script-src 'self' https://ac.avito.ru https://top-fwz1.mail.ru; connect-src https://www.avito.ru https://top-fwz1.mail.ru; img-src https://www.avito.ru https://top-fwz1.mail.ru data:; frame-ancestors 'self'; base-uri 'none'; form-action 'none'",
+          },
+          {
+            key: "Permissions-Policy",
+            value: "camera=(), microphone=(), geolocation=(), payment=()",
+          },
+        ],
+      },
     ];
   },
 };
