@@ -6,6 +6,7 @@ on:
       - .github/workflows/web-switch-smoke.yml
       - deploy/backup/*web_switch*.py
       - deploy/backup/*web_bootstrap*.py
+      - deploy/backup/*web_controller_install*.py
       - deploy/nginx/pilot-web-switch.conf.template
       - deploy/render-web-switch.mjs
       - deploy/fixtures/web-switch-*.mjs
@@ -15,6 +16,7 @@ on:
       - scripts/web-bootstrap-*.mjs
       - docs/runbooks/web-switch-bootstrap.md
       - docs/runbooks/web-bootstrap-draft.md
+      - docs/runbooks/web-controller-install.md
       - docs/runbooks/staged-web-switch.md
       - docs/operations/web-*.md
 permissions:
@@ -51,6 +53,10 @@ jobs:
         run: python3 -B -m unittest discover -s deploy/backup -p 'test_web_bootstrap*.py' -v
       - name: Normalize only synthetic bootstrap Compose without a Docker daemon
         run: python3 -B deploy/backup/web_bootstrap_smoke.py --disposable > .local/web-switch-controller-smoke/bootstrap-draft.json
+      - name: Verify inactive controller installation on disposable Linux
+        run: sudo env TMPDIR=/root python3 -B -m unittest discover -s deploy/backup -p 'test_web_controller_install*.py' -v
+      - name: Rehearse process crashes without touching runtime or real server paths
+        run: sudo env TMPDIR=/root python3 -B deploy/backup/web_controller_install_smoke.py --disposable > .local/web-switch-controller-smoke/inactive-install.json
       - name: Verify opt-in ingress without installing it
         run: node --test scripts/web-switch-ingress.test.mjs scripts/web-switch-transport.test.mjs scripts/web-switch-controller-smoke.test.mjs scripts/web-bootstrap-preparation.test.mjs
       - name: Verify public archive access without exposing private fixture files
