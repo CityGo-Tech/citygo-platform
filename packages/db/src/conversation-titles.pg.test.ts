@@ -168,17 +168,21 @@ test(
     });
     await updated;
     onOwnerRead = entered;
-    const pending = store.update(owner, thread, {
-      title: "must not commit",
-      expectedRevision: "2",
-    });
+    // Observe both outcomes before releasing the blocker; the expected refusal
+    // may settle before the blocking transaction's COMMIT reaches this caller.
+    const pending = Promise.allSettled([
+      store.update(owner, thread, {
+        title: "must not commit",
+        expectedRevision: "2",
+      }),
+    ]);
     await started;
     release();
     await block;
-    await assert.rejects(
-      pending,
-      (e) => e instanceof DomainError && e.statusCode === 403,
-    );
+    const [outcome] = await pending;
+    assert.ok(outcome.status === "rejected", "blocked owner must be rejected");
+    assert.ok(outcome.reason instanceof DomainError);
+    assert.equal(outcome.reason.statusCode, 403);
     assert.equal(
       (await db.query("select title from conversation_titles")).rows[0]!.title,
       null,
