@@ -4,7 +4,43 @@ import {
   controllerFixtureEnv,
   localDockerEndpoint,
   runControllerSmoke,
+  verifyControllerTrustedCodeProof,
 } from "./web-switch-controller-smoke.mjs";
+
+test("whole Host requires byte-identical root normalization after the actual hostile UID challenge", () => {
+  const hashes = { "web_switch.py": "a".repeat(64) };
+  const proof = {
+    version: 1,
+    received: { "web_switch.py": { uid: 1001, gid: 1001, mode: 0o664 } },
+    adversarial: { "web_switch.py": { uid: 1001, gid: 1001, mode: 0o666 } },
+    normalized: {
+      "web_switch.py": {
+        uid: 0,
+        gid: 0,
+        mode: 0o644,
+        sha256: hashes["web_switch.py"],
+      },
+    },
+    normalizedBeforeControllerImport: true,
+    byteIdentityPreserved: true,
+  };
+  verifyControllerTrustedCodeProof(proof, hashes);
+  for (const change of [
+    (p) => (p.normalized["web_switch.py"].uid = 1001),
+    (p) => (p.normalized["web_switch.py"].mode = 0o664),
+    (p) => (p.normalized["web_switch.py"].sha256 = "b".repeat(64)),
+    (p) => (p.adversarial["web_switch.py"].uid = 0),
+    (p) => (p.normalizedBeforeControllerImport = false),
+    (p) => (p.byteIdentityPreserved = false),
+    (p) => delete p.normalized["web_switch.py"],
+    (p) => (p.normalized["other.py"] = p.normalized["web_switch.py"]),
+    (p) => (p.extra = true),
+  ]) {
+    const invalid = structuredClone(proof);
+    change(invalid);
+    assert.throws(() => verifyControllerTrustedCodeProof(invalid, hashes));
+  }
+});
 
 test("durable V2 has an inert same-image plan and still requires the explicit fixture permission", async () => {
   const output = [];

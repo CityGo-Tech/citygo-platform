@@ -2,7 +2,7 @@
 // No outer daemon socket, repository, credentials or host directory is mounted.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   closeSync,
   fsyncSync,
@@ -68,6 +68,43 @@ export function localDockerEndpoint(context) {
 }
 export function controllerDiagnosticTail(previous, chunk, limit = 4000) {
   return (previous + chunk.toString()).slice(-limit);
+}
+export function verifyControllerTrustedCodeProof(proof, expectedHashes) {
+  assert.deepEqual(Object.keys(proof).sort(), [
+    "adversarial",
+    "byteIdentityPreserved",
+    "normalized",
+    "normalizedBeforeControllerImport",
+    "received",
+    "version",
+  ]);
+  assert.equal(proof.version, 1);
+  assert.equal(proof.normalizedBeforeControllerImport, true);
+  assert.equal(proof.byteIdentityPreserved, true);
+  for (const field of ["received", "adversarial", "normalized"])
+    assert.deepEqual(
+      Object.keys(proof[field]).sort(),
+      Object.keys(expectedHashes).sort(),
+    );
+  for (const [name, sha256] of Object.entries(expectedHashes)) {
+    assert.match(sha256, /^[a-f0-9]{64}$/);
+    const received = proof.received[name];
+    assert.deepEqual(Object.keys(received).sort(), ["gid", "mode", "uid"]);
+    for (const key of ["uid", "gid", "mode"])
+      assert.ok(Number.isInteger(received[key]) && received[key] >= 0);
+    assert.ok(received.mode <= 0o7777);
+    assert.deepEqual(proof.adversarial[name], {
+      uid: 1001,
+      gid: 1001,
+      mode: 0o666,
+    });
+    assert.deepEqual(proof.normalized[name], {
+      uid: 0,
+      gid: 0,
+      mode: 0o644,
+      sha256,
+    });
+  }
 }
 export async function runControllerSmoke(cliArgs = process.argv.slice(2)) {
   const args = new Set(cliArgs);
@@ -511,6 +548,7 @@ export async function runControllerSmoke(cliArgs = process.argv.slice(2)) {
       assert.match(containerId, /^[a-f0-9]{64}$/);
       obtained("host", { id: containerId });
       const directory = "/opt/citygo-controller-fixture";
+      const trustedFileHashes = {};
       for (const [source, destination] of [
         [
           "deploy/fixtures/web-switch-controller-harness.py",
@@ -527,8 +565,17 @@ export async function runControllerSmoke(cliArgs = process.argv.slice(2)) {
           `${directory}/pilot-web-switch.conf.template`,
         ],
       ]) {
+        const digest = () =>
+          createHash("sha256")
+            .update(readFileSync(join(root, source)))
+            .digest("hex");
+        trustedFileHashes[destination.split("/").at(-1)] = digest();
         event("host", "copy-trusted-code", "before", { source, destination });
         docker(["cp", join(root, source), `${containerId}:${destination}`]);
+        assert.equal(
+          digest(),
+          trustedFileHashes[destination.split("/").at(-1)],
+        );
         event("host", "copy-trusted-code", "after", { source, destination });
       }
       event("host", "start", "before");
@@ -578,6 +625,10 @@ export async function runControllerSmoke(cliArgs = process.argv.slice(2)) {
       assert.equal(receipt.retired, true);
       assert.equal(receipt.planVersion, durableV2 ? 2 : 1);
       assert.equal(receipt.sameWebBootstrap, durableV2);
+      verifyControllerTrustedCodeProof(
+        receipt.trustedCodeBootstrap,
+        trustedFileHashes,
+      );
       if (durableV2) {
         assert.equal(receipt.webImages.old, receipt.webImages.new);
         assert.equal(receipt.webSources.old, receipt.webSources.new);

@@ -12,6 +12,7 @@ import os
 from pathlib import Path, PurePosixPath
 import shutil
 import ssl
+import stat
 import subprocess
 import sys
 import tarfile
@@ -30,6 +31,56 @@ NODE, POSTGRES = sys.argv[-2:]
 FIXTURE_FLAGS = sys.argv[1:-2]
 assert set(FIXTURE_FLAGS) <= {"--wait-for-images", "--durable-v2"}
 DURABLE_V2 = "--durable-v2" in FIXTURE_FLAGS
+TRUSTED_FILES = ("harness.py", "web_switch.py", "backup.py", "web_switch_assets.py", "pilot-web-switch.conf.template")
+
+
+def prepare_trusted_code():
+    """Normalize only the copied, trusted test payload before importing it.
+
+    Linux docker cp may retain the runner's UID. Always recreate that adverse
+    input here, including on Desktop, so every whole-Host run covers the fix.
+    Candidates and the inner daemon do not exist at this point.
+    """
+    assert HERE == Path("/opt/citygo-controller-fixture") and os.geteuid() == 0
+    assert {path.name for path in HERE.iterdir()} == set(TRUSTED_FILES)
+    for parent in HERE.parents:
+        info = parent.lstat()
+        assert stat.S_ISDIR(info.st_mode) and info.st_uid == 0 and not info.st_mode & 0o022
+    directory = os.open(HERE, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    proof = {"version": 1, "received": {}, "adversarial": {}, "normalized": {},
+             "normalizedBeforeControllerImport": True, "byteIdentityPreserved": True}
+    try:
+        info = os.fstat(directory)
+        assert stat.S_ISDIR(info.st_mode)
+        os.fchown(directory, 0, 0)
+        os.fchmod(directory, 0o755)
+        for name in TRUSTED_FILES:
+            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+            try:
+                info = os.fstat(fd)
+                assert stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and 0 < info.st_size <= 16 * 1024 * 1024
+                raw = os.read(fd, 16 * 1024 * 1024 + 1)
+                assert len(raw) == info.st_size
+                digest = hashlib.sha256(raw).hexdigest()
+                proof["received"][name] = {"uid": info.st_uid, "gid": info.st_gid, "mode": stat.S_IMODE(info.st_mode)}
+                os.fchown(fd, 1001, 1001)
+                os.fchmod(fd, 0o666)
+                adverse = os.fstat(fd)
+                assert (adverse.st_uid, adverse.st_gid, stat.S_IMODE(adverse.st_mode)) == (1001, 1001, 0o666)
+                proof["adversarial"][name] = {"uid": adverse.st_uid, "gid": adverse.st_gid, "mode": stat.S_IMODE(adverse.st_mode)}
+                os.fchown(fd, 0, 0)
+                os.fchmod(fd, 0o644)
+                after = os.fstat(fd)
+                os.lseek(fd, 0, os.SEEK_SET)
+                assert hashlib.sha256(os.read(fd, 16 * 1024 * 1024 + 1)).hexdigest() == digest
+                assert (after.st_uid, after.st_gid, stat.S_IMODE(after.st_mode), after.st_nlink) == (0, 0, 0o644, 1)
+                proof["normalized"][name] = {"uid": after.st_uid, "gid": after.st_gid, "mode": stat.S_IMODE(after.st_mode), "sha256": digest}
+            finally:
+                os.close(fd)
+    finally:
+        os.close(directory)
+    write(EVIDENCE / "trusted-code-bootstrap.json", json.dumps(proof, sort_keys=True) + "\n")
+    return proof
 
 
 def write(path, raw, mode=0o600):
@@ -114,10 +165,7 @@ def main():
     assert os.geteuid() == 0 and sys.platform.startswith("linux")
     EVIDENCE.mkdir(mode=0o700)
     ROOT.mkdir(mode=0o700)
-    HERE.chmod(0o755)
-    for file in HERE.iterdir():
-        if file.is_file():
-            file.chmod(0o644)
+    trusted_code = prepare_trusted_code()
     import web_switch as w
     import web_switch_assets as assets
     assert hasattr(os, "pidfd_open") and hasattr(__import__("signal"), "pidfd_send_signal")
@@ -423,7 +471,8 @@ def main():
           "availability": availability_proof, "candidateSockets": False,
           "resourceProof": "production Host reads VM /proc; outer 6GiB is a fixture budget, not a 4GiB production load test",
           "hostIsolation": "owned DinD network-none; no outer mounts/socket/ports", "actualSystemCA": True,
-          "controllerSha256": w.digest((HERE / "web_switch.py").read_bytes()), "assetFileCount": len(static)}))
+          "controllerSha256": w.digest((HERE / "web_switch.py").read_bytes()), "assetFileCount": len(static),
+          "trustedCodeBootstrap": trusted_code}))
     print("Whole production Host controller passed: " + ("V2 same-image durable canary" if DURABLE_V2 else "V1 distinct synthetic Web images"), flush=True)
 
 
