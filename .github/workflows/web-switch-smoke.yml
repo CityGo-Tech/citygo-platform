@@ -7,16 +7,20 @@ on:
       - deploy/backup/*web_switch*.py
       - deploy/backup/*web_bootstrap*.py
       - deploy/backup/*web_controller_install*.py
+      - deploy/backup/*web_runtime_stage*.py
       - deploy/nginx/pilot-web-switch.conf.template
       - deploy/render-web-switch.mjs
       - deploy/fixtures/web-switch-*.mjs
       - deploy/fixtures/web-switch-*.py
+      - deploy/fixtures/web-runtime-stage-*.py
       - deploy/fixtures/web-switch-*.Dockerfile
       - scripts/web-switch-*.mjs
+      - scripts/web-runtime-stage-*.mjs
       - scripts/web-bootstrap-*.mjs
       - docs/runbooks/web-switch-bootstrap.md
       - docs/runbooks/web-bootstrap-draft.md
       - docs/runbooks/web-controller-install.md
+      - docs/runbooks/web-runtime-stage.md
       - docs/runbooks/staged-web-switch.md
       - docs/operations/web-*.md
 permissions:
@@ -57,8 +61,10 @@ jobs:
         run: sudo env TMPDIR=/root python3 -B -m unittest discover -s deploy/backup -p 'test_web_controller_install*.py' -v
       - name: Rehearse process crashes without touching runtime or real server paths
         run: sudo env TMPDIR=/root python3 -B deploy/backup/web_controller_install_smoke.py --disposable > .local/web-switch-controller-smoke/inactive-install.json
+      - name: Verify runtime staging guards without deployment
+        run: sudo env TMPDIR=/root python3 -B -m unittest discover -s deploy/backup -p 'test_web_runtime_stage*.py' -v
       - name: Verify opt-in ingress without installing it
-        run: node --test scripts/web-switch-ingress.test.mjs scripts/web-switch-transport.test.mjs scripts/web-switch-controller-smoke.test.mjs scripts/web-bootstrap-preparation.test.mjs
+        run: node --test scripts/web-switch-ingress.test.mjs scripts/web-switch-transport.test.mjs scripts/web-switch-controller-smoke.test.mjs scripts/web-runtime-stage-smoke.test.mjs scripts/web-bootstrap-preparation.test.mjs
       - name: Verify public archive access without exposing private fixture files
         run: sudo env TMPDIR=/tmp "$(command -v node)" --test scripts/web-switch-fixture-permissions.test.mjs
       - name: Assemble an offline review kit without deployment authority
@@ -95,6 +101,9 @@ jobs:
       - name: Exercise same-image bootstrap with durable V2 policy
         if: ${{ !cancelled() && steps.source-proof.outcome == 'success' }}
         run: node scripts/web-switch-controller-smoke.mjs --disposable --allow-privileged-fixture --pull-public-bases --durable-v2
+      - name: Exercise closed API replacement and same-image Web staging
+        if: ${{ !cancelled() && steps.source-proof.outcome == 'success' }}
+        run: node scripts/web-switch-controller-smoke.mjs --disposable --allow-privileged-fixture --pull-public-bases --runtime-stage
       - uses: actions/upload-artifact@v7
         if: always()
         with:
