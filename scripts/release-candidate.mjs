@@ -303,26 +303,31 @@ export async function gate(
   }
   return checks;
 }
-export function prepareBases(env = process.env) {
-  const bases = {};
-  const keepPostgres = ["automatic-main", "operator-local"].includes(
+export function selectBaseReferences(env = process.env) {
+  const keepPostgres = ["manual", "automatic-main", "operator-local"].includes(
     env.RELEASE_MODE,
   );
+  const postgres = keepPostgres
+    ? env.CITYGO_POSTGRES_IMAGE
+    : "postgres:17-alpine";
+  if (keepPostgres)
+    requireValue(
+      typeof postgres === "string" &&
+        postgres.startsWith("postgres:17-alpine@") &&
+        digestPattern.test(postgres.slice("postgres:17-alpine@".length)),
+      "pinned server PostgreSQL required",
+    );
+  return { node: "node:24-bookworm-slim", postgres };
+}
+export function prepareBases(env = process.env) {
+  const references = selectBaseReferences(env);
+  const bases = {};
   for (const [name, tag] of [
     ["node", "node:24-bookworm-slim"],
     ["postgres", "postgres:17-alpine"],
   ]) {
-    // Automatic app releases must never upgrade the running database image.
-    const ref =
-      name === "postgres" && keepPostgres ? env.CITYGO_POSTGRES_IMAGE : tag;
-    if (name === "postgres" && keepPostgres) {
-      requireValue(
-        typeof ref === "string" &&
-          ref.startsWith(`${tag}@`) &&
-          digestPattern.test(ref.slice(tag.length + 1)),
-        "pinned server PostgreSQL required",
-      );
-    }
+    // App releases must never upgrade the running database image.
+    const ref = references[name];
     command("docker", ["pull", "--platform", "linux/amd64", ref], {
       timeout: 5 * 60 * 1000,
     });

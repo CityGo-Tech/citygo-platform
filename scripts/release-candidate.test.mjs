@@ -22,6 +22,7 @@ import {
   validateEvidence,
   validatePackage,
   selectCheckRun,
+  selectBaseReferences,
   gate,
   createManifest,
   publishImages,
@@ -59,6 +60,61 @@ const context = {
   GITHUB_RUN_ID: "123",
   GITHUB_RUN_ATTEMPT: "1",
 };
+
+test("manual, automatic and local app releases keep the exact server PostgreSQL pin", () => {
+  for (const mode of ["manual", "automatic-main", "operator-local"])
+    assert.deepEqual(
+      selectBaseReferences({
+        RELEASE_MODE: mode,
+        CITYGO_POSTGRES_IMAGE: bases.postgres,
+      }),
+      { node: "node:24-bookworm-slim", postgres: bases.postgres },
+    );
+  assert.deepEqual(selectBaseReferences({}), {
+    node: "node:24-bookworm-slim",
+    postgres: "postgres:17-alpine",
+  });
+});
+
+test("an app release rejects a missing or malformed PostgreSQL pin without a floating fallback", () => {
+  for (const mode of ["manual", "automatic-main", "operator-local"])
+    for (const pin of [
+      undefined,
+      "",
+      "postgres:17-alpine",
+      `postgres:18-alpine@${digest}`,
+      `node:24-bookworm-slim@${digest}`,
+      "postgres:17-alpine@sha256:" + "b".repeat(63),
+      "postgres:17-alpine@sha256:" + "B".repeat(64),
+      bases.postgres + "\n",
+      true,
+    ])
+      assert.throws(
+        () =>
+          selectBaseReferences({
+            RELEASE_MODE: mode,
+            CITYGO_POSTGRES_IMAGE: pin,
+          }),
+        /pinned server PostgreSQL required/,
+      );
+});
+
+test("explicit manual base selection never grants automatic publication authority", () => {
+  const manual = { ...context, RELEASE_MODE: "manual" };
+  assert.equal(validateContext(manual), sha);
+  for (const invalid of [
+    { GITHUB_EVENT_NAME: "push", AUTODEPLOY_ENABLED: "true" },
+    { GITHUB_EVENT_NAME: "pull_request" },
+    { PUBLISH_CONFIRM: "" },
+    { RELEASE_ENABLED: "false" },
+    { PACKAGE_SOURCES_CHECKED: "false" },
+    { GITHUB_REF: "refs/heads/feature" },
+  ])
+    assert.throws(
+      () => validateContext({ ...manual, ...invalid }),
+      /Release rejected/,
+    );
+});
 
 test("runtime bundle includes disabled backup scheduling and email modules", () => {
   for (const path of [
@@ -552,6 +608,11 @@ test("release workflow is manual, disabled by default, pinned and has no server/
   assert.doesNotMatch(workflow, /\n {2}(push|pull_request|workflow_run):/);
   assert.match(workflow, /CITYGO_RELEASE_PUBLISH_ENABLED == 'true'/);
   assert.match(workflow, /inputs\.package_sources_checked == true/);
+  assert.match(workflow, /\n {6}RELEASE_MODE: manual\n/);
+  assert.match(
+    workflow,
+    /\n {6}CITYGO_POSTGRES_IMAGE: \$\{\{ vars\.CITYGO_POSTGRES_IMAGE \}\}\n/,
+  );
   assert.match(
     workflow,
     /package_sources_checked:\s+description:[^\n]+\s+required: true\s+type: boolean\s+default: false/,
