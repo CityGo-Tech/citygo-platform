@@ -96,6 +96,48 @@ Collector SHA256: `e284ab1bcbd6a60f0fac84a7ee415241cf32740a9c8c0305a79023cb516af
 SHA256 полученных stdout-байтов:
 `1a103ecfcd2d81951a4096bac3f1ccfb6e6236a91e97c0c5bb4cbfe879aa5a04`.
 
+## Исправление GitHub rehearsal перед слиянием
+
+На исходном head `dcdeb1f` CI и Container smoke действительно стартовали;
+ошибка оплаты не блокировала их запуск. Web switch rehearsal
+[42536844733](https://github.com/CityGo-Tech/citygo-platform/actions/runs/42536844733)
+прошёл unit/сборку, но получил 403 при чтении старого чанка после retirement.
+Артефакт `13639493835` сохранён с проверенным SHA256
+`e9e63fb2da8d4bc083deb6d47a3cbc1ce3ab99141f256313a054142019e2c1d7`.
+Журнал Nginx прямо указывает `Permission denied` на `/fixture/archive/...`.
+
+Причина — Linux `mkdtemp` создаёт закрытый родительский каталог `0700`, который
+был смонтирован как `/fixture`; непривилегированный worker не мог пройти к
+public archive. Docker Desktop ранее не выявил эту разницу прав bind mount.
+Исправлен только transport fixture: отдельный read-only mount `/archive`,
+публичные каталоги `0755`/файлы `0644`, отказ от symlink/hardlink, явный
+`user nginx`. Приватный родитель остаётся `0700`, ключи — `0600`.
+Добавлены ранний GET с хешем и проверка фактических worker UID; прежние проверки
+всех чанков после retirement, SSE/POST и отсутствия HTTP-повторов сохранены.
+
+Новый Linux root-тест: 3/3 PASS без пропусков. Дочерний процесс сбрасывает
+groups/UID/GID до 65534, читает public inode, но получает EACCES при обращении
+через закрытый родитель и к ключу. Одноразовый контейнер удалён. Исправленный
+полный transport `633ad5b6a3d0`: 788/788 запросов, 0 ошибок, 44 архивных файла,
+оба worker UID 101, ранний hash probe PASS. Это cached Next-образ source
+`42ecf835`, не вымышленная сборка нового head; сам fixture проверен по текущим
+байтам. Исторический неуспешный результат не заменён успешным.
+
+Повтор idle-regression `940bcfa303d3` также PASS: ожидаемый сброс только
+непринятого reused GET при сравнении с нулевым minimum keep-alive, новый GET 200,
+принятые POST/SSE завершены ровно один раз, HTTP retries 0. Сравнение с 5 с
+остаётся только тестовым; production Nginx не менялся. Оба transport стенда
+очищены по собственным container/network IDs. Финальный Node-набор после
+исправления — 115/115; Linux permissions проверены отдельно 3/3 без skip.
+
+Workflow теперь закрепляет PR head и сохраняет checkout/tree/event/run evidence.
+V1 и V2 whole-host выполняются независимо от transport и друг от друга после
+успешной проверки исходников; transport failure по-прежнему оставляет workflow
+красным. `continue-on-error` не добавлен. Отдельный permissions step запускается
+Linux root, поэтому отсутствие реальной UID-проверки не маскируется skip.
+Backup/controller Python и приложение не менялись; сохранённые 771 Linux-тестов
+относятся к их неизменным байтам, а исправленный transport проверяется отдельно.
+
 ## Что пока не выполнено
 
 Установка кода/overlay/ingress, fresh backup и restore, production-план с

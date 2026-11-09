@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
+  chmodSync,
   cpSync,
   existsSync,
   lstatSync,
@@ -100,6 +101,24 @@ function archiveMerge(input, destination) {
     }
   }
 }
+// Only public bytes copied into this disposable archive receive public modes.
+// Mount it directly at /archive: the private mkdtemp parent must stay 0700.
+export function makeFixtureArchiveReadable(directory) {
+  const visit = (path) => {
+    const metadata = lstatSync(path);
+    assert.equal(metadata.isSymbolicLink(), false, "Fixture archive link");
+    if (metadata.isDirectory()) {
+      chmodSync(path, 0o755);
+      for (const entry of readdirSync(path)) visit(join(path, entry));
+    } else {
+      assert.equal(metadata.isFile(), true, "Fixture archive special file");
+      assert.equal(metadata.nlink, 1, "Fixture archive hard link");
+      chmodSync(path, 0o644);
+    }
+  };
+  assert.equal(lstatSync(directory).isDirectory(), true);
+  visit(directory);
+}
 function candidate(metadata, selectedImages, expectedSource) {
   assert.equal(metadata.Id, selectedImages.web, "Unexpected cached Web image");
   assert.equal(
@@ -110,7 +129,8 @@ function candidate(metadata, selectedImages, expectedSource) {
 function nginxConfig(slot, minimumKeepaliveSeconds = 0) {
   assert.ok(["blue", "green"].includes(slot));
   assert.ok([0, 5].includes(minimumKeepaliveSeconds));
-  return `worker_processes 2;
+  return `user nginx;
+worker_processes 2;
 pid /tmp/nginx.pid;
 error_log /dev/stderr notice;
 events { worker_connections 256; }
@@ -128,7 +148,7 @@ http {
     client_body_timeout 15s;
     send_timeout 300s;
     location ^~ /_next/static/ {
-      alias /fixture/archive/;
+      alias /archive/;
       add_header X-Rehearsal-Archived true always;
       add_header Cache-Control "public, max-age=31536000, immutable" always;
     }
@@ -391,6 +411,7 @@ export async function runRehearsal(selection) {
     mkdirSync(archived);
     docker(["cp", `${blue}:/app/apps/web/.next/static/.`, archived]);
     archiveMerge(archived, join(directory, "archive"));
+    makeFixtureArchiveReadable(join(directory, "archive"));
     const inventory = files(archived);
     assert.ok(inventory.some((item) => item.path.endsWith(".js")));
     const collision = join(directory, "collision");
@@ -485,6 +506,8 @@ export async function runRehearsal(selection) {
       "127.0.0.1::443",
       "--mount",
       mount(directory, "/fixture"),
+      "--mount",
+      mount(join(directory, "archive"), "/archive"),
       "--mount",
       mount(join(directory, "nginx.conf"), "/etc/nginx/nginx.conf"),
       images.nginx,
@@ -678,6 +701,25 @@ export async function runRehearsal(selection) {
         return false;
       }
     }, "Nginx TLS did not become ready");
+    const archiveWorkers = await workers();
+    assert.equal(archiveWorkers.length, 2);
+    const nginxWorkerUids = [
+      ...(
+        await dockerAsync([
+          "exec",
+          nginx,
+          "cat",
+          ...archiveWorkers.map(({ pid }) => `/proc/${pid}/status`),
+        ])
+      ).matchAll(/^Uid:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)/gm),
+    ].map((match) => match.slice(1).map(Number));
+    assert.equal(nginxWorkerUids.length, 2);
+    assert.ok(nginxWorkerUids.every((uids) => uids.every((uid) => uid > 0)));
+    const earlyAsset = inventory.find((item) => item.path.endsWith(".js"));
+    const earlyArchive = await call("/_next/static/" + earlyAsset.path);
+    assert.equal(earlyArchive.status, 200);
+    assert.equal(earlyArchive.headers["x-rehearsal-archived"], "true");
+    assert.equal(digest(earlyArchive.bytes), earlyAsset.hash);
     const login = await call("/api/rehearsal/login", {
       method: "POST",
       body: {},
@@ -855,6 +897,8 @@ export async function runRehearsal(selection) {
         retryCount: 0,
         zeroHttpRetries: true,
         actualProductionConfigurationChanged: false,
+        nginxWorkerUids,
+        archivedAssetPreflightPassed: true,
         productionMitigationSelected: false,
         comparisonProtectionIsFinite: true,
         productionControllerInvoked: false,
@@ -1119,6 +1163,8 @@ export async function runRehearsal(selection) {
       zeroHttpRetries: true,
       allHttpAttemptsSucceeded: failures.length === 0,
       archivedAssets: inventory.length,
+      nginxWorkerUids,
+      archivedAssetPreflightPassed: true,
       maximumProbeStartGapMs: probeStarts.reduce(
         (maximum, item, index) =>
           Math.max(maximum, index ? item - probeStarts[index - 1] : 0),
