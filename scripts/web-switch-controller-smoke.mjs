@@ -116,15 +116,23 @@ export async function runControllerSmoke(cliArgs = process.argv.slice(2)) {
         "--allow-privileged-fixture",
         "--pull-public-bases",
         "--durable-v2",
+        "--runtime-stage",
       ].includes(a),
     ),
   );
   const durableV2 = args.has("--durable-v2");
+  const runtimeStage = args.has("--runtime-stage");
+  assert.ok(
+    !(durableV2 && runtimeStage),
+    "Choose only one controller fixture profile",
+  );
   const selectedPlan = {
     ...plan,
-    controllerPlanVersion: durableV2 ? 2 : 1,
-    syntheticDistinctWebReleases: !durableV2,
-    sameWebBootstrap: durableV2,
+    kind: runtimeStage ? "citygo-disposable-web-runtime-stage" : plan.kind,
+    controllerPlanVersion: runtimeStage ? null : durableV2 ? 2 : 1,
+    syntheticDistinctWebReleases: !durableV2 && !runtimeStage,
+    sameWebBootstrap: durableV2 || runtimeStage,
+    runtimeStage,
   };
   if (args.has("--plan") || !args.has("--disposable")) {
     console.log(JSON.stringify(selectedPlan, null, 2));
@@ -551,7 +559,9 @@ export async function runControllerSmoke(cliArgs = process.argv.slice(2)) {
       const trustedFileHashes = {};
       for (const [source, destination] of [
         [
-          "deploy/fixtures/web-switch-controller-harness.py",
+          runtimeStage
+            ? "deploy/fixtures/web-runtime-stage-harness.py"
+            : "deploy/fixtures/web-switch-controller-harness.py",
           `${directory}/harness.py`,
         ],
         ["deploy/backup/web_switch.py", `${directory}/web_switch.py`],
@@ -564,6 +574,18 @@ export async function runControllerSmoke(cliArgs = process.argv.slice(2)) {
           "deploy/nginx/pilot-web-switch.conf.template",
           `${directory}/pilot-web-switch.conf.template`,
         ],
+        ...(runtimeStage
+          ? [
+              [
+                "deploy/backup/web_runtime_stage.py",
+                `${directory}/web_runtime_stage.py`,
+              ],
+              [
+                "deploy/backup/web_bootstrap.py",
+                `${directory}/web_bootstrap.py`,
+              ],
+            ]
+          : []),
       ]) {
         const digest = () =>
           createHash("sha256")
@@ -622,14 +644,34 @@ export async function runControllerSmoke(cliArgs = process.argv.slice(2)) {
         readFileSync(join(evidence, "receipt.json"), "utf8"),
       );
       assert.equal(receipt.productionHost, true);
-      assert.equal(receipt.retired, true);
-      assert.equal(receipt.planVersion, durableV2 ? 2 : 1);
-      assert.equal(receipt.sameWebBootstrap, durableV2);
+      if (runtimeStage) {
+        for (const field of [
+          "runtimePreparedClosed",
+          "legacyBarrierRetained",
+          "apiOnlyTwoDeltas",
+          "canonicalFilesUnchanged",
+          "baselineUnchanged",
+          "secretsAndBudgetUnchanged",
+          "admittedRequestsCompletedExactlyOnce",
+          "adoptNoDockerMutations",
+        ])
+          assert.equal(
+            receipt[field],
+            true,
+            `Runtime fixture proof missing: ${field}`,
+          );
+      } else {
+        assert.equal(receipt.retired, true);
+        assert.equal(receipt.planVersion, durableV2 ? 2 : 1);
+        assert.equal(receipt.sameWebBootstrap, durableV2);
+      }
       verifyControllerTrustedCodeProof(
         receipt.trustedCodeBootstrap,
         trustedFileHashes,
       );
-      if (durableV2) {
+      if (runtimeStage) {
+        assert.equal(receipt.runtimeChangedOnProductionServer, false);
+      } else if (durableV2) {
         assert.equal(receipt.webImages.old, receipt.webImages.new);
         assert.equal(receipt.webSources.old, receipt.webSources.new);
         assert.deepEqual(receipt.webRestartPolicies, {
