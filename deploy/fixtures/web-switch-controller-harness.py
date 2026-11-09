@@ -12,6 +12,7 @@ import os
 from pathlib import Path, PurePosixPath
 import shutil
 import ssl
+import stat
 import subprocess
 import sys
 import tarfile
@@ -27,6 +28,59 @@ ORIGIN = "https://" + HOSTNAME
 PROJECT = "citygo-controller-" + os.urandom(6).hex()
 DAEMON = None
 NODE, POSTGRES = sys.argv[-2:]
+FIXTURE_FLAGS = sys.argv[1:-2]
+assert set(FIXTURE_FLAGS) <= {"--wait-for-images", "--durable-v2"}
+DURABLE_V2 = "--durable-v2" in FIXTURE_FLAGS
+TRUSTED_FILES = ("harness.py", "web_switch.py", "backup.py", "web_switch_assets.py", "pilot-web-switch.conf.template")
+
+
+def prepare_trusted_code():
+    """Normalize only the copied, trusted test payload before importing it.
+
+    Linux docker cp may retain the runner's UID. Always recreate that adverse
+    input here, including on Desktop, so every whole-Host run covers the fix.
+    Candidates and the inner daemon do not exist at this point.
+    """
+    assert HERE == Path("/opt/citygo-controller-fixture") and os.geteuid() == 0
+    assert {path.name for path in HERE.iterdir()} == set(TRUSTED_FILES)
+    for parent in HERE.parents:
+        info = parent.lstat()
+        assert stat.S_ISDIR(info.st_mode) and info.st_uid == 0 and not info.st_mode & 0o022
+    directory = os.open(HERE, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    proof = {"version": 1, "received": {}, "adversarial": {}, "normalized": {},
+             "normalizedBeforeControllerImport": True, "byteIdentityPreserved": True}
+    try:
+        info = os.fstat(directory)
+        assert stat.S_ISDIR(info.st_mode)
+        os.fchown(directory, 0, 0)
+        os.fchmod(directory, 0o755)
+        for name in TRUSTED_FILES:
+            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+            try:
+                info = os.fstat(fd)
+                assert stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and 0 < info.st_size <= 16 * 1024 * 1024
+                raw = os.read(fd, 16 * 1024 * 1024 + 1)
+                assert len(raw) == info.st_size
+                digest = hashlib.sha256(raw).hexdigest()
+                proof["received"][name] = {"uid": info.st_uid, "gid": info.st_gid, "mode": stat.S_IMODE(info.st_mode)}
+                os.fchown(fd, 1001, 1001)
+                os.fchmod(fd, 0o666)
+                adverse = os.fstat(fd)
+                assert (adverse.st_uid, adverse.st_gid, stat.S_IMODE(adverse.st_mode)) == (1001, 1001, 0o666)
+                proof["adversarial"][name] = {"uid": adverse.st_uid, "gid": adverse.st_gid, "mode": stat.S_IMODE(adverse.st_mode)}
+                os.fchown(fd, 0, 0)
+                os.fchmod(fd, 0o644)
+                after = os.fstat(fd)
+                os.lseek(fd, 0, os.SEEK_SET)
+                assert hashlib.sha256(os.read(fd, 16 * 1024 * 1024 + 1)).hexdigest() == digest
+                assert (after.st_uid, after.st_gid, stat.S_IMODE(after.st_mode), after.st_nlink) == (0, 0, 0o644, 1)
+                proof["normalized"][name] = {"uid": after.st_uid, "gid": after.st_gid, "mode": stat.S_IMODE(after.st_mode), "sha256": digest}
+            finally:
+                os.close(fd)
+    finally:
+        os.close(directory)
+    write(EVIDENCE / "trusted-code-bootstrap.json", json.dumps(proof, sort_keys=True) + "\n")
+    return proof
 
 
 def write(path, raw, mode=0o600):
@@ -111,10 +165,7 @@ def main():
     assert os.geteuid() == 0 and sys.platform.startswith("linux")
     EVIDENCE.mkdir(mode=0o700)
     ROOT.mkdir(mode=0o700)
-    HERE.chmod(0o755)
-    for file in HERE.iterdir():
-        if file.is_file():
-            file.chmod(0o644)
+    trusted_code = prepare_trusted_code()
     import web_switch as w
     import web_switch_assets as assets
     assert hasattr(os, "pidfd_open") and hasattr(__import__("signal"), "pidfd_send_signal")
@@ -136,7 +187,9 @@ def main():
     web_network = docker("network", "create", "--subnet", "172.30.92.0/24", PROJECT + "-web").decode().strip()
     db_network = docker("network", "create", "--internal", "--subnet", "172.30.93.0/24", PROJECT + "-db").decode().strip()
     images, sources = {}, {}
-    for slot in ("old", "new"):
+    # V2 primary connection clones the approved live image, not a new app
+    # release. The original V1 rehearsal retains two distinct synthetic builds.
+    for slot in (("old",) if DURABLE_V2 else ("old", "new")):
         context = ROOT / ("build-" + slot)
         context.mkdir(mode=0o700)
         marker = "synthetic-controller-" + slot
@@ -153,13 +206,17 @@ def main():
         tag = PROJECT + ":" + slot
         docker("build", "--pull=false", "--network=none", "-t", tag, str(context), timeout=180)
         images[slot] = json.loads(docker("image", "inspect", tag))[0]["Id"]
-    assert images["old"] != images["new"] and sources["old"] != sources["new"]
+    if DURABLE_V2:
+        images["new"], sources["new"] = images["old"], sources["old"]
+    else:
+        assert images["old"] != images["new"] and sources["old"] != sources["new"]
     def labels(service):
         return ["--label", "com.docker.compose.project=" + PROJECT, "--label", "com.docker.compose.service=" + service]
     def app(service, slot, network, ip, port=None):
+        restart = "unless-stopped" if DURABLE_V2 and service == "web" and slot == "new" else "no"
         argv = ["run", "-d", "--pull=never", "--name", PROJECT + "-" + service + "-" + slot,
                 *labels(service), "--init", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges:true",
-                "--memory=768m", "--memory-swap=768m", "--restart=no", "--tmpfs", "/tmp:rw,size=16m,mode=1777",
+                "--memory=768m", "--memory-swap=768m", "--restart=" + restart, "--tmpfs", "/tmp:rw,size=16m,mode=1777",
                 "--network", network, "--ip", ip, "--stop-timeout", "30"]
         if service == "api":
             argv += ["--network-alias", "api", "--env", "TRUSTED_PROXY_CIDRS=172.30.92.10/32,172.30.92.20/32"]
@@ -244,7 +301,8 @@ def main():
     probe_host = w.Host.__new__(w.Host)
     master_process = probe_host.process(master)
     now = int(time.time())
-    value = {"version": 1, "purpose": "citygo-staged-web-switch-v1", "operation_id": os.urandom(16).hex(),
+    plan_version = 2 if DURABLE_V2 else 1
+    value = {"version": plan_version, "purpose": w.PLAN_PURPOSES[plan_version], "operation_id": os.urandom(16).hex(),
              "approved_at": now - 1, "expires_at": now + 3600, "origin": ORIGIN,
              "paths": {"state_dir": str(state), "coordination_dir": str(coordination), "nginx_config": "/etc/nginx/nginx.conf",
                        "upstream_include": str(ingress / "web-upstream.conf"), "traffic_marker": str(ingress / "traffic-open")},
@@ -378,6 +436,9 @@ def main():
         assert w.runtime_fingerprint(before[key]) == w.runtime_fingerprint(after[key])
     assert after["old"]["State"]["ExitCode"] == 0 and not after["old"]["State"]["Running"]
     assert next(iter(after["old"]["NetworkSettings"]["Networks"].values()))["IPAddress"] == ""
+    expected_new_policy = {"Name": "unless-stopped" if DURABLE_V2 else "no", "MaximumRetryCount": 0}
+    assert after["new"]["HostConfig"]["RestartPolicy"] == expected_new_policy
+    assert after["old"]["HostConfig"]["RestartPolicy"] == {"Name": "no", "MaximumRetryCount": 0}
     for name, entry in static.items():
         connection = w._TLS(HOSTNAME, timeout=5, context=ssl.create_default_context())
         connection.request("GET", "/_next/static/" + name, headers={"Host": HOSTNAME, "Connection": "close"})
@@ -398,6 +459,11 @@ def main():
               "State": after[key]["State"], "NetworkSettings": after[key]["NetworkSettings"]}))
     write(EVIDENCE / "controller-state.json", w.wire(w.inspect_pending(plan)))
     write(EVIDENCE / "receipt.json", w.wire({"version": 1, "productionHost": True, "retired": True,
+          "planVersion": plan_version, "purpose": w.PLAN_PURPOSES[plan_version], "sameWebBootstrap": DURABLE_V2,
+          "activeWebRestartPolicy": after["new"]["HostConfig"]["RestartPolicy"],
+          "oldWebRestartPolicy": after["old"]["HostConfig"]["RestartPolicy"],
+          "activeWebRuntimeUnchanged": w.runtime_fingerprint(before["new"]) == w.runtime_fingerprint(after["new"]),
+          "webRestartPolicies": {"old": after["old"]["HostConfig"]["RestartPolicy"], "new": after["new"]["HostConfig"]["RestartPolicy"]},
           "apiIsSynthetic": True, "billingTested": False, "webImages": images, "webSources": sources,
           "acceptedStreamCompleted": True, "baselineUnchanged": True, "rejects": rejected,
           "oldWebSigtermCount": 1, "prematureSigtermObserved": False,
@@ -405,8 +471,9 @@ def main():
           "availability": availability_proof, "candidateSockets": False,
           "resourceProof": "production Host reads VM /proc; outer 6GiB is a fixture budget, not a 4GiB production load test",
           "hostIsolation": "owned DinD network-none; no outer mounts/socket/ports", "actualSystemCA": True,
-          "controllerSha256": w.digest((HERE / "web_switch.py").read_bytes()), "assetFileCount": len(static)}))
-    print("Whole production Host controller passed with distinct synthetic Web images", flush=True)
+          "controllerSha256": w.digest((HERE / "web_switch.py").read_bytes()), "assetFileCount": len(static),
+          "trustedCodeBootstrap": trusted_code}))
+    print("Whole production Host controller passed: " + ("V2 same-image durable canary" if DURABLE_V2 else "V1 distinct synthetic Web images"), flush=True)
 
 
 if __name__ == "__main__":

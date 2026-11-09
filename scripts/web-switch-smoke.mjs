@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
+  chmodSync,
   cpSync,
   existsSync,
   lstatSync,
@@ -100,6 +101,146 @@ function archiveMerge(input, destination) {
     }
   }
 }
+// Only public bytes copied into this disposable archive receive public modes.
+// Mount it directly at /archive: the private mkdtemp parent must stay 0700.
+export function makeFixtureArchiveReadable(directory) {
+  const visit = (path) => {
+    const metadata = lstatSync(path);
+    assert.equal(metadata.isSymbolicLink(), false, "Fixture archive link");
+    if (metadata.isDirectory()) {
+      chmodSync(path, 0o755);
+      for (const entry of readdirSync(path)) visit(join(path, entry));
+    } else {
+      assert.equal(metadata.isFile(), true, "Fixture archive special file");
+      assert.equal(metadata.nlink, 1, "Fixture archive hard link");
+      chmodSync(path, 0o644);
+    }
+  };
+  assert.equal(lstatSync(directory).isDirectory(), true);
+  visit(directory);
+}
+// Acceptance for this single-request control only; the continuous-probe
+// classifier and production transport do not depend on these client details.
+export function assessIdleReuseControl(evidence) {
+  const {
+    minimumKeepaliveSeconds,
+    prime,
+    beforeHup,
+    beforeReuse,
+    afterAttempt,
+    sameSocket,
+    trace,
+    outcome,
+    admission,
+    httpAttempts,
+  } = evidence;
+  assert.ok([0, 5].includes(minimumKeepaliveSeconds));
+  assert.equal(httpAttempts, 1, "Control must issue exactly one HTTP request");
+  assert.equal(trace.method, "GET");
+  assert.equal(trace.path, "/api/rehearsal/probe");
+  assert.equal(trace.kind, "forced-idle-reuse");
+  assert.equal(prime.reusedSocket, false);
+  assert.equal(prime.status, 200);
+  assert.ok(Number.isInteger(prime.localPort) && prime.localPort > 0);
+  assert.ok(Number.isInteger(prime.remotePort) && prime.remotePort > 0);
+  assert.ok(typeof trace.id === "string" && trace.id !== prime.id);
+  for (const state of [beforeHup, beforeReuse]) {
+    assert.equal(state.localPort, prime.localPort);
+    assert.equal(state.remotePort, prime.remotePort);
+    assert.equal(
+      state.destroyed,
+      false,
+      "Control must retain the primed socket",
+    );
+    assert.equal(state.writable, true);
+    assert.equal(state.readable, true);
+    assert.equal(typeof state.pendingReadCheckSupported, "boolean");
+  }
+  if (beforeHup.pendingReadCheckSupported)
+    assert.equal(
+      beforeHup.pendingRead,
+      false,
+      "Primed socket already had pending input before HUP",
+    );
+  assert.ok(Number.isFinite(prime.finishedMonotonic));
+  assert.ok(Number.isFinite(trace.startedMonotonic));
+  const fullIdleAgeMs = trace.startedMonotonic - prime.finishedMonotonic;
+  assert.ok(fullIdleAgeMs >= 0);
+  assert.equal(trace.remotePort, prime.remotePort);
+  const success = () => {
+    assert.equal(outcome.status, "fulfilled");
+    assert.equal(outcome.responseStatus, 200);
+    assert.equal(trace.status, 200);
+    assert.ok(Number.isFinite(trace.responseHeadersAt));
+    assert.ok(trace.responseBytes > 0);
+    assert.deepEqual(JSON.parse(outcome.responseBody), {
+      userId: "synthetic-user-1",
+    });
+    assert.ok(admission && typeof admission === "object");
+    assert.equal(admission.id, trace.id);
+    assert.equal(admission.method, "GET");
+    assert.equal(admission.path, "/rehearsal/probe");
+    assert.equal(admission.visits, 1);
+    assert.ok(Number.isFinite(admission.responseFinishedAt));
+  };
+  if (minimumKeepaliveSeconds === 5) {
+    assert.ok(
+      fullIdleAgeMs < 5000,
+      "Full idle age exceeded the compared minimum keep-alive interval",
+    );
+    success();
+    assert.equal(trace.reusedSocket, true);
+    assert.equal(sameSocket, true);
+    assert.equal(trace.localPort, prime.localPort);
+    // Graceful shutdown may close this socket after the complete response.
+    return {
+      classification: "minimum-timeout-reuse-preserved",
+      legacyResetReproduced: false,
+      protectedClientAvoidanceObserved: false,
+      expectedApiAdmissions: 1,
+      fullIdleAgeMs,
+    };
+  }
+  if (outcome.status === "rejected") {
+    assert.equal(outcome.errorCode, "ECONNRESET");
+    assert.equal(trace.code, "ECONNRESET");
+    assert.equal(trace.reusedSocket, true);
+    assert.equal(sameSocket, true);
+    assert.equal(trace.localPort, prime.localPort);
+    assert.equal(trace.responseHeadersAt, null);
+    assert.equal(trace.responseBytes, 0);
+    assert.equal(afterAttempt.destroyed, true);
+    assert.equal(admission, null, "Reset GET must never reach the fixture API");
+    return {
+      classification: "legacy-stale-idle-reset",
+      legacyResetReproduced: true,
+      protectedClientAvoidanceObserved: false,
+      expectedApiAdmissions: 0,
+      fullIdleAgeMs,
+    };
+  }
+  success();
+  assert.equal(beforeHup.pendingReadCheckSupported, true);
+  assert.equal(beforeHup.pendingRead, false);
+  assert.equal(beforeReuse.pendingReadCheckSupported, true);
+  assert.equal(
+    beforeReuse.pendingRead,
+    true,
+    "Fresh request needs proof of stale-socket detection",
+  );
+  assert.equal(trace.reusedSocket, false);
+  assert.equal(sameSocket, false);
+  assert.equal(afterAttempt.destroyed, true);
+  assert.ok(Number.isInteger(trace.localPort) && trace.localPort > 0);
+  assert.notEqual(trace.localPort, prime.localPort);
+  return {
+    classification: "client-discarded-stale-idle-before-send",
+    legacyResetReproduced: false,
+    protectedClientAvoidanceObserved: true,
+    expectedApiAdmissions: 1,
+    fullIdleAgeMs,
+  };
+}
 function candidate(metadata, selectedImages, expectedSource) {
   assert.equal(metadata.Id, selectedImages.web, "Unexpected cached Web image");
   assert.equal(
@@ -110,7 +251,8 @@ function candidate(metadata, selectedImages, expectedSource) {
 function nginxConfig(slot, minimumKeepaliveSeconds = 0) {
   assert.ok(["blue", "green"].includes(slot));
   assert.ok([0, 5].includes(minimumKeepaliveSeconds));
-  return `worker_processes 2;
+  return `user nginx;
+worker_processes 2;
 pid /tmp/nginx.pid;
 error_log /dev/stderr notice;
 events { worker_connections 256; }
@@ -128,7 +270,7 @@ http {
     client_body_timeout 15s;
     send_timeout 300s;
     location ^~ /_next/static/ {
-      alias /fixture/archive/;
+      alias /archive/;
       add_header X-Rehearsal-Archived true always;
       add_header Cache-Control "public, max-age=31536000, immutable" always;
     }
@@ -391,6 +533,7 @@ export async function runRehearsal(selection) {
     mkdirSync(archived);
     docker(["cp", `${blue}:/app/apps/web/.next/static/.`, archived]);
     archiveMerge(archived, join(directory, "archive"));
+    makeFixtureArchiveReadable(join(directory, "archive"));
     const inventory = files(archived);
     assert.ok(inventory.some((item) => item.path.endsWith(".js")));
     const collision = join(directory, "collision");
@@ -486,6 +629,8 @@ export async function runRehearsal(selection) {
       "--mount",
       mount(directory, "/fixture"),
       "--mount",
+      mount(join(directory, "archive"), "/archive"),
+      "--mount",
       mount(join(directory, "nginx.conf"), "/etc/nginx/nginx.conf"),
       images.nginx,
     ]);
@@ -531,6 +676,7 @@ export async function runRehearsal(selection) {
         requestBytesWritten: 0,
       };
       requestTraces.push(trace);
+      let assignedSocket;
       const finishTrace = () => {
         trace.finishedAt = Date.now();
         trace.finishedMonotonic = performance.now();
@@ -590,7 +736,6 @@ export async function runRehearsal(selection) {
           },
         );
         requests.add(request);
-        let assignedSocket;
         let previousBytes = 0;
         request.once("socket", (socket) => {
           assignedSocket = socket;
@@ -635,6 +780,7 @@ export async function runRehearsal(selection) {
       return {
         promise,
         trace,
+        assignedSocket: () => assignedSocket,
         startBody: () => startBody(),
         finishBody: () => finishBody(),
       };
@@ -678,6 +824,25 @@ export async function runRehearsal(selection) {
         return false;
       }
     }, "Nginx TLS did not become ready");
+    const archiveWorkers = await workers();
+    assert.equal(archiveWorkers.length, 2);
+    const nginxWorkerUids = [
+      ...(
+        await dockerAsync([
+          "exec",
+          nginx,
+          "cat",
+          ...archiveWorkers.map(({ pid }) => `/proc/${pid}/status`),
+        ])
+      ).matchAll(/^Uid:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)/gm),
+    ].map((match) => match.slice(1).map(Number));
+    assert.equal(nginxWorkerUids.length, 2);
+    assert.ok(nginxWorkerUids.every((uids) => uids.every((uid) => uid > 0)));
+    const earlyAsset = inventory.find((item) => item.path.endsWith(".js"));
+    const earlyArchive = await call("/_next/static/" + earlyAsset.path);
+    assert.equal(earlyArchive.status, 200);
+    assert.equal(earlyArchive.headers["x-rehearsal-archived"], "true");
+    assert.equal(digest(earlyArchive.bytes), earlyAsset.hash);
     const login = await call("/api/rehearsal/login", {
       method: "POST",
       body: {},
@@ -689,6 +854,27 @@ export async function runRehearsal(selection) {
     );
     if (selection.idleReuseRegression) {
       const cases = [];
+      const clientRuntime = {
+        node: process.versions.node,
+        platform: process.platform,
+        architecture: process.arch,
+      };
+      const socketState = (socket) => {
+        const pendingReadCheckSupported =
+          typeof socket._handle?.hasPendingRead === "function";
+        return {
+          localPort: socket.localPort ?? null,
+          remotePort: socket.remotePort ?? null,
+          destroyed: socket.destroyed,
+          writable: socket.writable,
+          readable: socket.readable,
+          pendingReadCheckSupported,
+          // Diagnostic MSG_PEEK only: never override the Agent or consume input.
+          pendingRead: pendingReadCheckSupported
+            ? socket._handle.hasPendingRead()
+            : null,
+        };
+      };
       for (const minimumKeepaliveSeconds of [0, 5]) {
         markPhase(`idle-regression-${minimumKeepaliveSeconds}-configure`);
         const previous = await workers();
@@ -722,6 +908,7 @@ export async function runRehearsal(selection) {
           );
         }, "Fixture did not admit the controlled POST/SSE before HUP");
 
+        const oldWorkers = await workers();
         const idleAgent = new Agent({
           keepAlive: true,
           maxSockets: 1,
@@ -737,21 +924,22 @@ export async function runRehearsal(selection) {
           () => Object.values(idleAgent.freeSockets).flat().length === 1,
           "Expected one primed idle TLS socket",
         );
-        const oldWorkers = await workers();
+        const primedSocket = Object.values(idleAgent.freeSockets).flat()[0];
+        const primedBeforeHup = socketState(primedSocket);
+        let primedCloseObservedAt = null;
+        primedSocket.once("close", () => {
+          primedCloseObservedAt = performance.now();
+        });
 
-        // Deterministic client-long-task control: the independent Nginx event
-        // loops process HUP while this client's FIN/close callbacks cannot run.
-        // The following SINGLE GET then exercises the still-cached idle socket.
+        // Nginx handles HUP while this client's FIN/close callbacks cannot run.
+        // Legacy Agents reuse the stale socket; newer Agents can reject it
+        // before assigning the following SINGLE HTTP request to a fresh socket.
         markPhase(`idle-regression-${minimumKeepaliveSeconds}-blocked-hup`);
         const blockedStarted = performance.now();
         docker(["kill", "--signal", "HUP", nginx]);
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1200);
         const blockedClientMs = performance.now() - blockedStarted;
-        if (minimumKeepaliveSeconds)
-          assert.ok(
-            blockedClientMs < minimumKeepaliveSeconds * 1000,
-            "Client pause exceeded the compared minimum keep-alive interval",
-          );
+        const primedBeforeReuse = socketState(primedSocket);
         markPhase(`idle-regression-${minimumKeepaliveSeconds}-single-reuse`);
         const reused = request("/api/rehearsal/probe", {
           transportAgent: idleAgent,
@@ -759,30 +947,47 @@ export async function runRehearsal(selection) {
         });
         const [outcome] = await Promise.allSettled([reused.promise]);
         const current = await stats();
-        const admitted = current.requestAdmissions.some(
-          (entry) => entry.id === reused.trace.id,
-        );
+        const admission =
+          current.requestAdmissions.find(
+            (entry) => entry.id === reused.trace.id,
+          ) ?? null;
+        const admitted = admission !== null;
         const fresh = await call("/api/rehearsal/probe");
         assert.equal(fresh.status, 200);
-        assert.equal(reused.trace.reusedSocket, true);
-        if (minimumKeepaliveSeconds === 0) {
-          assert.equal(
-            outcome.status,
-            "rejected",
-            "Negative control must reproduce the stale-idle-socket reset",
-          );
-          assert.equal(outcome.reason.code, "ECONNRESET");
-          assert.equal(reused.trace.responseHeadersAt, null);
-          assert.equal(
-            admitted,
-            false,
-            "The reset GET must never reach the fixture API",
-          );
-        } else {
-          assert.equal(outcome.status, "fulfilled");
-          assert.equal(outcome.value.status, 200);
-          assert.equal(admitted, true);
-        }
+        const primedAfterAttempt = socketState(primedSocket);
+        const httpAttempts = requestTraces.filter(
+          (trace) => trace.id === reused.trace.id,
+        ).length;
+        const controlEvidence = {
+          clientRuntime,
+          minimumKeepaliveSeconds,
+          blockedClientMs,
+          oldWorkers,
+          prime: prime.transportTrace,
+          beforeHup: primedBeforeHup,
+          beforeReuse: primedBeforeReuse,
+          afterAttempt: primedAfterAttempt,
+          sameSocket: reused.assignedSocket() === primedSocket,
+          trace: reused.trace,
+          outcome:
+            outcome.status === "fulfilled"
+              ? {
+                  status: outcome.status,
+                  responseStatus: outcome.value.status,
+                  responseBody: outcome.value.body,
+                  responseConnection: outcome.value.headers.connection ?? null,
+                }
+              : { status: outcome.status, errorCode: outcome.reason.code },
+          admission,
+          httpAttempts,
+          primedCloseObservedMonotonic: primedCloseObservedAt,
+        };
+        // Retain socket/admission proof even if a strict assertion below fails.
+        writeFileSync(
+          join(evidence, `idle-control-${minimumKeepaliveSeconds}.json`),
+          JSON.stringify(controlEvidence, null, 2),
+        );
+        const assessment = assessIdleReuseControl(controlEvidence);
         assert.equal(
           current.dispatches,
           before.dispatches + 1,
@@ -807,7 +1012,7 @@ export async function runRehearsal(selection) {
         );
         assert.equal(
           finalAdmission?.visits ?? 0,
-          minimumKeepaliveSeconds === 0 ? 0 : 1,
+          assessment.expectedApiAdmissions,
           "The single reused GET cannot arrive late or be replayed",
         );
         assert.equal(after.dispatches, before.dispatches + 1);
@@ -820,16 +1025,27 @@ export async function runRehearsal(selection) {
         );
         assert.equal(after.cancelled, before.cancelled);
         cases.push({
+          ...assessment,
           minimumKeepaliveSeconds,
           blockedClientMs,
           oldWorkers,
+          primedSocket: {
+            primeAttempt: prime.transportTrace,
+            beforeHup: primedBeforeHup,
+            beforeReuse: primedBeforeReuse,
+            afterAttempt: primedAfterAttempt,
+            closeObservedMonotonic: primedCloseObservedAt,
+            assignedSameSocket: reused.assignedSocket() === primedSocket,
+          },
           singleAttempt: reused.trace,
+          singleHttpAttemptCount: httpAttempts,
+          singleAttemptApiAdmission: admission,
+          finalApiAdmission: finalAdmission ?? null,
           admittedToFixtureApi: admitted,
-          reusedGetApiAdmissions: admitted ? 1 : 0,
-          reusedGetExtraGenerations: current.dispatches - before.dispatches - 1,
-          reusedGetExtraSyntheticDebits:
+          singleGetApiAdmissions: finalAdmission?.visits ?? 0,
+          singleGetExtraGenerations: current.dispatches - before.dispatches - 1,
+          singleGetExtraSyntheticDebits:
             current.syntheticDebits - before.syntheticDebits,
-          expectedResetObserved: minimumKeepaliveSeconds === 0,
           acceptedPostCompletedOnce: true,
           acceptedSseCompletedOnce: true,
           syntheticDispatchesDelta: after.dispatches - before.dispatches,
@@ -850,11 +1066,14 @@ export async function runRehearsal(selection) {
         fixture: id,
         images,
         source,
+        clientRuntime,
         cases,
         timeline,
         retryCount: 0,
         zeroHttpRetries: true,
         actualProductionConfigurationChanged: false,
+        nginxWorkerUids,
+        archivedAssetPreflightPassed: true,
         productionMitigationSelected: false,
         comparisonProtectionIsFinite: true,
         productionControllerInvoked: false,
@@ -1119,6 +1338,8 @@ export async function runRehearsal(selection) {
       zeroHttpRetries: true,
       allHttpAttemptsSucceeded: failures.length === 0,
       archivedAssets: inventory.length,
+      nginxWorkerUids,
+      archivedAssetPreflightPassed: true,
       maximumProbeStartGapMs: probeStarts.reduce(
         (maximum, item, index) =>
           Math.max(maximum, index ? item - probeStarts[index - 1] : 0),
