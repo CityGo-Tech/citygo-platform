@@ -1,4 +1,7 @@
-import { landingAttributionSchema } from "@citygo/contracts";
+import {
+  landingAttributionSchema,
+  type LandingAttribution,
+} from "@citygo/contracts";
 import { parsePaidPixelConfig, type PaidPixelConfig } from "./paid-pixels";
 
 /** Explicit, content-free product analytics. The default is no collection. */
@@ -320,12 +323,41 @@ export function createProductAnalytics(
       if (identity !== null) call("setUserID", identity);
       return true;
     },
-    view(next: AnalyticsSurface): boolean {
+    landingEntry(value: LandingAttribution): boolean {
+      if (!active || surface !== null || location.pathname !== "/")
+        return false;
+      const entry = landingAttributionSchema.safeParse(value);
+      if (!entry.success || !entry.data.source || !entry.data.medium)
+        return false;
+      const version = entry.data.landingVersion;
+      const context = publicCampaignContext(
+        { ...location, pathname: "/landing/" + version },
+        version,
+        entry.data,
+      );
+      const params = {
+        surface: "landing",
+        landingVersion: version,
+        campaign: context.campaign,
+      };
+      if (
+        !call("hit", context.pageUrl, {
+          title: "CityGo",
+          referer: "",
+          params,
+        })
+      )
+        return false;
+      surface = "landing";
+      return true;
+    },
+    view(next: AnalyticsSurface, callback?: () => void): boolean {
       if (!analyticsSurfaces.includes(next) || !active || next === surface)
         return false;
       const sent = call("hit", pageUrl, {
         title: "CityGo",
         referer: "",
+        ...(callback ? { callback } : {}),
         params: {
           surface: next,
           ...(landingVersion ? { landingVersion } : {}),

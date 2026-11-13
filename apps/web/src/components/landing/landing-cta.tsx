@@ -5,6 +5,7 @@ import {
   captureLandingAttribution,
   landingStartHref,
   landingTouchExpiresAt,
+  stageLandingAnalyticsEntry,
   type LandingVersion,
 } from "./landing-attribution";
 import { productOrigin } from "./landing-config";
@@ -82,6 +83,14 @@ export function LandingCta({
       }}
       onClick={(event) => {
         event.currentTarget.href = currentHref();
+        if (
+          !event.defaultPrevented &&
+          !event.altKey &&
+          !event.ctrlKey &&
+          !event.metaKey &&
+          !event.shiftKey
+        )
+          stageLandingAnalyticsEntry(event.currentTarget.href);
         trackProductEvent("landing_cta_clicked", {
           surface: "landing",
           landingVersion: variant,

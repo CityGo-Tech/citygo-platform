@@ -255,6 +255,68 @@ function harness() {
 const goals = (h: ReturnType<typeof harness>) =>
   h.commands.filter((c) => c[1] === "reachGoal").map((c) => c[2]);
 
+test("a fast tagged CTA makes the landing the first hit before registration", async () => {
+  for (const [landingVersion, source] of [
+    ["v1", "vk"],
+    ["v8", "avito-ads"],
+  ] as const) {
+    const h = harness();
+    h.options.ownerId = null;
+    h.options.role = undefined;
+    h.options.surface = "register";
+    h.options.landingAnalyticsEntry = {
+      current: { landingVersion, source, medium: "cpc", campaignId: "qa" },
+    };
+    const analytics = h.render();
+    await turn();
+    analytics.beginRegistration(h.signal.signal, landingVersion);
+    h.load();
+    await turn();
+    assert.deepEqual(
+      h.commands.filter((row) => row[1] === "hit").map((row) => row[2]),
+      [
+        h.win.location.origin +
+          "/landing/" +
+          landingVersion +
+          "?utm_source=" +
+          source +
+          "&utm_medium=cpc&utm_campaign=qa",
+        h.win.location.origin + "/",
+      ],
+    );
+    const start = h.commands.find(
+      (row) => row[2] === "citygo_registration_started",
+    );
+    assert.deepEqual(start?.[3], { surface: "register", landingVersion });
+    assert.equal(h.options.landingAnalyticsEntry.current, undefined);
+    h.dispose();
+  }
+});
+
+test("landing entry is not sent for authenticated owners or after opt-out", async () => {
+  for (const optOut of [false, true]) {
+    const h = harness();
+    h.options.landingAnalyticsEntry = {
+      current: { landingVersion: "v1", source: "vk", medium: "cpc" },
+    };
+    if (optOut) {
+      h.options.ownerId = null;
+      h.options.role = undefined;
+    }
+    h.render();
+    await turn();
+    if (optOut) h.win.localStorage.setItem("citygo.analytics.optout", "1");
+    h.load();
+    await turn();
+    assert.equal(
+      h.commands.some((row) => String(row[2]).includes("utm_source")),
+      false,
+    );
+    if (optOut) assert.equal(h.commands.length, 0);
+    h.dispose();
+  }
+});
+
 test("a standard SDK may preserve the original function without blocking goals or BFCache", async () => {
   const h = harness();
   h.render();
@@ -278,13 +340,16 @@ test("only observed registration stages bridge confirmation once, with fast or s
     const h = harness();
     h.options.ownerId = null;
     h.options.role = undefined;
+    h.options.landingAnalyticsEntry = {
+      current: { landingVersion: "v8", source: "avito-ads", medium: "cpc" },
+    };
     const analytics = h.render();
     await turn();
     if (fast) {
       h.load();
       await turn();
     }
-    const flow = analytics.beginRegistration(h.signal.signal);
+    const flow = analytics.beginRegistration(h.signal.signal, "v8");
     analytics.registrationCodeSent(
       flow,
       "123e4567-e89b-42d3-a456-426614174001",
@@ -314,6 +379,17 @@ test("only observed registration stages bridge confirmation once, with fast or s
       h.load();
       await turn();
     }
+    const tagged = h.commands
+      .filter((row) => row[1] === "hit")
+      .map((row) => row[2]);
+    assert.equal(
+      tagged[0],
+      h.win.location.origin + "/landing/v8?utm_source=avito-ads&utm_medium=cpc",
+    );
+    assert.equal(
+      tagged.filter((url) => String(url).includes("utm_source")).length,
+      1,
+    );
     assert.deepEqual(
       goals(h).filter((goal) =>
         String(goal).startsWith("citygo_registration_"),

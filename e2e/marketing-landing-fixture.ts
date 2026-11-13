@@ -5,7 +5,10 @@ import { syntheticConsentPolicy } from "./service-consent-fixture";
 import { fulfillProductAnalytics } from "./product-analytics-fixture";
 import { analyticsOrigin } from "./product-analytics-collector";
 
-export async function syntheticProduct(page: Page) {
+export async function syntheticProduct(
+  page: Page,
+  options: { fastLandingCta?: boolean } = {},
+) {
   const state = {
     authenticated: false,
     role: "user" as "user" | "admin",
@@ -31,6 +34,20 @@ export async function syntheticProduct(page: Page) {
     const url = new URL(route.request().url());
     // Redirect chains are not re-routed by Playwright. Keep the real browser
     // bridge on localhost, so no redirect can escape to the live product.
+    if (url.pathname === "/landing/start" && options.fastLandingCta) {
+      const response = await page.request.get(
+        "http://localhost:3000" + url.pathname + url.search,
+        { maxRedirects: 0 },
+      );
+      expect(response.status()).toBe(303);
+      // Commit the real route's cookies, then navigate in a separate request
+      // so Playwright intercepts the root document on this synthetic origin.
+      return route.fulfill({
+        contentType: "text/html",
+        headers: { "set-cookie": response.headers()["set-cookie"]! },
+        body: '<meta name="referrer" content="no-referrer"><meta http-equiv="refresh" content="0; url=/">',
+      });
+    }
     if (url.pathname === "/landing/start")
       return route.fulfill({
         status: 303,
@@ -47,12 +64,17 @@ export async function syntheticProduct(page: Page) {
       throw new Error("Unexpected redirect in the synthetic origin proxy");
     await route.fulfill({ response, headers });
   });
-  await page.context().route("https://mc.yandex.ru/metrika/tag.js", (route) =>
-    route.fulfill({
+  await page.context().route("https://mc.yandex.ru/metrika/tag.js", (route) => {
+    if (
+      options.fastLandingCta &&
+      /^\/landing\/v[18]$/.test(new URL(page.url()).pathname)
+    )
+      return route.abort();
+    return route.fulfill({
       contentType: "application/javascript",
       body: `window.ym=(...args)=>{const a=JSON.parse(localStorage.getItem('__landing_calls')||'[]');a.push(args);localStorage.setItem('__landing_calls',JSON.stringify(a))}`,
-    }),
-  );
+    });
+  });
   await page.route("**/api/v1/**", async (route) => {
     if (await fulfillProductAnalytics(route)) return;
     const path = new URL(route.request().url()).pathname;

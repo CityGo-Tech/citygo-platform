@@ -7,6 +7,8 @@ export const landingCookieMaxAge = 60 * 60 * 24 * 30;
 export type LandingVersion = "v1" | "v8";
 export const landingTouchStorageKey = "citygo.landing.touch.v1";
 export const landingTouchMaxAge = 30 * 60 * 1000;
+const analyticsEntryKey = "citygo.landing.analytics-entry.v1";
+const analyticsEntryMaxAge = 60 * 1000;
 const campaignSlug = /^[a-z0-9][a-z0-9._-]{0,79}$/;
 const fields = {
   utm_source: "source",
@@ -89,6 +91,7 @@ export function clearBrowserLandingAttribution(): void {
   }
   try {
     sessionStorage.removeItem(landingTouchStorageKey);
+    sessionStorage.removeItem(analyticsEntryKey);
   } catch {
     // Storage is optional, including in privacy modes.
   }
@@ -109,6 +112,67 @@ export function consumeLandingLoginIntent(): boolean {
 
 type LandingTouch = { at: number; attribution: LandingAttribution };
 let currentLanding: LandingTouch | undefined;
+let reportedLanding: LandingAttribution | undefined;
+
+export function acknowledgeLandingView(attribution: LandingAttribution): void {
+  reportedLanding = attribution;
+}
+
+/** Recover a first pageview when a same-origin CTA beats the counter to it. */
+export function stageLandingAnalyticsEntry(target: string): void {
+  if (!browserAcquisitionAllowed()) return;
+  try {
+    sessionStorage.removeItem(analyticsEntryKey);
+    const url = new URL(target);
+    const touch = currentLanding;
+    const now = Date.now();
+    if (
+      url.origin !== location.origin ||
+      url.pathname !== "/landing/start" ||
+      !touch ||
+      (reportedLanding?.landingVersion === touch.attribution.landingVersion &&
+        Object.values(fields).every(
+          (field) => reportedLanding?.[field] === touch.attribution[field],
+        )) ||
+      location.pathname !== "/landing/" + touch.attribution.landingVersion ||
+      url.searchParams.get("landing") !== touch.attribution.landingVersion ||
+      !touch.attribution.source ||
+      !touch.attribution.medium ||
+      now - touch.at >= landingTouchMaxAge
+    )
+      return;
+    sessionStorage.setItem(
+      analyticsEntryKey,
+      JSON.stringify({ at: now, attribution: touch.attribution }),
+    );
+  } catch {
+    // Navigation still works when the counter or storage is unavailable.
+  }
+}
+
+export function consumeLandingAnalyticsEntry(): LandingAttribution | undefined {
+  try {
+    const raw = sessionStorage.getItem(analyticsEntryKey);
+    sessionStorage.removeItem(analyticsEntryKey);
+    if (!raw || location.pathname !== "/") return undefined;
+    const attribution = readBrowserLandingAttribution();
+    if (!attribution) return undefined;
+    const now = Date.now();
+    const entry = parseLandingTouch(raw, attribution.landingVersion, now);
+    if (
+      entry &&
+      now - entry.at < analyticsEntryMaxAge &&
+      entry.attribution.source &&
+      entry.attribution.medium &&
+      Object.values(fields).every(
+        (field) => entry.attribution[field] === attribution[field],
+      )
+    )
+      return entry.attribution;
+  } catch {
+    // The entry is optional and never influences registration.
+  }
+}
 
 export function landingTouchExpiresAt(
   version: LandingVersion,

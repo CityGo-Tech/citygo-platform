@@ -241,6 +241,60 @@ test("campaign visits report validated source labels while the address and priva
   await page.waitForLoadState("networkidle");
 });
 
+for (const [version, source] of [
+  ["v1", "vk"],
+  ["v8", "avito-ads"],
+] as const) {
+  test(`fast ${version} CTA preserves the first tagged hit through confirmed registration`, async ({
+    page,
+  }) => {
+    test.skip(
+      !enabledCollector(),
+      "Requires the explicit fake-collector build",
+    );
+    const state = await syntheticProduct(page, { fastLandingCta: true });
+    const landing = analyticsOrigin + "/landing/" + version;
+    const tags = `?utm_source=${source}&utm_medium=cpc&utm_campaign=qa_${version}`;
+    await page.goto(landing + tags + "&email=never-store%40example.test");
+    const cta = page.locator("[data-landing-cta=hero]");
+    await expect(cta).toHaveAttribute("href", /utm_campaign=qa_/);
+    await cta.click();
+    await expect(page).toHaveURL(analyticsOrigin + "/");
+    await submitRegistration(page);
+    await page.getByLabel("Код из письма", { exact: true }).fill("654321");
+    await page.getByRole("button", { name: "Подтвердить email" }).click();
+    const commands = () =>
+      page.evaluate(
+        () =>
+          JSON.parse(
+            localStorage.getItem("__landing_calls") || "[]",
+          ) as unknown[][],
+      );
+    await expect
+      .poll(
+        async () =>
+          (await commands()).filter(
+            (row) => row[2] === "citygo_registration_completed",
+          ).length,
+      )
+      .toBe(1);
+    const captured = await commands();
+    expect(captured.find((row) => row[1] === "hit")?.[2]).toBe(landing + tags);
+    expect(
+      captured.filter((row) => row[1] === "hit" && row[2] === landing + tags),
+    ).toHaveLength(1);
+    expect(
+      captured.find((row) => row[2] === "citygo_registration_completed")?.[3],
+    ).toEqual({
+      surface: "register",
+      landingVersion: version,
+    });
+    expect(JSON.stringify(captured)).not.toContain("never-store");
+    expect(state.outside).toEqual([]);
+    await page.waitForLoadState("networkidle");
+  });
+}
+
 test("opt-out preserves registration without attribution; the header still opens the login form", async ({
   page,
 }) => {
