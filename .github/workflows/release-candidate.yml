@@ -38,6 +38,8 @@ jobs:
       actions: read
       packages: write
     env:
+      RELEASE_MODE: manual
+      CITYGO_POSTGRES_IMAGE: ${{ vars.CITYGO_POSTGRES_IMAGE }}
       EXPECTED_SHA: ${{ inputs.expected_sha }}
       PUBLISH_CONFIRM: ${{ inputs.confirm }}
       PACKAGE_SOURCES_CHECKED: ${{ inputs.package_sources_checked }}

@@ -24,6 +24,14 @@ login, pull, tag, удаления, переключения Docker backend ил
 - PostgreSQL и backup используют один одобренный local ID и прежний digest
   `postgres:17-alpine`. Новая версия PostgreSQL этим путём не допускается.
 
+Ручной workflow `Release candidate (manual)` передаёт режим `manual` и
+`vars.CITYGO_POSTGRES_IMAGE` в подготовку базовых образов. Значение должно быть
+полным `postgres:17-alpine@sha256:…` и совпадать с текущим проверенным bundle
+сервера. При отсутствующем или неверном pin подготовка отклоняется до первого
+Docker-вызова; перехода на плавающий тег нет. Автоматический и operator-local
+режимы сохраняют такую же привязку. Обычная disposable-проверка без режима
+выпуска по-прежнему может разрешать публичный тег для своего тестового стенда.
+
 ### Classic Docker и containerd
 
 В classic store `.Id` — config digest. При совпадении с протестированным config ID
