@@ -4,6 +4,7 @@ import {
   readBrowserLandingAttribution,
   clearBrowserLandingAttribution,
   consumeLandingLoginIntent,
+  consumeLandingAnalyticsEntry,
   browserAcquisitionAllowed,
 } from "../components/landing/landing-attribution";
 import { BalanceHistoryPanel } from "../components/balance-history";
@@ -22,6 +23,7 @@ import {
 import type {
   AgentKey,
   Dashboard,
+  LandingAttribution,
   ConversationSummary,
   ConversationFilters,
   ServiceConsentChoice,
@@ -120,9 +122,13 @@ export default function Home() {
   );
   const [registration, setRegistration] =
     useState<PendingEmailRegistration | null>(null);
+  const landingAnalyticsEntry = useRef<LandingAttribution | undefined>(
+    undefined,
+  );
   useEffect(() => {
     if (consumeLandingLoginIntent()) setMode("login");
     if (!browserAcquisitionAllowed()) clearBrowserLandingAttribution();
+    landingAnalyticsEntry.current ??= consumeLandingAnalyticsEntry();
   }, []);
   const registrationAnalytics = useRef<RegistrationAnalyticsFlow | null>(null);
   const authPending = useRef(false);
@@ -217,6 +223,7 @@ export default function Home() {
               : "profile",
     sessionSignal: session.capture().signal,
     client: analyticsClient,
+    landingAnalyticsEntry,
   });
   const history = useConversationHistory({
     board: board?.user.serviceConsentRequired ? null : board,
