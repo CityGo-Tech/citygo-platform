@@ -7,9 +7,10 @@
   const origin = location.origin;
   let channel = null;
   let ready = false;
-  let registrationSent = false;
+  let registrationExpiresAt = 0;
   let config = null;
   const loaded = { vk: false, avito: false };
+  const sent = { vk: false, avito: false };
   function optedOut() {
     try {
       return (
@@ -57,24 +58,51 @@
       return false;
     }
   }
+  function sendRegistration(provider) {
+    if (
+      !loaded[provider] ||
+      sent[provider] ||
+      Date.now() >= registrationExpiresAt ||
+      optedOut()
+    )
+      return;
+    sent[provider] = true;
+    try {
+      if (provider === "vk")
+        window._tmr.push({
+          id: String(config.vkPixelId),
+          type: "reachGoal",
+          goal: "citygoRegistrationCompleted",
+          url: location.href,
+          referrer: "",
+          title: "CityGo",
+        });
+      else
+        window._apxl.sendEvent({
+          type: "reachGoal",
+          goalName: "citygo_registration_completed",
+        });
+    } catch {
+      // A collector failure must not affect the other provider.
+    }
+  }
   function script(src, provider) {
-    return new Promise((resolve) => {
-      const node = document.createElement("script");
-      node.async = true;
-      node.referrerPolicy = "no-referrer";
-      node.src = src;
-      const timeout = setTimeout(() => resolve(false), 10000);
-      node.onload = () => {
-        clearTimeout(timeout);
-        loaded[provider] = true;
-        resolve(true);
-      };
-      node.onerror = () => {
-        clearTimeout(timeout);
-        resolve(false);
-      };
-      document.head.append(node);
-    });
+    const node = document.createElement("script");
+    node.async = true;
+    node.referrerPolicy = "no-referrer";
+    node.src = src;
+    node.onload = () => {
+      loaded[provider] = true;
+      if (!ready) {
+        ready = true;
+        window.parent.postMessage(
+          { type: "citygo-paid-ready", version: 1, channel },
+          origin,
+        );
+      }
+      sendRegistration(provider);
+    };
+    document.head.append(node);
   }
   window.addEventListener("message", (event) => {
     if (
@@ -110,7 +138,6 @@
       // This changes ONLY the empty child document's URL. Provider SDKs see
       // the approved public page and UTM labels, never the parent's raw URL.
       history.replaceState(null, "", value.url);
-      const jobs = [];
       if (config.vkPixelId) {
         window._tmr = [
           {
@@ -122,7 +149,7 @@
             title: "CityGo",
           },
         ];
-        jobs.push(script("https://top-fwz1.mail.ru/js/code.js", "vk"));
+        script("https://top-fwz1.mail.ru/js/code.js", "vk");
       }
       if (config.avitoCounterId) {
         window._apxl = [{ id: config.avitoCounterId, start: Date.now() }];
@@ -131,40 +158,33 @@
           if (window._apxl.q.length < 10)
             window._apxl.q.push([args, location.href, Date.now()]);
         };
-        jobs.push(script("https://ac.avito.ru/tag.js", "avito"));
+        script("https://ac.avito.ru/tag.js", "avito");
       }
-      void Promise.all(jobs).then((values) => {
-        if (!values.some(Boolean)) return;
-        ready = true;
-        window.parent.postMessage(
-          { type: "citygo-paid-ready", version: 1, channel },
-          origin,
-        );
-      });
     } else if (
       value.type === "citygo-paid-registration" &&
-      Object.keys(value).sort().join(",") === "channel,type,version" &&
       value.version === 1 &&
       channel !== null &&
       value.channel === channel &&
       ready &&
-      !registrationSent
+      !registrationExpiresAt
     ) {
-      registrationSent = true;
-      if (loaded.vk)
-        window._tmr.push({
-          id: String(config.vkPixelId),
-          type: "reachGoal",
-          goal: "citygoRegistrationCompleted",
-          url: location.href,
-          referrer: "",
-          title: "CityGo",
-        });
-      if (loaded.avito)
-        window._apxl.sendEvent({
-          type: "reachGoal",
-          goalName: "citygo_registration_completed",
-        });
+      const now = Date.now();
+      const fields = Object.keys(value).sort().join(",");
+      if (fields === "channel,type,version") {
+        // A tab opened before the release can still send a v1 receipt.
+        registrationExpiresAt = now + 10_000;
+      } else {
+        if (
+          fields !== "channel,expiresAt,type,version" ||
+          !Number.isSafeInteger(value.expiresAt) ||
+          value.expiresAt <= now ||
+          value.expiresAt > now + 120_000
+        )
+          return;
+        registrationExpiresAt = value.expiresAt;
+      }
+      sendRegistration("vk");
+      sendRegistration("avito");
     }
   });
 })();

@@ -118,6 +118,7 @@ function harness() {
       if (name === "./product-analytics") return product;
       if (name === "./paid-pixels")
         return {
+          ANALYTICS_AUTH_RECEIPT_TTL_MS: 120_000,
           createPaidPixelBridge(config: unknown, url: string) {
             const value = { config, url, active: false, goals: [] as string[] };
             paidBridges.push(value);

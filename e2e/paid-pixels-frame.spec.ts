@@ -38,7 +38,11 @@ type Command = {
  */
 async function harness(
   page: Page,
-  options: { delaySdk?: boolean; heartbeat?: boolean; failVk?: boolean } = {},
+  options: {
+    delaySdk?: boolean | "avito";
+    heartbeat?: boolean;
+    failVk?: boolean;
+  } = {},
 ) {
   const state = {
     sdk: [] as string[],
@@ -103,7 +107,11 @@ async function harness(
       state.sdk.push(request.url());
       if (options.failVk && url.hostname === "top-fwz1.mail.ru")
         return route.abort();
-      await gate;
+      if (
+        options.delaySdk === true ||
+        (options.delaySdk === "avito" && url.hostname === "ac.avito.ru")
+      )
+        await gate;
       try {
         return await route.fulfill({
           contentType: "application/javascript",
@@ -174,10 +182,11 @@ async function ready(page: Page) {
     .toBe(true);
 }
 
-const registration = () => ({
+const registration = (expiresAt = Date.now() + 60_000) => ({
   type: "citygo-paid-registration",
   version: 1,
   channel,
+  expiresAt,
 });
 
 test("paid frame rejects invalid URLs, extra data, identities and sibling senders before loading SDKs", async ({
@@ -396,3 +405,38 @@ test("opening the public frame as a top document does not start an advertising c
   expect(state.commands).toEqual([]);
   expect(state.unexpected).toEqual([]);
 });
+
+for (const expired of [false, true]) {
+  test(`late Avito SDK ${expired ? "discards an expired" : "sends a pending"} registration independently of VK`, async ({
+    page,
+  }) => {
+    await page.clock.install();
+    const { state, releaseSdk } = await harness(page, { delaySdk: "avito" });
+    const goals = () =>
+      state.commands
+        .filter((row) => row.command.type === "reachGoal")
+        .map((row) => row.provider);
+    await attach(page);
+    await post(page, init());
+    await expect.poll(() => state.sdk.length).toBe(2);
+    await ready(page);
+    const goal = registration();
+    await post(page, goal);
+    await expect.poll(goals).toEqual(["vk"]);
+
+    await page.clock.fastForward(expired ? 61_000 : 11_000);
+    releaseSdk();
+    await expect
+      .poll(() =>
+        state.commands.some(
+          (row) => row.provider === "avito" && row.command.type === "pageView",
+        ),
+      )
+      .toBe(true);
+    if (!expired) await expect.poll(goals).toEqual(["vk", "avito"]);
+    await post(page, registration(Date.now() + 90_000));
+    await page.waitForLoadState("networkidle");
+    expect(goals()).toEqual(expired ? ["vk"] : ["vk", "avito"]);
+    expect(state.unexpected).toEqual([]);
+  });
+}
