@@ -54,7 +54,7 @@ function fixture() {
   };
   const ready = {
     type: "citygo-paid-ready",
-    version: 1,
+    version: 2,
     channel: "123e4567-e89b-42d3-a456-426614174001",
   };
   return {
@@ -178,6 +178,7 @@ test("one confirmed receipt waits for exact child ready; private content never c
     "version",
   ]);
   assert.equal(goal.expiresAt, expiresAt);
+  assert.equal(goal.version, 2);
   assert(!JSON.stringify(f.sent).includes("auth:memory-only"));
   bridge.stop();
   assert.equal(f.attached(), false);
@@ -185,6 +186,21 @@ test("one confirmed receipt waits for exact child ready; private content never c
   assert.equal(f.frame.onload, null);
   f.dispatch(f.ready);
   assert.equal(bridge.registrationCompleted("late", expiresAt), false);
+  assert.equal(f.sent.length, 2);
+});
+
+test("a current parent uses the exact v1 registration message with a rolled-back frame", () => {
+  const f = fixture();
+  const bridge = createPaidPixelBridge(config, url, f.host);
+  assert.equal(bridge.start(), true);
+  f.frame.onload?.();
+  bridge.registrationCompleted("receipt", Date.now() + 1000);
+  f.dispatch({ ...f.ready, version: 1 });
+  assert.deepEqual(f.sent[1], [
+    { type: "citygo-paid-registration", version: 1, channel: f.ready.channel },
+    origin,
+  ]);
+  f.dispatch({ ...f.ready, version: 1 });
   assert.equal(f.sent.length, 2);
 });
 

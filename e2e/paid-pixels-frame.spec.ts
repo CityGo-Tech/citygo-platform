@@ -166,25 +166,28 @@ async function post(page: Page, message: unknown) {
   }, message);
 }
 
+async function readyVersions(page: Page): Promise<number[]> {
+  return page.evaluate(() =>
+    (window as HarnessWindow).__paidMessages.flatMap((item) =>
+      item &&
+      typeof item === "object" &&
+      "type" in item &&
+      "version" in item &&
+      item.type === "citygo-paid-ready" &&
+      typeof item.version === "number"
+        ? [item.version]
+        : [],
+    ),
+  );
+}
+
 async function ready(page: Page) {
-  await expect
-    .poll(() =>
-      page.evaluate(() =>
-        (window as HarnessWindow).__paidMessages.some(
-          (item) =>
-            !!item &&
-            typeof item === "object" &&
-            "type" in item &&
-            item.type === "citygo-paid-ready",
-        ),
-      ),
-    )
-    .toBe(true);
+  await expect.poll(() => readyVersions(page)).toContain(2);
 }
 
 const registration = (expiresAt = Date.now() + 60_000) => ({
   type: "citygo-paid-registration",
-  version: 1,
+  version: 2,
   channel,
   expiresAt,
 });
@@ -437,6 +440,35 @@ for (const expired of [false, true]) {
     await post(page, registration(Date.now() + 90_000));
     await page.waitForLoadState("networkidle");
     expect(goals()).toEqual(expired ? ["vk"] : ["vk", "avito"]);
+    expect(state.unexpected).toEqual([]);
+  });
+}
+
+for (const late of [false, true]) {
+  test(`v1 parent ${late ? "cannot revive a receipt after" : "can register within"} its original readiness window`, async ({
+    page,
+  }) => {
+    await page.clock.install();
+    const { state, releaseSdk } = await harness(page, { delaySdk: true });
+    await attach(page);
+    await post(page, init());
+    await expect.poll(() => state.sdk.length).toBe(2);
+    if (late) await page.clock.fastForward(11_000);
+    releaseSdk();
+    await expect.poll(() => readyVersions(page)).toEqual(late ? [2] : [2, 1]);
+    await post(page, { type: "citygo-paid-registration", version: 1, channel });
+    await expect
+      .poll(
+        () =>
+          state.commands.filter((row) => row.command.type === "pageView")
+            .length,
+      )
+      .toBe(2);
+    const goals = () =>
+      state.commands.filter((row) => row.command.type === "reachGoal").length;
+    if (!late) await expect.poll(goals).toBe(2);
+    await page.waitForLoadState("networkidle");
+    expect(goals()).toBe(late ? 0 : 2);
     expect(state.unexpected).toEqual([]);
   });
 }

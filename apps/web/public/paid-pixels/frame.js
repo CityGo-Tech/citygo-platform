@@ -7,6 +7,7 @@
   const origin = location.origin;
   let channel = null;
   let ready = false;
+  let legacyUntil = 0;
   let registrationExpiresAt = 0;
   let config = null;
   const loaded = { vk: false, avito: false };
@@ -96,9 +97,15 @@
       if (!ready) {
         ready = true;
         window.parent.postMessage(
-          { type: "citygo-paid-ready", version: 1, channel },
+          { type: "citygo-paid-ready", version: 2, channel },
           origin,
         );
+        // Announce v2 first so a current parent never downgrades to v1.
+        if (Date.now() < legacyUntil)
+          window.parent.postMessage(
+            { type: "citygo-paid-ready", version: 1, channel },
+            origin,
+          );
       }
       sendRegistration(provider);
     };
@@ -135,6 +142,8 @@
         return;
       channel = value.channel;
       config = value.config;
+      // Older parents have no absolute receipt deadline on the wire.
+      legacyUntil = Date.now() + 10_000;
       // This changes ONLY the empty child document's URL. Provider SDKs see
       // the approved public page and UTM labels, never the parent's raw URL.
       history.replaceState(null, "", value.url);
@@ -162,7 +171,6 @@
       }
     } else if (
       value.type === "citygo-paid-registration" &&
-      value.version === 1 &&
       channel !== null &&
       value.channel === channel &&
       ready &&
@@ -170,11 +178,12 @@
     ) {
       const now = Date.now();
       const fields = Object.keys(value).sort().join(",");
-      if (fields === "channel,type,version") {
-        // A tab opened before the release can still send a v1 receipt.
-        registrationExpiresAt = now + 10_000;
+      if (value.version === 1 && fields === "channel,type,version") {
+        if (now >= legacyUntil) return;
+        registrationExpiresAt = legacyUntil;
       } else {
         if (
+          value.version !== 2 ||
           fields !== "channel,expiresAt,type,version" ||
           !Number.isSafeInteger(value.expiresAt) ||
           value.expiresAt <= now ||

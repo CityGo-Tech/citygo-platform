@@ -68,7 +68,7 @@ export function createPaidPixelBridge(
 ) {
   let frame: HTMLIFrameElement | null = null;
   let active = false;
-  let ready = false;
+  let readyVersion = 0;
   let registrationExpiresAt = 0;
   let registrationSent = false;
   const seen = new Set<string>();
@@ -79,7 +79,7 @@ export function createPaidPixelBridge(
   function sendRegistration() {
     if (
       !active ||
-      !ready ||
+      !readyVersion ||
       registrationSent ||
       Date.now() >= registrationExpiresAt
     )
@@ -88,9 +88,9 @@ export function createPaidPixelBridge(
       frame?.contentWindow?.postMessage(
         {
           type: "citygo-paid-registration",
-          version: 1,
+          version: readyVersion,
           channel,
-          expiresAt: registrationExpiresAt,
+          ...(readyVersion === 2 ? { expiresAt: registrationExpiresAt } : {}),
         },
         host.location.origin,
       );
@@ -110,11 +110,11 @@ export function createPaidPixelBridge(
       Array.isArray(event.data) ||
       Object.keys(event.data).sort().join(",") !== "channel,type,version" ||
       event.data.type !== "citygo-paid-ready" ||
-      event.data.version !== 1 ||
+      (event.data.version !== 1 && event.data.version !== 2) ||
       event.data.channel !== channel
     )
       return;
-    ready = true;
+    if (readyVersion !== 2) readyVersion = event.data.version;
     sendRegistration();
   };
   return {
@@ -188,7 +188,7 @@ export function createPaidPixelBridge(
     },
     stop() {
       active = false;
-      ready = false;
+      readyVersion = 0;
       registrationExpiresAt = 0;
       host.removeEventListener("message", onMessage);
       if (frame) frame.onload = null;
