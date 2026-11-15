@@ -1,6 +1,9 @@
 "use client";
 import { useEffect, useRef } from "react";
-import { createPaidPixelBridge } from "./paid-pixels";
+import {
+  ANALYTICS_AUTH_RECEIPT_TTL_MS,
+  createPaidPixelBridge,
+} from "./paid-pixels";
 import {
   acknowledgeLandingView,
   clearBrowserLandingAttribution,
@@ -192,7 +195,7 @@ export function useProductAnalytics(options: {
       receipt &&
       (receipt.signal !== sessionSignal ||
         receipt.signal.aborted ||
-        Date.now() - receipt.at >= 120_000 ||
+        Date.now() - receipt.at >= ANALYTICS_AUTH_RECEIPT_TTL_MS ||
         (ownerId !== null && (receipt.ownerId !== ownerId || role !== "user")))
     ) {
       clearAuth();
@@ -206,7 +209,7 @@ export function useProductAnalytics(options: {
           confirmed?.event === "registration_completed" &&
           confirmed.ownerId === ownerId &&
           confirmed.signal === sessionSignal &&
-          Date.now() - confirmed.at < 120_000 &&
+          Date.now() - confirmed.at < ANALYTICS_AUTH_RECEIPT_TTL_MS &&
           confirmed.landingVersion === entry?.current?.landingVersion)
       );
     };
@@ -271,7 +274,7 @@ export function useProductAnalytics(options: {
           value.signal.aborted ||
           value.ownerId !== ownerId ||
           role !== "user" ||
-          Date.now() - value.at >= 120_000 ||
+          Date.now() - value.at >= ANALYTICS_AUTH_RECEIPT_TTL_MS ||
           browserAnalyticsOptedOut())
       ) {
         pending.discard(value.onceKey);
@@ -288,7 +291,10 @@ export function useProductAnalytics(options: {
         role === "user" &&
         value.event === "registration_completed" &&
         !value.paidSubmitted &&
-        paidPixels?.registrationCompleted(value.onceKey)
+        paidPixels?.registrationCompleted(
+          value.onceKey,
+          value.at + ANALYTICS_AUTH_RECEIPT_TTL_MS,
+        )
       )
         value.paidSubmitted = true;
       for (const stage of registrationFlow.pending(sessionSignal, ownerId))

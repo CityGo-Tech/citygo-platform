@@ -54,7 +54,7 @@ function fixture() {
   };
   const ready = {
     type: "citygo-paid-ready",
-    version: 1,
+    version: 2,
     channel: "123e4567-e89b-42d3-a456-426614174001",
   };
   return {
@@ -130,7 +130,10 @@ test("disabled/private config creates no document and emits no commands", () => 
       bridge = createPaidPixelBridge(settings, target, f.host);
     assert.equal(bridge.start(), false);
     assert.equal(f.attached(), false);
-    assert.equal(bridge.registrationCompleted("receipt"), false);
+    assert.equal(
+      bridge.registrationCompleted("receipt", Date.now() + 1000),
+      false,
+    );
     assert.equal(f.sent.length, 0);
   }
 });
@@ -142,8 +145,15 @@ test("one confirmed receipt waits for exact child ready; private content never c
   assert.equal(bridge.start(), true);
   assert.equal(f.frame.referrerPolicy, "no-referrer");
   assert.equal(f.frame.attributes.sandbox, "allow-scripts allow-same-origin");
-  assert.equal(bridge.registrationCompleted("auth:memory-only"), true);
-  assert.equal(bridge.registrationCompleted("auth:memory-only"), false);
+  const expiresAt = Date.now() + 1000;
+  assert.equal(
+    bridge.registrationCompleted("auth:memory-only", expiresAt),
+    true,
+  );
+  assert.equal(
+    bridge.registrationCompleted("auth:memory-only", expiresAt),
+    false,
+  );
   f.frame.onload?.();
   assert.equal(f.sent.length, 1);
   f.dispatch(f.ready, {}, origin);
@@ -161,14 +171,36 @@ test("one confirmed receipt waits for exact child ready; private content never c
     vkPixelId: 3812681,
     avitoCounterId: 3496456,
   });
-  assert.deepEqual(Object.keys(goal).sort(), ["channel", "type", "version"]);
+  assert.deepEqual(Object.keys(goal).sort(), [
+    "channel",
+    "expiresAt",
+    "type",
+    "version",
+  ]);
+  assert.equal(goal.expiresAt, expiresAt);
+  assert.equal(goal.version, 2);
   assert(!JSON.stringify(f.sent).includes("auth:memory-only"));
   bridge.stop();
   assert.equal(f.attached(), false);
   assert.equal(f.listeners.size, 0);
   assert.equal(f.frame.onload, null);
   f.dispatch(f.ready);
-  assert.equal(bridge.registrationCompleted("late"), false);
+  assert.equal(bridge.registrationCompleted("late", expiresAt), false);
+  assert.equal(f.sent.length, 2);
+});
+
+test("a current parent uses the exact v1 registration message with a rolled-back frame", () => {
+  const f = fixture();
+  const bridge = createPaidPixelBridge(config, url, f.host);
+  assert.equal(bridge.start(), true);
+  f.frame.onload?.();
+  bridge.registrationCompleted("receipt", Date.now() + 1000);
+  f.dispatch({ ...f.ready, version: 1 });
+  assert.deepEqual(f.sent[1], [
+    { type: "citygo-paid-registration", version: 1, channel: f.ready.channel },
+    origin,
+  ]);
+  f.dispatch({ ...f.ready, version: 1 });
   assert.equal(f.sent.length, 2);
 });
 
@@ -176,7 +208,7 @@ test("departure before SDK readiness discards the goal instead of reviving it", 
   const f = fixture(),
     bridge = createPaidPixelBridge(config, url, f.host);
   bridge.start();
-  bridge.registrationCompleted("receipt");
+  bridge.registrationCompleted("receipt", Date.now() + 1000);
   const oldLoad = f.frame.onload;
   bridge.stop();
   oldLoad?.();
