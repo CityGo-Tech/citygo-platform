@@ -79,17 +79,23 @@ export function PlanStepComposer({
   sessionSignal,
   onAccessDenied,
   source,
+  initialFields,
   onSaved,
   onCancel,
 }: OwnerProps & {
   source: PlanMessageSource | null;
+  initialFields?: StepFields;
   onSaved: () => void;
   onCancel: (checkPlan: boolean) => void;
 }) {
-  const [fields, setFields] = useState<StepFields>({
-    title: source?.content.trim().split(/\r?\n/)[0]!.slice(0, 120) ?? "",
-    details: source?.content.slice(0, 4000) ?? "",
-  });
+  const [fields, setFields] = useState<StepFields>(() =>
+    source
+      ? {
+          title: source.content.trim().split(/\r?\n/)[0]!.slice(0, 120),
+          details: source.content.slice(0, 4000),
+        }
+      : (initialFields ?? { title: "", details: "" }),
+  );
   const [frozen, setFrozen] = useState<CreatePersonalPlanItem | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -182,7 +188,7 @@ export function PlanStepComposer({
         Добавить шаг в план
       </h2>
       <p>
-        {source
+        {source || initialFields
           ? "Выберите действие и уточните формулировку перед сохранением."
           : "Запишите действие, которое хотите сделать."}
       </p>
