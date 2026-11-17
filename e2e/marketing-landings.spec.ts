@@ -466,7 +466,9 @@ test("the housing CTA resumes signup through window focus with analytics disable
   });
   await code.fill("000000");
   await confirm.click();
-  await expect(page.getByText("Неверный код", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("alert").filter({ hasText: "Неверный код" }),
+  ).toBeVisible();
   expect(state.starts).toEqual([]);
   let releaseStart!: () => void;
   state.startGate = new Promise<void>((resolve) => {
