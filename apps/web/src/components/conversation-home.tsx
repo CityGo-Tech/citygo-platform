@@ -1,7 +1,11 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { JourneySidebar, AssistantContextRail } from "./workspace-frame";
+import {
+  JourneySidebar,
+  AssistantContextRail,
+  WorkspaceFrame,
+} from "./workspace-frame";
 import { Button, Card, Badge, AssistantMessage } from "@citygo/ui-web";
 import { agentNames, type JourneyProps } from "./journey";
 import { FavoriteButton } from "./message-favorites";
@@ -42,6 +46,7 @@ import {
 import { MessageTextActions } from "./message-text-actions";
 import { ConversationMessageSearch } from "./conversation-message-search";
 import { ConversationExportAction } from "./conversation-export";
+import { HousingPlanLaunch, HousingStarterPlan } from "./housing-starter-plan";
 
 const greeting =
   "Здравствуйте! Я координатор CityGo. Помогу разложить переезд на понятные шаги. Можно просто рассказать, что сейчас волнует — даже если бюджет и дата ещё неизвестны.";
@@ -63,6 +68,7 @@ export function ConversationHome(props: JourneyProps) {
     if (!props.workspaceRequest) return;
     setTab(props.workspaceRequest.tab);
     setShowList(false);
+    setHousingJourney(null);
     props.onWorkspaceRequestHandled?.(props.workspaceRequest.sequence);
   }, [props.workspaceRequest, props.onWorkspaceRequestHandled]);
   const [supportSelection, setSupportSelection] = useState<{
@@ -87,6 +93,12 @@ export function ConversationHome(props: JourneyProps) {
   const contextOpener = useRef<HTMLElement | null>(null);
   const [planSource, setPlanSource] = useState<PlanMessageSource | null>(null);
   const [planGeneration, setPlanGeneration] = useState(0);
+  const [housingJourney, setHousingJourney] = useState<{
+    userId: string;
+    threadId: string;
+    signal: AbortSignal;
+  } | null>(null);
+  const housingLaunch = useRef<HTMLElement>(null);
   const [handoffSource, setHandoffSource] =
     useState<AssistantHandoffSource | null>(null);
   const { board, busy, sending } = props;
@@ -102,6 +114,20 @@ export function ConversationHome(props: JourneyProps) {
     },
   );
   const agent = props.streamAgent ?? board.thread?.agentKey ?? "support";
+  const housingThread =
+    board.thread &&
+    !board.thread.closed &&
+    (board.thread.assistantKey ?? board.thread.agentKey) === "housing"
+      ? board.thread
+      : null;
+  const currentHousingJourney =
+    !props.sessionSignal.aborted &&
+    !props.history?.detached &&
+    housingJourney?.userId === board.user.id &&
+    housingJourney?.signal === props.sessionSignal &&
+    housingJourney?.threadId === housingThread?.id
+      ? housingJourney
+      : null;
   const contextAgent = ["Мой план", "Результаты", "Помощь человека"].includes(
     tab,
   )
@@ -118,6 +144,7 @@ export function ConversationHome(props: JourneyProps) {
     !props.history?.detached &&
     !busy;
   const suggest = (text: string) => {
+    setHousingJourney(null);
     props.onText(text);
     setTab("Диалоги");
     setShowList(false);
@@ -126,6 +153,7 @@ export function ConversationHome(props: JourneyProps) {
     const started = await props.onBegin?.(key);
     if (started) {
       setPlanSource(null);
+      setHousingJourney(null);
       setTab("Диалоги");
       setShowList(false);
     }
@@ -135,6 +163,7 @@ export function ConversationHome(props: JourneyProps) {
     const opened = await props.onOpenConversation?.(id);
     if (opened) {
       setPlanSource(null);
+      setHousingJourney(null);
       setTab("Диалоги");
       setShowList(false);
     }
@@ -159,7 +188,10 @@ export function ConversationHome(props: JourneyProps) {
     <JourneySidebar
       disabled={busy || sending || tab === "Контекст"}
       onSuggest={suggest}
-      onSupport={() => setTab("Помощь человека")}
+      onSupport={() => {
+        setHousingJourney(null);
+        setTab("Помощь человека");
+      }}
     />
   );
   const openContext = () => {
@@ -182,6 +214,7 @@ export function ConversationHome(props: JourneyProps) {
       signal: props.sessionSignal,
       tab: tab === "Контекст" ? "Диалоги" : tab,
     });
+    setHousingJourney(null);
     setTab("Контекст");
   };
   const rail = (
@@ -189,7 +222,10 @@ export function ConversationHome(props: JourneyProps) {
       agent={contextAgent}
       disabled={busy || sending}
       city={board.profile?.targetCity}
-      onHelpers={() => setTab("Помощники")}
+      onHelpers={() => {
+        setHousingJourney(null);
+        setTab("Помощники");
+      }}
       modeSelector={
         <AiModeSelector
           modes={board.aiAccess.modes}
@@ -214,6 +250,7 @@ export function ConversationHome(props: JourneyProps) {
             disabled={busy || sending}
             onClick={() => {
               props.onNavigateWorkspace?.();
+              setHousingJourney(null);
               setTab(name);
               if (name === "Мой план")
                 trackProductEvent("plan_opened", { surface: "plan" });
@@ -250,6 +287,7 @@ export function ConversationHome(props: JourneyProps) {
           onAccessDenied={props.onAccessDenied}
           disabled={busy || sending}
           onOpen={(id) => {
+            setHousingJourney(null);
             setSupportSelection({
               owner: board.user.id,
               signal: props.sessionSignal,
@@ -480,6 +518,26 @@ export function ConversationHome(props: JourneyProps) {
           </div>
           {rail}
         </div>
+      ) : tab === "Диалоги" && currentHousingJourney ? (
+        <WorkspaceFrame sidebar={sidebar} rail={rail}>
+          <HousingStarterPlan
+            key={board.user.id + ":" + currentHousingJourney.threadId}
+            userId={board.user.id}
+            sessionSignal={props.sessionSignal}
+            onAccessDenied={props.onAccessDenied}
+            onExit={() => {
+              setHousingJourney(null);
+              requestAnimationFrame(() =>
+                housingLaunch.current?.querySelector("button")?.focus(),
+              );
+            }}
+            onOpenSavedPlan={() => {
+              setHousingJourney(null);
+              setPlanGeneration((current) => current + 1);
+              setTab("Мой план");
+            }}
+          />
+        </WorkspaceFrame>
       ) : (
         <div className="conversation-workspace">
           {sidebar}
@@ -697,6 +755,26 @@ export function ConversationHome(props: JourneyProps) {
                   </article>
                 )}
               </div>
+              {housingThread && (
+                <HousingPlanLaunch
+                  launchRef={housingLaunch}
+                  disabled={
+                    busy ||
+                    sending ||
+                    !!planSource ||
+                    !!handoffSource ||
+                    !!props.history?.detached ||
+                    props.sessionSignal.aborted
+                  }
+                  onStart={() =>
+                    setHousingJourney({
+                      userId: board.user.id,
+                      threadId: housingThread.id,
+                      signal: props.sessionSignal,
+                    })
+                  }
+                />
+              )}
               {!board.thread ? (
                 <Button disabled={busy} onClick={() => void begin()}>
                   Начать диалог
