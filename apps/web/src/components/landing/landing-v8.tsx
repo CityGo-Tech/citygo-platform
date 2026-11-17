@@ -436,6 +436,14 @@ export function LandingV8() {
                   Реальный разбор · условные вводные · 04.11.2026
                 </p>
                 <FullExampleLink example="cost" />
+                <LandingCta
+                  variant="v8"
+                  placement="housing"
+                  task="housing"
+                  className={styles.cta}
+                >
+                  Обсудить жильё
+                </LandingCta>
               </Card>
             </div>
           </div>

@@ -1,5 +1,6 @@
 import { landingAttributionSchema } from "@citygo/contracts";
 import type { LandingAttribution } from "@citygo/contracts";
+import type { LandingTask } from "./landing-task";
 
 export const landingCookie = "citygo_landing_attribution";
 export const landingIntentCookie = "citygo_landing_intent";
@@ -259,10 +260,12 @@ export function landingStartHref(
   productBase: string,
   version: LandingVersion,
   intent: "register" | "login" = "register",
+  task?: LandingTask,
 ): string {
   const target = new URL("/landing/start", productBase);
   if (intent === "login") target.searchParams.set("intent", "login");
   target.searchParams.set("landing", version);
+  if (intent === "register" && task) target.searchParams.set("task", task);
   const attribution: LandingAttribution =
     browserAcquisitionAllowed() &&
     currentLanding?.attribution.landingVersion === version &&

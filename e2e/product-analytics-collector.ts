@@ -18,6 +18,9 @@ export async function delayedCollector(page: Page) {
     const request = route.request(),
       url = new URL(request.url());
     expect(url.origin).toBe(analyticsOrigin);
+    // Only proxy public HTML and assets. Synthetic API routes supply the
+    // authorized account and operations for analytics tests.
+    if (url.pathname.startsWith("/api/v1/")) return route.fallback();
     expect(request.method()).toBe("GET");
     const response = await page.request.get(
       "http://localhost:3000" + url.pathname + url.search,

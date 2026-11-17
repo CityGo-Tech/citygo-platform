@@ -105,9 +105,12 @@ test("V8 preserves a safe campaign through an example, reload, return and confir
   await page.getByLabel("Код из письма", { exact: true }).fill("654321");
   await page.getByRole("button", { name: "Подтвердить email" }).click();
   await expect(
-    page.getByRole("heading", { name: "Давайте начнём с того, что волнует" }),
+    page
+      .getByRole("heading", { name: "Координатор переезда", exact: true })
+      .first(),
   ).toBeVisible();
   expect(state.confirm).toBe(1);
+  expect(state.starts).toEqual(["support"]);
   expect(
     await page.evaluate(() =>
       sessionStorage.getItem("citygo.landing.touch.v1"),
