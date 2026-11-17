@@ -1,4 +1,9 @@
 import { openMessageActions } from "./navigation-helper";
+import {
+  analyticsOrigin,
+  delayedCollector,
+  enabledCollector,
+} from "./product-analytics-collector";
 import { readFile } from "node:fs/promises";
 import { fulfillProductAnalytics } from "./product-analytics-fixture";
 import { syntheticConsentPolicy } from "./service-consent-fixture";
@@ -289,6 +294,12 @@ async function fixture(
   await context.route("**/api/v1/**", async (route) => {
     if (await fulfillProductAnalytics(route)) return;
     if (
+      new URL(route.request().url()).pathname === "/api/v1/analytics/identity"
+    )
+      return route.fulfill({
+        json: { analyticsUserId: "cga_" + "a".repeat(64) },
+      });
+    if (
       route.request().method() === "GET" &&
       new URL(route.request().url()).origin === "http://localhost:3000" &&
       new URL(route.request().url()).pathname ===
@@ -560,7 +571,22 @@ test("own user message can become a step, with frozen idempotent retry after a l
 }) => {
   const state = await fixture(context);
   state.lostCreateReceipt = true;
-  await page.goto("/");
+  const collector = enabledCollector() ? await delayedCollector(page) : null;
+  collector?.release();
+  await page.goto(collector ? analyticsOrigin + "/" : "/", {
+    referer: "https://yandex.ru/",
+  });
+  const saveGoals = async () =>
+    ((await collector?.commands()) ?? [])
+      .filter(
+        (row) => row[1] === "reachGoal" && row[2] === "citygo_plan_step_saved",
+      )
+      .map((row) => row.slice(2));
+  if (collector) {
+    await expect
+      .poll(() => collector.commands())
+      .toEqual(expect.arrayContaining([expect.arrayContaining(["setUserID"])]));
+  }
   const form = await chooseMessage(page, 0);
   await form
     .getByLabel("Название шага", { exact: true })
@@ -569,6 +595,7 @@ test("own user message can become a step, with frozen idempotent retry after a l
     .getByRole("button", { name: "Подтвердить добавление", exact: true })
     .click();
   await expect(form.getByRole("alert")).toContainText("уже мог сохраниться");
+  expect(await saveGoals()).toEqual([]);
   await expect(
     form.getByLabel("Название шага", { exact: true }),
   ).toBeDisabled();
@@ -583,6 +610,10 @@ test("own user message can become a step, with frozen idempotent retry after a l
   expect(state.posts[1]).toEqual(state.posts[0]);
   expect(state.items).toHaveLength(1);
   expect(state.posts[0]?.sourceMessageId).toBe("10");
+  if (collector)
+    await expect
+      .poll(saveGoals)
+      .toEqual([["citygo_plan_step_saved", { surface: "plan" }]]);
   expect(state.external).toBe(0);
   expect(state.forbidden).toEqual([]);
 });

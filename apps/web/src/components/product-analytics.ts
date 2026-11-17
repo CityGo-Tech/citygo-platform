@@ -31,6 +31,7 @@ export const productEvents = [
   "phone_opened",
   "profile_opened",
   "plan_opened",
+  "plan_step_saved",
   "payment_created",
   "payment_redirected",
   "payment_credited",

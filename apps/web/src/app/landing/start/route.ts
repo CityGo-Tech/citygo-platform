@@ -6,30 +6,39 @@ import {
   landingIntentCookie,
 } from "../../../components/landing/landing-attribution";
 
+import {
+  landingTaskFromValue,
+  landingTaskHash,
+} from "../../../components/landing/landing-task";
+
 /** Cross-domain CTA arrives here before the query-free product/auth page. */
 export function GET(request: NextRequest) {
+  const search = request.nextUrl.searchParams;
+  const intentValue = search.get("intent");
+  const intent = intentValue === "login" ? "login" : "register";
+  const tasks = search.getAll("task");
+  const task =
+    (intentValue === null || intentValue === "register") &&
+    search.getAll("intent").length < 2 &&
+    tasks.length === 1
+      ? landingTaskFromValue(tasks[0]!)
+      : undefined;
   // A standalone Next server can expose its internal 0.0.0.0:3000 origin in
   // request.url. A fixed relative target works behind either public hostname
   // and cannot reflect Host/Forwarded or a caller-provided return URL.
   const response = new NextResponse(null, {
     status: 303,
-    headers: { Location: "/" },
+    headers: { Location: task ? "/" + landingTaskHash(task) : "/" },
   });
   response.headers.set("Cache-Control", "private, no-store");
   response.headers.set("Referrer-Policy", "no-referrer");
   response.headers.set("X-Robots-Tag", "noindex, nofollow");
-  response.cookies.set(
-    landingIntentCookie,
-    request.nextUrl.searchParams.get("intent") === "login"
-      ? "login"
-      : "register",
-    {
-      path: "/",
-      maxAge: 60,
-      sameSite: "lax",
-      secure: request.nextUrl.protocol === "https:",
-    },
-  );
+  response.cookies.set(landingIntentCookie, intent, {
+    path: "/",
+    maxAge: 60,
+    sameSite: "lax",
+    secure: request.nextUrl.protocol === "https:",
+  });
   const versions = request.nextUrl.searchParams.getAll("landing");
   const version = versions.length === 1 ? versions[0] : null;
   if (

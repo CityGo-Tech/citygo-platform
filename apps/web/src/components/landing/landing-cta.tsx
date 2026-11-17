@@ -9,6 +9,7 @@ import {
   type LandingVersion,
 } from "./landing-attribution";
 import { productOrigin } from "./landing-config";
+import type { LandingTask } from "./landing-task";
 import { trackProductEvent } from "../product-analytics";
 
 export function LandingCta({
@@ -18,6 +19,7 @@ export function LandingCta({
   className,
   secondary,
   intent = "register",
+  task = "coordinator",
 }: {
   variant: LandingVersion;
   placement: string;
@@ -25,20 +27,24 @@ export function LandingCta({
   className?: string;
   secondary?: boolean;
   intent?: "register" | "login";
+  task?: LandingTask;
 }) {
-  const untrackedHref =
-    productOrigin + (intent === "login" ? "/landing/start?intent=login" : "/");
+  const untrackedPath =
+    intent === "login"
+      ? "/landing/start?intent=login"
+      : "/landing/start?task=" + task;
+  const untrackedHref = productOrigin + untrackedPath;
   const [href, setHref] = useState(untrackedHref);
   const currentHref = () =>
     browserAcquisitionAllowed()
-      ? landingStartHref(productOrigin, variant, intent)
+      ? landingStartHref(productOrigin, variant, intent, task)
       : untrackedHref;
   useEffect(() => {
     captureLandingAttribution(variant);
     const refresh = () =>
       setHref(
         browserAcquisitionAllowed()
-          ? landingStartHref(productOrigin, variant, intent)
+          ? landingStartHref(productOrigin, variant, intent, task)
           : untrackedHref,
       );
     refresh();
@@ -60,7 +66,7 @@ export function LandingCta({
       window.removeEventListener("citygo:analytics-preference", refresh);
       document.removeEventListener("visibilitychange", refresh);
     };
-  }, [variant, intent, untrackedHref]);
+  }, [variant, intent, task, untrackedHref]);
   return (
     <a
       href={href}

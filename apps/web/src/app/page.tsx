@@ -7,6 +7,12 @@ import {
   consumeLandingAnalyticsEntry,
   browserAcquisitionAllowed,
 } from "../components/landing/landing-attribution";
+import {
+  consumeLandingTask,
+  landingTaskAgents,
+  landingTaskMaxAgeMs,
+  type LandingTask,
+} from "../components/landing/landing-task";
 import { BalanceHistoryPanel } from "../components/balance-history";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
@@ -104,6 +110,9 @@ function draftStorage() {
   }
 }
 
+type RegistrationTask = { task: LandingTask; ownerId: string };
+type RegistrationChallenge = PendingEmailRegistration & { task?: LandingTask };
+
 export default function Home() {
   const [session] = useState(createSessionGuard);
   const [formVersion, setFormVersion] = useState(0);
@@ -121,12 +130,30 @@ export default function Home() {
     "register",
   );
   const [registration, setRegistration] =
-    useState<PendingEmailRegistration | null>(null);
+    useState<RegistrationChallenge | null>(null);
+  const landingTask = useRef<{ task: LandingTask; expiresAt: number } | null>(
+    null,
+  );
+  const landingAssistantEvent = useRef<{
+    ownerId: string;
+    signal: AbortSignal;
+    assistant: (typeof landingTaskAgents)[LandingTask];
+    threadId: string;
+  } | null>(null);
   const landingAnalyticsEntry = useRef<LandingAttribution | undefined>(
     undefined,
   );
   useEffect(() => {
-    if (consumeLandingLoginIntent()) setMode("login");
+    const task = consumeLandingTask();
+    const login = consumeLandingLoginIntent();
+    if (task) {
+      landingTask.current = {
+        task,
+        expiresAt: Date.now() + landingTaskMaxAgeMs,
+      };
+    } else if (login) {
+      setMode("login");
+    }
     if (!browserAcquisitionAllowed()) clearBrowserLandingAttribution();
     landingAnalyticsEntry.current ??= consumeLandingAnalyticsEntry();
   }, []);
@@ -225,6 +252,22 @@ export default function Home() {
     client: analyticsClient,
     landingAnalyticsEntry,
   });
+  useEffect(() => {
+    const opened = landingAssistantEvent.current;
+    if (
+      !opened ||
+      board?.user.id !== opened.ownerId ||
+      board.thread?.id !== opened.threadId
+    )
+      return;
+    landingAssistantEvent.current = null;
+    if (!opened.signal.aborted)
+      trackProductEvent(
+        "assistant_opened",
+        { surface: "chat", assistant: opened.assistant },
+        opened.threadId,
+      );
+  }, [board]);
   const history = useConversationHistory({
     board: board?.user.serviceConsentRequired ? null : board,
     sessionSignal: session.capture().signal,
@@ -233,10 +276,12 @@ export default function Home() {
   function requireLogin() {
     const hadOwner = session.hasOwner();
     if (hadOwner) notifyBrowserSessionChange();
-    clearUserState();
+    clearUserState(undefined, !hadOwner);
     if (hadOwner) setNotice("Сессия завершилась. Войдите снова.");
   }
-  function clearUserState(owner?: string) {
+  function clearUserState(owner?: string, keepAnonymousTask = false) {
+    if (!keepAnonymousTask) landingTask.current = null;
+    landingAssistantEvent.current = null;
     clearChatDrafts(draftStorage());
     setDraftRecovered(false);
     session.reset(owner);
@@ -284,12 +329,16 @@ export default function Home() {
       window.location.pathname + window.location.search,
     );
   }
-  async function refresh(ticket = session.capture()) {
+  async function refresh(
+    ticket = session.capture(),
+    registrationTask?: RegistrationTask,
+  ) {
     ticket.check();
     let version = ++refreshVersion.current;
     let next = await api.dashboard();
     ticket.check();
     if (version !== refreshVersion.current) return false;
+    landingTask.current = null;
     if (session.ownerChanged(next.user.id)) {
       notifyBrowserSessionChange();
       clearUserState(next.user.id);
@@ -322,7 +371,43 @@ export default function Home() {
       selectedConversation.current?.owner === next.user.id
         ? selectedConversation.current.id
         : readConversationSelection(next.user.id, conversationStorage());
-    if (
+    const target =
+      registrationTask?.ownerId === next.user.id &&
+      next.user.role === "user" &&
+      !next.user.mustChangePassword &&
+      !next.user.serviceConsentRequired
+        ? landingTaskAgents[registrationTask.task]
+        : undefined;
+    if (target) {
+      try {
+        const started = await api.startConversation(target);
+        ticket.check();
+        if (version !== refreshVersion.current) return false;
+        const detail = await api.conversation(started.id);
+        ticket.check();
+        if (version !== refreshVersion.current) return false;
+        if (detail.userId !== next.user.id) {
+          clearUserState();
+          return false;
+        }
+        if (detail.thread.closed || detail.thread.assistantKey !== target)
+          throw new Error("Unexpected registration task conversation");
+        next = { ...next, thread: detail.thread };
+        rememberConversation(next.user.id, started.id);
+        landingAssistantEvent.current = {
+          ownerId: next.user.id,
+          signal: ticket.signal,
+          assistant: target,
+          threadId: started.id,
+        };
+      } catch {
+        ticket.check();
+        if (version !== refreshVersion.current) return false;
+        setNotice(
+          "Не удалось открыть диалог. Выберите помощника и продолжите.",
+        );
+      }
+    } else if (
       preferred &&
       !next.user.mustChangePassword &&
       !next.user.serviceConsentRequired
@@ -744,6 +829,13 @@ export default function Home() {
     const authMode = mode;
     const landingAttribution =
       authMode === "register" ? readBrowserLandingAttribution() : undefined;
+    const selectedTask = landingTask.current;
+    const task =
+      authMode === "register" &&
+      selectedTask &&
+      Date.now() < selectedTask.expiresAt
+        ? selectedTask.task
+        : undefined;
     const email = String(data.get("email"));
     let password = String(data.get("password"));
     data.delete("password");
@@ -778,9 +870,15 @@ export default function Home() {
               landingAttribution,
             );
             ticket.check();
-            setRegistration(
-              pendingEmailRegistration(email, challenge, Date.now(), consents!),
-            );
+            setRegistration({
+              ...pendingEmailRegistration(
+                email,
+                challenge,
+                Date.now(),
+                consents!,
+              ),
+              task,
+            });
             analytics.registrationCodeSent(
               registrationAnalytics.current,
               challenge.challengeId,
@@ -816,13 +914,18 @@ export default function Home() {
           flow,
         );
         clearBrowserLandingAttribution();
-        await refresh(ticket);
+        await refresh(
+          ticket,
+          task ? { task, ownerId: authenticated.user.id } : undefined,
+        );
       } catch (cause) {
-        if (ticket.active() && !accepted)
+        if (ticket.active() && !accepted) {
+          if (task) landingTask.current = selectedTask;
           trackProductEvent(
             authMode === "register" ? "registration_failed" : "login_failed",
             { surface: authMode },
           );
+        }
         throw cause;
       } finally {
         password = "";
@@ -849,14 +952,15 @@ export default function Home() {
           current.proof,
         );
         ticket.check();
-        setRegistration(
-          pendingEmailRegistration(
+        setRegistration({
+          ...pendingEmailRegistration(
             current.email,
             challenge,
             Date.now(),
             current.consents,
           ),
-        );
+          task: current.task,
+        });
         setNotice("Новый код отправлен. Предыдущий код больше не действует.");
       } finally {
         if (ticket.active()) authPending.current = false;
@@ -894,7 +998,12 @@ export default function Home() {
         clearBrowserLandingAttribution();
         setBusy(true);
         try {
-          await refresh(confirmed);
+          await refresh(
+            confirmed,
+            current.task
+              ? { task: current.task, ownerId: authenticated.user.id }
+              : undefined,
+          );
         } catch {
           if (confirmed.active())
             setNotice(

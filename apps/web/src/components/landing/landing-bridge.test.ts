@@ -46,3 +46,35 @@ test("bridge privacy headers expire prior attribution while retaining the one-us
     assert.equal(response.cookies.get("citygo_landing_intent")!.value, "login");
   }
 });
+
+test("the fixed signup task survives DNT independently from tracking", () => {
+  for (const task of ["housing", "coordinator"]) {
+    const response = GET(
+      new NextRequest(
+        "https://pilot.example.test/landing/start?task=" +
+          task +
+          "&landing=v1&utm_source=vk",
+        { headers: { DNT: "1" } },
+      ),
+    );
+    assert.equal(response.headers.get("location"), "/#citygo-start-" + task);
+    assert.equal(response.cookies.get("citygo_landing_attribution")!.maxAge, 0);
+    assert.equal(response.cookies.getAll().length, 2);
+  }
+});
+
+test("unknown, duplicate and login tasks cannot carry a destination", () => {
+  for (const query of [
+    "task=https%3A%2F%2Fevil.test%2F",
+    "task=housing&task=coordinator",
+    "task=housing&task=housing",
+    "intent=login&task=housing",
+    "intent=register&intent=login&task=housing",
+    "intent=other&task=housing",
+  ]) {
+    const response = GET(
+      new NextRequest("https://pilot.example.test/landing/start?" + query),
+    );
+    assert.equal(response.headers.get("location"), "/");
+  }
+});

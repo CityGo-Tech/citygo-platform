@@ -17,6 +17,7 @@ import {
   type PersonalPlanState,
 } from "./personal-plan-state";
 import { FavoriteMessageContext } from "./favorite-message-context";
+import { trackProductEvent } from "./product-analytics";
 
 type OwnerProps = {
   userId: string;
@@ -140,6 +141,11 @@ export function PlanStepComposer({
           result.item.source?.role !== source?.role
         )
           throw new Error("Plan receipt owner or source mismatch");
+        trackProductEvent(
+          "plan_step_saved",
+          { surface: "plan" },
+          result.item.id,
+        );
         callbacks.current.onSaved();
       } catch (cause) {
         if (signal.aborted) return;
