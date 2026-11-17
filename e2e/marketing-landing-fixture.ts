@@ -19,6 +19,7 @@ export async function syntheticProduct(
     starts: [] as string[],
     chatPosts: 0,
     failStart: false,
+    startGate: null as Promise<void> | null,
     outside: [] as string[],
   };
   const board: Dashboard = {
@@ -130,6 +131,7 @@ export async function syntheticProduct(
       const { agentKey } = route.request().postDataJSON();
       expect(["housing", "support"]).toContain(agentKey);
       state.starts.push(agentKey);
+      if (state.startGate) await state.startGate;
       if (state.failStart)
         return route.fulfill({
           status: 503,

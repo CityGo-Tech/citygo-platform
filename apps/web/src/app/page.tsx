@@ -379,6 +379,8 @@ export default function Home() {
         ? landingTaskAgents[registrationTask.task]
         : undefined;
     if (target) {
+      // Focus still probes session ownership while this selection is pending.
+      conversationSwitch.current = true;
       try {
         const started = await api.startConversation(target);
         ticket.check();
@@ -406,6 +408,8 @@ export default function Home() {
         setNotice(
           "Не удалось открыть диалог. Выберите помощника и продолжите.",
         );
+      } finally {
+        if (ticket.active()) conversationSwitch.current = false;
       }
     } else if (
       preferred &&

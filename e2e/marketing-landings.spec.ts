@@ -438,7 +438,7 @@ test("an existing acquisition cookie is cleared on product entry when optional a
   );
 });
 
-test("the housing CTA resumes the same signup task after email verification with analytics disabled", async ({
+test("the housing CTA resumes signup through window focus with analytics disabled", async ({
   page,
 }) => {
   const state = await syntheticProduct(page);
@@ -468,8 +468,22 @@ test("the housing CTA resumes the same signup task after email verification with
   await confirm.click();
   await expect(page.getByText("Неверный код", { exact: true })).toBeVisible();
   expect(state.starts).toEqual([]);
-  await code.fill("654321");
-  await confirm.click();
+  let releaseStart!: () => void;
+  state.startGate = new Promise<void>((resolve) => {
+    releaseStart = resolve;
+  });
+  try {
+    await code.fill("654321");
+    await confirm.click();
+    await expect.poll(() => state.starts).toEqual(["housing"]);
+    const dashboardReads = state.dashboardReads;
+    await page.evaluate(() => window.dispatchEvent(new FocusEvent("focus")));
+    await expect
+      .poll(() => state.dashboardReads)
+      .toBeGreaterThan(dashboardReads);
+  } finally {
+    releaseStart();
+  }
   await expect(
     page.getByRole("heading", { name: "Помощник по жилью", level: 1 }),
   ).toBeVisible();
