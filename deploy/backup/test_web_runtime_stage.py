@@ -769,9 +769,54 @@ class Stage(unittest.TestCase):
         self.assertIs(result["legacy_barrier_retained"], True)
         self.assertTrue((self.coordination / "operation-pending.json").is_file())
         self.assert_unchanged_originals()
+        self.assert_adopt_review(cap, now, result, len(INTENTS) - 1)
+
+    def assert_adopt_review(self, cap, now, result, ack_count):
+        from test_web_bootstrap_handoff import observation_fixture
+        from web_bootstrap_handoff import review_handoff
+
         before = snapshot(self.root)
-        self.inspect()
+        op = self.plan["operation_id"]
+        audit = digest(cap.read_bytes())
+        evidence = {
+            "stage-plan.json": self.plan_path.read_bytes(),
+            "draft.json": (Path(self.plan["draft_dir"]) / "draft.json").read_bytes(),
+            "prepared.json": (self.state / ("prepared-" + op + ".json")).read_bytes(),
+            "pending.json": (self.state / "pending.json").read_bytes(),
+            "legacy-barrier.json": (self.coordination / "operation-pending.json").read_bytes(),
+            "stage-inspection.json": encoded(self.inspect()),
+            "adopt-approval.json": (self.state / ("adopt-" + audit + ".json")).read_bytes(),
+            "adopt-state.json": (self.state / ("adopt-state-" + audit + ".json")).read_bytes(),
+        }
+        evidence["observation.json"] = encoded(observation_fixture(evidence, now))
+        pending = json.loads(evidence["pending.json"])
+        self.assertEqual(pending["completed"], list(INTENTS[:ack_count]))
+        self.assertEqual(pending["ready_pins"], {"api": result["targets"]["api"]})
+        self.assertEqual(review_handoff(evidence, now=now)["status"], "reviewed-closed-not-authorized")
         self.assertEqual(snapshot(self.root), before)
+
+    def test_adopt_review_accepts_existing_normal_receipt_after_journal_close_failure(self):
+        op = self.plan["operation_id"]
+        receipt_path = self.state / ("prepared-" + op + ".json")
+        real_once = self.module._once
+
+        def stop_after_receipt(path, raw):
+            real_once(path, raw)
+            if path == receipt_path:
+                raise self.module.StageError("synthetic-stop-after-receipt")
+
+        with patch.object(self.module, "_once", side_effect=stop_after_receipt):
+            with self.assertRaisesRegex(self.module.StageError, "^synthetic-stop-after-receipt$"):
+                self.stage()
+        original_receipt = receipt_path.read_bytes()
+        self.assertIsNone(json.loads(original_receipt)["adopt_approval_sha256"])
+        self.assertEqual(self.host.mutations, list(INTENTS))
+        cap, now = self.adopt_cap()
+        result = self.module.adopt_prepared(self.plan_path, cap, allow_adopt=True, now=now, _host=self.host)
+        self.assertIsNone(result["adopt_approval_sha256"])
+        self.assertEqual(receipt_path.read_bytes(), original_receipt)
+        self.assertEqual(self.host.mutations, list(INTENTS))
+        self.assert_adopt_review(cap, now, result, len(INTENTS))
 
     def test_adopt_refuses_partial_topology_and_never_finishes_commands(self):
         self.host.fail_after = "api-create"
