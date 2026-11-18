@@ -19,6 +19,7 @@ on:
       - scripts/web-bootstrap-*.mjs
       - docs/runbooks/web-switch-bootstrap.md
       - docs/runbooks/web-bootstrap-draft.md
+      - docs/runbooks/web-bootstrap-handoff.md
       - docs/runbooks/web-controller-install.md
       - docs/runbooks/web-runtime-stage.md
       - docs/runbooks/staged-web-switch.md
@@ -53,7 +54,7 @@ jobs:
           printf 'event=%s\nrun=%s\nattempt=%s\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> .local/web-switch-controller-smoke/checkout.txt
       - name: Verify controller and protected asset paths on disposable Linux
         run: sudo env TMPDIR=/root python3 -B -m unittest discover -s deploy/backup -p 'test_web_switch*.py' -v
-      - name: Verify offline bootstrap drafts without server access
+      - name: Verify offline bootstrap drafts and handoff without server access
         run: python3 -B -m unittest discover -s deploy/backup -p 'test_web_bootstrap*.py' -v
       - name: Normalize only synthetic bootstrap Compose without a Docker daemon
         run: python3 -B deploy/backup/web_bootstrap_smoke.py --disposable > .local/web-switch-controller-smoke/bootstrap-draft.json
