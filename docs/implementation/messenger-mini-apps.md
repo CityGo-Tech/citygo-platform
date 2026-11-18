@@ -16,3 +16,13 @@ Web CityGo. При ошибке SDK экран предлагает открыт
 этого этапа. Чаты, постоплата, платежи, чеки и подарок доступны в Web CityGo.
 Для будущего пополнения внутри Telegram нужны
 [Telegram Stars](https://core.telegram.org/bots/payments-stars#faq).
+
+## MAX
+
+`/mini/max` использует те же гостевые сценарии и
+[цвета оболочки MAX из Figma](https://www.figma.com/design/xnlvdm113tfcHbZO5bekdg?node-id=4-94).
+[MAX Bridge](https://dev.max.ru/docs/webapps/bridge) обрабатывает системную
+кнопку «Назад» и открывает CityGo во внешнем браузере по нажатию. Данные
+запуска служат подсказкой для выбора задачи. Обычный браузер открывает
+гостевой экран без MAX Bridge. Привязка аккаунта, оплата и выдача подарка
+внутри MAX относятся к следующим этапам.
