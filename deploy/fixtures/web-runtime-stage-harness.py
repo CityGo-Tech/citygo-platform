@@ -27,7 +27,9 @@ DAEMON = None
 NODE, POSTGRES = sys.argv[-2:]
 assert sys.argv[1:-2] == ["--wait-for-images"]
 TRUSTED_FILES = ("harness.py", "web_switch.py", "backup.py", "web_switch_assets.py",
-                 "pilot-web-switch.conf.template", "web_runtime_stage.py", "web_bootstrap.py")
+                 "pilot-web-switch.conf.template", "web_runtime_stage.py", "web_bootstrap.py",
+                 "web_bootstrap_ingress_locked.py", "web_bootstrap_ingress_transaction.py",
+                 "web_bootstrap_ingress_witness.py", "web_runtime_stage_ingress_proof.py")
 TRACE = []
 CHECKPOINT_LOG = []
 TRACE_SCOPE = threading.local()
@@ -234,7 +236,7 @@ def fetch_http(path, port=3000):
         connection.close()
 
 
-def closed_ingress():
+def closed_ingress(ingress_proof):
     """Real TLS/503 contract on the private host, kept unchanged thereafter."""
     hostname = ORIGIN[8:]
     tls = ROOT / "tls"
@@ -262,6 +264,8 @@ def closed_ingress():
     enabled.symlink_to("../sites-available/citygo-pilot")
     config = ("user nginx;\nworker_processes 1;\npid /run/nginx.pid;\nerror_log /evidence/nginx.log notice;\n"
               "events { worker_connections 128; }\nhttp { include " + str(enabled) + "; }\n")
+    ingress_proof.setup_closed_ingress()
+    config = config.replace("http { include ", "http { include /etc/nginx/conf.d/citygo-closed-epoch.conf; include ")
     write("/etc/nginx/nginx.conf", config, 0o644)
     command(["/usr/sbin/nginx", "-t"])
     command(["/usr/sbin/nginx"])
@@ -356,11 +360,12 @@ def main():
     ROOT.mkdir(mode=0o700)
     trusted = prepare_trusted_code()
     import web_runtime_stage as stage
+    import web_runtime_stage_ingress_proof as ingress_proof
     import web_bootstrap as compiler
     import web_switch as switch
     assert not any(key in os.environ for key in ("SSL_CERT_FILE", "SSL_CERT_DIR", "LD_LIBRARY_PATH", "PYTHONPATH", "DOCKER_HOST", "DOCKER_CONTEXT"))
     sys.addaudithook(audit_subprocess)
-    ingress_paths, nginx_before = closed_ingress()
+    ingress_paths, nginx_before = closed_ingress(ingress_proof)
     daemon_log = (EVIDENCE / "dockerd.log").open("wb")
     DAEMON = subprocess.Popen(["/usr/local/bin/dind", "/usr/local/bin/dockerd", "--host=unix:///var/run/docker.sock",
                                "--data-root=/var/lib/docker", "--storage-driver=vfs", "--iptables=false", "--ip6tables=false",
@@ -606,6 +611,13 @@ def main():
     assert sorted(argv[-1] for argv in stage_mutations if argv[1] == "start") == sorted([new_api, new_web])
     assert [entry for entry in mutating if entry["phase"] == "adopt"] == []
     assert any(entry["phase"] == "adopt" for entry in TRACE)
+    locked_ingress = ingress_proof.rehearse_locked_ingress(operation_id, plan, ORIGIN)
+    unchanged = {name: value for name, value in before_files.items()
+                 if name != "/etc/nginx/sites-enabled/citygo-pilot"}
+    assert snapshot_files(unchanged) == unchanged and budget_sql() == database_before
+    assert {ident: switch.runtime_fingerprint(inspect(ident)) for ident in before_adopt} == before_adopt
+    assert not stage.TRAFFIC_MARKER.exists()
+    write(EVIDENCE / "locked-ingress.json", wire(locked_ingress))
     write(EVIDENCE / "command-trace.json", wire(TRACE))
     write(EVIDENCE / "stage-checkpoints.json", wire(checkpoints))
     write(EVIDENCE / "stage-receipt.json", wire(receipt))
@@ -615,7 +627,7 @@ def main():
                "admittedRequestsCompletedExactlyOnce": True, "adoptNoDockerMutations": True,
                "runtimeChangedOnProductionServer": False, "trustedCodeBootstrap": trusted,
                "realProductApiOrBilling": False, "backupRestoreAttestationSynthetic": True,
-               "stageMutationCount": 6, "adoptMutationCount": 0, "api": new_api, "newWeb": new_web,
+               "lockedIngress": locked_ingress, "stageMutationCount": 6, "adoptMutationCount": 0, "api": new_api, "newWeb": new_web,
                "sameApprovedWebImage": node_image, "signalCount": 1, "admitted": {"sse": 1, "post": 1},
                "completed": {"sse": 1, "post": 1}, "sourceSha": source_sha}
     write(EVIDENCE / "receipt.json", wire(summary))
