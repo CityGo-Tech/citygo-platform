@@ -66,6 +66,7 @@ type TelegramFixture = {
 };
 
 async function fixtureCalls(page: Page) {
+  await page.waitForFunction(() => "telegramFixture" in window);
   return page.evaluate(() => {
     const { events, links, goBack } = (
       window as Window & { telegramFixture: TelegramFixture }
@@ -121,7 +122,8 @@ test("Telegram housing handoff uses the real redirect and resumes the task after
   await page.addInitScript(() =>
     localStorage.setItem("citygo.analytics.optout", "1"),
   );
-  await page.goto("/mini/telegram");
+  const preview = await page.goto(`/mini/telegram?user=${launchCanary}`);
+  expect(await preview?.headerValue("referrer-policy")).toBe("no-referrer");
   await page.getByRole("button", { name: /Найти жильё/ }).click();
   await page.getByLabel("Куда ездить").fill(launchCanary);
   await page.getByRole("button", { name: "Собрать стартовый план" }).click();
@@ -138,6 +140,7 @@ test("Telegram housing handoff uses the real redirect and resumes the task after
   expect(response.status()).toBe(303);
   expect(await response.headerValue("location")).toBe("/#citygo-start-housing");
   expect(await response.headerValue("referrer-policy")).toBe("no-referrer");
+  expect(await response.request().headerValue("referer")).toBeNull();
   await expect(page).toHaveURL("http://localhost:3000/");
 
   await submitRegistration(page);
