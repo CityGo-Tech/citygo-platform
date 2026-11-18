@@ -6,7 +6,7 @@ gates and Nginx process-generation checks are responsibilities of the caller.
 from hashlib import sha256
 import http.client
 import os
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 import re
 import socket
 import stat
@@ -66,6 +66,35 @@ server {{
 """.encode("ascii")
 
 
+def master_listener_inode(path, master_pid):
+    # Nginx can bind the listener before daemonizing. Linux then reports the
+    # creator's PID even though the live master owns the inherited descriptor.
+    process = Path("/proc") / str(master_pid)
+    expected = str(path).encode("ascii")
+    try:
+        with (process / "net/unix").open("rb") as entries:
+            listeners = []
+            for line in entries:
+                fields = line.removesuffix(b"\n").split(maxsplit=7)
+                if (len(fields) == 8 and fields[3:6] == [b"00010000", b"0001", b"01"]
+                        and fields[7] == expected):
+                    inode = fields[6]
+                    require(re.fullmatch(rb"[1-9][0-9]*", inode), "epoch-peer")
+                    listeners.append(inode.decode("ascii"))
+        require(len(listeners) == 1, "epoch-peer")
+        expected_link = "socket:[" + listeners[0] + "]"
+        with os.scandir(process / "fd") as descriptors:
+            for descriptor in descriptors:
+                try:
+                    if os.readlink(descriptor.path) == expected_link:
+                        return listeners[0]
+                except FileNotFoundError:
+                    continue  # An unrelated descriptor can close during the scan.
+    except OSError:
+        raise WitnessError("epoch-peer") from None
+    raise WitnessError("epoch-peer")
+
+
 def read_epoch(socket_path, *, master_pid, owner_uid):
     require(sys.platform.startswith("linux") and type(master_pid) is int and master_pid > 0
             and type(owner_uid) is int and owner_uid >= 0, "epoch-peer")
@@ -83,7 +112,8 @@ def read_epoch(socket_path, *, master_pid, owner_uid):
             connection.settimeout(3)
             connection.connect(f"/proc/self/fd/{folder}/{path.name}")
             pid, uid, _gid = struct.unpack("3i", connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
-            require((pid, uid) == (master_pid, owner_uid), "epoch-peer")
+            require(uid == owner_uid, "epoch-peer")
+            inherited = master_listener_inode(path, master_pid) if pid != master_pid else None
             connection.sendall(b"GET /epoch HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
             with http.client.HTTPResponse(connection) as response:
                 response.begin()
@@ -94,6 +124,8 @@ def read_epoch(socket_path, *, master_pid, owner_uid):
                         and response.headers.get_all("transfer-encoding") is None, "epoch-response")
                 raw = response.read(65)
                 require(re.fullmatch(rb"[0-9a-f]{64}\n", raw), "epoch-response")
+            if inherited is not None:
+                require(master_listener_inode(path, master_pid) == inherited, "epoch-peer")
         final = os.stat(path.name, dir_fd=folder, follow_symlinks=False)
         require(os.path.samestat(original, final), "epoch-socket")
         return raw[:-1].decode("ascii")

@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 import re
 import socket
+import struct
+import subprocess
 import sys
 from tempfile import TemporaryDirectory
 from threading import Thread
@@ -130,6 +132,79 @@ class EpochProtocolTests(unittest.TestCase):
             with self.assertRaises(witness.WitnessError):
                 witness.read_epoch(path, master_pid=os.getpid() + 1, owner_uid=os.geteuid())
         self.assertEqual(requests, [])
+
+
+    @contextmanager
+    def inherited_peer(self, path, connections, requests):
+        # Daemonized Nginx opens its listener before it forks. Transfer only
+        # this listener and release the creator's copy before any connection.
+        server_code = r"""
+import socket
+import sys
+
+with socket.socket(fileno=int(sys.argv[1])) as listener:
+    listener.settimeout(4)
+    connections = int(sys.argv[2])
+    for _ in range(connections):
+        with listener.accept()[0] as peer:
+            peer.settimeout(2)
+            request = b""
+            while b"\r\n\r\n" not in request and len(request) < 4096:
+                chunk = peer.recv(4096)
+                if not chunk:
+                    break
+                request += chunk
+            if request:
+                peer.sendall(bytes.fromhex(sys.argv[3]))
+                sys.stdout.buffer.write(request.split(b"\r\n", 1)[0] + b"\n")
+    # The parent releases stdin after its post-response listener check.
+    sys.stdin.buffer.read()
+"""
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+            listener.bind(os.fspath(path))
+            path.chmod(0o600)
+            listener.listen(2)
+            fd = listener.fileno()
+            with subprocess.Popen(
+                [sys.executable, "-B", "-c", server_code, str(fd), str(connections), http_response().hex()],
+                pass_fds=(fd,),
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            ) as master:
+                listener.close()
+                try:
+                    yield master.pid
+                    seen, errors = master.communicate(timeout=6)
+                    self.assertEqual(master.returncode, 0, errors.decode(errors="replace"))
+                    self.assertEqual(seen.splitlines(), requests)
+                finally:
+                    if master.poll() is None:
+                        master.kill()
+                        master.communicate(timeout=3)
+
+    def test_accepts_inherited_listener_when_kernel_names_its_creator(self):
+        with TemporaryDirectory(prefix="epoch-") as temporary:
+            path = Path(temporary) / "epoch.sock"
+            with self.inherited_peer(path, 2, [b"GET /epoch HTTP/1.1"]) as master_pid:
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+                    probe.settimeout(2)
+                    probe.connect(os.fspath(path))
+                    creator_pid, uid, _gid = struct.unpack(
+                        "3i", probe.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
+                    )
+                self.assertEqual((creator_pid, uid), (os.getpid(), os.geteuid()))
+                self.assertNotEqual(creator_pid, master_pid)
+                self.assertEqual(witness.read_epoch(path, master_pid=master_pid, owner_uid=uid), TOKEN)
+
+    def test_rejects_a_live_master_with_only_an_unrelated_listening_socket(self):
+        with TemporaryDirectory(prefix="epoch-") as temporary:
+            directory = Path(temporary)
+            path = directory / "epoch.sock"
+            with self.inherited_peer(directory / "other.sock", 0, []) as unrelated_pid:
+                with self.inherited_peer(path, 1, []):
+                    with self.assertRaisesRegex(witness.WitnessError, "^epoch-peer$"):
+                        witness.read_epoch(path, master_pid=unrelated_pid, owner_uid=os.geteuid())
 
     def test_refuses_wrong_socket_owner_context_and_symlink(self):
         with TemporaryDirectory(prefix="epoch-") as temporary, socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:

@@ -584,6 +584,22 @@ export async function runControllerSmoke(cliArgs = process.argv.slice(2)) {
                 "deploy/backup/web_bootstrap.py",
                 `${directory}/web_bootstrap.py`,
               ],
+              [
+                "deploy/backup/web_bootstrap_ingress_locked.py",
+                `${directory}/web_bootstrap_ingress_locked.py`,
+              ],
+              [
+                "deploy/backup/web_bootstrap_ingress_transaction.py",
+                `${directory}/web_bootstrap_ingress_transaction.py`,
+              ],
+              [
+                "deploy/backup/web_bootstrap_ingress_witness.py",
+                `${directory}/web_bootstrap_ingress_witness.py`,
+              ],
+              [
+                "deploy/fixtures/web_runtime_stage_ingress_proof.py",
+                `${directory}/web_runtime_stage_ingress_proof.py`,
+              ],
             ]
           : []),
       ]) {
@@ -660,6 +676,19 @@ export async function runControllerSmoke(cliArgs = process.argv.slice(2)) {
             true,
             `Runtime fixture proof missing: ${field}`,
           );
+        for (const field of [
+          "lockRefusal",
+          "lostHupObservedWithoutReplay",
+          "restoredExactLegacyLink",
+        ])
+          assert.equal(receipt.lockedIngress?.[field], true);
+        for (const direction of ["install", "restore"]) {
+          const proof = receipt.lockedIngress?.[direction];
+          assert.equal(proof?.status, "verified-closed");
+          assert.equal(proof.direction, direction);
+          assert.equal(proof.traffic_opened, false);
+          assert.equal(proof.legacy_barrier_retained, true);
+        }
       } else {
         assert.equal(receipt.retired, true);
         assert.equal(receipt.planVersion, durableV2 ? 2 : 1);

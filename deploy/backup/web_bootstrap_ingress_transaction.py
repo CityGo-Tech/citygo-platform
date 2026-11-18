@@ -1,4 +1,4 @@
-"""Durable closed-ingress sequencing. Only the disposable adapter is wired today."""
+"""Durable closed-ingress sequencing and shared receipt validation."""
 from dataclasses import dataclass
 import os
 from pathlib import Path
@@ -66,7 +66,11 @@ def read_record(path, binding):
     require(path.is_file() and not path.is_symlink(), "journal-file")
     with path.open("rb") as stream:
         raw = stream.read(32769)
-    require(0 < len(raw) <= 32768, "journal-file")
+    return parse_record(raw, binding)
+
+
+def parse_record(raw, binding):
+    require(type(raw) is bytes and 0 < len(raw) <= 32768, "journal-file")
     record = strict_json(raw)
     require(type(record) is dict and set(record) == {"version", "binding", "phase", "before", "after"}
             and type(record["version"]) is int and record["version"] == 1
