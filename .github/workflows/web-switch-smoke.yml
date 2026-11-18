@@ -56,6 +56,17 @@ jobs:
         run: sudo env TMPDIR=/root python3 -B -m unittest discover -s deploy/backup -p 'test_web_switch*.py' -v
       - name: Verify offline bootstrap drafts and handoff without server access
         run: python3 -B -m unittest discover -s deploy/backup -p 'test_web_bootstrap*.py' -v
+      - name: Rehearse closed ingress installation and traffic rollback with real Nginx
+        run: |
+          sudo apt-get update -qq
+          fixture_tools=$(mktemp -d "$RUNNER_TEMP/citygo-nginx.XXXXXXXX")
+          (
+            cd "$fixture_tools"
+            apt-get download nginx
+            dpkg-deb -x nginx_*.deb extracted
+          )
+          test -x "$fixture_tools/extracted/usr/sbin/nginx"
+          PATH="$fixture_tools/extracted/usr/sbin:$PATH" python3 -B deploy/fixtures/web-switch-ingress-handoff.py --disposable > .local/web-switch-controller-smoke/bootstrap-ingress.json
       - name: Normalize only synthetic bootstrap Compose without a Docker daemon
         run: python3 -B deploy/backup/web_bootstrap_smoke.py --disposable > .local/web-switch-controller-smoke/bootstrap-draft.json
       - name: Verify inactive controller installation on disposable Linux
