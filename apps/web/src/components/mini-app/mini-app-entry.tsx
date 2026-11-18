@@ -11,14 +11,15 @@ import {
 } from "../landing/landing-task";
 import {
   cityGoEntryPath,
-  isMessengerLaunch,
+  miniAppLaunch,
   type MiniAppBridge,
   type MiniAppHost,
+  type MiniAppLaunch,
 } from "./host";
 import styles from "./mini-app-entry.module.css";
 
 type Screen = "welcome" | "housing" | "plan" | "relocation";
-type Launch = "checking" | "browser" | "messenger";
+type Launch = "checking" | MiniAppLaunch;
 
 const screenForTask = {
   housing: "housing",
@@ -38,11 +39,7 @@ export function MiniAppEntry({ host }: { host: MiniAppHost }) {
   const connected = useRef(false);
 
   useEffect(() => {
-    setLaunch(
-      isMessengerLaunch(window.location.hash, host.launchFragmentKey)
-        ? "messenger"
-        : "browser",
-    );
+    setLaunch(miniAppLaunch(window.location.hash, host.launchFragmentKey));
   }, [host]);
 
   const changeScreen = useCallback((next: Screen) => {
@@ -66,6 +63,7 @@ export function MiniAppEntry({ host }: { host: MiniAppHost }) {
 
   const launchError =
     "Не удалось подключиться к мессенджеру. Откройте CityGo из бота ещё раз.";
+  const launchNotice = notice || (launch === "invalid" ? launchError : "");
 
   const connect = () => {
     if (connected.current) return;
@@ -111,7 +109,7 @@ export function MiniAppEntry({ host }: { host: MiniAppHost }) {
       )}
       <header className={styles.bar} aria-label={`CityGo в ${host.name}`}>
         <div className={styles.barSide}>
-          {screen !== "welcome" && !bridge?.onBack && (
+          {screen !== "welcome" && (
             <Button
               type="button"
               variant="secondary"
@@ -314,9 +312,9 @@ export function MiniAppEntry({ host }: { host: MiniAppHost }) {
             </Button>
           </>
         )}
-        {notice && (
+        {launchNotice && (
           <p className={styles.notice} role="status">
-            {notice}
+            {launchNotice}
           </p>
         )}
       </main>
