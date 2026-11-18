@@ -1,14 +1,13 @@
-import type { MiniAppBridge, MiniAppHost } from "./host";
+import {
+  nativeBackButton,
+  type MiniAppHost,
+  type NativeBackButton,
+} from "./host";
 
 type MaxWebApp = {
   initDataUnsafe?: { start_param?: unknown };
   openLink?: (url: string) => void;
-  BackButton?: {
-    show?: () => void;
-    hide?: () => void;
-    onClick?: (listener: () => void) => void;
-    offClick?: (listener: () => void) => void;
-  };
+  BackButton?: NativeBackButton;
 };
 
 export const maxLaunch: MiniAppHost = {
@@ -21,31 +20,10 @@ export const maxLaunch: MiniAppHost = {
     if (typeof openLink !== "function") return undefined;
 
     const startParam = sdk?.initDataUnsafe?.start_param;
-    const bridge: MiniAppBridge = {
+    return {
       initialTask: typeof startParam === "string" ? startParam : undefined,
       openExternal: (url) => openLink.call(sdk, url),
+      onBack: nativeBackButton(sdk?.BackButton),
     };
-
-    const back = sdk?.BackButton;
-    const show = back?.show;
-    const hide = back?.hide;
-    const onClick = back?.onClick;
-    const offClick = back?.offClick;
-    if (
-      typeof show === "function" &&
-      typeof hide === "function" &&
-      typeof onClick === "function" &&
-      typeof offClick === "function"
-    ) {
-      bridge.onBack = (listener) => {
-        onClick.call(back, listener);
-        show.call(back);
-        return () => {
-          offClick.call(back, listener);
-          hide.call(back);
-        };
-      };
-    }
-    return bridge;
   },
 };
