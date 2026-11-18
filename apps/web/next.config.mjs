@@ -34,6 +34,14 @@ const config = {
         ],
       },
       {
+        source: "/mini/:path*",
+        headers: [{ key: "Referrer-Policy", value: "no-referrer" }],
+      },
+      {
+        source: "/landing/start",
+        headers: [{ key: "Referrer-Policy", value: "no-referrer" }],
+      },
+      {
         source: "/paid-pixels/:path*",
         headers: [
           { key: "X-Frame-Options", value: "SAMEORIGIN" },
