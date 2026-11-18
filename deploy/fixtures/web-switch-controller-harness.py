@@ -448,6 +448,8 @@ def main():
     checkout_answers = []
     checkout_thread = None
     if ROLLBACK_REGRESSION:
+        assert w.Host(plan).probe(route_only=True) == "127.0.0.1:3001"
+
         def checkout():
             connection = w._TLS(HOSTNAME, timeout=60, context=ssl.create_default_context())
             try:

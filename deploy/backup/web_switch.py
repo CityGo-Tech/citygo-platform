@@ -428,7 +428,8 @@ class Host:
             if fd is not None:
                 os.close(fd)
 
-    def probe(self, port=None):
+    def probe(self, port=None, *, route_only=False):
+        require(not route_only or port is None, "route-only-requires-nginx")
         host = self.value["origin"][8:]
         connection = (_TLS(host, timeout=5, context=ssl.create_default_context()) if port is None
                       else http.client.HTTPConnection("127.0.0.1", port, timeout=5))
@@ -436,6 +437,11 @@ class Host:
             path = "/__citygo_web_slot" if port is None else "/api/ready"
             connection.request("GET", path, headers={"Host": host, "X-Forwarded-Proto": "https", "Connection": "close"})
             response = connection.getresponse()
+            if route_only:
+                # Pinned Nginx supplies this header from its actual upstream,
+                # even for a failed upstream request. Keep the readiness gate
+                # strict for verify, switch and confirmation of the old route.
+                return response.getheader("X-CityGo-Web-Slot")
             require(response.status == 200 and strict_json(response.read(4097)) == {"status": "ok"}, "web-not-ready")
             if port is None:
                 return response.getheader("X-CityGo-Web-Slot")
@@ -628,6 +634,8 @@ def switch(plan, *, allow_switch=False, require_rollback=False, _host=None):
         old, new = (upstream(value["slots"][k]["port"]) for k in ("old", "new"))
         require(host.read(path) == old and host.probe() == "127.0.0.1:" + str(value["slots"]["old"]["port"]), "active-route-changed")
         record = {**proof, "phase": "prepared", "old_workers": value["nginx"]["workers"]}
+        if require_rollback:
+            record["prior_active_sha256"] = digest(wire(active))
         host.save(PENDING, record)  # durable BEFORE the first ingress mutation
         host.assert_plan()
         host.write(path, new)
@@ -759,19 +767,30 @@ def rollback(plan, *, allow_rollback=False, _host=None):
 
         record = _pending(plan, host)
         phase = record.get("phase")
-        require(phase in ("switched-awaiting-retirement", "rollback-reload-requested", "rolled-back"),
-                "switch-not-reversible")
+        require(phase in ("reload-requested", "switched-awaiting-retirement",
+                          "rollback-reload-requested", "rolled-back"), "switch-not-reversible")
         require(record.get("rollback_compatible") is True, "rollback-not-verified-before-switch")
-        forward = {key: content for key, content in record.items()
-                   if key not in ("rollback_from_workers", "rollback_workers")}
-        forward.update(phase="switched-awaiting-retirement", active_web=new_web)
-        require(active == forward or (phase == "rolled-back" and active == record), "active-record-changed")
         _verify(plan, host, check_workers=False, rollback=True)
-        if phase == "switched-awaiting-retirement":
+        if phase in ("reload-requested", "switched-awaiting-retirement"):
             workers = host.processes()
-            require(host.read(path) == upstream(new_port)
-                    and any(worker in workers for worker in record["new_workers"]), "active-route-changed")
-            reverse = {**record, "phase": "rollback-prepared", "rollback_from_workers": workers}
+            require(host.read(path) == upstream(new_port), "active-route-changed")
+            if phase == "switched-awaiting-retirement":
+                require(active == record and record.get("active_web") == new_web, "active-record-changed")
+                require(any(worker in workers for worker in record["new_workers"]), "active-route-changed")
+            else:
+                # The forward HUP may have run while its acknowledgment was
+                # lost. Require evidence of a loaded candidate generation even
+                # if that candidate now returns an error on its readiness URL.
+                forwarded = {**record, "phase": "switched-awaiting-retirement", "active_web": new_web}
+                saved_forward = (type(active) is dict and bool(active.get("new_workers"))
+                                 and {key: entry for key, entry in active.items() if key != "new_workers"} == forwarded)
+                require(saved_forward or digest(wire(active)) == record.get("prior_active_sha256"),
+                        "active-record-changed")
+                require(any(worker not in record["old_workers"] for worker in workers)
+                        and host.probe(route_only=True) == "127.0.0.1:" + str(new_port),
+                        "forward-reload-unconfirmed")
+            reverse = {**record, "phase": "rollback-prepared", "rollback_from_workers": workers,
+                       "rollback_active_sha256": digest(wire(active))}
             host.save(PENDING, reverse)
             host.assert_plan()
             host.write(path, upstream(old_port))
@@ -789,6 +808,9 @@ def rollback(plan, *, allow_rollback=False, _host=None):
                 host.save(PENDING, {**reverse, "phase": "rollback-configuration-rejected"})
                 raise
             host.hup()
+        else:
+            require(digest(wire(active)) == record.get("rollback_active_sha256")
+                    or (phase == "rolled-back" and active == record), "active-record-changed")
 
         # Once the reverse reload is requested, a retry can only observe it.
         # Both slots stay up while Nginx drains requests from either generation.
