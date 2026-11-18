@@ -47,6 +47,7 @@
 
 .content {
   max-width: 512px;
+  min-height: 0;
   margin: 0 auto;
   padding: var(--cg-space-md)
     max(var(--cg-space-md), env(safe-area-inset-right))
@@ -128,6 +129,12 @@
 
 .task span {
   font-weight: 500;
+}
+
+.content .task {
+  border: 1px solid var(--cg-color-border);
+  background: var(--cg-color-surface);
+  color: var(--cg-color-foreground);
 }
 
 .content .quiet,
