@@ -11,6 +11,8 @@ map "$uri:$status" $citygo_frame_options {
 }
 map $uri $citygo_referrer_policy {
     default strict-origin-when-cross-origin;
+    /landing/start no-referrer;
+    ~^/mini/ no-referrer;
     /paid-pixels/frame.html no-referrer;
     /paid-pixels/frame.js no-referrer;
 }

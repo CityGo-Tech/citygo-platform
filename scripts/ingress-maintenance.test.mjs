@@ -59,7 +59,7 @@ test("ingress allows framing only the empty paid document without bypassing main
   );
   assert.match(
     config,
-    /map \$uri \$citygo_referrer_policy \{\s*default strict-origin-when-cross-origin;\s*\/paid-pixels\/frame\.html no-referrer;\s*\/paid-pixels\/frame\.js no-referrer;\s*\}/,
+    /map \$uri \$citygo_referrer_policy \{\s*default strict-origin-when-cross-origin;\s*\/landing\/start no-referrer;\s*~\^\/mini\/ no-referrer;\s*\/paid-pixels\/frame\.html no-referrer;\s*\/paid-pixels\/frame\.js no-referrer;\s*\}/,
   );
   const app = config.slice(
     config.indexOf("    location / {\n"),
