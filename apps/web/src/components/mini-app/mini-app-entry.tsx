@@ -30,7 +30,9 @@ const budgetFormat = new Intl.NumberFormat("ru-RU");
 export function MiniAppEntry({ host }: { host: MiniAppHost }) {
   const [launch, setLaunch] = useState<Launch>("checking");
   const [bridge, setBridge] = useState<MiniAppBridge>();
-  const [screen, setScreen] = useState<Screen>("welcome");
+  const [connectionFailed, setConnectionFailed] = useState(false);
+  const [screens, setScreens] = useState<Screen[]>(["welcome"]);
+  const screen = screens.at(-1) ?? "welcome";
   const [budget, setBudget] = useState("");
   const [commute, setCommute] = useState("");
   const [notice, setNotice] = useState("");
@@ -45,12 +47,14 @@ export function MiniAppEntry({ host }: { host: MiniAppHost }) {
   const changeScreen = useCallback((next: Screen) => {
     entered.current = true;
     setNotice("");
-    setScreen(next);
+    setScreens((current) => [...current, next]);
   }, []);
   const back = useCallback(() => {
     entered.current = true;
     setNotice("");
-    setScreen((current) => (current === "plan" ? "housing" : "welcome"));
+    setScreens((current) =>
+      current.length > 1 ? current.slice(0, -1) : current,
+    );
   }, []);
 
   useEffect(() => {
@@ -63,20 +67,27 @@ export function MiniAppEntry({ host }: { host: MiniAppHost }) {
 
   const launchError =
     "Не удалось подключиться к мессенджеру. Откройте CityGo из бота ещё раз.";
-  const launchNotice = notice || (launch === "invalid" ? launchError : "");
+  const launchNotice =
+    notice || (launch === "invalid" || connectionFailed ? launchError : "");
 
   const connect = () => {
     if (connected.current) return;
-    const connection = host.connect();
-    if (!connection) {
-      setNotice(launchError);
-      return;
+    try {
+      const connection = host.connect();
+      if (!connection) {
+        setConnectionFailed(true);
+        return;
+      }
+      connection.ready?.();
+      const task = landingTaskFromValue(connection.initialTask ?? null);
+      if (!entered.current && task) changeScreen(screenForTask[task]);
+      connected.current = true;
+      setBridge(connection);
+      setConnectionFailed(false);
+      setNotice("");
+    } catch {
+      setConnectionFailed(true);
     }
-    const task = landingTaskFromValue(connection.initialTask ?? null);
-    if (!entered.current && task) changeScreen(screenForTask[task]);
-    connected.current = true;
-    setBridge(connection);
-    connection.ready?.();
   };
 
   const openCityGo = (task?: LandingTask) => {
@@ -98,13 +109,21 @@ export function MiniAppEntry({ host }: { host: MiniAppHost }) {
     }
   };
 
+  const closeMiniApp = () => {
+    try {
+      bridge?.close?.();
+    } catch {
+      setNotice("Не удалось закрыть CityGo. Закройте окно в мессенджере.");
+    }
+  };
+
   return (
     <div className={styles.shell} data-host={host.name}>
       {launch === "messenger" && (
         <Script
           src={host.script}
           onReady={connect}
-          onError={() => setNotice(launchError)}
+          onError={() => setConnectionFailed(true)}
         />
       )}
       <header className={styles.bar} aria-label={`CityGo в ${host.name}`}>
@@ -132,7 +151,7 @@ export function MiniAppEntry({ host }: { host: MiniAppHost }) {
               variant="secondary"
               className={styles.iconButton}
               aria-label={`Закрыть в ${host.name}`}
-              onClick={bridge.close}
+              onClick={closeMiniApp}
             >
               <Image src="/mini-app/close.svg" width={20} height={20} alt="" />
             </Button>

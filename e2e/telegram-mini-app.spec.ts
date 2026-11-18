@@ -10,7 +10,7 @@ const launchCanary = "mini-launch-private-canary";
 async function installPreviewRoutes(
   page: Page,
   startParam?: string,
-  brokenBack = false,
+  failure?: "back" | "ready" | "close",
 ) {
   const calls = { external: [] as string[], api: [] as string[], sdk: 0 };
   await page.context().route("https://**", (route) => {
@@ -35,11 +35,18 @@ async function installPreviewRoutes(
             start_param: ${JSON.stringify(startParam)},
             user: { first_name: ${JSON.stringify(launchCanary)} },
           },
-          ready() { state.events.push('ready'); },
+          ready() {
+            state.events.push('ready');
+            if (${failure === "ready"}) throw new Error('Ready unavailable');
+          },
+          close() {
+            state.events.push('close');
+            if (${failure === "close"}) throw new Error('Close unavailable');
+          },
           BackButton: {
             show() {
               state.events.push('show');
-              if (${brokenBack}) throw new Error('Back unavailable');
+              if (${failure === "back"}) throw new Error('Back unavailable');
             },
             hide() { state.events.push('hide'); },
             onClick(handler) {
@@ -119,6 +126,12 @@ test("Telegram housing handoff uses the real redirect and resumes the task after
   page,
 }) => {
   const state = await syntheticProduct(page);
+  const productRequests: string[] = [];
+  page.on("request", (request) => {
+    const path = new URL(request.url()).pathname;
+    if (path.startsWith("/api/"))
+      productRequests.push(`${request.method()} ${path}`);
+  });
   await page.addInitScript(() =>
     localStorage.setItem("citygo.analytics.optout", "1"),
   );
@@ -127,7 +140,11 @@ test("Telegram housing handoff uses the real redirect and resumes the task after
   await page.getByRole("button", { name: /Найти жильё/ }).click();
   await page.getByLabel("Куда ездить").fill(launchCanary);
   await page.getByRole("button", { name: "Собрать стартовый план" }).click();
-  expect(state.dashboardReads).toBe(0);
+  await expect(
+    page.getByRole("heading", { name: "Стартовый план" }),
+  ).toBeVisible();
+  expect(productRequests).toEqual([]);
+  expect(state.outside).toEqual([]);
 
   const redirect = page.waitForResponse(
     (response) =>
@@ -142,6 +159,15 @@ test("Telegram housing handoff uses the real redirect and resumes the task after
   expect(await response.headerValue("referrer-policy")).toBe("no-referrer");
   expect(await response.request().headerValue("referer")).toBeNull();
   await expect(page).toHaveURL("http://localhost:3000/");
+  await expect(page.locator("input[name=personalDataConsent]")).toBeVisible();
+  const signedOutReads = new Set([
+    "GET /api/v1/dashboard",
+    "GET /api/v1/auth/registration-policy",
+  ]);
+  expect(
+    productRequests.filter((request) => !signedOutReads.has(request)),
+  ).toEqual([]);
+  expect(state.outside).toEqual([]);
 
   await submitRegistration(page);
   expect(state.begin).toHaveLength(1);
@@ -180,6 +206,31 @@ test("Telegram can start a housing plan without criteria and fits a narrow viewp
   expect(
     await page.evaluate(() => document.documentElement.scrollWidth),
   ).toBeLessThanOrEqual(320);
+  expect(calls).toEqual({ external: [], api: [], sdk: 0 });
+});
+
+test("Telegram browser Back follows task history from the housing plan to welcome", async ({
+  page,
+}) => {
+  const calls = await installPreviewRoutes(page);
+  await page.goto("/mini/telegram");
+  const back = page.getByRole("button", { name: "Назад", exact: true });
+  await page.getByRole("button", { name: /Оценить переезд/ }).click();
+  await page.getByRole("button", { name: "Найти жильё", exact: true }).click();
+  await page.getByRole("button", { name: "Собрать стартовый план" }).click();
+  for (const heading of [
+    "Стартовый план",
+    "Поиск жилья",
+    "Оценить переезд",
+    "С чего начнём?",
+  ]) {
+    await expect(
+      page.getByRole("heading", { name: heading, level: 1 }),
+    ).toBeVisible();
+    if (heading !== "С чего начнём?") await back.click();
+  }
+  await expect(back).toHaveCount(0);
+  await expect(page).toHaveURL("http://localhost:3000/mini/telegram");
   expect(calls).toEqual({ external: [], api: [], sdk: 0 });
 });
 
@@ -227,7 +278,7 @@ test("Telegram native launch uses only its task, responds to Back and opens the 
 test("Telegram keeps in-page Back available when the native SDK throws", async ({
   page,
 }) => {
-  await installPreviewRoutes(page, "housing", true);
+  const calls = await installPreviewRoutes(page, "housing", "back");
   await page.goto(`/mini/telegram#tgWebAppData=${launchCanary}`);
   await expect(page.getByLabel("Куда ездить")).toBeVisible();
   await expect
@@ -240,6 +291,62 @@ test("Telegram keeps in-page Back available when the native SDK throws", async (
   await expect(
     page.getByRole("heading", { name: "С чего начнём?" }),
   ).toBeVisible();
+  expect(calls).toEqual({ external: [], api: [], sdk: 1 });
+});
+
+test("Telegram keeps guest tasks available when startup fails and blocks handoff", async ({
+  page,
+}) => {
+  const calls = await installPreviewRoutes(page, "housing", "ready");
+  const pageErrors: Error[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error));
+  await page.goto(`/mini/telegram#tgWebAppData=${launchCanary}`);
+  await expect(page.getByRole("status")).toContainText(
+    "Откройте CityGo из бота ещё раз",
+  );
+  await expect(
+    page.getByRole("heading", { level: 1, name: "С чего начнём?" }),
+  ).toBeVisible();
+  expect(await fixtureCalls(page)).toEqual({
+    events: ["ready"],
+    links: [],
+    hasBackListener: false,
+  });
+  await page.getByRole("button", { name: /Оценить переезд/ }).click();
+  await expect(
+    page.getByRole("heading", { level: 1, name: "Оценить переезд" }),
+  ).toBeVisible();
+  await expect(page.getByRole("status")).toContainText(
+    "Откройте CityGo из бота ещё раз",
+  );
+  await page.getByRole("button", { name: "Продолжить в CityGo" }).click();
+  await expect(page).toHaveURL(/\/mini\/telegram#/);
+  expect((await fixtureCalls(page)).links).toEqual([]);
+  expect(pageErrors).toEqual([]);
+  expect(calls).toEqual({ external: [], api: [], sdk: 1 });
+});
+
+test("Telegram reports a failing native close without throwing or handing off", async ({
+  page,
+}) => {
+  const calls = await installPreviewRoutes(page, "", "close");
+  const pageErrors: Error[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error));
+  await page.goto(`/mini/telegram#tgWebAppData=${launchCanary}`);
+  await page.getByRole("button", { name: "Закрыть в Telegram" }).click();
+  await expect(page.getByRole("status")).toContainText(
+    "Не удалось закрыть CityGo",
+  );
+  await expect(
+    page.getByRole("heading", { level: 1, name: "С чего начнём?" }),
+  ).toBeVisible();
+  expect(await fixtureCalls(page)).toEqual({
+    events: ["ready", "close"],
+    links: [],
+    hasBackListener: false,
+  });
+  expect(pageErrors).toEqual([]);
+  expect(calls).toEqual({ external: [], api: [], sdk: 1 });
 });
 
 test("Telegram rejects an empty or repeated launch marker before loading SDK", async ({
