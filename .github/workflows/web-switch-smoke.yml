@@ -56,7 +56,7 @@ jobs:
         run: sudo env TMPDIR=/root python3 -B -m unittest discover -s deploy/backup -p 'test_web_switch*.py' -v
       - name: Verify offline bootstrap drafts and handoff without server access
         run: python3 -B -m unittest discover -s deploy/backup -p 'test_web_bootstrap*.py' -v
-      - name: Rehearse closed ingress journal recovery and traffic rollback with real Nginx
+      - name: Verify loaded Nginx over a private Unix socket during recovery and rollback
         run: |
           sudo apt-get update -qq
           fixture_tools=$(mktemp -d "$RUNNER_TEMP/citygo-nginx.XXXXXXXX")

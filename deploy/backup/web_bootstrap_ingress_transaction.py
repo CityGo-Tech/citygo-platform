@@ -117,10 +117,15 @@ def transition(path, *, operation, review_sha256, direction, host, resume=False,
         epoch = observe(host)
         require(epoch.link == destination and epoch.loaded == origin and epoch.pins() == before,
                 "link-readback")
+        host.prepare_witness(origin, destination)
+        if checkpoint is not None:
+            checkpoint("witness-prepared")
         host.test_config()
+        host.check_prepared(destination)
         require(observe(host) == epoch, "before-hup-changed")
         record["phase"] = "hup-intent"
         save(record, "hup-intent")
+        host.check_prepared(destination)
         require(observe(host) == epoch, "before-hup-changed")
         host.hup()
         if checkpoint is not None:
@@ -129,6 +134,7 @@ def transition(path, *, operation, review_sha256, direction, host, resume=False,
 
     epoch = observe(host)
     require(converged(epoch, before, destination), "reload-unconfirmed")
+    host.check_prepared(destination)
     if record["phase"] == "verified-closed":
         require(epoch.pins() == record["after"], "final-epoch-changed")
     else:

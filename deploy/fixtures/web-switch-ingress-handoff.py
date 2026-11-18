@@ -21,6 +21,7 @@ from uuid import uuid4
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backup"))
 from backup import sync_directory
 from web_bootstrap_ingress_transaction import Epoch, transition
+from web_bootstrap_ingress_witness import epoch_token, read_epoch, render_witness
 
 HOST = "citygo-ingress.example.test"
 LOOPBACK = "127.0.0.1"
@@ -136,13 +137,8 @@ def rehearse_ingress(root, http_port, tls_port, a, b):
     legacy_target = "../sites-available/citygo-pilot"
     enabled = root / "sites-enabled" / "citygo-pilot"
 
-    def render(name, profile):
+    def render(name):
         raw = (TEMPLATES / name).read_text(encoding="utf-8").replace("__CITYGO_HOST__", HOST)
-        # The two production templates have the same 503. A private fixture
-        # header supplies distinct positive observations under closed traffic.
-        location = "    location @citygo_maintenance {"
-        assert raw.count(location) == 1
-        raw = raw.replace(location, location + f"\n        add_header X-CityGo-Fixture-Epoch {profile} always;")
         for source, destination in paths.items():
             raw = raw.replace(source, str(destination))
         return (raw.replace("listen 80", f"listen {LOOPBACK}:{http_port}")
@@ -150,8 +146,8 @@ def rehearse_ingress(root, http_port, tls_port, a, b):
                 .replace(LOOPBACK + ":3000", f"{LOOPBACK}:{a.port}")).encode("utf-8")
 
     legacy_file = enabled.parent / legacy_target
-    legacy_bytes = render("pilot.conf.template", "legacy")
-    switch_bytes = render("pilot-web-switch.conf.template", "switch")
+    legacy_bytes = render("pilot.conf.template")
+    switch_bytes = render("pilot-web-switch.conf.template")
     legacy_file.write_bytes(legacy_bytes)
     replace_link(enabled, legacy_target)
     citygo = paths["/var/lib/citygo"]
@@ -166,6 +162,10 @@ def rehearse_ingress(root, http_port, tls_port, a, b):
         replace_file(include, f"proxy_pass http://{LOOPBACK}:{port};\n".encode())
 
     select(a.port)
+    proof_dir = root / "epoch"
+    proof_dir.mkdir(mode=0o700)
+    proof_socket = proof_dir / "epoch.sock"
+    proof_config = root / "epoch.conf"
     config = root / "nginx.conf"
     temp_paths = "\n".join(f"{name}_temp_path {root}/{name};"
                            for name in ("client_body", "proxy", "fastcgi", "uwsgi", "scgi"))
@@ -175,10 +175,18 @@ pid {root}/nginx.pid;
 events {{ worker_connections 128; }}
 http {{
 {temp_paths}
+include {proof_config};
 include {enabled};
 }}
 """, encoding="utf-8")
     initial_include, initial_config = include.read_bytes(), config.read_bytes()
+    operation = uuid4().hex
+    review = sha256(legacy_bytes + switch_bytes + initial_include + initial_config).hexdigest()
+    tokens = {direction: epoch_token(operation=operation, direction=direction, review_sha256=review,
+                                     site_sha256=sha256(raw).hexdigest())
+              for direction, raw in (("baseline", legacy_bytes), ("install", switch_bytes), ("restore", legacy_bytes))}
+    documents = {direction: render_witness(token, proof_socket) for direction, token in tokens.items()}
+    replace_file(proof_config, documents["baseline"])
     args = ["nginx", "-p", str(root) + "/", "-c", str(config), "-e", "stderr"]
 
     def validate():
@@ -197,14 +205,14 @@ include {enabled};
                 self.sock = context.wrap_socket(raw, server_hostname=HOST)
                 cleanup.pop_all()
 
-    def fetch(path, connection=None, header="X-CityGo-Web-Slot"):
+    def fetch(path, connection=None):
         with ExitStack() as cleanup:
             if connection is None:
                 connection = TLS()
                 cleanup.callback(connection.close)
             connection.request("GET", path)
             response = connection.getresponse()
-            return response.status, response.getheader(header), response.read()
+            return response.status, response.getheader("X-CityGo-Web-Slot"), response.read()
 
     def closed(path, connection=None):
         status, slot_header, body = fetch(path, connection)
@@ -262,6 +270,13 @@ include {enabled};
         class ClosedHost:
             signals = 0
 
+            def select_operation(self, direction):
+                origin_profile, target_profile = ("legacy", "switch") if direction == "install" else ("switch", "legacy")
+                observed_before = "baseline" if direction == "install" else "install"
+                self.allowed = {tokens[observed_before]: origin_profile, tokens[direction]: target_profile}
+                self.proof_before, self.proof_after = documents[observed_before], documents[direction]
+                self.target = target_profile
+
             def observe_closed(self):
                 assert not os.path.lexists(marker) and legacy_file.read_bytes() == legacy_bytes
                 assert include.read_bytes() == initial_include and config.read_bytes() == initial_config
@@ -272,9 +287,9 @@ include {enabled};
                 else:
                     assert enabled.is_file() and enabled.read_bytes() == switch_bytes
                     link = "switch"
-                status, loaded, body = fetch("/", header="X-CityGo-Fixture-Epoch")
-                assert status == 503 and json.loads(body)["code"] == "SERVICE_UNAVAILABLE"
-                return Epoch(link, loaded, boot_id, master, worker_pins())
+                closed("/")
+                token = read_epoch(proof_socket, master_pid=nginx.pid, owner_uid=os.geteuid())
+                return Epoch(link, self.allowed.get(token), boot_id, master, worker_pins())
 
             def replace_link(self, origin, destination):
                 assert self.observe_closed().link == origin
@@ -282,6 +297,17 @@ include {enabled};
                     replace_file(enabled, switch_bytes)
                 else:
                     replace_link(enabled, legacy_target)
+
+            def prepare_witness(self, origin, destination):
+                observed = self.observe_closed()
+                assert observed.loaded == origin and observed.link == destination == self.target
+                current = proof_config.read_bytes()
+                assert current in (self.proof_before, self.proof_after)
+                if current == self.proof_before:
+                    replace_file(proof_config, self.proof_after)
+
+            def check_prepared(self, destination):
+                assert destination == self.target and proof_config.read_bytes() == self.proof_after
 
             def test_config(self):
                 validate()
@@ -304,10 +330,9 @@ include {enabled};
             pass
 
         host = ClosedHost()
-        operation = uuid4().hex
-        review = sha256(legacy_bytes + switch_bytes + initial_include + initial_config).hexdigest()
 
         def closed_transition(direction, interruption):
+            host.select_operation(direction)
             path = root / (direction + "-journal.json")
 
             def interrupt(label):
@@ -338,7 +363,7 @@ include {enabled};
             wait_for(workers, "initial worker did not start")
             closed("/")
             install_receipt = closed_transition("install", "hup-sent")
-            for path in ("/", ASSET, "/__citygo_web_slot"):
+            for path in ("/", ASSET, "/__citygo_web_slot", "/epoch"):
                 closed(path)
             with closing(TLS()) as probe:
                 closed("/", probe)
@@ -385,6 +410,7 @@ include {enabled};
             assert install_receipt["binding"]["operation"] == restore_receipt["binding"]["operation"]
             assert host.signals == 2
             closed("/")
+            closed("/epoch")
             assert not marker.exists() and legacy_file.read_bytes() == legacy_bytes
             marker.touch()
             assert fetch("/") == (200, None, b"slot-a")
@@ -416,6 +442,7 @@ def main():
     print(json.dumps({"status": "passed", "nginx": version, "scope": "disposable-loopback",
                       "tlsVerified": True, "acceptedSseCount": 1, "acceptedPostCount": 1,
                       "legacyRestoredClosed": True, "workerGenerationTimingsMs": timings,
+                      "privateUnixEpochWitness": True, "publicEpochRouteClosed": True,
                       "closedJournalRecovery": {"installAfterHup": True, "restoreAfterLink": True,
                                                 "hupSignals": 2}}, sort_keys=True))
 
