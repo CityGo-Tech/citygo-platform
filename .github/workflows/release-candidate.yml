@@ -13,7 +13,7 @@ on:
         required: true
         type: string
       package_sources_checked:
-        description: Checked existing Packages in UI (private, source CityGo-Tech/citygo-platform, Actions access); new packages inherit private repo access
+        description: Checked existing Packages in UI (private, source CityGo-Tech/citygo-platform, Actions access)
         required: true
         type: boolean
         default: false
@@ -39,6 +39,7 @@ jobs:
       packages: write
     env:
       RELEASE_MODE: manual
+      CITYGO_RELEASE_WEB_PROFILE: pilot-analytics-v1
       CITYGO_POSTGRES_IMAGE: ${{ vars.CITYGO_POSTGRES_IMAGE }}
       EXPECTED_SHA: ${{ inputs.expected_sha }}
       PUBLISH_CONFIRM: ${{ inputs.confirm }}

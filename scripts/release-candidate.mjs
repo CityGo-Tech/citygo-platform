@@ -92,6 +92,69 @@ function keys(value, expected) {
   );
   assert.deepEqual(Object.keys(value).sort(), [...expected].sort());
 }
+const pilotWebProfile = "pilot-analytics-v1";
+const pilotWebArgs = Object.freeze({
+  NEXT_PUBLIC_CITYGO_METRIKA_ENABLED: "enabled",
+  NEXT_PUBLIC_CITYGO_METRIKA_COUNTER_ID: "113847047",
+  NEXT_PUBLIC_CITYGO_METRIKA_WEBVISOR: "enabled",
+  NEXT_PUBLIC_CITYGO_AD_PIXELS_ENABLED: "enabled",
+  NEXT_PUBLIC_CITYGO_VK_PIXEL_ID: "3812681",
+  NEXT_PUBLIC_CITYGO_AVITO_COUNTER_ID: "3496456",
+});
+const existingPackageIds = { api: 15292352, web: 15293992, jobs: 15293993 };
+
+function validateWebBuildProfile(profile) {
+  requireValue(profile === pilotWebProfile, "unknown Web build profile");
+  return profile;
+}
+export function selectWebBuildProfile(env = process.env) {
+  const profile = env.CITYGO_RELEASE_WEB_PROFILE;
+  if (profile !== undefined) return validateWebBuildProfile(profile);
+  requireValue(
+    env.RELEASE_MODE !== "manual",
+    "manual Web build profile required",
+  );
+}
+export function validateBuildInputs(inputs) {
+  const profiled = inputs && Object.hasOwn(inputs, "webProfile");
+  keys(
+    inputs,
+    profiled ? ["node", "postgres", "webProfile"] : ["node", "postgres"],
+  );
+  const { webProfile, ...bases } = inputs;
+  validateBases(bases);
+  if (profiled) validateWebBuildProfile(webProfile);
+  return inputs;
+}
+export function composeCandidateBuild(inputs, sha) {
+  const { node, postgres, webProfile } = validateBuildInputs(inputs);
+  requireValue(shaPattern.test(sha ?? ""), "build source SHA");
+  const args = { NODE_IMAGE: node, SOURCE_SHA: sha };
+  // Identical public-only inputs let BuildKit share the builder for all roles.
+  // Only the Web runtime inherits the compiled browser output and its label.
+  if (webProfile !== undefined)
+    Object.assign(args, { API_INTERNAL_URL: "http://api:4000" }, pilotWebArgs);
+  const app = { platform: "linux/amd64", build: { args } };
+  return {
+    services: {
+      api: app,
+      web: app,
+      migrator: app,
+      worker: app,
+      postgres: { image: postgres, platform: "linux/amd64" },
+    },
+  };
+}
+export function validateWebImageProfile(info, profile) {
+  if (profile === undefined) return;
+  validateWebBuildProfile(profile);
+  requireValue(
+    info?.Config?.Labels?.["com.citygo.web.analytics"] ===
+      Object.values(pilotWebArgs).join("|"),
+    "Web image analytics profile mismatch",
+  );
+}
+
 export function validateBases(bases) {
   keys(bases, ["node", "postgres"]);
   for (const [name, tag] of [
@@ -110,7 +173,12 @@ export function validateBases(bases) {
   return bases;
 }
 export function validateEvidence(evidence, sha) {
-  keys(evidence, ["version", "sourceSha", "bases", "images"]);
+  const expectedKeys = ["version", "sourceSha", "bases", "images"];
+  if (evidence && Object.hasOwn(evidence, "webProfile")) {
+    validateWebBuildProfile(evidence.webProfile);
+    expectedKeys.push("webProfile");
+  }
+  keys(evidence, expectedKeys);
   requireValue(
     evidence.version === 1 &&
       shaPattern.test(sha) &&
@@ -252,6 +320,21 @@ export function validatePackage(pkg, role, packageSourcesChecked) {
   );
   return "reported-match";
 }
+function validatePublicationPackage(
+  pkg,
+  role,
+  packageSourcesChecked,
+  existingOnly,
+) {
+  const link = validatePackage(pkg, role, packageSourcesChecked);
+  if (existingOnly)
+    requireValue(
+      pkg.id === existingPackageIds[role],
+      "existing approved private package required",
+    );
+  return link;
+}
+
 export function validateImageOrigin(info, id, sha) {
   requireValue(
     info?.Id === id && info.Os === "linux" && info.Architecture === "amd64",
@@ -269,16 +352,27 @@ export async function gate(
   head = () => command("git", ["rev-parse", "HEAD"]),
 ) {
   const sha = validateContext(env);
+  const profile = selectWebBuildProfile(env);
+  const exactManualWorkflow =
+    env.RELEASE_MODE === "manual" &&
+    profile === pilotWebProfile &&
+    env.GITHUB_WORKFLOW_REF ===
+      `${repository}/.github/workflows/release-candidate.yml@refs/heads/main`;
+  requireValue(
+    env.RELEASE_MODE !== "manual" || exactManualWorkflow,
+    "trusted manual workflow required",
+  );
   requireValue(head() === sha, "checkout mismatch");
   const repo = await read(`/repos/${repository}`);
   requireValue(
-    repo.private === true &&
+    (repo.private === true ||
+      (repo.private === false && exactManualWorkflow)) &&
       repo.default_branch === "main" &&
       repo.id === repositoryId &&
       repo.full_name === repository &&
       repo.owner?.id === organizationId &&
       repo.owner?.login === "CityGo-Tech",
-    "trusted private repository required",
+    "trusted release repository required",
   );
   const main = await read(`/repos/${repository}/git/ref/heads/main`);
   requireValue(
@@ -299,7 +393,15 @@ export async function gate(
       `/orgs/CityGo-Tech/packages/container/citygo-platform-${role}`,
       { allowMissing: true },
     );
-    if (pkg !== null) validatePackage(pkg, role, env.PACKAGE_SOURCES_CHECKED);
+    if (exactManualWorkflow)
+      requireValue(pkg !== null, "existing approved private package required");
+    if (pkg !== null)
+      validatePublicationPackage(
+        pkg,
+        role,
+        env.PACKAGE_SOURCES_CHECKED,
+        exactManualWorkflow,
+      );
   }
   return checks;
 }
@@ -321,6 +423,7 @@ export function selectBaseReferences(env = process.env) {
 }
 export function prepareBases(env = process.env) {
   const references = selectBaseReferences(env);
+  const webProfile = selectWebBuildProfile(env);
   const bases = {};
   for (const [name, tag] of [
     ["node", "node:24-bookworm-slim"],
@@ -342,7 +445,12 @@ export function prepareBases(env = process.env) {
     requireValue(digests.length === 1, "base registry digest");
     bases[name] = `${tag}@${digests[0].split("@")[1]}`;
   }
-  jsonWrite(join(candidateDir, "build-inputs.json"), validateBases(bases));
+  jsonWrite(
+    join(candidateDir, "build-inputs.json"),
+    validateBuildInputs(
+      webProfile === undefined ? bases : { ...bases, webProfile },
+    ),
+  );
 }
 export function hashFile(path, limit = 262144, budget) {
   const info = lstatSync(path);
@@ -477,6 +585,7 @@ export async function publishImages({
   report = () => {},
   directory = root,
   checks = [],
+  existingPrivatePackagesOnly = false,
 }) {
   validateEvidence(evidence, sha);
   requireValue(
@@ -513,13 +622,28 @@ export async function publishImages({
       ]),
     ),
   });
+  const verifyPackage = async (role) => {
+    const pkg = await read(
+      `/orgs/CityGo-Tech/packages/container/citygo-platform-${role}`,
+    );
+    return validatePublicationPackage(
+      pkg,
+      role,
+      packageSourcesChecked,
+      existingPrivatePackagesOnly,
+    );
+  };
+
   // Validate ALL tested images before login/first push, not halfway through a release.
   for (const role of roles) {
     report(`${role}: inspect tested local image`);
     const id = evidence.images[role];
     const [info] = JSON.parse(docker(["image", "inspect", id]));
     validateImageOrigin(info, id, sha);
+    if (role === "web") validateWebImageProfile(info, evidence.webProfile);
   }
+  if (existingPrivatePackagesOnly)
+    for (const role of roles) await verifyPackage(role);
   report("Registry login");
   docker(["login", "ghcr.io", "--username", actor, "--password-stdin"], {
     input: token,
@@ -528,6 +652,7 @@ export async function publishImages({
     const id = evidence.images[role];
     const name = `ghcr.io/citygo-tech/citygo-platform-${role}`;
     const tag = `${name}:sha-${sha}-${runId}-${attempt}`;
+    if (existingPrivatePackagesOnly) await verifyPackage(role);
     docker(["tag", id, tag]);
     report(`${role}: push`);
     const output = docker(["push", tag], { timeout: 10 * 60 * 1000 });
@@ -546,11 +671,9 @@ export async function publishImages({
       "registry readback differs from tested image",
     );
     validateImageOrigin(pulled, id, sha);
+    if (role === "web") validateWebImageProfile(pulled, evidence.webProfile);
     report(`${role}: verify private package destination`);
-    const pkg = await read(
-      `/orgs/CityGo-Tech/packages/container/citygo-platform-${role}`,
-    );
-    const link = validatePackage(pkg, role, packageSourcesChecked);
+    const link = await verifyPackage(role);
     report(
       link === "reported-match"
         ? `${role}: repository metadata matches`
@@ -568,6 +691,22 @@ export async function publishCandidate() {
     jsonRead(join(candidateDir, "tested-images.json")),
     sha,
   );
+  const expectedProfile = selectWebBuildProfile();
+  requireValue(
+    evidence.webProfile === expectedProfile,
+    "tested Web profile differs from approved publication",
+  );
+  if (expectedProfile !== undefined) {
+    const { webProfile, ...bases } = validateBuildInputs(
+      jsonRead(join(candidateDir, "build-inputs.json")),
+    );
+    requireValue(
+      webProfile === expectedProfile &&
+        bases.node === evidence.bases.node &&
+        bases.postgres === evidence.bases.postgres,
+      "tested build inputs differ from preparation",
+    );
+  }
   const dockerConfig = mkdtempSync(join(tmpdir(), "citygo-release-auth-"));
   const docker = (args, options = {}) =>
     command("docker", ["--config", dockerConfig, ...args], options);
@@ -582,6 +721,7 @@ export async function publishCandidate() {
       actor: process.env.GITHUB_ACTOR,
       token: process.env.GH_TOKEN,
       packageSourcesChecked: process.env.PACKAGE_SOURCES_CHECKED,
+      existingPrivatePackagesOnly: process.env.RELEASE_MODE === "manual",
       report: (stage) => console.log(`Release stage: ${stage}`),
     });
     // A manifest is written only after ALL three exact images pass registry readback.
