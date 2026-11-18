@@ -29,8 +29,10 @@ PROJECT = "citygo-controller-" + os.urandom(6).hex()
 DAEMON = None
 NODE, POSTGRES = sys.argv[-2:]
 FIXTURE_FLAGS = sys.argv[1:-2]
-assert set(FIXTURE_FLAGS) <= {"--wait-for-images", "--durable-v2"}
+assert set(FIXTURE_FLAGS) <= {"--wait-for-images", "--durable-v2", "--rollback-regression"}
 DURABLE_V2 = "--durable-v2" in FIXTURE_FLAGS
+ROLLBACK_REGRESSION = "--rollback-regression" in FIXTURE_FLAGS
+assert not (DURABLE_V2 and ROLLBACK_REGRESSION)
 TRUSTED_FILES = ("harness.py", "web_switch.py", "backup.py", "web_switch_assets.py", "pilot-web-switch.conf.template")
 
 
@@ -115,12 +117,25 @@ def until(check, message, seconds=60):
 
 API = r"""import http from 'node:http';
 let release; const gate = new Promise(r => release=r); let streams=0;
+let releaseCheckout;
+const checkoutGate = new Promise(resolve => releaseCheckout=resolve);
+let checkoutCount=0;
 http.createServer(async(q,s)=>{
  if(q.url==='/ready'){s.setHeader('content-type','application/json');return s.end('{"status":"ok"}');}
  if(q.url==='/v1/dashboard'){s.writeHead(401,{'content-type':'application/json','x-citygo-contract-version':'1'});return s.end('{"code":"UNAUTHENTICATED","contractVersion":"1"}');}
  if(q.url==='/hold-stream'){streams++;s.writeHead(200,{'content-type':'text/event-stream'});s.write('data: first\n\n');await gate;s.end('data: last\n\n');return;}
  if(q.url==='/fixture-release'){release();s.end('released');return;}
  if(q.url==='/fixture-counts'){s.setHeader('content-type','application/json');s.end(JSON.stringify({streams}));return;}
+ if(q.url==='/hold-checkout'&&q.method==='POST'){
+   let body='';
+   for await (const chunk of q) body+=chunk;
+   if(body!=='{"order":"synthetic-order"}'){s.writeHead(400);s.end();return;}
+   checkoutCount++;
+   await checkoutGate;
+   s.writeHead(201,{'content-type':'application/json'});s.end('{"order":"synthetic-order"}');return;
+ }
+ if(q.url==='/fixture-release-checkout'){releaseCheckout();s.end('released');return;}
+ if(q.url==='/fixture-checkout-count'){s.end(String(checkoutCount));return;}
  s.writeHead(404);s.end();
 }).listen(4000,'0.0.0.0');
 """
@@ -199,7 +214,7 @@ def main():
         write(context / "web.mjs", WEB, 0o644)
         write(context / "release.txt", marker, 0o644)
         write(context / "public/shared.txt", "immutable shared fixture", 0o644)
-        if slot == "new":
+        if slot == "new" and not ROLLBACK_REGRESSION:
             write(context / "public/new.txt", "new immutable fixture", 0o644)
         write(context / ("static/chunks/" + source + ".js"), "// " + marker + "\n", 0o644)
         write(context / "Dockerfile", f"FROM {NODE}\nLABEL org.opencontainers.image.revision={source}\nCOPY . /fixture/\nUSER 1000:1000\n", 0o644)
@@ -410,32 +425,91 @@ def main():
     thread = threading.Thread(target=stream, daemon=True)
     thread.start()
     assert first.wait(10), "accepted stream not observed"
-    switched = w.switch(plan, allow_switch=True)
+    marker = ingress / "traffic-open"
+    marker_before = (marker.stat().st_ino, marker.stat().st_mtime_ns, marker.read_bytes())
+    switched = w.switch(plan, allow_switch=True, require_rollback=ROLLBACK_REGRESSION)
     assert switched["phase"] == "switched-awaiting-retirement"
     assert w.Host(plan).probe() == "127.0.0.1:3001" and not stream_done.is_set()
     refuses(lambda: w.switch(plan, allow_switch=True), "web-switch-pending")
     refuses(lambda: w.retire(plan, allow_stop=True, _wait_seconds=0), "old-nginx-workers-still-active")
     assert inspect(old)["State"]["Running"] and not stream_done.is_set()
     assert b"fixture-web-sigterm" not in docker("logs", old)
-    connection = http.client.HTTPConnection("127.0.0.1", 3001, timeout=5)
+
+    def fixture_get(path, port):
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        try:
+            connection.request("GET", path)
+            response = connection.getresponse()
+            assert response.status == 200
+            return response.read()
+        finally:
+            connection.close()
+
+    checkout_answers = []
+    checkout_thread = None
+    if ROLLBACK_REGRESSION:
+        assert w.Host(plan).probe(route_only=True) == "127.0.0.1:3001"
+
+        def checkout():
+            connection = w._TLS(HOSTNAME, timeout=60, context=ssl.create_default_context())
+            try:
+                connection.request("POST", "/api/hold-checkout",
+                                   body=b'{"order":"synthetic-order"}',
+                                   headers={"Host": HOSTNAME, "Content-Type": "application/json",
+                                            "Connection": "close"})
+                response = connection.getresponse()
+                checkout_answers.append((response.status, response.read()))
+            finally:
+                connection.close()
+
+        checkout_thread = threading.Thread(target=checkout, daemon=True)
+        checkout_thread.start()
+        until(lambda: fixture_get("/api/fixture-checkout-count", 3001) == b"1",
+              "synthetic checkout was not admitted through the candidate", 10)
+        assert checkout_thread.is_alive() and not stream_done.is_set()
+        until(lambda: any(sample["slot"] == "127.0.0.1:3001" for sample in availability_samples),
+              "candidate route was not sampled", 10)
+        result = w.rollback(plan, allow_rollback=True)
+        assert result["phase"] == "rolled-back" and not (state / w.PENDING).exists()
+        assert w.Host(plan).probe() == "127.0.0.1:3000"
+        assert checkout_thread.is_alive() and not stream_done.is_set()
+        assert (marker.stat().st_ino, marker.stat().st_mtime_ns, marker.read_bytes()) == marker_before
+        assert fixture_get("/api/fixture-release-checkout", 3000) == b"released"
+        checkout_thread.join(10)
+        assert not checkout_thread.is_alive()
+        assert checkout_answers == [(201, b'{"order":"synthetic-order"}')]
+        assert fixture_get("/api/fixture-checkout-count", 3000) == b"1"
+
+    connection = http.client.HTTPConnection("127.0.0.1", 3000 if ROLLBACK_REGRESSION else 3001, timeout=5)
     connection.request("GET", "/api/fixture-release")
     assert connection.getresponse().read() == b"released"
     connection.close()
     assert stream_done.wait(10)
     thread.join()
     assert b"".join(stream_body) == b"data: first\n\ndata: last\n\n"
-    receipt = w.retire(plan, allow_stop=True)
-    assert receipt["phase"] == "retired" and not (state / w.PENDING).exists()
-    assert w.retire(plan, allow_stop=True) == receipt
-    assert docker("logs", old).count(b"fixture-web-sigterm") == 1
+    if ROLLBACK_REGRESSION:
+        assert w.inspect_pending(plan)["active"]["phase"] == "rolled-back"
+        assert not (state / w.PENDING).exists()
+        assert b"fixture-web-sigterm" not in docker("logs", old)
+        assert b"fixture-web-sigterm" not in docker("logs", new)
+        refuses(lambda: w.retire(plan, allow_stop=True, _wait_seconds=0), "no-confirmed-retirement")
+    else:
+        receipt = w.retire(plan, allow_stop=True)
+        assert receipt["phase"] == "retired" and not (state / w.PENDING).exists()
+        assert w.retire(plan, allow_stop=True) == receipt
+        assert docker("logs", old).count(b"fixture-web-sigterm") == 1
     after = {key: inspect(ident) for key, ident in containers.items()}
-    for key in ("api", "postgres", "job", "new"):
+    unchanged_roles = containers if ROLLBACK_REGRESSION else ("api", "postgres", "job", "new")
+    for key in unchanged_roles:
         for field in ("Id", "Image", "RestartCount"):
             assert before[key][field] == after[key][field]
         assert before[key]["State"]["StartedAt"] == after[key]["State"]["StartedAt"]
         assert w.runtime_fingerprint(before[key]) == w.runtime_fingerprint(after[key])
-    assert after["old"]["State"]["ExitCode"] == 0 and not after["old"]["State"]["Running"]
-    assert next(iter(after["old"]["NetworkSettings"]["Networks"].values()))["IPAddress"] == ""
+    if ROLLBACK_REGRESSION:
+        assert after["old"]["State"]["Running"] and after["new"]["State"]["Running"]
+    else:
+        assert after["old"]["State"]["ExitCode"] == 0 and not after["old"]["State"]["Running"]
+        assert next(iter(after["old"]["NetworkSettings"]["Networks"].values()))["IPAddress"] == ""
     expected_new_policy = {"Name": "unless-stopped" if DURABLE_V2 else "no", "MaximumRetryCount": 0}
     assert after["new"]["HostConfig"]["RestartPolicy"] == expected_new_policy
     assert after["old"]["HostConfig"]["RestartPolicy"] == {"Name": "no", "MaximumRetryCount": 0}
@@ -458,7 +532,14 @@ def main():
         write(EVIDENCE / (key + "-final.json"), w.wire({"Id": after[key]["Id"], "Image": after[key]["Image"],
               "State": after[key]["State"], "NetworkSettings": after[key]["NetworkSettings"]}))
     write(EVIDENCE / "controller-state.json", w.wire(w.inspect_pending(plan)))
-    write(EVIDENCE / "receipt.json", w.wire({"version": 1, "productionHost": True, "retired": True,
+    rollback_proof = {
+        "rolledBack": True,
+        "acceptedCheckoutCompletedExactlyOnce": True,
+        "trafficMarkerUnchanged": True,
+        "previousAndCandidateWebRetained": True,
+    } if ROLLBACK_REGRESSION else {}
+    write(EVIDENCE / "receipt.json", w.wire({"version": 1, "productionHost": True, "retired": not ROLLBACK_REGRESSION,
+          **rollback_proof,
           "planVersion": plan_version, "purpose": w.PLAN_PURPOSES[plan_version], "sameWebBootstrap": DURABLE_V2,
           "activeWebRestartPolicy": after["new"]["HostConfig"]["RestartPolicy"],
           "oldWebRestartPolicy": after["old"]["HostConfig"]["RestartPolicy"],
@@ -466,14 +547,16 @@ def main():
           "webRestartPolicies": {"old": after["old"]["HostConfig"]["RestartPolicy"], "new": after["new"]["HostConfig"]["RestartPolicy"]},
           "apiIsSynthetic": True, "billingTested": False, "webImages": images, "webSources": sources,
           "acceptedStreamCompleted": True, "baselineUnchanged": True, "rejects": rejected,
-          "oldWebSigtermCount": 1, "prematureSigtermObserved": False,
+          "oldWebSigtermCount": 0 if ROLLBACK_REGRESSION else 1, "prematureSigtermObserved": False,
           "verifyAdvisoryLocksOnly": True, "hostInjection": False,
           "availability": availability_proof, "candidateSockets": False,
           "resourceProof": "production Host reads VM /proc; outer 6GiB is a fixture budget, not a 4GiB production load test",
           "hostIsolation": "owned DinD network-none; no outer mounts/socket/ports", "actualSystemCA": True,
           "controllerSha256": w.digest((HERE / "web_switch.py").read_bytes()), "assetFileCount": len(static),
           "trustedCodeBootstrap": trusted_code}))
-    print("Whole production Host controller passed: " + ("V2 same-image durable canary" if DURABLE_V2 else "V1 distinct synthetic Web images"), flush=True)
+    scenario = ("V1 switch and rollback with an accepted checkout" if ROLLBACK_REGRESSION else
+                "V2 same-image durable canary" if DURABLE_V2 else "V1 distinct synthetic Web images")
+    print("Whole production Host controller passed: " + scenario, flush=True)
 
 
 if __name__ == "__main__":

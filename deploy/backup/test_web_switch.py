@@ -99,8 +99,12 @@ class FakeHost:
         self.keep_old_workers = False
         self.stop_exit = 0
         self.stop_hangs = False
+        self._locked = False
+        self.generation = 0
 
     def event(self, name):
+        if name.startswith(("write:", "save:", "sigterm:")) or name in ("hup", "clear-pending"):
+            assert self._locked, "controller mutation outside its common lock"
         self.events.append(name)
         if name in self.fail:
             raise w.WebSwitchError("synthetic-failure")
@@ -111,8 +115,13 @@ class FakeHost:
 
     @contextmanager
     def locked(self):
+        assert not self._locked
         self.event("lock")
-        yield
+        self._locked = True
+        try:
+            yield
+        finally:
+            self._locked = False
 
     def read(self, path):
         self.event("read:" + str(path))
@@ -171,12 +180,16 @@ class FakeHost:
 
     def hup(self):
         self.event("hup")
-        fresh = [{"pid": 201, "starttime": 2001}, {"pid": 202, "starttime": 2002}]
+        self.generation += 1
+        fresh = [{"pid": 200 * self.generation + n, "starttime": 2000 * self.generation + n}
+                 for n in (1, 2)]
         self.workers = self.workers + fresh if self.keep_old_workers else fresh
-        self.route = "127.0.0.1:3001"
+        path = self.plan.values["paths"]["upstream_include"]
+        [port] = [port for port in w.SLOTS if self.files[path] == w.upstream(port)]
+        self.route = f"127.0.0.1:{port}"
 
-    def probe(self, port=None):
-        self.event("probe:" + str(port))
+    def probe(self, port=None, *, route_only=False):
+        self.event("probe:route" if route_only else "probe:" + str(port))
         return self.route if port is None else None
 
     def sigterm(self, ident):
@@ -206,6 +219,287 @@ class Protocol(unittest.TestCase):
 
     def assert_no_mutation(self):
         self.assertFalse(any(x.startswith(("save:", "write:", "sigterm:")) or x == "hup" for x in self.host.events))
+
+    def rollback(self, permission=True):
+        return w.rollback(self.plan, allow_rollback=permission, _host=self.host)
+
+    def switch_reversible(self):
+        return w.switch(self.plan, allow_switch=True, require_rollback=True, _host=self.host)
+
+    def test_reversible_switch_and_rollback_preserve_slots_and_shared_backend(self):
+        baseline = copy.deepcopy(self.host.records)
+        marker = self.plan.values["paths"]["traffic_marker"]
+        marker_bytes = self.host.files[marker]
+        self.host.keep_old_workers = True
+        switched = self.switch_reversible()
+        self.assertEqual(switched["phase"], "switched-awaiting-retirement")
+        self.assertEqual(self.host.route, "127.0.0.1:3001")
+        candidate_workers = copy.deepcopy(self.host.workers)
+        offset = len(self.host.events)
+        receipt = self.rollback()
+        self.assertEqual(receipt["phase"], "rolled-back")
+        self.assertEqual(self.host.route, "127.0.0.1:3000")
+        self.assertEqual(self.host.files[self.plan.values["paths"]["upstream_include"]], w.upstream(3000))
+        self.assertEqual(self.host.files[marker], marker_bytes)
+        self.assertTrue(all(worker in self.host.workers for worker in candidate_workers))
+        self.assertEqual(self.host.records, baseline)
+        self.assertNotIn(w.PENDING, self.host.journal)
+        self.assertEqual(self.host.journal[w.ACTIVE]["active_web"], self.plan.values["slots"]["old"]["container"]["id"])
+        events = self.host.events[offset:]
+        self.assertEqual(events[0], "lock")
+        self.assertLess(next(i for i, event in enumerate(events) if event.startswith("save:" + w.PENDING + ":")),
+                        events.index("write:include"))
+        self.assertLess(events.index("nginx-test"), events.index("hup"))
+        self.assertLess(events.index("hup"), events.index("clear-pending"))
+        self.assertFalse(any(event.startswith("sigterm:") for event in self.host.events))
+        self.assertEqual(self.host.events.count("hup"), 2)
+
+    def test_reversible_switch_rejects_new_only_unversioned_public_asset_before_mutating(self):
+        value = self.plan.values
+        path = value["assets"]["public_new"]["path"]
+        public = w.strict_json(self.host.files[path])
+        public["new-only.svg"] = {"sha256": "f" * 64, "size": 20}
+        raw = w.wire(public)
+        self.host.files[path] = raw
+        value["assets"]["public_new"]["sha256"] = w.digest(raw)
+        self.plan = w.WebSwitchPlan(w.wire(value), self.plan.path)
+        self.host.plan = self.plan
+        with self.assertRaisesRegex(w.WebSwitchError, "public-assets-not-reversible"):
+            self.switch_reversible()
+        self.assert_no_mutation()
+
+    def test_rollback_accepts_unhealthy_candidate_but_refuses_changed_candidate_identity(self):
+        self.switch_reversible()
+        candidate = self.host.records[self.plan.values["slots"]["new"]["container"]["id"]]
+        candidate["State"]["Health"]["Status"] = "unhealthy"
+        self.host.fail.add("probe:3001")
+        image = candidate["Image"]
+        candidate["Image"] = "sha256:" + "f" * 64
+        offset = len(self.host.events)
+        with self.assertRaises(w.WebSwitchError):
+            self.rollback()
+        self.assertNotIn("write:include", self.host.events[offset:])
+        self.assertEqual(self.host.events.count("hup"), 1)
+        candidate["Image"] = image
+        self.assertEqual(self.rollback()["phase"], "rolled-back")
+        self.assertEqual(self.host.route, "127.0.0.1:3000")
+        self.assertTrue(candidate["State"]["Running"])
+
+    def test_rollback_needs_permission_and_a_healthy_original_slot(self):
+        self.switch_reversible()
+        for permission in (False, 1, None, "true"):
+            with self.assertRaises(w.WebSwitchError):
+                self.rollback(permission)
+        original = self.host.records[self.plan.values["slots"]["old"]["container"]["id"]]
+        original["State"]["Health"]["Status"] = "unhealthy"
+        offset = len(self.host.events)
+        with self.assertRaises(w.WebSwitchError):
+            self.rollback()
+        self.assertNotIn("write:include", self.host.events[offset:])
+        self.assertEqual(self.host.events.count("hup"), 1)
+        self.assertEqual(self.host.route, "127.0.0.1:3001")
+
+    def test_rolled_back_operation_cannot_signal_again_or_retire_current_slot(self):
+        self.switch_reversible()
+        receipt = self.rollback()
+        offset = len(self.host.events)
+        self.assertEqual(self.rollback(), receipt)
+        for operation in (self.switch_reversible, self.retire):
+            with self.assertRaises(w.WebSwitchError):
+                operation()
+        events = self.host.events[offset:]
+        self.assertFalse(any(event.startswith(("save:", "write:", "sigterm:")) or event == "hup" for event in events))
+        self.assertNotIn(w.PENDING, self.host.journal)
+
+    def test_rollback_configuration_rejection_restores_candidate_include_without_hup(self):
+        self.switch_reversible()
+        self.host.fail.add("nginx-test")
+        with self.assertRaises(w.WebSwitchError):
+            self.rollback()
+        self.assertEqual(self.host.route, "127.0.0.1:3001")
+        self.assertEqual(self.host.files[self.plan.values["paths"]["upstream_include"]], w.upstream(3001))
+        self.assertEqual(self.host.journal[w.PENDING]["phase"], "rollback-configuration-rejected")
+        self.assertEqual(self.host.events.count("hup"), 1)
+        self.assertFalse(any(event.startswith("sigterm:") for event in self.host.events))
+
+    def test_rollback_rechecks_original_slot_before_hup_and_restores_include_on_drift(self):
+        self.switch_reversible()
+        old = self.host.records[self.plan.values["slots"]["old"]["container"]["id"]]
+
+        def lose_original_readiness():
+            old["State"]["Health"]["Status"] = "unhealthy"
+
+        with patch.object(self.host, "nginx_test", side_effect=lose_original_readiness):
+            with self.assertRaisesRegex(w.WebSwitchError, "container-not-ready"):
+                self.rollback()
+        self.assertEqual(self.host.journal[w.PENDING]["phase"], "rollback-configuration-rejected")
+        self.assertEqual(self.host.files[self.plan.values["paths"]["upstream_include"]], w.upstream(3001))
+        self.assertEqual(self.host.route, "127.0.0.1:3001")
+        self.assertEqual(self.host.events.count("hup"), 1)
+
+    def test_rollback_cli_requires_exact_permission(self):
+        with patch.object(w, "load_plan", return_value=self.plan) as load, patch.object(w, "rollback") as rollback:
+            rollback.return_value = {"phase": "rolled-back"}
+            self.assertEqual(w.main(["rollback", "--plan", "/trusted/plan.json"]), 1)
+            self.assertEqual(w.main(["rollback", "--plan", "/trusted/plan.json", "--allow-rollback", "--allow-stop"]), 1)
+            load.assert_not_called()
+            self.assertEqual(w.main(["rollback", "--plan", "/trusted/plan.json", "--allow-rollback"]), 0)
+            load.assert_called_once_with("/trusted/plan.json")
+            rollback.assert_called_once_with(self.plan, allow_rollback=True)
+
+    def test_rollback_unconfirmed_hup_keeps_intent_and_cannot_be_replayed(self):
+        self.switch_reversible()
+        self.host.fail.add("hup")
+        with self.assertRaises(w.WebSwitchError):
+            self.rollback()
+        self.assertEqual(self.host.route, "127.0.0.1:3001")
+        self.assertEqual(self.host.journal[w.PENDING]["phase"], "rollback-reload-requested")
+        self.assertEqual(self.host.events.count("hup"), 2)
+        self.host.fail.remove("hup")
+        with patch.object(w.time, "monotonic", side_effect=(0, 11)):
+            with self.assertRaisesRegex(w.WebSwitchError, "rollback-nginx-generation-unconfirmed"):
+                self.rollback()
+        with self.assertRaises(w.WebSwitchError):
+            self.retire()
+        self.assertEqual(self.host.events.count("hup"), 2)
+        self.assertFalse(any(event.startswith("sigterm:") for event in self.host.events))
+
+    def test_rollback_refuses_unconfirmed_forward_delivery_without_sending_hup(self):
+        self.host.fail.add("hup")
+        with self.assertRaises(w.WebSwitchError):
+            self.switch_reversible()
+        self.host.fail.remove("hup")
+        self.assertEqual(self.host.journal[w.PENDING]["phase"], "reload-requested")
+        self.assertEqual(self.host.route, "127.0.0.1:3000")
+        offset = len(self.host.events)
+        with self.assertRaises(w.WebSwitchError):
+            self.rollback()
+        self.assertEqual(self.host.journal[w.PENDING]["phase"], "reload-requested")
+        self.assertNotIn("write:include", self.host.events[offset:])
+        self.assertNotIn("clear-pending", self.host.events[offset:])
+        self.assertEqual(self.host.events.count("hup"), 1)
+
+    def test_rollback_requires_exact_forward_route_even_with_fresh_workers(self):
+        self.host.fail.add("hup")
+        with self.assertRaises(w.WebSwitchError):
+            self.switch_reversible()
+        self.host.fail.remove("hup")
+        self.host.workers = [{"pid": 201, "starttime": 2001}]
+        offset = len(self.host.events)
+        with self.assertRaises(w.WebSwitchError):
+            self.rollback()
+        self.assertIn("probe:route", self.host.events[offset:])
+        self.assertNotIn("write:include", self.host.events[offset:])
+        self.assertEqual(self.host.events.count("hup"), 1)
+        self.assertEqual(self.host.journal[w.PENDING]["phase"], "reload-requested")
+
+    def test_rollback_after_lost_forward_ack_uses_private_route_evidence(self):
+        send = self.host.hup
+
+        def lose_ack_after_sending():
+            send()
+            raise w.WebSwitchError("synthetic-forward-ack-lost")
+
+        with patch.object(self.host, "hup", side_effect=lose_ack_after_sending):
+            with self.assertRaises(w.WebSwitchError):
+                self.switch_reversible()
+        self.assertEqual(self.host.journal[w.PENDING]["phase"], "reload-requested")
+        self.assertNotIn(w.ACTIVE, self.host.journal)
+        self.assertEqual(self.host.route, "127.0.0.1:3001")
+        candidate = self.host.records[self.plan.values["slots"]["new"]["container"]["id"]]
+        candidate["State"]["Health"]["Status"] = "unhealthy"
+        self.host.fail.add("probe:3001")
+        offset = len(self.host.events)
+        receipt = self.rollback()
+        self.assertEqual(receipt["phase"], "rolled-back")
+        self.assertEqual(self.host.route, "127.0.0.1:3000")
+        self.assertIn("probe:route", self.host.events[offset:])
+        self.assertEqual(self.rollback(), receipt)
+        self.assertEqual(self.host.events.count("hup"), 2)
+        self.assertNotIn(w.PENDING, self.host.journal)
+        self.assertTrue(candidate["State"]["Running"])
+
+    def test_rollback_after_lost_forward_ack_requires_unchanged_previous_active_receipt(self):
+        earlier_active = {"operation_id": "c" * 32, "plan_sha256": "b" * 64, "phase": "retired",
+                          "active_web": self.plan.values["slots"]["old"]["container"]["id"]}
+        self.host.journal[w.ACTIVE] = earlier_active
+        send = self.host.hup
+
+        def lose_ack_after_sending():
+            send()
+            raise w.WebSwitchError("synthetic-forward-ack-lost")
+
+        with patch.object(self.host, "hup", side_effect=lose_ack_after_sending):
+            with self.assertRaises(w.WebSwitchError):
+                self.switch_reversible()
+        self.assertEqual(self.host.journal[w.PENDING]["prior_active_sha256"], w.digest(w.wire(earlier_active)))
+        unrelated_active = {**earlier_active, "operation_id": "d" * 32}
+        self.host.journal[w.ACTIVE] = unrelated_active
+        offset = len(self.host.events)
+        with self.assertRaises(w.WebSwitchError):
+            self.rollback()
+        self.assertEqual(self.host.journal[w.ACTIVE], unrelated_active)
+        self.assertNotIn("write:include", self.host.events[offset:])
+        self.assertEqual(self.host.events.count("hup"), 1)
+        self.host.journal[w.ACTIVE] = earlier_active
+        receipt = self.rollback()
+        self.assertEqual(receipt["phase"], "rolled-back")
+        self.assertEqual(self.host.events.count("hup"), 2)
+
+    def test_rollback_recovers_lost_ack_from_observed_old_route_without_sending_hup_again(self):
+        self.switch_reversible()
+        send = self.host.hup
+
+        def lose_ack_after_sending():
+            send()
+            raise w.WebSwitchError("synthetic-ack-lost")
+
+        with patch.object(self.host, "hup", side_effect=lose_ack_after_sending):
+            with self.assertRaises(w.WebSwitchError):
+                self.rollback()
+        self.assertEqual(self.host.journal[w.PENDING]["phase"], "rollback-reload-requested")
+        self.assertEqual(self.host.route, "127.0.0.1:3000")
+        self.assertEqual(self.rollback()["phase"], "rolled-back")
+        self.assertEqual(self.host.events.count("hup"), 2)
+        self.assertNotIn(w.PENDING, self.host.journal)
+
+    def test_rollback_finishes_durable_pending_receipt_after_active_write_failure(self):
+        self.switch_reversible()
+        failure = "save:" + w.ACTIVE + ":rolled-back"
+        self.host.fail.add(failure)
+        with self.assertRaises(w.WebSwitchError):
+            self.rollback()
+        self.assertEqual(self.host.route, "127.0.0.1:3000")
+        self.assertEqual(self.host.journal[w.ACTIVE]["phase"], "switched-awaiting-retirement")
+        self.assertEqual(self.host.journal[w.PENDING]["phase"], "rolled-back")
+        self.host.fail.remove(failure)
+        self.assertEqual(self.rollback()["phase"], "rolled-back")
+        self.assertEqual(self.host.journal[w.ACTIVE]["phase"], "rolled-back")
+        self.assertNotIn(w.PENDING, self.host.journal)
+        self.assertEqual(self.host.events.count("hup"), 2)
+
+    def test_rollback_refuses_drift_with_same_pid_and_different_worker_starttime(self):
+        self.switch_reversible()
+        self.host.workers = [{**worker, "starttime": worker["starttime"] + 1} for worker in self.host.workers]
+        offset = len(self.host.events)
+        with self.assertRaises(w.WebSwitchError):
+            self.rollback()
+        self.assertNotIn("write:include", self.host.events[offset:])
+        self.assertEqual(self.host.events.count("hup"), 1)
+
+    def test_rollback_requires_reversible_switch_receipt_and_running_original(self):
+        self.switch()
+        with self.assertRaises(w.WebSwitchError):
+            self.rollback()
+        self.assertEqual(self.host.events.count("hup"), 1)
+        self.plan, self.host = fixture()
+        self.switch_reversible()
+        self.retire()
+        offset = len(self.host.events)
+        with self.assertRaises(w.WebSwitchError):
+            self.rollback()
+        self.assertNotIn("hup", self.host.events[offset:])
+        self.assertNotIn("write:include", self.host.events[offset:])
 
     def test_verify_is_read_only_and_repeatable(self):
         self.assertEqual(w.verify(self.plan, _host=self.host)["status"], "verified-not-switched")
@@ -498,6 +792,23 @@ class Protocol(unittest.TestCase):
         with patch.object(host, "capture", return_value=raw + b"# configuration file /unreviewed/vhost.conf:\n"):
             with self.assertRaisesRegex(w.WebSwitchError, "nginx-unpinned-configuration"):
                 host.nginx_policy()
+
+    def test_private_tls_route_probe_accepts_failed_upstream_without_weakening_readiness(self):
+        host = w.Host.__new__(w.Host)
+        host.value = self.plan.values
+        with patch.object(w.ssl, "create_default_context"), patch.object(w, "_TLS") as tls:
+            connection = tls.return_value
+            response = connection.getresponse.return_value
+            response.status = 503
+            response.getheader.return_value = "127.0.0.1:3001"
+            self.assertEqual(host.probe(route_only=True), "127.0.0.1:3001")
+            self.assertEqual(connection.request.call_args.args, ("GET", "/__citygo_web_slot"))
+            response.read.assert_not_called()
+            connection.close.assert_called_once()
+            with self.assertRaisesRegex(w.WebSwitchError, "web-not-ready"):
+                host.probe()
+            with self.assertRaisesRegex(w.WebSwitchError, "route-only-requires-nginx"):
+                host.probe(3001, route_only=True)
 
     def test_adapter_sigterm_and_inspect_have_fixed_argv(self):
         host = w.Host.__new__(w.Host)

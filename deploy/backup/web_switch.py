@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Explicit, manual switch of TWO ALREADY STAGED Web containers only.
+"""Switch and roll back between two already staged Web containers.
 
-No runtime creation, migrations, grants, API/DB/jobs stop, automatic rollback,
-autodeploy integration, forced shutdown, or recovery inferred from elapsed time.
-Plan/pins are an operator trust root, not an attestation of source correctness.
+Both slots share the pinned API and database. Rollback is explicit and keeps
+both Web containers available to workers draining established connections.
 """
 import argparse
 import copy
@@ -429,7 +428,8 @@ class Host:
             if fd is not None:
                 os.close(fd)
 
-    def probe(self, port=None):
+    def probe(self, port=None, *, route_only=False):
+        require(not route_only or port is None, "route-only-requires-nginx")
         host = self.value["origin"][8:]
         connection = (_TLS(host, timeout=5, context=ssl.create_default_context()) if port is None
                       else http.client.HTTPConnection("127.0.0.1", port, timeout=5))
@@ -437,6 +437,11 @@ class Host:
             path = "/__citygo_web_slot" if port is None else "/api/ready"
             connection.request("GET", path, headers={"Host": host, "X-Forwarded-Proto": "https", "Connection": "close"})
             response = connection.getresponse()
+            if route_only:
+                # Pinned Nginx supplies this header from its actual upstream,
+                # even for a failed upstream request. Keep the readiness gate
+                # strict for verify, switch and confirmation of the old route.
+                return response.getheader("X-CityGo-Web-Slot")
             require(response.status == 200 and strict_json(response.read(4097)) == {"status": "ok"}, "web-not-ready")
             if port is None:
                 return response.getheader("X-CityGo-Web-Slot")
@@ -472,7 +477,7 @@ def _compatibility(host, value):
     return {"backend_sha256": records["old"]["backend_sha256"], "schema_sha256": records["old"]["schema_sha256"]}
 
 
-def _containers(host, value, *, retired=False):
+def _containers(host, value, *, retired=False, rollback=False):
     baseline = value["baseline"]
     pins = [baseline[k] for k in ("api", "postgres")] + baseline["jobs"]
     pins += [slot["container"] for slot in value["slots"].values()]
@@ -509,8 +514,10 @@ def _containers(host, value, *, retired=False):
             require(state.get("Running") is False and state.get("Status") == "exited"
                     and type(state.get("ExitCode")) is int and state["ExitCode"] == 0, "unclean-exit")
         else:
+            restoring_previous = rollback and pin == value["slots"]["new"]["container"]
             require(state.get("Running") is True and state.get("Status") == "running"
-                    and state.get("Health", {}).get("Status") == "healthy", "container-not-ready")
+                    and (restoring_previous or state.get("Health", {}).get("Status") == "healthy"),
+                    "container-not-ready")
         details[pin["id"]] = item
         # Config fingerprints pin mount identity, while these hashes pin the
         # bytes behind every bind-mounted configuration/secret file.
@@ -556,7 +563,7 @@ def _containers(host, value, *, retired=False):
     return details
 
 
-def _verify(plan, host, *, retired=False, check_workers=True):
+def _verify(plan, host, *, retired=False, check_workers=True, require_rollback=False, rollback=False):
     require(type(plan) is WebSwitchPlan, "loaded-plan-required")
     host.assert_plan()
     value = plan.values
@@ -565,7 +572,7 @@ def _verify(plan, host, *, retired=False, check_workers=True):
         host.pinned(pin)
     host.read(value["paths"]["traffic_marker"])
     compatibility = _compatibility(host, value)
-    _containers(host, value, retired=retired)
+    _containers(host, value, retired=retired, rollback=rollback)
     host.resources()
     host.nginx_policy()
     workers = host.processes()
@@ -578,22 +585,28 @@ def _verify(plan, host, *, retired=False, check_workers=True):
         proof = assets.verify_archive(section["root"], archive)
     except (b.BackupError, ValueError, OSError):
         raise WebSwitchError("assets-unverified") from None
+    if require_rollback or rollback:
+        # The forward check already compared every old entry. With no additions
+        # the old image also serves every unversioned URL from the candidate.
+        require(old == new, "public-assets-not-reversible")
     for name, slot in value["slots"].items():
-        if not (retired and name == "old"):
+        if not (retired and name == "old") and not (rollback and name == "new"):
             host.probe(slot["port"])
     host.assert_plan()
     proof = {"version": 1, "plan_sha256": plan.sha256, "operation_id": value["operation_id"],
              "compatibility": compatibility, "assets": proof}
     if value["version"] == 2:
         proof.update(plan_version=2, purpose=PLAN_PURPOSES[2])
+    if require_rollback or rollback:
+        proof["rollback_compatible"] = True
     return proof
 
 
-def verify(plan, *, _host=None):
+def verify(plan, *, require_rollback=False, _host=None):
     host = _host or Host(plan)
     with host.locked():
         require(host.record(PENDING) is None, "web-switch-pending")
-        proof = _verify(plan, host)
+        proof = _verify(plan, host, require_rollback=require_rollback)
         require(host.read(plan.values["paths"]["upstream_include"]) == upstream(plan.values["slots"]["old"]["port"]), "upstream-changed")
         require(host.probe() == "127.0.0.1:" + str(plan.values["slots"]["old"]["port"]), "active-route-changed")
         return {**proof, "status": "verified-not-switched"}
@@ -607,7 +620,7 @@ def _pending(plan, host):
     return record
 
 
-def switch(plan, *, allow_switch=False, _host=None):
+def switch(plan, *, allow_switch=False, require_rollback=False, _host=None):
     require(allow_switch is True, "explicit-switch-permission-required")
     host = _host or Host(plan)
     with host.locked():
@@ -615,12 +628,14 @@ def switch(plan, *, allow_switch=False, _host=None):
         active = host.record(ACTIVE)
         require(active is None or type(active) is dict, "active-record-invalid")
         require(active is None or active.get("operation_id") != plan.values["operation_id"], "operation-already-used")
-        proof = _verify(plan, host)
+        proof = _verify(plan, host, require_rollback=require_rollback)
         value = plan.values
         path = value["paths"]["upstream_include"]
         old, new = (upstream(value["slots"][k]["port"]) for k in ("old", "new"))
         require(host.read(path) == old and host.probe() == "127.0.0.1:" + str(value["slots"]["old"]["port"]), "active-route-changed")
         record = {**proof, "phase": "prepared", "old_workers": value["nginx"]["workers"]}
+        if require_rollback:
+            record["prior_active_sha256"] = digest(wire(active))
         host.save(PENDING, record)  # durable BEFORE the first ingress mutation
         host.assert_plan()
         host.write(path, new)
@@ -632,7 +647,7 @@ def switch(plan, *, allow_switch=False, _host=None):
             raise
         host.assert_plan()
         require(host.read(path) == new, "upstream-changed")
-        _verify(plan, host)  # No source/config/process drift may cross HUP.
+        _verify(plan, host, require_rollback=require_rollback)  # No source/config/process drift may cross HUP.
         host.save(PENDING, {**record, "phase": "reload-requested"})
         host.hup()
         deadline = time.monotonic() + 10
@@ -644,7 +659,7 @@ def switch(plan, *, allow_switch=False, _host=None):
                 break
             require(time.monotonic() < deadline, "new-nginx-generation-unconfirmed")
             host.pause()
-        _verify(plan, host, check_workers=False)
+        _verify(plan, host, check_workers=False, require_rollback=require_rollback)
         require(host.read(path) == new, "upstream-changed")
         receipt = {**record, "phase": "switched-awaiting-retirement", "new_workers": fresh,
                    "active_web": value["slots"]["new"]["container"]["id"]}
@@ -709,6 +724,112 @@ def retire(plan, *, allow_stop=False, _host=None, _wait_seconds=330):
         return receipt
 
 
+def _rollback_route(host, path, port, previous_workers, *, wait=10):
+    expected = "127.0.0.1:" + str(port)
+    deadline = time.monotonic() + wait
+    while True:
+        host.assert_plan()
+        require(host.read(path) == upstream(port), "upstream-changed")
+        fresh = [worker for worker in host.processes() if worker not in previous_workers]
+        if fresh:
+            try:
+                if host.probe() == expected:
+                    return fresh
+            except WebSwitchError as error:
+                if str(error) != "web-not-ready":
+                    raise
+            except (ConnectionError, TimeoutError):
+                # A fresh, read-only TLS probe can briefly hit a draining worker.
+                pass
+        require(time.monotonic() < deadline, "rollback-nginx-generation-unconfirmed")
+        host.pause()
+
+
+def rollback(plan, *, allow_rollback=False, _host=None):
+    require(allow_rollback is True, "explicit-rollback-permission-required")
+    host = _host or Host(plan)
+    with host.locked():
+        host.assert_plan()
+        value = plan.values
+        path = value["paths"]["upstream_include"]
+        old_port, new_port = (value["slots"][slot]["port"] for slot in ("old", "new"))
+        old_web, new_web = (value["slots"][slot]["container"]["id"] for slot in ("old", "new"))
+        active = host.record(ACTIVE)
+        record = host.record(PENDING)
+        if record is None:
+            require(type(active) is dict and active.get("phase") == "rolled-back"
+                    and active.get("plan_sha256") == plan.sha256 and active.get("active_web") == old_web,
+                    "no-confirmed-rollback")
+            _verify(plan, host, check_workers=False, rollback=True)
+            require(host.read(path) == upstream(old_port)
+                    and host.probe() == "127.0.0.1:" + str(old_port), "active-route-changed")
+            return active
+
+        record = _pending(plan, host)
+        phase = record.get("phase")
+        require(phase in ("reload-requested", "switched-awaiting-retirement",
+                          "rollback-reload-requested", "rolled-back"), "switch-not-reversible")
+        require(record.get("rollback_compatible") is True, "rollback-not-verified-before-switch")
+        _verify(plan, host, check_workers=False, rollback=True)
+        if phase in ("reload-requested", "switched-awaiting-retirement"):
+            workers = host.processes()
+            require(host.read(path) == upstream(new_port), "active-route-changed")
+            if phase == "switched-awaiting-retirement":
+                require(active == record and record.get("active_web") == new_web, "active-record-changed")
+                require(any(worker in workers for worker in record["new_workers"]), "active-route-changed")
+            else:
+                # The forward HUP may have run while its acknowledgment was
+                # lost. Require evidence of a loaded candidate generation even
+                # if that candidate now returns an error on its readiness URL.
+                forwarded = {**record, "phase": "switched-awaiting-retirement", "active_web": new_web}
+                saved_forward = (type(active) is dict and bool(active.get("new_workers"))
+                                 and {key: entry for key, entry in active.items() if key != "new_workers"} == forwarded)
+                require(saved_forward or digest(wire(active)) == record.get("prior_active_sha256"),
+                        "active-record-changed")
+                require(any(worker not in record["old_workers"] for worker in workers)
+                        and host.probe(route_only=True) == "127.0.0.1:" + str(new_port),
+                        "forward-reload-unconfirmed")
+            reverse = {**record, "phase": "rollback-prepared", "rollback_from_workers": workers,
+                       "rollback_active_sha256": digest(wire(active))}
+            host.save(PENDING, reverse)
+            host.assert_plan()
+            host.write(path, upstream(old_port))
+            try:
+                host.nginx_test()
+                _verify(plan, host, check_workers=False, rollback=True)
+                require(host.read(path) == upstream(old_port)
+                        and all(worker in workers for worker in host.processes()), "nginx-workers-changed")
+                record = {**reverse, "phase": "rollback-reload-requested"}
+                host.save(PENDING, record)
+            except (WebSwitchError, b.BackupError, OSError, ValueError, http.client.HTTPException):
+                # No reverse HUP has been dispatched; put the live include back.
+                if host.read(path) == upstream(old_port):
+                    host.write(path, upstream(new_port))
+                host.save(PENDING, {**reverse, "phase": "rollback-configuration-rejected"})
+                raise
+            host.hup()
+        else:
+            require(digest(wire(active)) == record.get("rollback_active_sha256")
+                    or (phase == "rolled-back" and active == record), "active-record-changed")
+
+        # Once the reverse reload is requested, a retry can only observe it.
+        # Both slots stay up while Nginx drains requests from either generation.
+        fresh = _rollback_route(host, path, old_port, record["rollback_from_workers"],
+                                wait=0 if phase == "rolled-back" else 10)
+        _verify(plan, host, check_workers=False, rollback=True)
+        require(host.read(path) == upstream(old_port) and host.probe() == "127.0.0.1:" + str(old_port),
+                "active-route-changed")
+        receipt = record
+        if phase != "rolled-back":
+            receipt = {**record, "phase": "rolled-back", "rollback_workers": fresh, "active_web": old_web}
+            host.save(PENDING, receipt)
+        host.save(ACTIVE, receipt)
+        host.assert_plan()
+        require(_pending(plan, host) == receipt, "pending-changed")
+        host.clear_pending()
+        return receipt
+
+
 def inspect_pending(plan, *, _host=None):
     host = _host or Host(plan)
     with host.locked():
@@ -719,7 +840,9 @@ def inspect_pending(plan, *, _host=None):
             require(type(record) is dict and record.get("plan_sha256") == plan.sha256
                     and record.get("operation_id") == plan.values["operation_id"]
                     and record.get("phase") in {"prepared", "configuration-rejected", "reload-requested",
-                                                 "switched-awaiting-retirement", "stop-requested", "retired"}, "state-record-invalid")
+                                                 "switched-awaiting-retirement", "stop-requested", "retired",
+                                                 "rollback-prepared", "rollback-configuration-rejected",
+                                                 "rollback-reload-requested", "rolled-back"}, "state-record-invalid")
             # Do not echo arbitrary JSON/paths/errors from a corrupt state file.
             return {key: record[key] for key in ("plan_sha256", "operation_id", "phase")}
         return {"pending": summary(host.record(PENDING)), "active": summary(host.record(ACTIVE))}
@@ -727,17 +850,30 @@ def inspect_pending(plan, *, _host=None):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("verify", "switch", "retire", "inspect"))
+    parser.add_argument("operation", choices=("verify", "switch", "rollback", "retire", "inspect"))
     parser.add_argument("--plan", required=True)
     parser.add_argument("--allow-switch", action="store_true")
     parser.add_argument("--allow-stop", action="store_true")
+    parser.add_argument("--allow-rollback", action="store_true")
+    parser.add_argument("--require-rollback", action="store_true")
     args = parser.parse_args(argv)
     try:
-        require(args.allow_switch is (args.operation == "switch") and args.allow_stop is (args.operation == "retire"), "explicit-operation-flags")
+        require(args.allow_switch is (args.operation == "switch")
+                and args.allow_stop is (args.operation == "retire")
+                and args.allow_rollback is (args.operation == "rollback")
+                and (not args.require_rollback or args.operation in ("verify", "switch")),
+                "explicit-operation-flags")
         plan = load_plan(args.plan)
-        result = ({"verify": verify, "inspect": inspect_pending}[args.operation](plan)
-                  if args.operation in ("verify", "inspect") else
-                  switch(plan, allow_switch=True) if args.operation == "switch" else retire(plan, allow_stop=True))
+        if args.operation == "verify":
+            result = verify(plan, require_rollback=args.require_rollback)
+        elif args.operation == "switch":
+            result = switch(plan, allow_switch=True, require_rollback=args.require_rollback)
+        elif args.operation == "rollback":
+            result = rollback(plan, allow_rollback=True)
+        elif args.operation == "retire":
+            result = retire(plan, allow_stop=True)
+        else:
+            result = inspect_pending(plan)
         print(json.dumps(result, sort_keys=True))
         return 0
     except (WebSwitchError, b.BackupError, OSError, ValueError, KeyError, TypeError, http.client.HTTPException):
