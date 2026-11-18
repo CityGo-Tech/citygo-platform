@@ -2,6 +2,7 @@
 import { useEffect, useId, useRef, useState, type Ref } from "react";
 import { Button, Card, Field } from "@citygo/ui-web";
 import { PlanStepComposer } from "./personal-plan";
+import { housingFirstPaymentDetails } from "./housing-first-payment";
 import styles from "./housing-starter-plan.module.css";
 
 const situations = [
@@ -91,8 +92,7 @@ export function HousingStarterPlan({
         "Спросите, что входит в ежемесячный платёж, на каких условиях возвращают залог и кто подписывает договор. Подготовьте вопросы для просмотра.",
     },
   ];
-  const costDetails =
-    "Отдельно сравните первый месяц, залог, возможную комиссию, коммунальные услуги и расходы на временное жильё при необходимости.";
+  const costDetails = housingFirstPaymentDetails;
   const summary = [
     budget ? "Бюджет " + budget : "Бюджет пока открыт",
     commute ? "Ориентир «" + commute + "»" : "Район пока открыт",
