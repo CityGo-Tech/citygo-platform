@@ -24,7 +24,8 @@ class FixtureHost:
     def __init__(self, direction):
         self.initial, self.requested = tx.PROFILES[direction]
         self.epoch = tx.Epoch(self.initial, self.initial, BOOT, (100, 1), frozenset({(101, 2)}))
-        self.link_calls = self.hup_calls = 0
+        self.link_calls = self.hup_calls = self.witness_writes = 0
+        self.witness = self.initial
         self.gates_closed = True
         self.loaded = True
         self.valid_config = True
@@ -38,6 +39,16 @@ class FixtureHost:
         assert origin == self.epoch.link and destination == self.requested
         self.epoch = replace(self.epoch, link=destination)
         self.link_calls += 1
+
+    def prepare_witness(self, origin, destination):
+        assert self.epoch.link == destination and self.witness in (origin, destination)
+        if self.witness == origin:
+            self.witness = destination
+            self.witness_writes += 1
+
+    def check_prepared(self, destination):
+        if self.epoch.link != destination or self.witness != destination:
+            raise tx.TransitionError("witness-drift")
 
     def test_config(self):
         if not self.valid_config:
@@ -88,12 +99,28 @@ class IngressTransactionTests(unittest.TestCase):
         with self.assertRaisesRegex(tx.TransitionError, "journal-exists"):
             self.call()
 
-    def test_lost_link_response_resumes_without_replacing_again(self):
+    def test_lost_link_response_prepares_witness_without_replacing_site_again(self):
         self.interrupted("link-replaced")
         self.assertEqual(self.read()["phase"], "link-intent")
         self.assertEqual(self.host.epoch.loaded, "legacy")
+        self.assertEqual(self.host.witness, "legacy")
         self.assertEqual(self.call(resume=True)["phase"], "verified-closed")
-        self.assertEqual((self.host.link_calls, self.host.hup_calls), (1, 1))
+        self.assertEqual((self.host.link_calls, self.host.witness_writes, self.host.hup_calls), (1, 1, 1))
+
+    def test_resume_after_witness_staging_does_not_replace_either_file_again(self):
+        self.interrupted("witness-prepared")
+        self.assertEqual(self.read()["phase"], "link-intent")
+        self.assertEqual((self.host.link_calls, self.host.witness_writes, self.host.hup_calls), (1, 1, 0))
+        self.assertEqual(self.call(resume=True)["phase"], "verified-closed")
+        self.assertEqual((self.host.link_calls, self.host.witness_writes, self.host.hup_calls), (1, 1, 1))
+
+    def test_convergence_cannot_be_adopted_with_changed_witness_file(self):
+        self.interrupted("hup-sent")
+        self.host.witness = "legacy"
+        with self.assertRaisesRegex(tx.TransitionError, "witness-drift"):
+            self.call(resume=True)
+        self.assertEqual(self.read()["phase"], "hup-intent")
+        self.assertEqual(self.host.hup_calls, 1)
 
     def test_lost_hup_response_can_be_confirmed_without_resending(self):
         self.interrupted("hup-sent")
