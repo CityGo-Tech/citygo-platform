@@ -1,16 +1,16 @@
-import type { MiniAppBridge, MiniAppHost } from "./host";
+import {
+  nativeBackButton,
+  type MiniAppBridge,
+  type MiniAppHost,
+  type NativeBackButton,
+} from "./host";
 
 type TelegramWebApp = {
-  initDataUnsafe?: { start_param?: string };
+  initDataUnsafe?: { start_param?: unknown };
   ready?: () => void;
   openLink?: (url: string) => void;
   close?: () => void;
-  BackButton?: {
-    show: () => void;
-    hide: () => void;
-    onClick: (listener: () => void) => void;
-    offClick: (listener: () => void) => void;
-  };
+  BackButton?: NativeBackButton;
 };
 
 function connect(): MiniAppBridge | undefined {
@@ -18,27 +18,13 @@ function connect(): MiniAppBridge | undefined {
     .Telegram?.WebApp;
   if (!app || typeof app.openLink !== "function") return;
 
-  const back = app.BackButton;
+  const task = app.initDataUnsafe?.start_param;
   return {
-    initialTask: app.initDataUnsafe?.start_param,
+    initialTask: typeof task === "string" ? task : undefined,
     openExternal: (url) => app.openLink?.(url),
     ready: typeof app.ready === "function" ? () => app.ready?.() : undefined,
     close: typeof app.close === "function" ? () => app.close?.() : undefined,
-    onBack:
-      back &&
-      typeof back.onClick === "function" &&
-      typeof back.offClick === "function" &&
-      typeof back.show === "function" &&
-      typeof back.hide === "function"
-        ? (listener) => {
-            back.onClick(listener);
-            back.show();
-            return () => {
-              back.offClick(listener);
-              back.hide();
-            };
-          }
-        : undefined,
+    onBack: nativeBackButton(app.BackButton),
   };
 }
 
