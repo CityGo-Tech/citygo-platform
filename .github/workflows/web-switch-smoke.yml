@@ -5,6 +5,7 @@ on:
     paths:
       - .github/workflows/web-switch-smoke.yml
       - deploy/backup/*web_switch*.py
+      - deploy/backup/*web_bootstrap*.py
       - deploy/nginx/pilot-web-switch.conf.template
       - deploy/render-web-switch.mjs
       - deploy/fixtures/web-switch-*.mjs
@@ -13,6 +14,7 @@ on:
       - scripts/web-switch-*.mjs
       - scripts/web-bootstrap-*.mjs
       - docs/runbooks/web-switch-bootstrap.md
+      - docs/runbooks/web-bootstrap-draft.md
       - docs/runbooks/staged-web-switch.md
       - docs/operations/web-*.md
 permissions:
@@ -45,6 +47,10 @@ jobs:
           printf 'event=%s\nrun=%s\nattempt=%s\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> .local/web-switch-controller-smoke/checkout.txt
       - name: Verify controller and protected asset paths on disposable Linux
         run: sudo env TMPDIR=/root python3 -B -m unittest discover -s deploy/backup -p 'test_web_switch*.py' -v
+      - name: Verify offline bootstrap drafts without server access
+        run: python3 -B -m unittest discover -s deploy/backup -p 'test_web_bootstrap*.py' -v
+      - name: Normalize only synthetic bootstrap Compose without a Docker daemon
+        run: python3 -B deploy/backup/web_bootstrap_smoke.py --disposable > .local/web-switch-controller-smoke/bootstrap-draft.json
       - name: Verify opt-in ingress without installing it
         run: node --test scripts/web-switch-ingress.test.mjs scripts/web-switch-transport.test.mjs scripts/web-switch-controller-smoke.test.mjs scripts/web-bootstrap-preparation.test.mjs
       - name: Verify public archive access without exposing private fixture files
