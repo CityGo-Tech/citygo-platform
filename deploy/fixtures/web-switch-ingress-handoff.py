@@ -2,6 +2,7 @@
 import http.client
 from contextlib import ExitStack, closing, contextmanager
 from dataclasses import dataclass, field
+from hashlib import sha256
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
@@ -15,6 +16,11 @@ import sys
 from tempfile import TemporaryDirectory
 from threading import Event, Thread
 from time import monotonic, sleep
+from uuid import uuid4
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backup"))
+from backup import sync_directory
+from web_bootstrap_ingress_transaction import Epoch, transition
 
 HOST = "citygo-ingress.example.test"
 LOOPBACK = "127.0.0.1"
@@ -86,16 +92,21 @@ def slot(label):
 
 
 def replace_file(path, raw):
-    staged = path.with_name(path.name + ".next")
-    staged.write_bytes(raw)
+    staged = path.with_name(path.name + ".next-" + uuid4().hex)
+    with staged.open("xb") as stream:
+        stream.write(raw)
+        stream.flush()
+        os.fsync(stream.fileno())
     staged.replace(path)
-    assert path.read_bytes() == raw
+    sync_directory(path.parent)
+    assert path.is_file() and not path.is_symlink() and path.read_bytes() == raw
 
 
 def replace_link(path, target):
-    staged = path.with_name(path.name + ".next")
+    staged = path.with_name(path.name + ".next-" + uuid4().hex)
     staged.symlink_to(target)
     staged.replace(path)
+    sync_directory(path.parent)
     assert path.is_symlink() and os.readlink(path) == target
 
 
@@ -123,11 +134,15 @@ def rehearse_ingress(root, http_port, tls_port, a, b):
                    check=True, capture_output=True, timeout=15)
     context = ssl.create_default_context(cafile=str(cert / "fullchain.pem"))
     legacy_target = "../sites-available/citygo-pilot"
-    switch_target = "../sites-available/citygo-web-switch"
     enabled = root / "sites-enabled" / "citygo-pilot"
 
-    def render(name):
+    def render(name, profile):
         raw = (TEMPLATES / name).read_text(encoding="utf-8").replace("__CITYGO_HOST__", HOST)
+        # The two production templates have the same 503. A private fixture
+        # header supplies distinct positive observations under closed traffic.
+        location = "    location @citygo_maintenance {"
+        assert raw.count(location) == 1
+        raw = raw.replace(location, location + f"\n        add_header X-CityGo-Fixture-Epoch {profile} always;")
         for source, destination in paths.items():
             raw = raw.replace(source, str(destination))
         return (raw.replace("listen 80", f"listen {LOOPBACK}:{http_port}")
@@ -135,9 +150,9 @@ def rehearse_ingress(root, http_port, tls_port, a, b):
                 .replace(LOOPBACK + ":3000", f"{LOOPBACK}:{a.port}")).encode("utf-8")
 
     legacy_file = enabled.parent / legacy_target
-    legacy_bytes = render("pilot.conf.template")
+    legacy_bytes = render("pilot.conf.template", "legacy")
+    switch_bytes = render("pilot-web-switch.conf.template", "switch")
     legacy_file.write_bytes(legacy_bytes)
-    (enabled.parent / switch_target).write_bytes(render("pilot-web-switch.conf.template"))
     replace_link(enabled, legacy_target)
     citygo = paths["/var/lib/citygo"]
     asset = citygo / ("web-assets" + ASSET)
@@ -163,6 +178,7 @@ http {{
 include {enabled};
 }}
 """, encoding="utf-8")
+    initial_include, initial_config = include.read_bytes(), config.read_bytes()
     args = ["nginx", "-p", str(root) + "/", "-c", str(config), "-e", "stderr"]
 
     def validate():
@@ -181,14 +197,14 @@ include {enabled};
                 self.sock = context.wrap_socket(raw, server_hostname=HOST)
                 cleanup.pop_all()
 
-    def fetch(path, connection=None):
+    def fetch(path, connection=None, header="X-CityGo-Web-Slot"):
         with ExitStack() as cleanup:
             if connection is None:
                 connection = TLS()
                 cleanup.callback(connection.close)
             connection.request("GET", path)
             response = connection.getresponse()
-            return response.status, response.getheader("X-CityGo-Web-Slot"), response.read()
+            return response.status, response.getheader(header), response.read()
 
     def closed(path, connection=None):
         status, slot_header, body = fetch(path, connection)
@@ -202,41 +218,126 @@ include {enabled};
             assert nginx.poll() is None, "disposable Nginx exited"
             return set(Path(f"/proc/{nginx.pid}/task/{nginx.pid}/children").read_text().split())
 
-        def reload(name, change, ports=None):
+        def reload(name, change, ports):
             previous = workers()
             began = monotonic()
             change()
             validate()
             nginx.send_signal(signal.SIGHUP)
-            if ports is None:
-                # No request is held during installation/legacy rollback.
-                wait_for(lambda: (current := workers()) and current.isdisjoint(previous),
-                         "Nginx did not replace the initial worker")
-            else:
-                wait_for(lambda: bool(workers() - previous), "Nginx did not start a new generation")
-                def retired_listener(pid):
-                    try:
-                        title = Path(f"/proc/{pid}/cmdline").read_bytes()
-                    except FileNotFoundError:
-                        return True
-                    return title.startswith(b"nginx: worker process is shutting down")
+            wait_for(lambda: bool(workers() - previous), "Nginx did not start a new generation")
+            def retired_listener(pid):
+                try:
+                    title = Path(f"/proc/{pid}/cmdline").read_bytes()
+                except FileNotFoundError:
+                    return True
+                return title.startswith(b"nginx: worker process is shutting down")
 
-                wait_for(lambda: all(retired_listener(pid) for pid in previous),
-                         "old Nginx workers still accept new connections")
-                previous_port, target_port = ports
+            wait_for(lambda: all(retired_listener(pid) for pid in previous),
+                     "old Nginx workers still accept new connections")
+            previous_port, target_port = ports
 
-                def switched():
-                    status, route, _ = fetch("/__citygo_web_slot")
-                    assert status == 200 and route in (f"{LOOPBACK}:{previous_port}", f"{LOOPBACK}:{target_port}")
-                    return route == f"{LOOPBACK}:{target_port}"
+            def switched():
+                status, route, _ = fetch("/__citygo_web_slot")
+                assert status == 200 and route in (f"{LOOPBACK}:{previous_port}", f"{LOOPBACK}:{target_port}")
+                return route == f"{LOOPBACK}:{target_port}"
 
-                wait_for(switched, "fresh TLS did not converge to the requested slot")
+            wait_for(switched, "fresh TLS did not converge to the requested slot")
             timings[name] = round((monotonic() - began) * 1000, 2)
+
+        boot_id = Path("/proc/sys/kernel/random/boot_id").read_text().strip().replace("-", "")
+
+        def process_pin(pid):
+            try:
+                raw = Path(f"/proc/{pid}/stat").read_text()
+            except FileNotFoundError:
+                return None
+            tail = raw.rsplit(")", 1)[1].split()
+            return (int(pid), int(tail[19])) if tail[0] != "Z" else None
+
+        master = process_pin(nginx.pid)
+
+        def worker_pins():
+            return frozenset(pin for pid in workers() if (pin := process_pin(pid)) is not None)
+
+        class ClosedHost:
+            signals = 0
+
+            def observe_closed(self):
+                assert not os.path.lexists(marker) and legacy_file.read_bytes() == legacy_bytes
+                assert include.read_bytes() == initial_include and config.read_bytes() == initial_config
+                assert process_pin(nginx.pid) == master
+                if enabled.is_symlink():
+                    assert os.readlink(enabled) == legacy_target
+                    link = "legacy"
+                else:
+                    assert enabled.is_file() and enabled.read_bytes() == switch_bytes
+                    link = "switch"
+                status, loaded, body = fetch("/", header="X-CityGo-Fixture-Epoch")
+                assert status == 503 and json.loads(body)["code"] == "SERVICE_UNAVAILABLE"
+                return Epoch(link, loaded, boot_id, master, worker_pins())
+
+            def replace_link(self, origin, destination):
+                assert self.observe_closed().link == origin
+                if destination == "switch":
+                    replace_file(enabled, switch_bytes)
+                else:
+                    replace_link(enabled, legacy_target)
+
+            def test_config(self):
+                validate()
+
+            def hup(self):
+                fd = os.pidfd_open(nginx.pid)
+                try:
+                    assert process_pin(nginx.pid) == master
+                    signal.pidfd_send_signal(fd, signal.SIGHUP, None, 0)
+                    self.signals += 1
+                finally:
+                    os.close(fd)
+
+            def wait_for_workers(self, before):
+                old = {tuple(pin) for pin in before["workers"]}
+                wait_for(lambda: (pins := worker_pins()) and pins.isdisjoint(old),
+                         "Nginx did not drain the old closed generation")
+
+        class Interrupted(Exception):
+            pass
+
+        host = ClosedHost()
+        operation = uuid4().hex
+        review = sha256(legacy_bytes + switch_bytes + initial_include + initial_config).hexdigest()
+
+        def closed_transition(direction, interruption):
+            path = root / (direction + "-journal.json")
+
+            def interrupt(label):
+                if label == interruption:
+                    raise Interrupted()
+
+            args = dict(operation=operation, review_sha256=review, direction=direction, host=host)
+            signals_before = host.signals
+            began = monotonic()
+            try:
+                transition(path, checkpoint=interrupt, **args)
+            except Interrupted:
+                pass
+            else:
+                raise AssertionError("fixture interruption not reached")
+            pending = json.loads(path.read_bytes())
+            if interruption == "hup-sent":
+                assert pending["phase"] == "hup-intent" and host.signals == signals_before + 1
+                host.wait_for_workers(pending["before"])
+            else:
+                assert pending["phase"] == "link-intent" and host.signals == signals_before
+            receipt = transition(path, resume=True, **args)
+            assert receipt["phase"] == "verified-closed" and host.signals == signals_before + 1
+            timings[direction + "ClosedMs"] = round((monotonic() - began) * 1000, 2)
+            return receipt
 
         try:
             wait_for(workers, "initial worker did not start")
             closed("/")
-            reload("installClosedMs", lambda: replace_link(enabled, switch_target))
+            install_receipt = closed_transition("install", "hup-sent")
             for path in ("/", ASSET, "/__citygo_web_slot"):
                 closed(path)
             with closing(TLS()) as probe:
@@ -279,7 +380,10 @@ include {enabled};
                 marker.unlink()
                 closed("/", probe)
                 assert probe.sock is socket_before
-            reload("restoreLegacyClosedMs", lambda: replace_link(enabled, legacy_target))
+            wait_for(lambda: len(worker_pins()) == 1, "open switch workers did not drain")
+            restore_receipt = closed_transition("restore", "link-replaced")
+            assert install_receipt["binding"]["operation"] == restore_receipt["binding"]["operation"]
+            assert host.signals == 2
             closed("/")
             assert not marker.exists() and legacy_file.read_bytes() == legacy_bytes
             marker.touch()
@@ -311,7 +415,9 @@ def main():
     version = subprocess.run(["nginx", "-v"], check=True, capture_output=True, text=True, timeout=5).stderr.strip()
     print(json.dumps({"status": "passed", "nginx": version, "scope": "disposable-loopback",
                       "tlsVerified": True, "acceptedSseCount": 1, "acceptedPostCount": 1,
-                      "legacyRestoredClosed": True, "workerGenerationTimingsMs": timings}, sort_keys=True))
+                      "legacyRestoredClosed": True, "workerGenerationTimingsMs": timings,
+                      "closedJournalRecovery": {"installAfterHup": True, "restoreAfterLink": True,
+                                                "hupSignals": 2}}, sort_keys=True))
 
 
 if __name__ == "__main__":
