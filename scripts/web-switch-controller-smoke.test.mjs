@@ -61,6 +61,31 @@ test("durable V2 has an inert same-image plan and still requires the explicit fi
   );
 });
 
+test("rollback regression is an inert distinct-image profile without explicit fixture permission", async () => {
+  const output = [];
+  const previous = console.log;
+  console.log = (value) => output.push(value);
+  try {
+    await runControllerSmoke(["--plan", "--rollback-regression"]);
+  } finally {
+    console.log = previous;
+  }
+  const plan = JSON.parse(output[0]);
+  assert.equal(plan.rollbackRegression, true);
+  assert.equal(plan.controllerPlanVersion, 1);
+  assert.equal(plan.syntheticDistinctWebReleases, true);
+  assert.equal(plan.realProductApiOrBilling, false);
+  await assert.rejects(
+    runControllerSmoke(["--disposable", "--rollback-regression"]),
+    /Explicit disposable privileged fixture flag required/,
+  );
+  for (const incompatible of ["--durable-v2", "--runtime-stage"])
+    await assert.rejects(
+      runControllerSmoke(["--plan", "--rollback-regression", incompatible]),
+      /Choose only one controller fixture profile/,
+    );
+});
+
 test("fixture Docker children cannot inherit credentials, remote daemon or altered trust", () => {
   const env = controllerFixtureEnv({
     PATH: "/usr/bin",

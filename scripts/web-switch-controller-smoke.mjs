@@ -117,13 +117,15 @@ export async function runControllerSmoke(cliArgs = process.argv.slice(2)) {
         "--pull-public-bases",
         "--durable-v2",
         "--runtime-stage",
+        "--rollback-regression",
       ].includes(a),
     ),
   );
   const durableV2 = args.has("--durable-v2");
   const runtimeStage = args.has("--runtime-stage");
+  const rollbackRegression = args.has("--rollback-regression");
   assert.ok(
-    !(durableV2 && runtimeStage),
+    [durableV2, runtimeStage, rollbackRegression].filter(Boolean).length <= 1,
     "Choose only one controller fixture profile",
   );
   const selectedPlan = {
@@ -133,6 +135,7 @@ export async function runControllerSmoke(cliArgs = process.argv.slice(2)) {
     syntheticDistinctWebReleases: !durableV2 && !runtimeStage,
     sameWebBootstrap: durableV2 || runtimeStage,
     runtimeStage,
+    rollbackRegression,
   };
   if (args.has("--plan") || !args.has("--disposable")) {
     console.log(JSON.stringify(selectedPlan, null, 2));
@@ -550,6 +553,7 @@ export async function runControllerSmoke(cliArgs = process.argv.slice(2)) {
         toolsId,
         "--wait-for-images",
         ...(durableV2 ? ["--durable-v2"] : []),
+        ...(rollbackRegression ? ["--rollback-regression"] : []),
         nodeTag,
         postgresTag,
       ]);
@@ -690,7 +694,21 @@ export async function runControllerSmoke(cliArgs = process.argv.slice(2)) {
           assert.equal(proof.legacy_barrier_retained, true);
         }
       } else {
-        assert.equal(receipt.retired, true);
+        assert.equal(receipt.retired, !rollbackRegression);
+        if (rollbackRegression) {
+          for (const key of [
+            "rolledBack",
+            "acceptedCheckoutCompletedExactlyOnce",
+            "acceptedStreamCompleted",
+            "trafficMarkerUnchanged",
+            "previousAndCandidateWebRetained",
+            "baselineUnchanged",
+          ])
+            assert.equal(receipt[key], true);
+          assert.equal(receipt.oldWebSigtermCount, 0);
+          assert.equal(receipt.availability.errorCount, 0);
+          assert.equal(receipt.billingTested, false);
+        }
         assert.equal(receipt.planVersion, durableV2 ? 2 : 1);
         assert.equal(receipt.sameWebBootstrap, durableV2);
       }

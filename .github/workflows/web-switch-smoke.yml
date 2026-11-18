@@ -114,6 +114,9 @@ jobs:
       - name: Exercise the whole controller inside its own isolated Docker host
         if: ${{ !cancelled() && steps.source-proof.outcome == 'success' }}
         run: node scripts/web-switch-controller-smoke.mjs --disposable --allow-privileged-fixture --pull-public-bases
+      - name: Exercise reversible switch with admitted checkout and SSE
+        if: ${{ !cancelled() && steps.source-proof.outcome == 'success' }}
+        run: node scripts/web-switch-controller-smoke.mjs --disposable --allow-privileged-fixture --pull-public-bases --rollback-regression
       - name: Exercise same-image bootstrap with durable V2 policy
         if: ${{ !cancelled() && steps.source-proof.outcome == 'success' }}
         run: node scripts/web-switch-controller-smoke.mjs --disposable --allow-privileged-fixture --pull-public-bases --durable-v2
