@@ -6,6 +6,11 @@ import {
   landingCookie,
   parseLandingTouch,
   landingTouchMaxAge,
+  acknowledgeLandingView,
+  captureLandingAttribution,
+  consumeLandingAnalyticsEntry,
+  landingStartHref,
+  stageLandingAnalyticsEntry,
 } from "./landing-attribution";
 
 test("campaign attribution extracts only bounded campaign slugs; contact, URL, term and unknown fields are discarded", () => {
@@ -99,4 +104,64 @@ test("registration bridge parses only its own bounded strict cookie and fails op
     "x".repeat(20_000),
   ])
     assert.equal(parseLandingCookie(raw), undefined);
+});
+
+test("a fast CTA transfers only a matching campaign in the same tab once", (t) => {
+  const origin = "https://pilot.xn--c1ajazlh.xn--p1ai";
+  const location = { origin, pathname: "/landing/v8", search: "" };
+  const document = { cookie: "" };
+  const storage = new Map<string, string>();
+  const globals = {
+    window: {},
+    location,
+    document,
+    localStorage: { getItem: () => null },
+    sessionStorage: {
+      getItem: (key: string) => storage.get(key) ?? null,
+      removeItem: (key: string) => storage.delete(key),
+      setItem: (key: string, value: string) => storage.set(key, value),
+    },
+  };
+  const original = Object.getOwnPropertyDescriptors(globalThis);
+  for (const [name, value] of Object.entries(globals))
+    Object.defineProperty(globalThis, name, { configurable: true, value });
+  t.after(() => {
+    for (const name of Object.keys(globals)) {
+      if (original[name])
+        Object.defineProperty(globalThis, name, original[name]);
+      else Reflect.deleteProperty(globalThis, name);
+    }
+  });
+  function landing() {
+    location.pathname = "/landing/v8";
+    location.search =
+      "?utm_source=avito-ads&utm_medium=cpc&utm_campaign=qa&email=hidden";
+    return captureLandingAttribution("v8")!;
+  }
+  function root(attribution: ReturnType<typeof landing>) {
+    location.pathname = "/";
+    location.search = "";
+    document.cookie =
+      landingCookie + "=" + encodeURIComponent(JSON.stringify(attribution));
+  }
+  const campaign = landing();
+  stageLandingAnalyticsEntry(landingStartHref(origin, "v8"));
+  root(campaign);
+  assert.deepEqual(consumeLandingAnalyticsEntry(), {
+    landingVersion: "v8",
+    source: "avito-ads",
+    medium: "cpc",
+    campaignId: "qa",
+  });
+  assert.equal(consumeLandingAnalyticsEntry(), undefined);
+
+  landing();
+  stageLandingAnalyticsEntry(landingStartHref(origin, "v8"));
+  root({ ...campaign, campaignId: "different" });
+  assert.equal(consumeLandingAnalyticsEntry(), undefined);
+
+  acknowledgeLandingView(landing());
+  stageLandingAnalyticsEntry(landingStartHref(origin, "v8"));
+  root(campaign);
+  assert.equal(consumeLandingAnalyticsEntry(), undefined);
 });

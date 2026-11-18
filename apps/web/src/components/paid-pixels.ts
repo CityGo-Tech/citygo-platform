@@ -1,5 +1,7 @@
 import { landingAttributionSchema } from "@citygo/contracts";
 
+export const ANALYTICS_AUTH_RECEIPT_TTL_MS = 120_000;
+
 /** Public advertising counters. No credentials, identity or application content. */
 export type PaidPixelConfig = {
   enabled: boolean;
@@ -66,8 +68,8 @@ export function createPaidPixelBridge(
 ) {
   let frame: HTMLIFrameElement | null = null;
   let active = false;
-  let ready = false;
-  let registrationPending = false;
+  let readyVersion = 0;
+  let registrationExpiresAt = 0;
   let registrationSent = false;
   const seen = new Set<string>();
   const channel = host.crypto.randomUUID();
@@ -75,14 +77,24 @@ export function createPaidPixelBridge(
     value === null ||
     (Number.isSafeInteger(value) && value > 0 && value < 10_000_000_000);
   function sendRegistration() {
-    if (!active || !ready || !registrationPending || registrationSent) return;
+    if (
+      !active ||
+      !readyVersion ||
+      registrationSent ||
+      Date.now() >= registrationExpiresAt
+    )
+      return;
     try {
       frame?.contentWindow?.postMessage(
-        { type: "citygo-paid-registration", version: 1, channel },
+        {
+          type: "citygo-paid-registration",
+          version: readyVersion,
+          channel,
+          ...(readyVersion === 2 ? { expiresAt: registrationExpiresAt } : {}),
+        },
         host.location.origin,
       );
       registrationSent = true;
-      registrationPending = false;
     } catch {
       // A disabled/blocked collector must not fail an account operation.
     }
@@ -98,11 +110,11 @@ export function createPaidPixelBridge(
       Array.isArray(event.data) ||
       Object.keys(event.data).sort().join(",") !== "channel,type,version" ||
       event.data.type !== "citygo-paid-ready" ||
-      event.data.version !== 1 ||
+      (event.data.version !== 1 && event.data.version !== 2) ||
       event.data.channel !== channel
     )
       return;
-    ready = true;
+    if (readyVersion !== 2) readyVersion = event.data.version;
     sendRegistration();
   };
   return {
@@ -156,25 +168,28 @@ export function createPaidPixelBridge(
         return false;
       }
     },
-    registrationCompleted(onceKey: string): boolean {
+    registrationCompleted(onceKey: string, expiresAt: number): boolean {
       if (
         !active ||
         typeof onceKey !== "string" ||
         !onceKey ||
         onceKey.length > 200 ||
-        seen.has(onceKey)
+        seen.has(onceKey) ||
+        !Number.isSafeInteger(expiresAt) ||
+        expiresAt <= Date.now() ||
+        expiresAt > Date.now() + ANALYTICS_AUTH_RECEIPT_TTL_MS
       )
         return false;
       if (seen.size >= 100) return false;
       seen.add(onceKey);
-      registrationPending = true;
+      registrationExpiresAt = expiresAt;
       sendRegistration();
       return true;
     },
     stop() {
       active = false;
-      ready = false;
-      registrationPending = false;
+      readyVersion = 0;
+      registrationExpiresAt = 0;
       host.removeEventListener("message", onMessage);
       if (frame) frame.onload = null;
       frame?.remove();

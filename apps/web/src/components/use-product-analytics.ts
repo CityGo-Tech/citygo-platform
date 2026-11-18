@@ -1,7 +1,13 @@
 "use client";
 import { useEffect, useRef } from "react";
-import { createPaidPixelBridge } from "./paid-pixels";
-import { clearBrowserLandingAttribution } from "./landing/landing-attribution";
+import {
+  ANALYTICS_AUTH_RECEIPT_TTL_MS,
+  createPaidPixelBridge,
+} from "./paid-pixels";
+import {
+  acknowledgeLandingView,
+  clearBrowserLandingAttribution,
+} from "./landing/landing-attribution";
 import { customerInteractionNameSchema } from "@citygo/contracts";
 import type {
   CustomerInteractionName,
@@ -166,6 +172,7 @@ export function useProductAnalytics(options: {
   client: AnalyticsClient;
   publicLandingVersion?: "v1" | "v8";
   publicLandingAttribution?: LandingAttribution;
+  landingAnalyticsEntry?: { current: LandingAttribution | undefined };
 }) {
   const { config, ownerId, role, blocked, sessionSignal, client } = options;
   const surface = useRef(options.surface);
@@ -182,17 +189,32 @@ export function useProductAnalytics(options: {
     authReceipt.current = null;
   }
   useEffect(() => {
+    const entry = options.landingAnalyticsEntry;
     const receipt = authReceipt.current;
     if (
       receipt &&
       (receipt.signal !== sessionSignal ||
         receipt.signal.aborted ||
-        Date.now() - receipt.at >= 120_000 ||
+        Date.now() - receipt.at >= ANALYTICS_AUTH_RECEIPT_TTL_MS ||
         (ownerId !== null && (receipt.ownerId !== ownerId || role !== "user")))
     ) {
       clearAuth();
       registrationFlow.clear();
     }
+    const entryAllowed = () => {
+      const confirmed = authReceipt.current;
+      return (
+        ownerId === null ||
+        (role === "user" &&
+          confirmed?.event === "registration_completed" &&
+          confirmed.ownerId === ownerId &&
+          confirmed.signal === sessionSignal &&
+          Date.now() - confirmed.at < ANALYTICS_AUTH_RECEIPT_TTL_MS &&
+          confirmed.landingVersion === entry?.current?.landingVersion)
+      );
+    };
+    if (entry && (browserAnalyticsOptedOut() || !entryAllowed()))
+      entry.current = undefined;
     if (
       blocked ||
       sessionSignal.aborted ||
@@ -252,7 +274,7 @@ export function useProductAnalytics(options: {
           value.signal.aborted ||
           value.ownerId !== ownerId ||
           role !== "user" ||
-          Date.now() - value.at >= 120_000 ||
+          Date.now() - value.at >= ANALYTICS_AUTH_RECEIPT_TTL_MS ||
           browserAnalyticsOptedOut())
       ) {
         pending.discard(value.onceKey);
@@ -269,7 +291,10 @@ export function useProductAnalytics(options: {
         role === "user" &&
         value.event === "registration_completed" &&
         !value.paidSubmitted &&
-        paidPixels?.registrationCompleted(value.onceKey)
+        paidPixels?.registrationCompleted(
+          value.onceKey,
+          value.at + ANALYTICS_AUTH_RECEIPT_TTL_MS,
+        )
       )
         value.paidSubmitted = true;
       for (const stage of registrationFlow.pending(sessionSignal, ownerId))
@@ -332,6 +357,8 @@ export function useProductAnalytics(options: {
         browserAnalyticsOptedOut() ||
         !analyticsLocationAllowed(window.location)
       ) {
+        if (options.landingAnalyticsEntry)
+          options.landingAnalyticsEntry.current = undefined;
         clearAuth();
         registrationFlow.clear();
         stop();
@@ -441,8 +468,16 @@ export function useProductAnalytics(options: {
           return;
         }
         recorder.current = current;
-        current.view(surface.current);
-        if (ownerId === null && !landingSent)
+        if (entry?.current) {
+          if (entryAllowed()) current.landingEntry(entry.current);
+          entry.current = undefined;
+        }
+        const attribution = options.publicLandingAttribution;
+        current.view(
+          surface.current,
+          attribution ? () => acknowledgeLandingView(attribution) : undefined,
+        );
+        if (ownerId === null && options.publicLandingVersion && !landingSent)
           landingSent = current.event(
             "landing_viewed",
             { surface: "landing" },
@@ -494,6 +529,7 @@ export function useProductAnalytics(options: {
     registrationFlow,
     options.publicLandingVersion,
     options.publicLandingAttribution,
+    options.landingAnalyticsEntry,
   ]);
   useEffect(() => {
     recorder.current?.view(options.surface);
@@ -540,11 +576,13 @@ export function useProductAnalytics(options: {
         registrationFlow.clear();
         return;
       }
-      if (flow) registrationFlow.transfer(flow, user.id, signal);
-      else registrationFlow.clear();
+      const transferred =
+        flow && registrationFlow.transfer(flow, user.id, signal);
+      if (!transferred) registrationFlow.clear();
       const value: AuthReceipt = {
         event,
         ...(event === "registration_completed" &&
+        transferred &&
         flow &&
         registrationFlow.landingVersion(flow)
           ? { landingVersion: registrationFlow.landingVersion(flow) }

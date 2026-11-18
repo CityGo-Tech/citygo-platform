@@ -21,7 +21,7 @@ test("a live privacy change removes attribution from copied and non-primary CTA 
   });
   await expect(cta).toHaveAttribute(
     "href",
-    "https://pilot.xn--c1ajazlh.xn--p1ai/",
+    "https://pilot.xn--c1ajazlh.xn--p1ai/landing/start?task=coordinator",
   );
   await cta.dispatchEvent("contextmenu");
   await expect(cta).not.toHaveAttribute("href", /utm_/);
@@ -122,9 +122,13 @@ test("campaign CTA reaches query-free registration and freezes its safe version 
   await page.getByLabel("Код из письма", { exact: true }).fill("654321");
   await page.getByRole("button", { name: "Подтвердить email" }).click();
   await expect(
-    page.getByRole("heading", { name: "Давайте начнём с того, что волнует" }),
+    page
+      .getByRole("heading", { name: "Координатор переезда", exact: true })
+      .first(),
   ).toBeVisible();
   expect(state.confirm).toBe(1);
+  expect(state.starts).toEqual(["support"]);
+  expect(state.chatPosts).toBe(0);
   expect(await page.evaluate(() => document.cookie)).not.toContain(
     "citygo_landing_attribution",
   );
@@ -240,6 +244,74 @@ test("campaign visits report validated source labels while the address and priva
   expect(state.outside).toEqual([]);
   await page.waitForLoadState("networkidle");
 });
+
+for (const [version, source] of [
+  ["v1", "vk"],
+  ["v8", "avito-ads"],
+] as const) {
+  test(`fast ${version} CTA preserves the first tagged hit through confirmed registration`, async ({
+    page,
+  }) => {
+    test.skip(
+      !enabledCollector(),
+      "Requires the explicit fake-collector build",
+    );
+    const state = await syntheticProduct(page, { fastLandingCta: true });
+    const landing = analyticsOrigin + "/landing/" + version;
+    const tags = `?utm_source=${source}&utm_medium=cpc&utm_campaign=qa_${version}`;
+    await page.goto(landing + tags + "&email=never-store%40example.test");
+    const cta = page.locator("[data-landing-cta=hero]");
+    await expect(cta).toHaveAttribute("href", /utm_campaign=qa_/);
+    await cta.click();
+    await expect(page).toHaveURL(analyticsOrigin + "/");
+    await submitRegistration(page);
+    await page.getByLabel("Код из письма", { exact: true }).fill("654321");
+    await page.getByRole("button", { name: "Подтвердить email" }).click();
+    const commands = () =>
+      page.evaluate(
+        () =>
+          JSON.parse(
+            localStorage.getItem("__landing_calls") || "[]",
+          ) as unknown[][],
+      );
+    await expect
+      .poll(
+        async () =>
+          (await commands()).filter(
+            (row) => row[2] === "citygo_registration_completed",
+          ).length,
+      )
+      .toBe(1);
+    await expect
+      .poll(async () =>
+        (await commands()).filter(
+          (row) => row[2] === "citygo_assistant_opened",
+        ),
+      )
+      .toEqual([
+        [
+          expect.any(Number),
+          "reachGoal",
+          "citygo_assistant_opened",
+          { surface: "chat", assistant: "support" },
+        ],
+      ]);
+    const captured = await commands();
+    expect(captured.find((row) => row[1] === "hit")?.[2]).toBe(landing + tags);
+    expect(
+      captured.filter((row) => row[1] === "hit" && row[2] === landing + tags),
+    ).toHaveLength(1);
+    expect(
+      captured.find((row) => row[2] === "citygo_registration_completed")?.[3],
+    ).toEqual({
+      surface: "register",
+      landingVersion: version,
+    });
+    expect(JSON.stringify(captured)).not.toContain("never-store");
+    expect(state.outside).toEqual([]);
+    await page.waitForLoadState("networkidle");
+  });
+}
 
 test("opt-out preserves registration without attribution; the header still opens the login form", async ({
   page,
@@ -365,3 +437,103 @@ test("an existing acquisition cookie is cleared on product entry when optional a
     /citygo_landing_attribution=;[^\n]*Max-Age=0/,
   );
 });
+
+test("the housing CTA resumes signup through window focus with analytics disabled", async ({
+  page,
+}) => {
+  const state = await syntheticProduct(page);
+  await page.addInitScript(() =>
+    localStorage.setItem("citygo.analytics.optout", "1"),
+  );
+  await page.goto(analyticsOrigin + "/landing/v1?utm_source=vk");
+  const action = page.getByRole("link", {
+    name: "Обсудить жильё",
+    exact: true,
+  });
+  await expect(action).toHaveAttribute(
+    "href",
+    analyticsOrigin + "/landing/start?task=housing",
+  );
+  await action.click();
+  await expect(page).toHaveURL("http://localhost:3000/");
+  await submitRegistration(page);
+  expect(state.begin[0]?.landingAttribution).toBeUndefined();
+  expect(state.begin[0]).not.toHaveProperty("task");
+  const code = page.getByLabel("Код из письма", { exact: true });
+  const confirm = page.getByRole("button", {
+    name: "Подтвердить email",
+    exact: true,
+  });
+  await code.fill("000000");
+  await confirm.click();
+  await expect(
+    page.getByRole("alert").filter({ hasText: "Неверный код" }),
+  ).toBeVisible();
+  expect(state.starts).toEqual([]);
+  let releaseStart!: () => void;
+  state.startGate = new Promise<void>((resolve) => {
+    releaseStart = resolve;
+  });
+  try {
+    await code.fill("654321");
+    await confirm.click();
+    await expect.poll(() => state.starts).toEqual(["housing"]);
+    const dashboardReads = state.dashboardReads;
+    await page.evaluate(() => window.dispatchEvent(new FocusEvent("focus")));
+    await expect
+      .poll(() => state.dashboardReads)
+      .toBeGreaterThan(dashboardReads);
+  } finally {
+    releaseStart();
+  }
+  await expect(
+    page.getByRole("heading", { name: "Помощник по жилью", level: 1 }),
+  ).toBeVisible();
+  expect(state.starts).toEqual(["housing"]);
+  expect(state.chatPosts).toBe(0);
+  expect(await page.evaluate(() => document.cookie)).not.toContain(
+    "citygo_landing_intent",
+  );
+  await page.reload();
+  await expect(
+    page.getByRole("heading", { name: "Помощник по жилью", level: 1 }),
+  ).toBeVisible();
+  expect(state.starts).toEqual(["housing"]);
+  expect(state.outside).toEqual([]);
+});
+
+for (const cause of ["different owner", "unavailable conversation"] as const) {
+  test(
+    "signup keeps its cabinet when resuming a task encounters " + cause,
+    async ({ page }) => {
+      const state = await syntheticProduct(page);
+      if (cause === "different owner") state.dashboardOwner = "102";
+      else state.failStart = true;
+      await page.goto("/landing/start?task=housing");
+      await submitRegistration(page);
+      await page.getByLabel("Код из письма", { exact: true }).fill("654321");
+      await page
+        .getByRole("button", { name: "Подтвердить email", exact: true })
+        .click();
+      await expect(
+        page.getByRole("heading", {
+          name: "Давайте начнём с того, что волнует",
+          level: 1,
+        }),
+      ).toBeVisible();
+      expect(state.confirm).toBe(1);
+      expect(state.starts).toEqual(
+        cause === "different owner" ? [] : ["housing"],
+      );
+      if (cause === "unavailable conversation")
+        await expect(
+          page.getByText(
+            "Не удалось открыть диалог. Выберите помощника и продолжите.",
+            { exact: true },
+          ),
+        ).toBeVisible();
+      expect(state.chatPosts).toBe(0);
+      expect(state.outside).toEqual([]);
+    },
+  );
+}

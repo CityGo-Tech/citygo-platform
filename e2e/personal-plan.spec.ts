@@ -1,4 +1,9 @@
 import { openMessageActions } from "./navigation-helper";
+import {
+  analyticsOrigin,
+  delayedCollector,
+  enabledCollector,
+} from "./product-analytics-collector";
 import { readFile } from "node:fs/promises";
 import { fulfillProductAnalytics } from "./product-analytics-fixture";
 import { syntheticConsentPolicy } from "./service-consent-fixture";
@@ -209,6 +214,7 @@ async function chooseMessage(page: Page, index = 1) {
 async function fixture(
   context: BrowserContext,
   initial: PersonalPlanItem[] = [],
+  housing = false,
 ) {
   const state = {
     owner: "101",
@@ -268,6 +274,14 @@ async function fixture(
       },
     ],
   });
+  let activeHousing = false;
+  const housingThread = {
+    id: "30",
+    agentKey: "housing" as const,
+    assistantKey: "housing" as const,
+    closed: false,
+    messages: [],
+  };
   const board = (): Dashboard => ({
     user: {
       id: state.owner,
@@ -278,7 +292,10 @@ async function fixture(
     profile: null,
     quests: [],
     xp: 0,
-    thread: thread(state.owner),
+    thread:
+      activeHousing && state.owner === "101"
+        ? housingThread
+        : thread(state.owner),
     provider: "unconfigured",
     aiAccess: { granted: false, dailyLimit: 0, policy: null },
   });
@@ -288,6 +305,12 @@ async function fixture(
   });
   await context.route("**/api/v1/**", async (route) => {
     if (await fulfillProductAnalytics(route)) return;
+    if (
+      new URL(route.request().url()).pathname === "/api/v1/analytics/identity"
+    )
+      return route.fulfill({
+        json: { analyticsUserId: "cga_" + "a".repeat(64) },
+      });
     if (
       route.request().method() === "GET" &&
       new URL(route.request().url()).origin === "http://localhost:3000" &&
@@ -310,6 +333,31 @@ async function fixture(
     if (!state.authenticated)
       return route.fulfill({ status: 401, json: { error: "Signed out" } });
     if (path === "/api/v1/dashboard") return route.fulfill({ json: board() });
+    if (
+      housing &&
+      path === "/api/v1/conversations/start" &&
+      request.method() === "POST"
+    ) {
+      expect(request.postDataJSON()).toEqual({ agentKey: "housing" });
+      activeHousing = true;
+      return route.fulfill({
+        json: {
+          id: housingThread.id,
+          agentKey: "housing",
+          assistantKey: "housing",
+          closed: false,
+        },
+      });
+    }
+    if (
+      housing &&
+      activeHousing &&
+      path === "/api/v1/conversations/30" &&
+      request.method() === "GET"
+    )
+      return route.fulfill({
+        json: { userId: state.owner, thread: housingThread },
+      });
     const sourceContext = path.match(
       /^\/api\/v1\/conversations\/(10|20)\/messages\/(\d+)\/context$/,
     );
@@ -560,7 +608,22 @@ test("own user message can become a step, with frozen idempotent retry after a l
 }) => {
   const state = await fixture(context);
   state.lostCreateReceipt = true;
-  await page.goto("/");
+  const collector = enabledCollector() ? await delayedCollector(page) : null;
+  collector?.release();
+  await page.goto(collector ? analyticsOrigin + "/" : "/", {
+    referer: "https://yandex.ru/",
+  });
+  const saveGoals = async () =>
+    ((await collector?.commands()) ?? [])
+      .filter(
+        (row) => row[1] === "reachGoal" && row[2] === "citygo_plan_step_saved",
+      )
+      .map((row) => row.slice(2));
+  if (collector) {
+    await expect
+      .poll(() => collector.commands())
+      .toEqual(expect.arrayContaining([expect.arrayContaining(["setUserID"])]));
+  }
   const form = await chooseMessage(page, 0);
   await form
     .getByLabel("Название шага", { exact: true })
@@ -569,6 +632,7 @@ test("own user message can become a step, with frozen idempotent retry after a l
     .getByRole("button", { name: "Подтвердить добавление", exact: true })
     .click();
   await expect(form.getByRole("alert")).toContainText("уже мог сохраниться");
+  expect(await saveGoals()).toEqual([]);
   await expect(
     form.getByLabel("Название шага", { exact: true }),
   ).toBeDisabled();
@@ -583,6 +647,10 @@ test("own user message can become a step, with frozen idempotent retry after a l
   expect(state.posts[1]).toEqual(state.posts[0]);
   expect(state.items).toHaveLength(1);
   expect(state.posts[0]?.sourceMessageId).toBe("10");
+  if (collector)
+    await expect
+      .poll(saveGoals)
+      .toEqual([["citygo_plan_step_saved", { surface: "plan" }]]);
   expect(state.external).toBe(0);
   expect(state.forbidden).toEqual([]);
 });
@@ -1142,6 +1210,142 @@ test("standalone plan creation survives reload, shows its own origin and exposes
   await openPlan(page);
   await expect(entry).toContainText("Мой список вещей");
   expect(state.sourceReads).toEqual([]);
+  expect(state.forbidden).toEqual([]);
+  expect(state.external).toBe(0);
+});
+
+test("housing starter plan works with incomplete criteria and reopens after an explicit save", async ({
+  page,
+  context,
+}, info) => {
+  const state = await fixture(context, [], true);
+  await page.goto("/");
+  const launch = page.getByRole("button", {
+    name: "Составить план поиска жилья",
+    exact: true,
+  });
+  await expect(launch).toHaveCount(0);
+  await page.getByRole("button", { name: "Помощники", exact: true }).click();
+  const openHousing = page
+    .getByRole("article", { name: "Помощник по жилью", exact: true })
+    .getByRole("button", { name: "Начать разговор", exact: true });
+  await openHousing.click();
+  await launch.click();
+  await page
+    .getByRole("button", { name: "Работу пока ищу", exact: true })
+    .click();
+
+  const preview = page.getByRole("region", {
+    name: "Ваш стартовый план поиска",
+    exact: true,
+  });
+  await expect(preview.getByRole("heading", { level: 1 })).toBeFocused();
+  await expect(
+    preview
+      .getByRole("list", { name: "Шаги поиска", exact: true })
+      .getByRole("listitem"),
+  ).toHaveCount(3);
+  await expect(preview).toContainText("Бюджет пока открыт · Район пока открыт");
+  await expect(preview).toContainText("Пока работа в поиске");
+  expect(state.posts).toEqual([]);
+  await preview.getByRole("button", { name: "К диалогу", exact: true }).click();
+
+  await expect(launch).toBeFocused();
+  await expect(
+    page.getByLabel("Сообщение помощнику", { exact: true }),
+  ).toBeVisible();
+  if (info.project.name === "desktop") {
+    await launch.click();
+    await page
+      .getByRole("button", { name: "Есть ориентир по работе", exact: true })
+      .click();
+    const commute = page.getByLabel("Ориентир для регулярных поездок", {
+      exact: true,
+    });
+    await commute.fill("Не сохранять этот черновик");
+    await page
+      .getByRole("button", { name: "Сменить помощника", exact: true })
+      .click();
+    await openHousing.click();
+    await launch.click();
+    await page
+      .getByRole("button", { name: "Есть ориентир по работе", exact: true })
+      .click();
+    await expect(commute).toHaveValue("");
+    await page
+      .getByRole("button", { name: "Найти жильё", exact: true })
+      .click();
+    await expect(
+      page.getByLabel("Сообщение помощнику", { exact: true }),
+    ).toHaveValue("Хочу обсудить поиск жилья в Москве.");
+    await expect(commute).toHaveCount(0);
+  }
+  await launch.click();
+  await page
+    .getByRole("button", { name: "Есть ориентир по работе", exact: true })
+    .click();
+  await page
+    .getByLabel("Ориентир для регулярных поездок", { exact: true })
+    .fill("метро Парк Победы");
+  await page
+    .getByRole("button", { name: "Открыть план поиска", exact: true })
+    .click();
+  await expect(preview).toContainText("Бюджет пока открыт");
+  await expect(preview).toContainText(
+    "Сравните дорогу до ориентира «метро Парк Победы»",
+  );
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth + 1,
+    ),
+  ).toBe(true);
+  await page.screenshot({
+    path: info.outputPath("housing-starter-plan.png"),
+    fullPage: true,
+  });
+
+  await preview
+    .getByRole("button", { name: "Сохранить ориентир", exact: true })
+    .click();
+  const confirmation = page.getByRole("region", {
+    name: "Добавление шага в план",
+    exact: true,
+  });
+  await expect(
+    confirmation.getByLabel("Название шага", { exact: true }),
+  ).toHaveValue("Стартовый план поиска жилья");
+  await expect(
+    confirmation.getByLabel("Описание шага", { exact: true }),
+  ).toHaveValue(/Бюджет пока открыт.*метро Парк Победы/);
+  expect(state.posts).toEqual([]);
+  await confirmation
+    .getByRole("button", { name: "Отмена", exact: true })
+    .click();
+  await expect(preview).toBeVisible();
+  expect(state.posts).toEqual([]);
+  await preview
+    .getByRole("button", { name: "Сохранить ориентир", exact: true })
+    .click();
+  await confirmation
+    .getByRole("button", { name: "Подтвердить добавление", exact: true })
+    .click();
+  const saved = planPanel(page)
+    .getByRole("article")
+    .filter({ hasText: "Стартовый план поиска жилья" });
+  await expect(saved).toContainText("Готовиться к разговору");
+  await expect(saved).toContainText("метро Парк Победы");
+  expect(state.posts).toHaveLength(1);
+  expect(state.posts[0]?.sourceMessageId).toBeNull();
+  await expect(
+    saved.getByRole("button", {
+      name: "Открыть исходное сообщение",
+      exact: true,
+    }),
+  ).toHaveCount(0);
+  await page.reload();
+  await openPlan(page);
+  await expect(saved).toContainText("Бюджет пока открыт");
+  expect(state.posts).toHaveLength(1);
   expect(state.forbidden).toEqual([]);
   expect(state.external).toBe(0);
 });

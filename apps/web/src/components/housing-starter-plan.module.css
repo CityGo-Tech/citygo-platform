@@ -1,0 +1,97 @@
+.launch {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--cg-space-sm) var(--cg-space-md);
+  padding: var(--cg-space-compact);
+  border: 1px solid var(--cg-color-border);
+  border-radius: var(--cg-radius-control);
+}
+
+.launch p,
+.panel h1,
+.panel h2,
+.panel p {
+  margin: 0;
+}
+
+.launch p,
+.intro {
+  color: var(--cg-color-muted);
+}
+
+.panel,
+.header,
+.stack,
+.steps {
+  display: grid;
+  gap: var(--cg-space-compact);
+  min-width: 0;
+}
+
+.panel {
+  overflow-wrap: anywhere;
+  gap: var(--cg-space-md);
+}
+
+.header :global(.cg-button) {
+  justify-self: start;
+}
+
+.header h1 {
+  font-size: clamp(24px, 3vw, 32px);
+  line-height: 1.25;
+}
+
+.eyebrow {
+  color: var(--cg-color-primary-strong);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.summary {
+  padding: var(--cg-space-compact) var(--cg-space-md);
+  border-radius: var(--cg-radius-control);
+  background: var(--cg-color-primary-soft);
+  font-size: 14px;
+}
+
+.orientation,
+.steps li {
+  display: grid;
+  gap: var(--cg-space-sm);
+  min-width: 0;
+  padding: var(--cg-space-md);
+  border: 1px solid var(--cg-color-border);
+  border-radius: var(--cg-radius-card);
+  background: var(--cg-color-surface);
+}
+
+.orientation h2 {
+  font-size: 20px;
+  line-height: 1.35;
+}
+
+.steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.steps h2 {
+  font-size: 16px;
+  line-height: 1.4;
+}
+
+.steps p {
+  font-size: 15px;
+}
+
+@media (max-width: 680px) {
+  .launch :global(.cg-button) {
+    width: 100%;
+  }
+}

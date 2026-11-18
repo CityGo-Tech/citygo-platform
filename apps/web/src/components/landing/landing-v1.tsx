@@ -55,6 +55,8 @@ const assistants = [
   },
   {
     name: "Жильё",
+    task: "housing",
+    action: "Обсудить жильё",
     image: "/landing/housing-assistant.jpg",
     desktop: "Поиск, бюджет и просмотры",
     mobile: "Бюджет и выбор района",
@@ -591,6 +593,16 @@ export function LandingV1() {
                         mobile={assistant.mobile}
                       />
                     </p>
+                    {"task" in assistant && (
+                      <LandingCta
+                        variant="v1"
+                        placement={assistant.task}
+                        task={assistant.task}
+                        className={styles.assistantAction}
+                      >
+                        {assistant.action}
+                      </LandingCta>
+                    )}
                   </div>
                 </Card>
               ))}

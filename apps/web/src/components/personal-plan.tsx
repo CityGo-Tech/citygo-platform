@@ -17,6 +17,7 @@ import {
   type PersonalPlanState,
 } from "./personal-plan-state";
 import { FavoriteMessageContext } from "./favorite-message-context";
+import { trackProductEvent } from "./product-analytics";
 
 type OwnerProps = {
   userId: string;
@@ -79,17 +80,23 @@ export function PlanStepComposer({
   sessionSignal,
   onAccessDenied,
   source,
+  initialFields,
   onSaved,
   onCancel,
 }: OwnerProps & {
   source: PlanMessageSource | null;
+  initialFields?: StepFields;
   onSaved: () => void;
   onCancel: (checkPlan: boolean) => void;
 }) {
-  const [fields, setFields] = useState<StepFields>({
-    title: source?.content.trim().split(/\r?\n/)[0]!.slice(0, 120) ?? "",
-    details: source?.content.slice(0, 4000) ?? "",
-  });
+  const [fields, setFields] = useState<StepFields>(() =>
+    source
+      ? {
+          title: source.content.trim().split(/\r?\n/)[0]!.slice(0, 120),
+          details: source.content.slice(0, 4000),
+        }
+      : (initialFields ?? { title: "", details: "" }),
+  );
   const [frozen, setFrozen] = useState<CreatePersonalPlanItem | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -140,6 +147,11 @@ export function PlanStepComposer({
           result.item.source?.role !== source?.role
         )
           throw new Error("Plan receipt owner or source mismatch");
+        trackProductEvent(
+          "plan_step_saved",
+          { surface: "plan" },
+          result.item.id,
+        );
         callbacks.current.onSaved();
       } catch (cause) {
         if (signal.aborted) return;
@@ -182,7 +194,7 @@ export function PlanStepComposer({
         Добавить шаг в план
       </h2>
       <p>
-        {source
+        {source || initialFields
           ? "Выберите действие и уточните формулировку перед сохранением."
           : "Запишите действие, которое хотите сделать."}
       </p>
