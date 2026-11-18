@@ -11,8 +11,10 @@ import { assertClosedPaymentAdmission } from "./payment-admission-smoke.mjs";
 import { syntheticServiceConsentChoice } from "./smoke-service-consents.mjs";
 import {
   candidateDir,
-  validateBases,
+  composeCandidateBuild,
+  validateBuildInputs,
   validateEvidence,
+  validateWebImageProfile,
 } from "./release-candidate.mjs";
 
 // Explicitly opt in; this script builds images and deletes ONLY its own disposable volume.
@@ -26,11 +28,12 @@ assert.ok(
     .every((arg) => ["--disposable", "--release-candidate"].includes(arg)),
 );
 const releaseCandidate = process.argv.includes("--release-candidate");
-const bases = releaseCandidate
-  ? validateBases(
+const inputs = releaseCandidate
+  ? validateBuildInputs(
       JSON.parse(readFileSync(join(candidateDir, "build-inputs.json"), "utf8")),
     )
   : null;
+const { webProfile, ...bases } = inputs ?? {};
 const sourceSha = releaseCandidate
   ? spawnSync("git", ["rev-parse", "HEAD"], {
       cwd: root,
@@ -53,24 +56,14 @@ const base = [
   "--profile",
   "jobs",
 ];
-if (bases) {
+if (inputs) {
   const override = join(candidateDir, "build-overrides.json");
-  const app = {
-    platform: "linux/amd64",
-    build: { args: { NODE_IMAGE: bases.node, SOURCE_SHA: sourceSha } },
-  };
   writeFileSync(
     override,
-    JSON.stringify({
-      services: {
-        api: app,
-        web: app,
-        migrator: app,
-        worker: app,
-        postgres: { image: bases.postgres, platform: "linux/amd64" },
-      },
-    }),
-    { flag: "wx" },
+    JSON.stringify(composeCandidateBuild(inputs, sourceSha)),
+    {
+      flag: "wx",
+    },
   );
   base.push("-f", override);
 }
@@ -510,13 +503,20 @@ try {
     ]).trim(),
     testedImages.jobsImage,
   );
-  await pilotSmoke({ ...testedImages, postgresImage: bases?.postgres });
-  if (bases)
+  await pilotSmoke({ ...testedImages, postgresImage: bases.postgres });
+  if (webProfile !== undefined) {
+    const [web] = JSON.parse(
+      docker(["image", "inspect", testedImages.webImage]),
+    );
+    validateWebImageProfile(web, webProfile);
+  }
+  if (inputs)
     evidence = validateEvidence(
       {
         version: 1,
         sourceSha,
         bases,
+        ...(webProfile === undefined ? {} : { webProfile }),
         images: {
           api: testedImages.apiImage,
           web: testedImages.webImage,

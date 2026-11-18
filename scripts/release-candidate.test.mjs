@@ -19,9 +19,14 @@ import {
   runtimeFiles,
   validateContext,
   validateBases,
+  validateBuildInputs,
   validateEvidence,
+  composeCandidateBuild,
+  selectWebBuildProfile,
+  validateWebImageProfile,
   validatePackage,
   selectCheckRun,
+  selectBaseReferences,
   gate,
   createManifest,
   publishImages,
@@ -59,6 +64,61 @@ const context = {
   GITHUB_RUN_ID: "123",
   GITHUB_RUN_ATTEMPT: "1",
 };
+
+test("manual, automatic and local app releases keep the exact server PostgreSQL pin", () => {
+  for (const mode of ["manual", "automatic-main", "operator-local"])
+    assert.deepEqual(
+      selectBaseReferences({
+        RELEASE_MODE: mode,
+        CITYGO_POSTGRES_IMAGE: bases.postgres,
+      }),
+      { node: "node:24-bookworm-slim", postgres: bases.postgres },
+    );
+  assert.deepEqual(selectBaseReferences({}), {
+    node: "node:24-bookworm-slim",
+    postgres: "postgres:17-alpine",
+  });
+});
+
+test("an app release rejects a missing or malformed PostgreSQL pin without a floating fallback", () => {
+  for (const mode of ["manual", "automatic-main", "operator-local"])
+    for (const pin of [
+      undefined,
+      "",
+      "postgres:17-alpine",
+      `postgres:18-alpine@${digest}`,
+      `node:24-bookworm-slim@${digest}`,
+      "postgres:17-alpine@sha256:" + "b".repeat(63),
+      "postgres:17-alpine@sha256:" + "B".repeat(64),
+      bases.postgres + "\n",
+      true,
+    ])
+      assert.throws(
+        () =>
+          selectBaseReferences({
+            RELEASE_MODE: mode,
+            CITYGO_POSTGRES_IMAGE: pin,
+          }),
+        /pinned server PostgreSQL required/,
+      );
+});
+
+test("explicit manual base selection never grants automatic publication authority", () => {
+  const manual = { ...context, RELEASE_MODE: "manual" };
+  assert.equal(validateContext(manual), sha);
+  for (const invalid of [
+    { GITHUB_EVENT_NAME: "push", AUTODEPLOY_ENABLED: "true" },
+    { GITHUB_EVENT_NAME: "pull_request" },
+    { PUBLISH_CONFIRM: "" },
+    { RELEASE_ENABLED: "false" },
+    { PACKAGE_SOURCES_CHECKED: "false" },
+    { GITHUB_REF: "refs/heads/feature" },
+  ])
+    assert.throws(
+      () => validateContext({ ...manual, ...invalid }),
+      /Release rejected/,
+    );
+});
 
 test("runtime bundle includes disabled backup scheduling and email modules", () => {
   for (const path of [
@@ -114,6 +174,10 @@ const privatePackage = (role, overrides = {}) => ({
   repository: { id: repositoryId, full_name: repository },
   ...overrides,
 });
+const existingIds = { api: 15292352, web: 15293992, jobs: 15293993 };
+const webProfile = "pilot-analytics-v1";
+const webAnalyticsLabel = "enabled|113847047|enabled|enabled|3812681|3496456";
+
 const run = (workflow, overrides = {}) => ({
   id: 100,
   run_attempt: 1,
@@ -275,7 +339,10 @@ function githubFixture(overrides = {}) {
       assert.ok(roles.includes(role));
       return overrides.missingPackage
         ? null
-        : privatePackage(role, overrides.pkg);
+        : privatePackage(role, {
+            ...(overrides.existingPackages ? { id: existingIds[role] } : {}),
+            ...overrides.pkg,
+          });
     }
     throw new Error("Unexpected fixture request");
   };
@@ -336,6 +403,12 @@ function publisherFixture(overrides = {}) {
           ? "https://github.com/other/repo"
           : (overrides.source ?? sourceUrl),
       };
+      if (role === "web" && overrides.webProfile)
+        labels["com.citygo.web.analytics"] =
+          (pulled && overrides.badWebReadback) ||
+          (!pulled && overrides.badWebLocal)
+            ? "disabled"
+            : webAnalyticsLabel;
       if (overrides.missingSource)
         delete labels["org.opencontainers.image.source"];
       if (pulled && overrides.badReadbackSource)
@@ -363,7 +436,8 @@ function publisherFixture(overrides = {}) {
     calls,
     args: {
       sha,
-      evidence,
+      evidence: overrides.webProfile ? { ...evidence, webProfile } : evidence,
+      existingPrivatePackagesOnly: !!overrides.existingPackages,
       runId: "123",
       attempt: "2",
       actor: "fixture-user",
@@ -374,6 +448,7 @@ function publisherFixture(overrides = {}) {
         const role = path.split("-").at(-1);
         assert.ok(roles.includes(role));
         return privatePackage(role, {
+          ...(overrides.existingPackages ? { id: existingIds[role] } : {}),
           visibility: overrides.visibility ?? "private",
           ...overrides.pkg,
         });
@@ -552,6 +627,17 @@ test("release workflow is manual, disabled by default, pinned and has no server/
   assert.doesNotMatch(workflow, /\n {2}(push|pull_request|workflow_run):/);
   assert.match(workflow, /CITYGO_RELEASE_PUBLISH_ENABLED == 'true'/);
   assert.match(workflow, /inputs\.package_sources_checked == true/);
+  assert.match(workflow, /\n {6}RELEASE_MODE: manual\n/);
+  assert.match(workflow, /CITYGO_RELEASE_WEB_PROFILE: pilot-analytics-v1/);
+  assert.match(workflow, /GH_TOKEN: \$\{\{ github\.token \}\}/);
+  assert.match(
+    readFileSync(join(root, ".github/workflows/container-smoke.yml"), "utf8"),
+    /CITYGO_RELEASE_WEB_PROFILE: pilot-analytics-v1/,
+  );
+  assert.match(
+    workflow,
+    /\n {6}CITYGO_POSTGRES_IMAGE: \$\{\{ vars\.CITYGO_POSTGRES_IMAGE \}\}\n/,
+  );
   assert.match(
     workflow,
     /package_sources_checked:\s+description:[^\n]+\s+required: true\s+type: boolean\s+default: false/,
@@ -646,4 +732,148 @@ test("publisher bounds the aggregate SQL payload before any Docker call", async 
     /migration total size/,
   );
   assert.equal(oversized.calls.length, 0);
+});
+
+test("the allowlisted pilot Web profile controls the shared build and its derived Web label", () => {
+  assert.equal(selectWebBuildProfile({}), undefined);
+  assert.throws(() => selectWebBuildProfile({ RELEASE_MODE: "manual" }));
+  assert.equal(
+    selectWebBuildProfile({
+      RELEASE_MODE: "manual",
+      CITYGO_RELEASE_WEB_PROFILE: webProfile,
+    }),
+    webProfile,
+  );
+  for (const invalid of [null, "", "disabled", webProfile + " ", {}]) {
+    assert.throws(() =>
+      selectWebBuildProfile({ CITYGO_RELEASE_WEB_PROFILE: invalid }),
+    );
+    assert.throws(() => validateBuildInputs({ ...bases, webProfile: invalid }));
+  }
+  assert.throws(() => validateBuildInputs({ ...bases, extra: "secret" }));
+  assert.throws(() => validateEvidence({ ...evidence, webProfile: "" }, sha));
+  assert.equal(
+    validateEvidence({ ...evidence, webProfile }, sha).webProfile,
+    webProfile,
+  );
+
+  const { services } = composeCandidateBuild({ ...bases, webProfile }, sha);
+  assert.deepEqual(services.web.build.args, {
+    NODE_IMAGE: bases.node,
+    SOURCE_SHA: sha,
+    API_INTERNAL_URL: "http://api:4000",
+    NEXT_PUBLIC_CITYGO_METRIKA_ENABLED: "enabled",
+    NEXT_PUBLIC_CITYGO_METRIKA_COUNTER_ID: "113847047",
+    NEXT_PUBLIC_CITYGO_METRIKA_WEBVISOR: "enabled",
+    NEXT_PUBLIC_CITYGO_AD_PIXELS_ENABLED: "enabled",
+    NEXT_PUBLIC_CITYGO_VK_PIXEL_ID: "3812681",
+    NEXT_PUBLIC_CITYGO_AVITO_COUNTER_ID: "3496456",
+  });
+  for (const role of ["api", "migrator", "worker"])
+    assert.deepEqual(services[role].build.args, services.web.build.args);
+  assert.deepEqual(services.postgres, {
+    image: bases.postgres,
+    platform: "linux/amd64",
+  });
+  assert.deepEqual(composeCandidateBuild(bases, sha).services.web.build.args, {
+    NODE_IMAGE: bases.node,
+    SOURCE_SHA: sha,
+  });
+  const dockerfile = readFileSync(join(root, "deploy/Dockerfile"), "utf8");
+  const [builder, web] = dockerfile.split("FROM runtime AS web\n");
+  const names = Object.keys(services.web.build.args).filter((name) =>
+    name.startsWith("NEXT_PUBLIC_CITYGO_"),
+  );
+  for (const name of names) {
+    assert.ok(builder.includes("ARG " + name + "="));
+    assert.ok(web.includes("ARG " + name + "="));
+  }
+  const variables = names.map((name) => "$" + "{" + name + "}").join("|");
+  assert.ok(web.includes('LABEL com.citygo.web.analytics="' + variables + '"'));
+  assert.throws(() =>
+    validateWebImageProfile({ Config: { Labels: {} } }, webProfile),
+  );
+});
+
+test("only the exact manual workflow can publish to three known private packages from the public source", async () => {
+  const manual = {
+    ...context,
+    RELEASE_MODE: "manual",
+    CITYGO_RELEASE_WEB_PROFILE: webProfile,
+    GITHUB_WORKFLOW_REF:
+      repository + "/.github/workflows/release-candidate.yml@refs/heads/main",
+  };
+  const livePublic = { repo: { private: false }, existingPackages: true };
+  await gate(manual, githubFixture(livePublic), () => sha);
+  for (const change of [
+    { missingPackage: true },
+    { existingPackages: false },
+    { pkg: { visibility: "public" } },
+    { pkg: { visibility: "internal" } },
+    { pkg: { repository: { id: repositoryId, full_name: "other/repo" } } },
+  ])
+    await assert.rejects(
+      gate(manual, githubFixture({ ...livePublic, ...change }), () => sha),
+    );
+  for (const change of [
+    { CITYGO_RELEASE_WEB_PROFILE: undefined },
+    {
+      GITHUB_WORKFLOW_REF:
+        repository + "/.github/workflows/other.yml@refs/heads/main",
+    },
+    {
+      GITHUB_EVENT_NAME: "push",
+      RELEASE_MODE: "automatic-main",
+      AUTODEPLOY_ENABLED: "true",
+      GITHUB_WORKFLOW_REF:
+        repository + "/.github/workflows/deploy-main.yml@refs/heads/main",
+    },
+  ])
+    await assert.rejects(
+      gate({ ...manual, ...change }, githubFixture(livePublic), () => sha),
+    );
+});
+
+test("publication rechecks the Web profile and exact package identity before login and on readback", async () => {
+  const trusted = publisherFixture({
+    webProfile: true,
+    existingPackages: true,
+  });
+  await publishImages(trusted.args);
+  assert.equal(
+    trusted.calls.filter(({ args }) => args[0] === "push").length,
+    3,
+  );
+  for (const fields of [
+    { badWebLocal: true },
+    { pkg: { visibility: "public" } },
+    { pkg: { id: 42 } },
+  ]) {
+    const { args, calls } = publisherFixture({
+      webProfile: true,
+      existingPackages: true,
+      ...fields,
+    });
+    await assert.rejects(publishImages(args));
+    assert.ok(calls.every(({ args }) => args[0] === "image"));
+  }
+  const readback = publisherFixture({
+    webProfile: true,
+    existingPackages: true,
+    badWebReadback: true,
+  });
+  await assert.rejects(
+    publishImages(readback.args),
+    /Web image analytics profile mismatch/,
+  );
+  assert.ok(
+    readback.calls.some(
+      ({ args }) => args[0] === "pull" && args.at(-1).includes("-web@"),
+    ),
+  );
+  assert.ok(
+    readback.calls.every(
+      ({ args }) => args[0] !== "push" || !args[1].includes("-jobs:"),
+    ),
+  );
 });

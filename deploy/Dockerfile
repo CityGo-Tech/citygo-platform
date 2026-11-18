@@ -52,6 +52,14 @@ COPY --chown=node:node deploy/postgres/grants.sql ./release-grants.sql
 CMD ["migrate"]
 
 FROM runtime AS web
+# Derive the witness from the same build arguments used by the builder.
+ARG NEXT_PUBLIC_CITYGO_METRIKA_ENABLED=disabled
+ARG NEXT_PUBLIC_CITYGO_METRIKA_COUNTER_ID=
+ARG NEXT_PUBLIC_CITYGO_METRIKA_WEBVISOR=disabled
+ARG NEXT_PUBLIC_CITYGO_AD_PIXELS_ENABLED=disabled
+ARG NEXT_PUBLIC_CITYGO_VK_PIXEL_ID=
+ARG NEXT_PUBLIC_CITYGO_AVITO_COUNTER_ID=
+LABEL com.citygo.web.analytics="${NEXT_PUBLIC_CITYGO_METRIKA_ENABLED}|${NEXT_PUBLIC_CITYGO_METRIKA_COUNTER_ID}|${NEXT_PUBLIC_CITYGO_METRIKA_WEBVISOR}|${NEXT_PUBLIC_CITYGO_AD_PIXELS_ENABLED}|${NEXT_PUBLIC_CITYGO_VK_PIXEL_ID}|${NEXT_PUBLIC_CITYGO_AVITO_COUNTER_ID}"
 COPY --from=builder --chown=node:node /workspace/apps/web/.next/standalone/ ./
 COPY --from=builder --chown=node:node /workspace/apps/web/.next/static/ ./apps/web/.next/static/
 COPY --from=builder --chown=node:node /workspace/apps/web/public/ ./apps/web/public/
