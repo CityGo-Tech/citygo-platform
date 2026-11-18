@@ -82,6 +82,9 @@ jobs:
         run: sudo env TMPDIR=/tmp "$(command -v node)" --test scripts/web-switch-fixture-permissions.test.mjs
       - name: Assemble an offline review kit without deployment authority
         run: node scripts/web-bootstrap-preparation.mjs --prepare --host=pilot.xn--c1ajazlh.xn--p1ai
+      - name: Exercise closed API, same-image Web and lock-bound ingress rollback
+        if: ${{ !cancelled() && steps.source-proof.outcome == 'success' }}
+        run: node scripts/web-switch-controller-smoke.mjs --disposable --allow-privileged-fixture --pull-public-bases --runtime-stage
       - name: Prepare only disposable public image bases
         run: |
           docker pull node@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5
@@ -114,9 +117,6 @@ jobs:
       - name: Exercise same-image bootstrap with durable V2 policy
         if: ${{ !cancelled() && steps.source-proof.outcome == 'success' }}
         run: node scripts/web-switch-controller-smoke.mjs --disposable --allow-privileged-fixture --pull-public-bases --durable-v2
-      - name: Exercise closed API, same-image Web and lock-bound ingress rollback
-        if: ${{ !cancelled() && steps.source-proof.outcome == 'success' }}
-        run: node scripts/web-switch-controller-smoke.mjs --disposable --allow-privileged-fixture --pull-public-bases --runtime-stage
       - uses: actions/upload-artifact@v7
         if: always()
         with:
