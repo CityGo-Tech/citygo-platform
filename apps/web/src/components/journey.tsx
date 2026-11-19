@@ -44,6 +44,12 @@ const stateLabels: Record<Quest["state"], string> = {
 };
 export type JourneyProps = {
   headerNavigationId?: string;
+  miniAppNavigation?: {
+    registerBack: (handler: (() => boolean) | null) => void;
+    onMessenger: () => void;
+    onLogout: (trigger: HTMLButtonElement) => void;
+    onReceipts?: () => void;
+  };
   workspaceRequest?: { tab: string; sequence: number } | null;
   onWorkspaceRequestHandled?: (sequence: number) => void;
   onNavigateWorkspace?: () => void;

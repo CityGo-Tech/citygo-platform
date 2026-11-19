@@ -11,6 +11,7 @@ import {
   isAccountEmailCode,
   type AccountProfileState,
 } from "./account-profile.state";
+import miniStyles from "./mini-app/mini-workspace.module.css";
 import "./account-profile.css";
 
 /** Figma 6:64 result-card pattern with actual account/contact status. */
@@ -27,6 +28,7 @@ export function AccountProfile({
   onPassword,
   onSupport,
   onResults,
+  miniApp,
 }: {
   userId: string;
   sessionSignal: AbortSignal;
@@ -40,6 +42,11 @@ export function AccountProfile({
   onPassword?: () => void;
   onSupport?: () => void;
   onResults?: () => void;
+  miniApp?: {
+    onMessenger: () => void;
+    onLogout: (trigger: HTMLButtonElement) => void;
+    onReceipts?: () => void;
+  };
 }) {
   const [snapshot, setSnapshot] = useState<{
     owner: string;
@@ -113,12 +120,18 @@ export function AccountProfile({
   };
   return (
     <Card
-      className={accountStyles.page + " account-profile"}
+      className={
+        accountStyles.page +
+        " account-profile" +
+        (miniApp ? ` ${miniStyles.panel} ${miniStyles.profile}` : "")
+      }
       aria-labelledby="account-profile-heading"
       aria-busy={!!state?.busy}
     >
-      <span className={accountStyles.eyebrow}>ВАШ CITYGO</span>
-      <h1 id="account-profile-heading">Личный кабинет</h1>
+      {!miniApp && <span className={accountStyles.eyebrow}>ВАШ CITYGO</span>}
+      <h1 id="account-profile-heading">
+        {miniApp ? "Профиль" : "Личный кабинет"}
+      </h1>
 
       <section
         className={accountStyles.profileCard}
@@ -134,6 +147,15 @@ export function AccountProfile({
         <Button disabled={disabled} onClick={onBalance}>
           Баланс и пополнение
         </Button>
+        {miniApp?.onReceipts && (
+          <Button
+            variant="secondary"
+            disabled={disabled}
+            onClick={miniApp.onReceipts}
+          >
+            Чеки
+          </Button>
+        )}
       </section>
 
       <section
@@ -306,6 +328,19 @@ export function AccountProfile({
         </Button>
       </section>
 
+      {miniApp && (
+        <Button
+          variant="secondary"
+          className={miniStyles.resultsLink}
+          disabled={disabled}
+          onClick={miniApp.onMessenger}
+        >
+          <span>
+            <strong>Мессенджеры</strong>
+          </span>
+          <span aria-hidden="true">›</span>
+        </Button>
+      )}
       <section
         className={accountStyles.profileCard}
         aria-labelledby="profile-saved-heading"
@@ -337,8 +372,19 @@ export function AccountProfile({
         <Button variant="secondary" disabled={disabled} onClick={onPassword}>
           Изменить пароль
         </Button>
-        <Link href="/legal">Правила и данные</Link>
+        <Link href="/legal">
+          {miniApp ? "Правовые документы" : "Правила и данные"}
+        </Link>
         {admin && <Link href="/admin">Открыть админку сервиса</Link>}
+        {miniApp && (
+          <Button
+            variant="ghost"
+            disabled={disabled}
+            onClick={(event) => miniApp.onLogout(event.currentTarget)}
+          >
+            Выйти
+          </Button>
+        )}
       </div>
     </Card>
   );

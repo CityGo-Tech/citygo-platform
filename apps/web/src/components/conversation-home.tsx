@@ -1,5 +1,6 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import Image from "next/image";
 import { createPortal } from "react-dom";
 import {
   JourneySidebar,
@@ -47,13 +48,27 @@ import { MessageTextActions } from "./message-text-actions";
 import { ConversationMessageSearch } from "./conversation-message-search";
 import { ConversationExportAction } from "./conversation-export";
 import { HousingPlanLaunch, HousingStarterPlan } from "./housing-starter-plan";
+import miniStyles from "./mini-app/mini-workspace.module.css";
 
 const greeting =
   "Здравствуйте! Я координатор CityGo. Помогу разложить переезд на понятные шаги. Можно просто рассказать, что сейчас волнует — даже если бюджет и дата ещё неизвестны.";
 
+const workspaceTabs = [
+  { name: "Мой план", miniLabel: "План", icon: "plan" },
+  { name: "Диалоги", miniLabel: "Диалоги", icon: "messages" },
+  { name: "Помощники", miniLabel: "Помощники", icon: "spark" },
+  { name: "Результаты" },
+  { name: "Профиль", miniLabel: "Профиль", icon: "profile" },
+] as const;
+
 /** Conversation home and user-selected plan, from Figma 6:14 / 6:24. */
 export function ConversationHome(props: JourneyProps) {
-  const [tab, setTab] = useState("Диалоги");
+  const miniNavigation = props.miniAppNavigation;
+  const miniApp = !!miniNavigation;
+  const workspace = useRef<HTMLElement>(null);
+  const [tab, setTab] = useState(
+    miniNavigation && !props.board.thread ? "Мой план" : "Диалоги",
+  );
   const [navigationHost, setNavigationHost] = useState<HTMLElement | null>(
     null,
   );
@@ -83,6 +98,10 @@ export function ConversationHome(props: JourneyProps) {
       ? supportSelection.id
       : null;
   const [showList, setShowList] = useState(false);
+  useEffect(() => {
+    if (miniApp) workspace.current?.scrollIntoView({ block: "start" });
+  }, [miniApp, tab, showList]);
+  const [supportReturnTab, setSupportReturnTab] = useState("Диалоги");
   const [contextSource, setContextSource] = useState<{
     userId: string;
     threadId: string | null;
@@ -177,14 +196,47 @@ export function ConversationHome(props: JourneyProps) {
     contextSource.threadId === (board.thread?.id ?? null)
       ? contextSource
       : null;
-  const closeContext = () => {
+  const closeContext = useCallback(() => {
     setTab(contextSource?.tab ?? "Диалоги");
     setContextSource(null);
     requestAnimationFrame(() => {
       if (contextOpener.current?.isConnected) contextOpener.current.focus();
     });
-  };
-  const sidebar = (
+  }, [contextSource]);
+  const openConversationList = useCallback(() => {
+    setShowList(true);
+    props.onConversations?.();
+  }, [props.onConversations]);
+  const registerBack = miniNavigation?.registerBack;
+  useEffect(() => {
+    if (!registerBack) return;
+    registerBack(() => {
+      if (busy || sending) return true;
+      if (handoffSource) setHandoffSource(null);
+      else if (planSource) setPlanSource(null);
+      else if (currentHousingJourney) setHousingJourney(null);
+      else if (tab === "Контекст") closeContext();
+      else if (tab === "Помощь человека") setTab(supportReturnTab);
+      else if (tab === "Диалоги" && !showList) openConversationList();
+      else if (tab !== "Мой план") setTab("Мой план");
+      else return false;
+      return true;
+    });
+    return () => registerBack(null);
+  }, [
+    registerBack,
+    busy,
+    sending,
+    handoffSource,
+    planSource,
+    currentHousingJourney,
+    tab,
+    showList,
+    supportReturnTab,
+    closeContext,
+    openConversationList,
+  ]);
+  const sidebar = !miniNavigation && (
     <JourneySidebar
       disabled={busy || sending || tab === "Контекст"}
       onSuggest={suggest}
@@ -217,7 +269,7 @@ export function ConversationHome(props: JourneyProps) {
     setHousingJourney(null);
     setTab("Контекст");
   };
-  const rail = (
+  const rail = !miniNavigation && (
     <AssistantContextRail
       agent={contextAgent}
       disabled={busy || sending}
@@ -239,14 +291,28 @@ export function ConversationHome(props: JourneyProps) {
     />
   );
   const navigation = (
-    <nav aria-label="Личный кабинет CityGo" className="conversation-tabs">
-      {["Мой план", "Диалоги", "Помощники", "Результаты", "Профиль"].map(
-        (name) => (
+    <nav
+      aria-label="Личный кабинет CityGo"
+      className={
+        miniNavigation
+          ? `mini-app-tabs ${miniStyles.tabs}`
+          : "conversation-tabs"
+      }
+    >
+      {workspaceTabs.map((item) => {
+        if (miniNavigation && !("miniLabel" in item)) return null;
+        const { name } = item;
+        const selected =
+          tab === name ||
+          (!!miniNavigation && tab === "Результаты" && name === "Мой план");
+        return (
           <Button
             key={name}
             className="ym-show-content"
-            variant={tab === name ? "primary" : "secondary"}
-            aria-pressed={tab === name}
+            variant={
+              miniNavigation ? "ghost" : selected ? "primary" : "secondary"
+            }
+            aria-pressed={selected}
             disabled={busy || sending}
             onClick={() => {
               props.onNavigateWorkspace?.();
@@ -256,30 +322,57 @@ export function ConversationHome(props: JourneyProps) {
                 trackProductEvent("plan_opened", { surface: "plan" });
               if (name === "Профиль")
                 trackProductEvent("profile_opened", { surface: "profile" });
-              if (name === "Диалоги") {
-                setShowList(true);
-                props.onConversations?.();
-              }
+              if (
+                name === "Диалоги" &&
+                (!miniNavigation || tab !== "Диалоги" || !showList)
+              ) openConversationList();
             }}
           >
-            {name}
+            {miniNavigation && "miniLabel" in item ? (
+              <>
+                <Image
+                  src={`/mini-app/${item.icon}-${selected ? "blue" : "muted"}.svg`}
+                  width={20}
+                  height={20}
+                  alt=""
+                />
+                {item.miniLabel}
+              </>
+            ) : (
+              name
+            )}
           </Button>
-        ),
-      )}
+        );
+      })}
     </nav>
   );
   return (
-    <section className="conversation-home">
-      {navigationHost ? createPortal(navigation, navigationHost) : navigation}
-      <div className={contextStyles.mobileContext}>
-        <Button
-          variant="secondary"
-          disabled={busy || sending || board.assistantContextAvailable !== true}
-          onClick={openContext}
+    <section
+      ref={workspace}
+      className={`conversation-home${miniNavigation ? ` ${miniStyles.workspace}` : ""}`}
+    >
+      {!miniNavigation &&
+        (navigationHost
+          ? createPortal(navigation, navigationHost)
+          : navigation)}
+      {(!miniNavigation ||
+        (tab === "Диалоги" && !showList && board.thread && board.assistantContextAvailable === true)) && (
+        <div
+          className={
+            miniNavigation ? miniStyles.context : contextStyles.mobileContext
+          }
         >
-          Что помощники знают
-        </Button>
-      </div>
+          <Button
+            variant="secondary"
+            disabled={
+              busy || sending || board.assistantContextAvailable !== true
+            }
+            onClick={openContext}
+          >
+            Что помощники знают
+          </Button>
+        </div>
+      )}
       {board.supportUpdatesAvailable === true && (
         <SupportUpdatesNotice
           userId={board.user.id}
@@ -293,6 +386,7 @@ export function ConversationHome(props: JourneyProps) {
               signal: props.sessionSignal,
               id,
             });
+            if (tab !== "Помощь человека") setSupportReturnTab(tab);
             setTab("Помощь человека");
           }}
         />
@@ -409,7 +503,9 @@ export function ConversationHome(props: JourneyProps) {
               userId={board.user.id}
               sessionSignal={props.sessionSignal}
               onAccessDenied={props.onAccessDenied}
-              onClose={() => setTab("Диалоги")}
+              onClose={() =>
+                setTab(miniNavigation ? supportReturnTab : "Диалоги")
+              }
             />
           </div>
           {rail}
@@ -459,10 +555,20 @@ export function ConversationHome(props: JourneyProps) {
               navigationBusy={busy || sending}
               onOpenConversation={open}
               onContinue={() => {
-                setTab("Диалоги");
+                setTab(
+                  miniNavigation && !board.thread ? "Помощники" : "Диалоги",
+                );
                 setShowList(false);
               }}
               onHelpers={() => setTab("Помощники")}
+              miniApp={
+                miniNavigation
+                  ? {
+                      targetCity: board.profile?.targetCity,
+                      onResults: () => setTab("Результаты"),
+                    }
+                  : undefined
+              }
             />
           </div>
           {rail}
@@ -472,7 +578,11 @@ export function ConversationHome(props: JourneyProps) {
           {sidebar}
           <div className="conversation-main">
             {tab === "Помощники" ? (
-              <AssistantCatalog busy={busy || sending} onBegin={begin} />
+              <AssistantCatalog
+                busy={busy || sending}
+                onBegin={begin}
+                miniApp={!!miniNavigation}
+              />
             ) : (
               <ConversationList
                 userId={board.user.id}
@@ -488,6 +598,7 @@ export function ConversationHome(props: JourneyProps) {
                 }
                 onHelpers={() => setTab("Помощники")}
                 onFavorites={props.onFavorites}
+                miniApp={!!miniNavigation}
               />
             )}
           </div>
@@ -508,10 +619,14 @@ export function ConversationHome(props: JourneyProps) {
               onBalance={props.onBalance}
               onPhone={props.onPhone}
               onFavorites={props.onFavorites}
-              onResults={() => setTab("Результаты")}
+              onResults={
+                miniNavigation ? undefined : () => setTab("Результаты")
+              }
+              miniApp={miniNavigation}
               onPassword={props.onPassword}
               onSupport={() => {
                 setSupportSelection(null);
+                setSupportReturnTab("Профиль");
                 setTab("Помощь человека");
               }}
             />
@@ -571,10 +686,7 @@ export function ConversationHome(props: JourneyProps) {
                   <Button
                     variant="ghost"
                     disabled={busy || sending}
-                    onClick={() => {
-                      setShowList(true);
-                      props.onConversations?.();
-                    }}
+                    onClick={openConversationList}
                   >
                     Все диалоги
                   </Button>
@@ -856,6 +968,7 @@ export function ConversationHome(props: JourneyProps) {
           {rail}
         </div>
       )}
+      {miniNavigation && navigation}
     </section>
   );
 }

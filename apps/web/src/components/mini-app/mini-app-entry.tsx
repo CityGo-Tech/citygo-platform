@@ -19,6 +19,7 @@ import {
 } from "./host";
 import styles from "./mini-app-entry.module.css";
 import type { MiniAppAccountAccess } from "./account-access";
+import { trackMiniAppKeyboard } from "./viewport";
 
 type Screen = "welcome" | "housing" | "plan" | "relocation";
 type Launch = "checking" | MiniAppLaunch;
@@ -49,8 +50,11 @@ export function MiniAppEntry({ host }: { host: MiniAppHost }) {
   const [commute, setCommute] = useState("");
   const [notice, setNotice] = useState("");
   const heading = useRef<HTMLHeadingElement>(null);
+  const accountShell = useRef<HTMLDivElement>(null);
+  const accountBackHandler = useRef<(() => boolean) | null>(null);
   const entered = useRef(false);
   const connected = useRef(false);
+  const accountOpen = Boolean(accountAccess);
 
   useEffect(() => {
     const kind = miniAppLaunch(window.location.hash, host.launchFragmentKey);
@@ -72,14 +76,31 @@ export function MiniAppEntry({ host }: { host: MiniAppHost }) {
   }, []);
 
   useEffect(() => {
-    if (entered.current) heading.current?.focus();
-  }, [screen]);
+    if (entered.current && !accountOpen) heading.current?.focus();
+  }, [accountOpen, screen]);
 
-  const returnFromAccount = useCallback(() => setAccountAccess(undefined), []);
+  const returnFromAccount = useCallback(() => {
+    entered.current = true;
+    setNotice("");
+    setAccountAccess(undefined);
+  }, []);
+  const registerMiniAppBack = useCallback((handler: (() => boolean) | null) => {
+    accountBackHandler.current = handler;
+  }, []);
+  const goBackFromAccount = useCallback(() => {
+    if (!accountBackHandler.current?.()) returnFromAccount();
+  }, [returnFromAccount]);
+  const goBack = accountOpen ? goBackFromAccount : back;
+  const canGoBack = accountOpen || screen !== "welcome";
+
   useEffect(() => {
-    if (accountAccess) return bridge?.onBack?.(returnFromAccount);
-    if (screen !== "welcome") return bridge?.onBack?.(back);
-  }, [accountAccess, back, bridge, returnFromAccount, screen]);
+    if (canGoBack) return bridge?.onBack?.(goBack);
+  }, [bridge, canGoBack, goBack]);
+  useEffect(() => {
+    if (accountOpen && accountShell.current) {
+      return trackMiniAppKeyboard(accountShell.current);
+    }
+  }, [accountOpen]);
 
   const launchError =
     "Не удалось подключиться к мессенджеру. Откройте CityGo из бота ещё раз.";
@@ -120,6 +141,7 @@ export function MiniAppEntry({ host }: { host: MiniAppHost }) {
       return;
     }
     if (bridge.initData) {
+      setNotice("");
       setAccountAccess({
         provider: host.provider,
         initData: bridge.initData,
@@ -143,13 +165,14 @@ export function MiniAppEntry({ host }: { host: MiniAppHost }) {
     }
   };
 
-  if (accountAccess)
-    return (
-      <CityGoHome miniApp={accountAccess} onBackToMiniApp={returnFromAccount} />
-    );
-
   return (
-    <div className={styles.shell} data-host={host.name}>
+    <div
+      ref={accountShell}
+      className={
+        accountOpen ? `${styles.shell} ${styles.accountShell}` : styles.shell
+      }
+      data-host={host.name}
+    >
       {launch === "messenger" && (
         <Script
           src={host.script}
@@ -162,13 +185,13 @@ export function MiniAppEntry({ host }: { host: MiniAppHost }) {
       )}
       <header className={styles.bar} aria-label={`CityGo в ${host.name}`}>
         <div className={styles.barSide}>
-          {screen !== "welcome" && (
+          {canGoBack && (
             <Button
               type="button"
               variant="secondary"
               className={styles.iconButton}
               aria-label="Назад"
-              onClick={back}
+              onClick={goBack}
             >
               <Image src="/mini-app/back.svg" width={20} height={20} alt="" />
             </Button>
@@ -192,185 +215,201 @@ export function MiniAppEntry({ host }: { host: MiniAppHost }) {
           )}
         </div>
       </header>
-      <main className={styles.content}>
-        {screen === "welcome" && (
-          <>
-            <Image
-              src="/landing/brand-logo.png"
-              alt="Ситиго"
-              width={163}
-              height={34}
-              priority
+      {accountAccess ? (
+        <>
+          {launchNotice && (
+            <p className={styles.accountNotice} role="status">
+              {launchNotice}
+            </p>
+          )}
+          <div className={styles.accountContent}>
+            <CityGoHome
+              miniApp={accountAccess}
+              registerMiniAppBack={registerMiniAppBack}
             />
-            <Card className={styles.hero}>
-              <div className={styles.intro}>
-                <span className={styles.eyebrow}>Ваш переезд</span>
-                <h1 ref={heading} tabIndex={-1}>
-                  С чего начнём?
-                </h1>
-                <p>Можно выбрать одну задачу и уточнить детали позже.</p>
-              </div>
+          </div>
+        </>
+      ) : (
+        <main className={styles.content}>
+          {screen === "welcome" && (
+            <>
               <Image
-                src="/figma/support-assistant.png"
-                className={styles.portrait}
-                alt=""
-                width={64}
-                height={64}
+                src="/landing/brand-logo.png"
+                alt="Ситиго"
+                width={163}
+                height={34}
+                priority
               />
-            </Card>
-            <TaskButton
-              title="Найти жильё"
-              detail="Районы, дорога до работы и первый платёж"
-              onClick={() => changeScreen("housing")}
-            />
-            <TaskButton
-              title="Оценить переезд"
-              detail="Разберите расходы и следующие шаги"
-              onClick={() => changeScreen("relocation")}
-            />
-            <Button
-              type="button"
-              variant="ghost"
-              className={styles.quiet}
-              disabled={launch === "checking"}
-              onClick={() => openCityGo()}
-            >
-              Войти в CityGo
-            </Button>
-          </>
-        )}
-        {screen === "housing" && (
-          <>
-            <div className={styles.heading}>
-              <h1 ref={heading} tabIndex={-1}>
-                Поиск жилья
-              </h1>
-              <p>Укажите то, что уже знаете. Любое поле можно пропустить.</p>
-            </div>
-            <form
-              className={styles.form}
-              onSubmit={(event) => {
-                event.preventDefault();
-                changeScreen("plan");
-              }}
-            >
-              <div className={styles.city}>
-                <span>Город</span>
-                <strong>Москва</strong>
-              </div>
-              <Field
-                label="Бюджет в месяц, ₽"
-                type="number"
-                inputMode="numeric"
-                min={1}
-                max={99_999_999}
-                step={1}
-                placeholder="Пока не знаю"
-                value={budget}
-                onChange={(event) => setBudget(event.target.value)}
+              <Card className={styles.hero}>
+                <div className={styles.intro}>
+                  <span className={styles.eyebrow}>Ваш переезд</span>
+                  <h1 ref={heading} tabIndex={-1}>
+                    С чего начнём?
+                  </h1>
+                  <p>Можно выбрать одну задачу и уточнить детали позже.</p>
+                </div>
+                <Image
+                  src="/figma/support-assistant.png"
+                  className={styles.portrait}
+                  alt=""
+                  width={64}
+                  height={64}
+                />
+              </Card>
+              <TaskButton
+                title="Найти жильё"
+                detail="Районы, дорога до работы и первый платёж"
+                onClick={() => changeScreen("housing")}
               />
-              <Field
-                label="Куда ездить"
-                maxLength={100}
-                placeholder="Пока не указано"
-                value={commute}
-                onChange={(event) => setCommute(event.target.value)}
+              <TaskButton
+                title="Оценить переезд"
+                detail="Разберите расходы и следующие шаги"
+                onClick={() => changeScreen("relocation")}
               />
-              <Button type="submit">Собрать стартовый план</Button>
               <Button
                 type="button"
                 variant="ghost"
                 className={styles.quiet}
-                onClick={() => {
-                  setBudget("70000");
-                  setCommute("Кутузовский проспект");
+                disabled={launch === "checking"}
+                onClick={() => openCityGo()}
+              >
+                Войти в CityGo
+              </Button>
+            </>
+          )}
+          {screen === "housing" && (
+            <>
+              <div className={styles.heading}>
+                <h1 ref={heading} tabIndex={-1}>
+                  Поиск жилья
+                </h1>
+                <p>Укажите то, что уже знаете. Любое поле можно пропустить.</p>
+              </div>
+              <form
+                className={styles.form}
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  changeScreen("plan");
                 }}
               >
-                Подставить пример
+                <div className={styles.city}>
+                  <span>Город</span>
+                  <strong>Москва</strong>
+                </div>
+                <Field
+                  label="Бюджет в месяц, ₽"
+                  type="number"
+                  inputMode="numeric"
+                  min={1}
+                  max={99_999_999}
+                  step={1}
+                  placeholder="Пока не знаю"
+                  value={budget}
+                  onChange={(event) => setBudget(event.target.value)}
+                />
+                <Field
+                  label="Куда ездить"
+                  maxLength={100}
+                  placeholder="Пока не указано"
+                  value={commute}
+                  onChange={(event) => setCommute(event.target.value)}
+                />
+                <Button type="submit">Собрать стартовый план</Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className={styles.quiet}
+                  onClick={() => {
+                    setBudget("70000");
+                    setCommute("Кутузовский проспект");
+                  }}
+                >
+                  Подставить пример
+                </Button>
+              </form>
+            </>
+          )}
+          {screen === "plan" && (
+            <>
+              <div className={styles.heading}>
+                <h1 ref={heading} tabIndex={-1}>
+                  Стартовый план
+                </h1>
+                <p>
+                  {budget
+                    ? `Москва · до ${budgetFormat.format(Number(budget))} ₽ в месяц`
+                    : "Бюджет можно уточнить позже."}
+                </p>
+              </div>
+              <PlanCard
+                title="1. Определите первый платёж"
+                detail={housingFirstPaymentDetails}
+              />
+              <PlanCard
+                title="2. Сравните маршруты"
+                detail={
+                  commute.trim()
+                    ? `Проверьте дорогу до ориентира «${commute.trim()}» в обычное для поездок время.`
+                    : "Начните с работы и мест, куда ездите чаще всего."
+                }
+              />
+              <PlanCard
+                title="3. Подготовьте вопросы"
+                detail="Уточните, что входит в цену, как возвращают залог и кто подписывает договор."
+              />
+              <Button
+                type="button"
+                disabled={launch === "checking"}
+                onClick={() => openCityGo("housing")}
+              >
+                Продолжить в CityGo
               </Button>
-            </form>
-          </>
-        )}
-        {screen === "plan" && (
-          <>
-            <div className={styles.heading}>
-              <h1 ref={heading} tabIndex={-1}>
-                Стартовый план
-              </h1>
-              <p>
-                {budget
-                  ? `Москва · до ${budgetFormat.format(Number(budget))} ₽ в месяц`
-                  : "Бюджет можно уточнить позже."}
-              </p>
-            </div>
-            <PlanCard
-              title="1. Определите первый платёж"
-              detail={housingFirstPaymentDetails}
-            />
-            <PlanCard
-              title="2. Сравните маршруты"
-              detail={
-                commute.trim()
-                  ? `Проверьте дорогу до ориентира «${commute.trim()}» в обычное для поездок время.`
-                  : "Начните с работы и мест, куда ездите чаще всего."
-              }
-            />
-            <PlanCard
-              title="3. Подготовьте вопросы"
-              detail="Уточните, что входит в цену, как возвращают залог и кто подписывает договор."
-            />
-            <Button
-              type="button"
-              disabled={launch === "checking"}
-              onClick={() => openCityGo("housing")}
-            >
-              Продолжить в CityGo
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              className={styles.quiet}
-              onClick={back}
-            >
-              Уточнить условия
-            </Button>
-          </>
-        )}
-        {screen === "relocation" && (
-          <>
-            <div className={styles.heading}>
-              <h1 ref={heading} tabIndex={-1}>
-                Оценить переезд
-              </h1>
-              <p>Разложите решение на расходы, сроки и ближайшие действия.</p>
-            </div>
-            <PlanCard
-              title="С чего начать"
-              detail="Запишите, какой доход ожидаете после переезда и сколько можете потратить в первый месяц."
-              note
-            />
-            <Button
-              type="button"
-              disabled={launch === "checking"}
-              onClick={() => openCityGo("coordinator")}
-            >
-              Продолжить в CityGo
-            </Button>
-            <Button
-              type="button"
-              variant="secondary"
-              onClick={() => changeScreen("housing")}
-            >
-              Найти жильё
-            </Button>
-          </>
-        )}
-        {launchNotice && (
-          <p className={styles.notice} role="status">
-            {launchNotice}
-          </p>
-        )}
-      </main>
+              <Button
+                type="button"
+                variant="ghost"
+                className={styles.quiet}
+                onClick={back}
+              >
+                Уточнить условия
+              </Button>
+            </>
+          )}
+          {screen === "relocation" && (
+            <>
+              <div className={styles.heading}>
+                <h1 ref={heading} tabIndex={-1}>
+                  Оценить переезд
+                </h1>
+                <p>Разложите решение на расходы, сроки и ближайшие действия.</p>
+              </div>
+              <PlanCard
+                title="С чего начать"
+                detail="Запишите, какой доход ожидаете после переезда и сколько можете потратить в первый месяц."
+                note
+              />
+              <Button
+                type="button"
+                disabled={launch === "checking"}
+                onClick={() => openCityGo("coordinator")}
+              >
+                Продолжить в CityGo
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => changeScreen("housing")}
+              >
+                Найти жильё
+              </Button>
+            </>
+          )}
+          {launchNotice && (
+            <p className={styles.notice} role="status">
+              {launchNotice}
+            </p>
+          )}
+        </main>
+      )}
     </div>
   );
 }

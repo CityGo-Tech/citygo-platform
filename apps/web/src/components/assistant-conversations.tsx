@@ -14,6 +14,7 @@ import type {
   ConversationFilters,
 } from "@citygo/contracts";
 import { Button, Card, Field, SelectField } from "@citygo/ui-web";
+import miniStyles from "./mini-app/mini-workspace.module.css";
 
 export const assistantCatalog: {
   key: AgentKey;
@@ -78,49 +79,100 @@ function BubbleCard() {
   );
 }
 
+function MiniDirectoryRow({
+  agent,
+  title,
+  description,
+  busy,
+  onOpen,
+  label = title,
+}: {
+  agent: AgentKey;
+  title: string;
+  description: string;
+  busy: boolean;
+  onOpen: () => void;
+  label?: string;
+}) {
+  return (
+    <Button
+      className={miniStyles.directoryRow}
+      variant="secondary"
+      disabled={busy}
+      onClick={onOpen}
+      aria-label={label}
+    >
+      <Image src={assistantPortrait(agent)} width={48} height={48} alt="" />
+      <span>
+        <strong>{title}</strong>
+        <small>{description}</small>
+      </span>
+      <span aria-hidden="true">›</span>
+    </Button>
+  );
+}
+
 /** Figma 6:27 / 8:327. Artwork and tokens reuse the existing CityGo library. */
 export function AssistantCatalog({
   busy,
   onBegin,
+  miniApp = false,
 }: {
   busy: boolean;
   onBegin: (agent: AgentKey) => Promise<boolean>;
+  miniApp?: boolean;
 }) {
   return (
-    <Card className="assistant-directory" aria-label="Каталог помощников">
-      <span className="eyebrow">CITYGO · ВАШ ПЕРЕЕЗД</span>
-      <h1>Ваша команда AI-помощников</h1>
+    <Card
+      className={
+        "assistant-directory" + (miniApp ? ` ${miniStyles.panel}` : "")
+      }
+      aria-label="Каталог помощников"
+    >
+      {!miniApp && <span className="eyebrow">CITYGO · ВАШ ПЕРЕЕЗД</span>}
+      <h1>{miniApp ? "Помощники" : "Ваша команда AI-помощников"}</h1>
       <p>Выберите помощника для вашей задачи.</p>
-      {assistantCatalog.map((item) => (
-        <article
-          className="assistant-directory-card"
-          aria-label={item.title}
-          key={item.key}
-        >
-          <Image
-            className="assistant-catalog-portrait"
-            src={assistantPortrait(item.key)}
-            width={88}
-            height={88}
-            alt=""
+      {assistantCatalog.map((item) =>
+        miniApp ? (
+          <MiniDirectoryRow
+            key={item.key}
+            agent={item.key}
+            busy={busy}
+            title={item.title}
+            description={item.description}
+            onOpen={() => void onBegin(item.key)}
           />
-          <div>
-            <h2>{item.name}</h2>
-            <p className="assistant-specialty">{item.title}</p>
-            <p>{item.description}</p>
-            <Button
-              className="assistant-open"
-              variant="secondary"
-              disabled={busy}
-              onClick={() => void onBegin(item.key)}
-            >
-              Начать разговор
-            </Button>
-          </div>
-        </article>
-      ))}
-      <BubbleCard />
-      <small>Выберите помощника и задайте вопрос.</small>
+        ) : (
+          <article
+            className="assistant-directory-card"
+            aria-label={item.title}
+            key={item.key}
+          >
+            <Image
+              className="assistant-catalog-portrait"
+              src={assistantPortrait(item.key)}
+              width={88}
+              height={88}
+              alt=""
+            />
+            <div>
+              <h2>{item.name}</h2>
+              <p className="assistant-specialty">{item.title}</p>
+              <p>{item.description}</p>
+              <Button
+                className="assistant-open"
+                variant="secondary"
+                disabled={busy}
+                onClick={() => void onBegin(item.key)}
+              >
+                Начать разговор
+              </Button>
+            </div>
+          </article>
+        ),
+      )}
+      {!miniApp && <BubbleCard />}
+      {!miniApp && <small>Выберите помощника и задайте вопрос.</small>}
     </Card>
   );
 }
@@ -138,6 +190,7 @@ export function ConversationList({
   userId,
   sessionSignal,
   onAccessDenied,
+  miniApp = false,
 }: {
   userId: string;
   sessionSignal: AbortSignal;
@@ -150,6 +203,7 @@ export function ConversationList({
   onLoad: (before?: string, filters?: ConversationFilters) => void;
   onHelpers: () => void;
   onFavorites?: () => void;
+  miniApp?: boolean;
 }) {
   const [rename, setRename] = useState<TitleEditorSource | null>(null);
   const [titleState, setTitleState] = useState(() => ({
@@ -180,72 +234,98 @@ export function ConversationList({
       ...(status ? { status: status as "active" | "closed" } : {}),
     });
   };
-  return (
-    <Card className="assistant-directory" aria-label="Ваши разговоры">
-      <span className="eyebrow">CITYGO · ВАШ ПЕРЕЕЗД</span>
-      <h1>Ваши разговоры</h1>
-      <p>Здесь ваши разговоры с помощниками.</p>
-      <form
-        className="conversation-directory-filters ym-hide-content"
-        onSubmit={apply}
+  const filterForm = (
+    <form
+      className="conversation-directory-filters ym-hide-content"
+      onSubmit={apply}
+    >
+      <Field
+        label="Найти в переписке"
+        className="ym-disable-keys"
+        type="search"
+        maxLength={160}
+        value={search}
+        onChange={(event) => setSearch(event.target.value)}
+        disabled={busy}
+      />
+      <SelectField
+        label="Помощник"
+        value={assistant}
+        disabled={busy}
+        onChange={(event) => setAssistant(event.target.value as AgentKey | "")}
       >
-        <Field
-          label="Найти в переписке"
-          className="ym-disable-keys"
-          type="search"
-          maxLength={160}
-          value={search}
-          onChange={(event) => setSearch(event.target.value)}
+        <option value="">Все помощники</option>
+        {assistantCatalog.map((item) => (
+          <option key={item.key} value={item.key}>
+            {item.title}
+          </option>
+        ))}
+      </SelectField>
+      <SelectField
+        label="Статус"
+        value={status}
+        disabled={busy}
+        onChange={(event) =>
+          setStatus(event.target.value as "active" | "closed" | "")
+        }
+      >
+        <option value="">Все разговоры</option>
+        <option value="active">Можно продолжить</option>
+        <option value="closed">История</option>
+      </SelectField>
+      <div className="conversation-directory-actions">
+        <Button type="submit" disabled={busy}>
+          Найти
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
           disabled={busy}
-        />
-        <SelectField
-          label="Помощник"
-          value={assistant}
-          disabled={busy}
-          onChange={(event) =>
-            setAssistant(event.target.value as AgentKey | "")
-          }
+          onClick={() => {
+            setSearch("");
+            setAssistant("");
+            setStatus("");
+            onLoad(undefined, {});
+          }}
         >
-          <option value="">Все помощники</option>
-          {assistantCatalog.map((item) => (
-            <option key={item.key} value={item.key}>
-              {item.title}
-            </option>
-          ))}
-        </SelectField>
-        <SelectField
-          label="Статус"
-          value={status}
-          disabled={busy}
-          onChange={(event) =>
-            setStatus(event.target.value as "active" | "closed" | "")
-          }
-        >
-          <option value="">Все разговоры</option>
-          <option value="active">Можно продолжить</option>
-          <option value="closed">История</option>
-        </SelectField>
-        <div className="conversation-directory-actions">
-          <Button type="submit" disabled={busy}>
-            Найти
+          Сбросить
+        </Button>
+      </div>
+    </form>
+  );
+  return (
+    <Card
+      className={
+        "assistant-directory" + (miniApp ? ` ${miniStyles.panel}` : "")
+      }
+      aria-label="Ваши разговоры"
+    >
+      {!miniApp && <span className="eyebrow">CITYGO · ВАШ ПЕРЕЕЗД</span>}
+      <h1>{miniApp ? "Диалоги" : "Ваши разговоры"}</h1>
+      <p>
+        {miniApp
+          ? "Продолжите разговор или начните новый."
+          : "Здесь ваши разговоры с помощниками."}
+      </p>
+      {miniApp ? (
+        <>
+          <Button disabled={busy} onClick={onHelpers}>
+            Новый диалог
           </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            disabled={busy}
-            onClick={() => {
-              setSearch("");
-              setAssistant("");
-              setStatus("");
-              onLoad(undefined, {});
-            }}
-          >
-            Сбросить
-          </Button>
-        </div>
-      </form>
+          <details className={miniStyles.filters}>
+            <summary>Поиск и фильтры</summary>
+            {filterForm}
+          </details>
+        </>
+      ) : (
+        filterForm
+      )}
       {conversations === null ? (
-        <p role="status">Загружаем разговоры…</p>
+        <p role="status">
+          {miniApp && !busy
+            ? "Не удалось загрузить разговоры. Проверьте подключение и обновите список."
+            : "Загружаем разговоры…"}
+        </p>
       ) : conversations.length === 0 ? (
         <p>
           {Object.keys(filters).length
@@ -265,35 +345,55 @@ export function ConversationList({
               : item.customTitle;
           return (
             <article
-              className="conversation-directory-card ym-hide-content"
+              className={
+                miniApp
+                  ? `${miniStyles.conversationRow} ym-hide-content`
+                  : "conversation-directory-card ym-hide-content"
+              }
               aria-label={
                 customTitle ?? (item.assistantKey ? `Диалог: ${title}` : title)
               }
               key={item.id}
             >
-              <span className="eyebrow">
-                {item.closed ? "ИСТОРИЯ" : "ПРОДОЛЖИТЬ"}
-              </span>
-              <h2>
-                {customTitle ??
-                  (item.assistantKey
-                    ? assistantCatalog.find(
-                        (agent) => agent.key === item.assistantKey,
-                      )!.name
-                    : title)}
-              </h2>
-              <p>
-                {item.preview ||
-                  "Можно начать с первого вопроса — даже если срок и бюджет ещё неизвестны."}
-              </p>
-              <Button
-                className="assistant-open"
-                variant="secondary"
-                disabled={busy}
-                onClick={() => void onOpen(item.id)}
-              >
-                Открыть разговор
-              </Button>
+              {miniApp ? (
+                <MiniDirectoryRow
+                  agent={item.assistantKey ?? "support"}
+                  busy={busy}
+                  title={customTitle ?? title}
+                  description={
+                    item.preview ||
+                    (item.closed ? "История разговора" : "Новый диалог")
+                  }
+                  onOpen={() => void onOpen(item.id)}
+                  label={`Открыть разговор: ${customTitle ?? title}`}
+                />
+              ) : (
+                <>
+                  <span className="eyebrow">
+                    {item.closed ? "ИСТОРИЯ" : "ПРОДОЛЖИТЬ"}
+                  </span>
+                  <h2>
+                    {customTitle ??
+                      (item.assistantKey
+                        ? assistantCatalog.find(
+                            (agent) => agent.key === item.assistantKey,
+                          )!.name
+                        : title)}
+                  </h2>
+                  <p>
+                    {item.preview ||
+                      "Можно начать с первого вопроса — даже если срок и бюджет ещё неизвестны."}
+                  </p>
+                  <Button
+                    className="assistant-open"
+                    variant="secondary"
+                    disabled={busy}
+                    onClick={() => void onOpen(item.id)}
+                  >
+                    Открыть разговор
+                  </Button>
+                </>
+              )}
               {item.titleRevision !== undefined && (
                 <Button
                   variant="ghost"
@@ -347,11 +447,13 @@ export function ConversationList({
           Загрузить ещё разговоры
         </Button>
       )}
-      <BubbleCard />
+      {!miniApp && <BubbleCard />}
       <div className="conversation-directory-actions">
-        <Button disabled={busy} onClick={onHelpers}>
-          Все помощники
-        </Button>
+        {!miniApp && (
+          <Button disabled={busy} onClick={onHelpers}>
+            Все помощники
+          </Button>
+        )}
         <Button variant="secondary" disabled={busy} onClick={onFavorites}>
           Найти сохранённое сообщение
         </Button>

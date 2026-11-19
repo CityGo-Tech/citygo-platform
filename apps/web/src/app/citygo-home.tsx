@@ -15,7 +15,14 @@ import {
 } from "../components/landing/landing-task";
 import { BalanceHistoryPanel } from "../components/balance-history";
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+} from "react";
 import {
   createClient,
   createSessionGuard,
@@ -120,10 +127,10 @@ type RegistrationChallenge = PendingEmailRegistration & { task?: LandingTask };
 
 export default function CityGoHome({
   miniApp,
-  onBackToMiniApp,
+  registerMiniAppBack,
 }: {
   miniApp?: MiniAppAccountAccess;
-  onBackToMiniApp?: () => void;
+  registerMiniAppBack?: (handler: (() => boolean) | null) => void;
 }) {
   const [session] = useState(createSessionGuard);
   const [formVersion, setFormVersion] = useState(0);
@@ -148,6 +155,16 @@ export default function CityGoHome({
       : null,
   );
   const pendingOwnerTask = useRef<RegistrationTask | undefined>(undefined);
+  const miniRetryTask = useRef<RegistrationTask | undefined>(undefined);
+  const [miniOffline, setMiniOffline] = useState(false);
+  const [miniRefreshFailed, setMiniRefreshFailed] = useState(false);
+  const workspaceBack = useRef<(() => boolean) | null>(null);
+  const registerWorkspaceBack = useCallback(
+    (handler: (() => boolean) | null) => {
+      workspaceBack.current = handler;
+    },
+    [],
+  );
   const landingAssistantEvent = useRef<{
     ownerId: string;
     signal: AbortSignal;
@@ -300,6 +317,8 @@ export default function CityGoHome({
   function clearUserState(owner?: string, keepAnonymousTask = false) {
     if (!keepAnonymousTask) landingTask.current = null;
     pendingOwnerTask.current = undefined;
+    miniRetryTask.current = undefined;
+    setMiniRefreshFailed(false);
     landingAssistantEvent.current = null;
     clearChatDrafts(draftStorage());
     setDraftRecovered(false);
@@ -355,7 +374,16 @@ export default function CityGoHome({
   ) {
     ticket.check();
     let version = ++refreshVersion.current;
-    let next = await api.dashboard();
+    let next: Dashboard;
+    try {
+      next = await api.dashboard();
+    } catch (error) {
+      if (miniApp && ticket.active() && version === refreshVersion.current) {
+        miniRetryTask.current = registrationTask ?? miniRetryTask.current;
+        setMiniRefreshFailed(true);
+      }
+      throw error;
+    }
     ticket.check();
     if (version !== refreshVersion.current) return false;
     const entrance = landingTask.current;
@@ -401,6 +429,9 @@ export default function CityGoHome({
       selectedConversation.current?.owner === next.user.id
         ? selectedConversation.current.id
         : readConversationSelection(next.user.id, conversationStorage());
+    if (miniRetryTask.current?.ownerId !== next.user.id)
+      miniRetryTask.current = undefined;
+    if (miniApp) setMiniRefreshFailed(false);
     const target =
       followTask?.ownerId === next.user.id &&
       next.user.role === "user" &&
@@ -432,6 +463,10 @@ export default function CityGoHome({
           throw new Error("Unexpected registration task conversation");
         next = { ...next, thread: detail.thread };
         rememberConversation(next.user.id, started.id);
+        if (miniApp) {
+          miniRetryTask.current = undefined;
+          requestWorkspaceTab("Диалоги");
+        }
         landingAssistantEvent.current = {
           ownerId: next.user.id,
           signal: ticket.signal,
@@ -441,9 +476,14 @@ export default function CityGoHome({
       } catch {
         ticket.check();
         if (version !== refreshVersion.current) return false;
-        setNotice(
-          "Не удалось открыть диалог. Выберите помощника и продолжите.",
-        );
+        if (miniApp) {
+          miniRetryTask.current = followTask;
+          setMiniRefreshFailed(true);
+        } else {
+          setNotice(
+            "Не удалось открыть диалог. Выберите помощника и продолжите.",
+          );
+        }
       } finally {
         if (ticket.active()) conversationSwitch.current = false;
       }
@@ -466,20 +506,19 @@ export default function CityGoHome({
       } catch (error) {
         ticket.check();
         if (version !== refreshVersion.current) return false;
-        if (!(
-          error &&
-          typeof error === "object" &&
-          "status" in error &&
-          error.status === 404
-        ))
+        if (error instanceof ApiError && error.status === 404) {
+          selectedConversation.current = null;
+          writeConversationSelection(next.user.id, null, conversationStorage());
+          writeChatDraft(next.user.id, preferred, "", draftStorage());
+          conversationDrafts.current.delete(preferred);
+          // A removed selection cannot carry its draft into a different chat.
+          setText("");
+        } else if (miniApp) {
+          setMiniRefreshFailed(true);
+          next = { ...next, thread: null };
+        } else {
           throw error;
-        selectedConversation.current = null;
-        writeConversationSelection(next.user.id, null, conversationStorage());
-        writeChatDraft(next.user.id, preferred, "", draftStorage());
-        conversationDrafts.current.delete(preferred);
-        // A removed/inaccessible selection cannot carry its draft into the
-        // legacy fallback. Never reinterpret unsent text as a different chat.
-        setText("");
+        }
       }
     }
     ticket.check();
@@ -831,6 +870,17 @@ export default function CityGoHome({
       abort.current?.abort();
     };
   }, []);
+  useEffect(() => {
+    if (!miniApp) return;
+    const updateConnection = () => setMiniOffline(!navigator.onLine);
+    updateConnection();
+    window.addEventListener("offline", updateConnection);
+    window.addEventListener("online", updateConnection);
+    return () => {
+      window.removeEventListener("offline", updateConnection);
+      window.removeEventListener("online", updateConnection);
+    };
+  }, [miniApp]);
   async function act(work: (ticket: SessionTicket) => Promise<void>) {
     const ticket = session.capture();
     setError("");
@@ -1332,7 +1382,10 @@ export default function CityGoHome({
     chatSubmitting.current = false;
   }
   const Experience =
-    board?.profile && !board.thread?.assistantKey && !conversationView
+    !miniApp &&
+    board?.profile &&
+    !board.thread?.assistantKey &&
+    !conversationView
       ? Journey
       : ConversationHome;
   const topups = {
@@ -1381,6 +1434,9 @@ export default function CityGoHome({
     setReceiptsOpen(false);
     setPhoneOpen(true);
   }
+  function requestWorkspaceTab(tab: string) {
+    setWorkspaceRequest({ tab, sequence: ++workspaceRequestSequence.current });
+  }
   function returnToWorkspace(tab: string) {
     setMessengerOpen(false);
     setBalanceOpen(false);
@@ -1388,7 +1444,7 @@ export default function CityGoHome({
     setFavoritesOpen(false);
     setReceiptsOpen(false);
     setConversationView(true);
-    setWorkspaceRequest({ tab, sequence: ++workspaceRequestSequence.current });
+    requestWorkspaceTab(tab);
   }
   function returnToApp() {
     setBalanceOpen(false);
@@ -1413,10 +1469,36 @@ export default function CityGoHome({
     target?.scrollIntoView({ block: "start" });
     target?.focus({ preventScroll: true });
   }, [balanceOpen]);
+  useEffect(() => {
+    if (!registerMiniAppBack) return;
+    registerMiniAppBack(() => {
+      if (busy || sending) return true;
+      if (logoutIntent) setLogoutIntent(null);
+      else if (aiModeConsent) cancelAiModeChoice();
+      else if (!board && mode !== "login") changeAuthMode("login");
+      else if (
+        board?.user.mustChangePassword ||
+        board?.user.serviceConsentRequired
+      )
+        return false;
+      else if (passwordOpen) setPasswordOpen(false);
+      else if (messengerOpen && board) setMessengerOpen(false);
+      else if (balanceOpen || phoneOpen) returnToApp();
+      else if (receiptsOpen) setReceiptsOpen(false);
+      else if (favoritesOpen) setFavoritesOpen(false);
+      else return workspaceBack.current?.() ?? false;
+      return true;
+    });
+    return () => registerMiniAppBack(null);
+  });
+  const retryTask = miniRetryTask.current;
+  const showMiniResume =
+    miniApp && (miniOffline || miniRefreshFailed || retryTask);
   return (
     <div
       className={
         "shell prototype-shell" +
+        (miniApp ? " mini-home" : "") +
         (board?.profile ? " shell-journey" : board ? " shell-onboarding" : "") +
         (!board && (mode === "register" || mode === "recover")
           ? " " + registrationStyles.registrationShell
@@ -1424,172 +1506,167 @@ export default function CityGoHome({
         (!board && mode === "recover" ? " " + recoveryStyles.recoveryShell : "")
       }
     >
-      <header className="topbar">
-        {onBackToMiniApp ? (
-          <Button
-            variant="secondary"
-            disabled={busy || sending}
-            onClick={onBackToMiniApp}
-          >
-            Назад
-          </Button>
-        ) : (
+      {!miniApp && (
+        <header className="topbar">
           <Link className="wordmark" href="/" aria-label="CityGo — главная">
             <span className="citygo-brand-symbol" aria-hidden="true" />
             <span className="citygo-brand-wordmark" aria-hidden="true" />
           </Link>
-        )}
-        <span className="header-caption">Новый город. Ваша история.</span>
-        {board ? (
-          <>
-            {!board.user.mustChangePassword &&
-              !board.user.serviceConsentRequired &&
-              !passwordOpen && (
-                <div
-                  id="citygo-workspace-navigation"
-                  className="workspace-navigation-slot"
-                />
-              )}
-            <div className="account ym-hide-content">
-              <Badge>{board.xp} XP</Badge>
+          <span className="header-caption">Новый город. Ваша история.</span>
+          {board ? (
+            <>
               {!board.user.mustChangePassword &&
                 !board.user.serviceConsentRequired &&
                 !passwordOpen && (
-                  <AccountOverview
-                    compact
-                    access={board.aiAccess}
-                    disabled={busy || sending}
-                    onBalance={openBalance}
-                    onPhone={openPhone}
+                  <div
+                    id="citygo-workspace-navigation"
+                    className="workspace-navigation-slot"
                   />
                 )}
-              <details
-                className="account-menu"
-                onKeyDown={(event) => {
-                  if (event.key === "Escape") {
-                    event.currentTarget.open = false;
-                    event.currentTarget.querySelector("summary")?.focus();
-                  }
-                }}
-                onClick={(event) => {
-                  const action =
-                    event.target instanceof Element
-                      ? event.target.closest("button")
-                      : null;
-                  if (action && action.textContent?.trim() !== "Выйти") {
-                    event.currentTarget.open = false;
-                  }
-                }}
-              >
-                <summary>Аккаунт</summary>
-                <div>
-                  {!board.user.mustChangePassword &&
-                    !board.user.serviceConsentRequired &&
-                    !passwordOpen && (
-                      <>
-                        <Button
-                          variant="ghost"
-                          disabled={busy || sending}
-                          onClick={() => {
-                            setMessengerOpen(false);
-                            setConversationView(true);
-                            setWorkspaceRequest({
-                              tab: "Диалоги",
-                              sequence: ++workspaceRequestSequence.current,
-                            });
-                            setPhoneOpen(false);
-                            setBalanceOpen(false);
-                            setFavoritesOpen(false);
-                            setReceiptsOpen(false);
-                          }}
-                        >
-                          Диалоги и помощники
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          disabled={busy || sending}
-                          onClick={() => {
-                            setMessengerOpen(false);
-                            setReceiptsOpen(false);
-                            setPhoneOpen(false);
-                            setBalanceOpen(false);
-                            setFavoritesOpen(true);
-                          }}
-                        >
-                          Избранное
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          disabled={busy || sending}
-                          onClick={() => {
-                            setMessengerOpen(false);
-                            setFavoritesOpen(false);
-                            setPhoneOpen(false);
-                            setBalanceOpen(false);
-                            setReceiptsOpen(true);
-                          }}
-                        >
-                          Мои чеки
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          disabled={busy || sending}
-                          onClick={() => {
-                            setBalanceOpen(false);
-                            setPhoneOpen(false);
-                            setFavoritesOpen(false);
-                            setReceiptsOpen(false);
-                            setMessengerOpen(true);
-                          }}
-                        >
-                          Мессенджеры
-                        </Button>
-                        {board.profile && !board.thread?.assistantKey && (
+              <div className="account ym-hide-content">
+                <Badge>{board.xp} XP</Badge>
+                {!board.user.mustChangePassword &&
+                  !board.user.serviceConsentRequired &&
+                  !passwordOpen && (
+                    <AccountOverview
+                      compact
+                      access={board.aiAccess}
+                      disabled={busy || sending}
+                      onBalance={openBalance}
+                      onPhone={openPhone}
+                    />
+                  )}
+                <details
+                  className="account-menu"
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape") {
+                      event.currentTarget.open = false;
+                      event.currentTarget.querySelector("summary")?.focus();
+                    }
+                  }}
+                  onClick={(event) => {
+                    const action =
+                      event.target instanceof Element
+                        ? event.target.closest("button")
+                        : null;
+                    if (action && action.textContent?.trim() !== "Выйти") {
+                      event.currentTarget.open = false;
+                    }
+                  }}
+                >
+                  <summary>Аккаунт</summary>
+                  <div>
+                    {!board.user.mustChangePassword &&
+                      !board.user.serviceConsentRequired &&
+                      !passwordOpen && (
+                        <>
                           <Button
                             variant="ghost"
                             disabled={busy || sending}
                             onClick={() => {
                               setMessengerOpen(false);
-                              setConversationView(false);
+                              setConversationView(true);
+                              setWorkspaceRequest({
+                                tab: "Диалоги",
+                                sequence: ++workspaceRequestSequence.current,
+                              });
                               setPhoneOpen(false);
                               setBalanceOpen(false);
                               setFavoritesOpen(false);
                               setReceiptsOpen(false);
                             }}
                           >
-                            Карта пути
+                            Диалоги и помощники
                           </Button>
-                        )}
-                      </>
-                    )}
-                  <Button variant="ghost" onClick={() => setPasswordOpen(true)}>
-                    Пароль
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    onClick={(event) => requestLogout(event.currentTarget)}
-                  >
-                    Выйти
-                  </Button>
-                </div>
-              </details>
+                          <Button
+                            variant="ghost"
+                            disabled={busy || sending}
+                            onClick={() => {
+                              setMessengerOpen(false);
+                              setReceiptsOpen(false);
+                              setPhoneOpen(false);
+                              setBalanceOpen(false);
+                              setFavoritesOpen(true);
+                            }}
+                          >
+                            Избранное
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            disabled={busy || sending}
+                            onClick={() => {
+                              setMessengerOpen(false);
+                              setFavoritesOpen(false);
+                              setPhoneOpen(false);
+                              setBalanceOpen(false);
+                              setReceiptsOpen(true);
+                            }}
+                          >
+                            Мои чеки
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            disabled={busy || sending}
+                            onClick={() => {
+                              setBalanceOpen(false);
+                              setPhoneOpen(false);
+                              setFavoritesOpen(false);
+                              setReceiptsOpen(false);
+                              setMessengerOpen(true);
+                            }}
+                          >
+                            Мессенджеры
+                          </Button>
+                          {board.profile && !board.thread?.assistantKey && (
+                            <Button
+                              variant="ghost"
+                              disabled={busy || sending}
+                              onClick={() => {
+                                setMessengerOpen(false);
+                                setConversationView(false);
+                                setPhoneOpen(false);
+                                setBalanceOpen(false);
+                                setFavoritesOpen(false);
+                                setReceiptsOpen(false);
+                              }}
+                            >
+                              Карта пути
+                            </Button>
+                          )}
+                        </>
+                      )}
+                    <Button
+                      variant="ghost"
+                      onClick={() => setPasswordOpen(true)}
+                    >
+                      Пароль
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      onClick={(event) => requestLogout(event.currentTarget)}
+                    >
+                      Выйти
+                    </Button>
+                  </div>
+                </details>
+              </div>
+            </>
+          ) : (
+            <div className={registrationStyles.headerActions}>
+              <Button
+                variant="secondary"
+                aria-label={mode === "login" ? "Вы на экране входа" : undefined}
+                onClick={() => changeAuthMode("login")}
+              >
+                Войти
+              </Button>
+              <Button onClick={() => changeAuthMode("register")}>
+                Начать разговор
+              </Button>
             </div>
-          </>
-        ) : (
-          <div className={registrationStyles.headerActions}>
-            <Button
-              variant="secondary"
-              aria-label={mode === "login" ? "Вы на экране входа" : undefined}
-              onClick={() => changeAuthMode("login")}
-            >
-              Войти
-            </Button>
-            <Button onClick={() => changeAuthMode("register")}>
-              Начать разговор
-            </Button>
-          </div>
-        )}
-      </header>
+          )}
+        </header>
+      )}
       {board &&
         logoutIntent &&
         currentLogoutConfirmation(
@@ -1630,6 +1707,39 @@ export default function CityGoHome({
         {notice && (
           <div className="notice" role="status">
             {notice}
+          </div>
+        )}
+        {showMiniResume && (
+          <div className="notice" role="status">
+            <p>
+              {miniOffline
+                ? "Нет соединения. Подключитесь к интернету, чтобы продолжить."
+                : retryTask
+                  ? "Не удалось открыть диалог по выбранной задаче."
+                  : "Не удалось загрузить кабинет."}
+            </p>
+            <Button
+              variant="secondary"
+              disabled={
+                miniOffline || busy || sending || loading || logoutUnconfirmed
+              }
+              onClick={() =>
+                void act(async (ticket) => {
+                  const restored = await refresh(ticket, retryTask);
+                  if (
+                    !retryTask &&
+                    miniRefreshFailed &&
+                    restored &&
+                    restored.thread
+                  )
+                    requestWorkspaceTab("Диалоги");
+                })
+              }
+            >
+              {retryTask
+                ? "Продолжить выбранную задачу"
+                : "Повторить подключение"}
+            </Button>
           </div>
         )}
         {logoutUnconfirmed && (
@@ -1941,13 +2051,31 @@ export default function CityGoHome({
               </WorkspaceFrame>
             </div>
             <div
-              className={accountStyles.experience}
+              className={
+                accountStyles.experience +
+                (miniApp ? " mini-workspace-frame" : "")
+              }
               hidden={balanceOpen || phoneOpen || favoritesOpen || receiptsOpen}
             >
               <Experience
                 key={board.user.id + ":" + conversationNavigation}
                 board={history.board ?? board}
-                headerNavigationId="citygo-workspace-navigation"
+                headerNavigationId={
+                  miniApp ? undefined : "citygo-workspace-navigation"
+                }
+                miniAppNavigation={
+                  miniApp
+                    ? {
+                        registerBack: registerWorkspaceBack,
+                        onMessenger: () => {
+                          requestWorkspaceTab("Профиль");
+                          setMessengerOpen(true);
+                        },
+                        onReceipts: () => setReceiptsOpen(true),
+                        onLogout: requestLogout,
+                      }
+                    : undefined
+                }
                 workspaceRequest={workspaceRequest}
                 onWorkspaceRequestHandled={(sequence) =>
                   setWorkspaceRequest((request) =>
@@ -1981,7 +2109,10 @@ export default function CityGoHome({
                 onText={changeText}
                 onChat={chat}
                 onStop={() => abort.current?.abort()}
-                onPassword={() => setPasswordOpen(true)}
+                onPassword={() => {
+                  if (miniApp) requestWorkspaceTab("Профиль");
+                  setPasswordOpen(true);
+                }}
                 onBalance={openBalance}
                 onPhone={openPhone}
                 onFavorites={() => setFavoritesOpen(true)}
