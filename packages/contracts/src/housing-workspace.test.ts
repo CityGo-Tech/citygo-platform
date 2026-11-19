@@ -58,8 +58,14 @@ test("checklist selections are unique and bound to an existing plan revision", (
     false,
   );
   const updatedAt = "2026-11-19T00:00:00Z";
-  const { expectedRevision: _expectedRevision, ...checklist } = review;
-  const saved = { ...checklist, revision: 1, updatedAt };
+  const saved = {
+    planRevision: review.planRevision,
+    selected: review.selected,
+    paymentChecked: review.paymentChecked,
+    requestId,
+    revision: 1,
+    updatedAt,
+  };
   assert.equal(
     housingWorkspaceSchema.safeParse({
       userId: "2",

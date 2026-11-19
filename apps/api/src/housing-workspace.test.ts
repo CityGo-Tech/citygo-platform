@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { readConfig } from "@citygo/config";
 import {
   CONTRACT_VERSION_HEADER,
@@ -11,13 +11,13 @@ import {
   ensureConversation,
   migrate,
   Repository,
+  type Database,
 } from "@citygo/db";
 import { buildApp } from "./app.js";
 import { tokenHash } from "./auth.js";
 import { registerSyntheticConsentingUser } from "./test-service-consents.js";
 
-test("housing recovery, owner isolation and concurrent explicit result saves", async (t) => {
-  const db = await connectDatabase("pglite://:memory:");
+async function verifyHousingWorkspace(t: TestContext, db: Database) {
   await migrate(db);
   const app = await buildApp({
     db,
@@ -29,10 +29,7 @@ test("housing recovery, owner isolation and concurrent explicit result saves", a
       LLM_PROVIDER: "disabled",
     }),
   });
-  t.after(async () => {
-    await app.close();
-    await db.close();
-  });
+  t.after(() => app.close());
 
   const owner = await registerSyntheticConsentingUser(
     db,
@@ -227,4 +224,43 @@ test("housing recovery, owner isolation and concurrent explicit result saves", a
     (await db.query("select 1 from payment_topup_orders")).rows.length,
     0,
   );
+}
+
+test("housing recovery, owner isolation and concurrent explicit result saves", async (t) => {
+  const db = await connectDatabase("pglite://:memory:");
+  t.after(() => db.close());
+  await verifyHousingWorkspace(t, db);
 });
+
+test(
+  "PostgreSQL serializes housing writes across concurrent requests",
+  { skip: !process.env.TEST_DATABASE_URL, timeout: 30_000 },
+  async (t) => {
+    const target = new URL(process.env.TEST_DATABASE_URL!);
+    assert.ok(["postgres:", "postgresql:"].includes(target.protocol));
+    assert.ok(["127.0.0.1", "localhost", "[::1]"].includes(target.hostname));
+    assert.ok(
+      ((target.port || "5432") === "5432" &&
+        target.pathname === "/citygo_test") ||
+        (target.port === "55438" && target.pathname === "/citygo_synthetic"),
+    );
+    assert.equal(target.search + target.hash, "");
+    const admin = await connectDatabase(target.toString());
+    const name = "housing_workspace_" + randomUUID().replaceAll("-", "");
+    const resource: { database?: Database } = {};
+    let created = false;
+    t.after(async () => {
+      try {
+        await resource.database?.close();
+        if (created) await admin.query(`drop database "${name}"`);
+      } finally {
+        await admin.close();
+      }
+    });
+    await admin.query(`create database "${name}" template template0`);
+    created = true;
+    target.pathname = "/" + name;
+    resource.database = await connectDatabase(target.toString());
+    await verifyHousingWorkspace(t, resource.database);
+  },
+);
