@@ -26,7 +26,7 @@ const telegramReference = z
   .string()
   .min(1)
   .max(256)
-  .regex(/^[^\x00-\x20\x7f]+$/);
+  .regex(/^[^\p{Cc}\s]+$/u);
 // Telegram can attach order and user metadata. Parse only fields used for
 // verification; names, contact details and provider metadata are discarded.
 const invoice = z.object({
