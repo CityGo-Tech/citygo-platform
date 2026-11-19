@@ -181,6 +181,15 @@ for (const [hostIndex, host] of hosts.entries()) {
       .getByRole("button", { name: `Ответы на обращение №${savedId}` })
       .click();
     await expect(thread.getByText(reply, { exact: true })).toBeVisible();
+    await thread
+      .getByRole("button", {
+        name: "Отметить ответы прочитанными",
+        exact: true,
+      })
+      .click();
+    await expect(
+      thread.getByRole("button", { name: "Ответы прочитаны", exact: true }),
+    ).toBeDisabled();
     expect(
       await page.evaluate(() => document.documentElement.scrollWidth),
     ).toBeLessThanOrEqual(320);
