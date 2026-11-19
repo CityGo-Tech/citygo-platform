@@ -126,15 +126,16 @@ const snapshotTables = [
   ["payment_admission", "id"],
 ] as const;
 async function history(db: Database) {
-  const snapshot: Record<string, unknown[]> = {};
+  type HistoryRow = Record<string, unknown>;
+  const snapshot: Record<string, HistoryRow[]> = {};
   for (const [table, order] of snapshotTables)
     snapshot[table] = (
-      await db.query<{ row: unknown }>(
+      await db.query<{ row: HistoryRow }>(
         `select ${table === "agent_threads" ? "to_jsonb(t)-'conversation_agent_key'" : "to_jsonb(t)"} as row from ${table} t order by ${order}`,
       )
     ).rows.map(({ row }) => row);
   snapshot.ai_credit_charges = (
-    await db.query<{ row: unknown }>(
+    await db.query<{ row: HistoryRow }>(
       "select to_jsonb(c)-'reservation_mode'-'cost_limit_mode'-'balance_before_hold_micros' as row from ai_credit_charges c order by thread_id,request_id,attempt_number",
     )
   ).rows.map(({ row }) => row);
