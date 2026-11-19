@@ -954,7 +954,7 @@ export async function buildApp(options: {
     authenticate,
     authenticateCreate: async (request) => {
       const { account, messengerProvider } = await authenticateSession(request);
-      if (messengerProvider)
+      if (messengerProvider || syntheticMaxPayments)
         throw new DomainError(403, "Пополнение через эту сессию недоступно.");
       return account;
     },
