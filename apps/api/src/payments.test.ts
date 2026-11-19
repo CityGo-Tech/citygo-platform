@@ -282,7 +282,7 @@ test("isolated MAX checkout shares durable topups, scopes actors and verifies se
   const input = {
     requestId: randomUUID(),
     amountKopeks: 10_001,
-    receiptEmail: "max-fixture@example.test",
+    receiptEmail: "max-fixture@synthetic-citygo-mail.ru",
   };
   const create = (token: string, from = localOrigin) =>
     f.call("POST", topups, token, input, from);
