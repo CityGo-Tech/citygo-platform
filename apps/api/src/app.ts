@@ -167,6 +167,10 @@ import { registerAdminPhoneContacts } from "./admin-phone-contacts.js";
 import { registerMiniAppLaunch } from "./mini-app-launch/http.js";
 import { registerMessengerAccounts } from "./mini-app-launch/account.js";
 import {
+  registerTelegramStarsTest,
+  TELEGRAM_STARS_TEST_WEBHOOK_PATH,
+} from "./telegram-stars/http.js";
+import {
   registerCustomerObservability,
   serializeRequestLog,
 } from "./customer-observability.js";
@@ -189,9 +193,21 @@ export async function buildApp(options: {
   phoneVerificationDelivery?: PhoneVerificationDelivery;
   modeProviders?: ModeProviders;
   syntheticMiniAppChat?: boolean;
+  telegramStarsTest?: Omit<
+    Parameters<typeof registerTelegramStarsTest>[1],
+    "actor"
+  >;
 }) {
   const drain = options.drain ?? new ApiDrain();
   const config = options.config ?? readConfig();
+  if (
+    options.telegramStarsTest &&
+    (config.NODE_ENV !== "test" || options.testing !== true)
+  ) {
+    throw new Error(
+      "Telegram Stars fixtures require the isolated test harness",
+    );
+  }
   const postpayMode = config.AI_CUSTOMER_BILLING_MODE === "postpay_actual_v1";
   if (
     options.postpayReconcileScheduler &&
@@ -635,13 +651,15 @@ export async function buildApp(options: {
       .header("X-Content-Type-Options", "nosniff")
       .header("Cache-Control", "no-store");
     if (["GET", "HEAD", "OPTIONS"].includes(request.method)) return;
-    // One exact machine-only webhook. It cannot authenticate browser writes;
-    // the handler rejects Cookie/Origin/Authorization and only queues ID hints.
+    // Exact machine-only webhooks use independent authentication and reject
+    // browser credentials in their handlers.
     if (
-      config.YOOKASSA_MODE === "live" &&
-      paymentClient &&
       request.method === "POST" &&
-      request.url === PAYMENT_NOTIFICATION_PATH &&
+      ((config.YOOKASSA_MODE === "live" &&
+        paymentClient &&
+        request.url === PAYMENT_NOTIFICATION_PATH) ||
+        (options.telegramStarsTest &&
+          request.url === TELEGRAM_STARS_TEST_WEBHOOK_PATH)) &&
       request.headers.origin === undefined &&
       request.headers.cookie === undefined &&
       request.headers.authorization === undefined
@@ -1023,6 +1041,34 @@ export async function buildApp(options: {
       reply.setCookie(sessionName, token, cookieOptions);
     },
   });
+  if (options.telegramStarsTest) {
+    registerTelegramStarsTest(app, {
+      ...options.telegramStarsTest,
+      actor: async (request) => {
+        const { account, messengerProvider } =
+          await authenticateSession(request);
+        if (messengerProvider !== "telegram") {
+          throw new DomainError(
+            403,
+            "Войдите через Telegram для тестовой оплаты",
+          );
+        }
+        const token =
+          bearer(request.headers.authorization) ?? request.cookies[sessionName];
+        const { rows } = await options.db.query<{ subject: string }>(
+          `select m.subject::text from sessions s
+           join messenger_accounts m on m.user_id=s.user_id and m.provider=s.messenger_provider
+           where s.token_hash=$1 and s.user_id=$2 and s.messenger_provider='telegram'
+             and s.expires_at>statement_timestamp()`,
+          [tokenHash(token!), account.id],
+        );
+        const telegramUserId = rows[0]?.subject;
+        if (!telegramUserId)
+          throw new DomainError(401, "Войдите снова через Telegram");
+        return { userId: account.id, telegramUserId };
+      },
+    });
+  }
   registerEmailRegistration(app, {
     db: options.db,
     policyResolver: registrationAiPolicy,

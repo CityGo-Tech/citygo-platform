@@ -3,6 +3,7 @@ import {
   type MiniAppBridge,
   type MiniAppHost,
   type NativeBackButton,
+  type OpenMiniAppInvoice,
 } from "./host";
 
 type TelegramWebApp = {
@@ -10,6 +11,7 @@ type TelegramWebApp = {
   initDataUnsafe?: { start_param?: unknown };
   ready?: () => void;
   openLink?: (url: string) => void;
+  openInvoice?: OpenMiniAppInvoice;
   close?: () => void;
   BackButton?: NativeBackButton;
 };
@@ -20,6 +22,7 @@ function connect(): MiniAppBridge | undefined {
   if (!app || typeof app.openLink !== "function") return;
 
   const task = app.initDataUnsafe?.start_param;
+  const openInvoice = app.openInvoice;
   return {
     initialTask: typeof task === "string" ? task : undefined,
     initData: typeof app.initData === "string" ? app.initData : undefined,
@@ -27,6 +30,19 @@ function connect(): MiniAppBridge | undefined {
     ready: typeof app.ready === "function" ? () => app.ready?.() : undefined,
     close: typeof app.close === "function" ? () => app.close?.() : undefined,
     onBack: nativeBackButton(app.BackButton),
+    openInvoice:
+      typeof openInvoice === "function"
+        ? (url, callback) => {
+            if (
+              url !== url.trim() ||
+              !/^https:\/\/t\.me\/(?:\$|invoice\/)[A-Za-z0-9_-]{1,256}$/.test(
+                url,
+              )
+            )
+              throw new Error("Invalid Telegram invoice URL");
+            openInvoice.call(app, url, callback);
+          }
+        : undefined,
   };
 }
 

@@ -262,6 +262,7 @@ export function MiniAppEntry({ host }: { host: MiniAppHost }) {
           <div className={styles.accountContent}>
             <CityGoHome
               miniApp={accountAccess}
+              miniAppOpenInvoice={bridge?.openInvoice}
               registerMiniAppBack={registerMiniAppBack}
               rememberHousingOwner={rememberHousingOwner}
             />

@@ -15,6 +15,8 @@ import {
 } from "../components/landing/landing-task";
 import { BalanceHistoryPanel } from "../components/balance-history";
 import { MiniAppProfileBalance } from "../components/mini-app/profile-balance";
+import { TelegramStarsPanel } from "../components/mini-app/telegram-stars";
+import type { OpenMiniAppInvoice } from "../components/mini-app/host";
 import Link from "next/link";
 import {
   useCallback,
@@ -143,10 +145,12 @@ type RegistrationChallenge = PendingEmailRegistration & {
 
 export default function CityGoHome({
   miniApp,
+  miniAppOpenInvoice,
   registerMiniAppBack,
   rememberHousingOwner,
 }: {
   miniApp?: MiniAppAccountAccess;
+  miniAppOpenInvoice?: OpenMiniAppInvoice;
   registerMiniAppBack?: (handler: (() => boolean) | null) => void;
   rememberHousingOwner?: (ownerId: string | null) => void;
 }) {
@@ -227,6 +231,10 @@ export default function CityGoHome({
   const miniAccountDetailTrigger = useRef<HTMLElement | null>(null);
   const [messengerOpen, setMessengerOpen] = useState(!!miniApp?.initData);
   const [balanceOpen, setBalanceOpen] = useState(false);
+  const [telegramStarsOpen, setTelegramStarsOpen] = useState(false);
+  const [telegramStarsOwner, setTelegramStarsOwner] = useState<string | null>(
+    null,
+  );
   const [conversationView, setConversationView] = useState(true);
   const [workspaceRequest, setWorkspaceRequest] = useState<{
     tab: string;
@@ -310,6 +318,26 @@ export default function CityGoHome({
     [session],
   );
   const miniProvider = miniApp?.provider;
+  const telegramStarsAvailable =
+    miniProvider === "telegram" &&
+    !!miniAppOpenInvoice &&
+    !!miniChatOwner &&
+    telegramStarsOwner === miniChatOwner;
+  useEffect(() => {
+    if (miniProvider !== "telegram" || !miniAppOpenInvoice || !miniChatOwner)
+      return;
+    const ticket = session.capture();
+    const controller = new AbortController();
+    const signal = AbortSignal.any([ticket.signal, controller.signal]);
+    void createClient("/api", { signal: () => signal })
+      .telegramStars()
+      .then(() => {
+        if (!signal.aborted && ticket.active())
+          setTelegramStarsOwner(miniChatOwner);
+      })
+      .catch(() => {});
+    return () => controller.abort();
+  }, [miniProvider, miniAppOpenInvoice, miniChatOwner, session]);
   useEffect(() => {
     if (!miniProvider || !miniChatOwner) return;
     const ticket = session.capture();
@@ -452,6 +480,8 @@ export default function CityGoHome({
     miniAccountDetailTrigger.current = null;
     setMessengerOpen(false);
     setBalanceOpen(false);
+    setTelegramStarsOpen(false);
+    setTelegramStarsOwner(null);
     setConversationView(true);
     setWorkspaceRequest(null);
     selectedConversation.current = null;
@@ -1741,6 +1771,12 @@ export default function CityGoHome({
     setReceiptsOpen(false);
     setPhoneOpen(true);
   }
+  function openTelegramStars() {
+    if (!telegramStarsAvailable) return;
+    if (document.activeElement instanceof HTMLElement)
+      miniAccountDetailTrigger.current = document.activeElement;
+    setTelegramStarsOpen(true);
+  }
   function refreshPhoneStatus() {
     setProfileRevision((revision) => revision + 1);
     void refresh(session.capture()).catch(() => {});
@@ -1751,6 +1787,7 @@ export default function CityGoHome({
   function returnToWorkspace(tab: string) {
     setMessengerOpen(false);
     setBalanceOpen(false);
+    setTelegramStarsOpen(false);
     setPhoneOpen(false);
     setFavoritesOpen(false);
     setReceiptsOpen(false);
@@ -1760,6 +1797,7 @@ export default function CityGoHome({
   function returnToApp() {
     setBalanceOpen(false);
     setPhoneOpen(false);
+    setTelegramStarsOpen(false);
     if (miniApp) {
       if (phoneOpen) refreshPhoneStatus();
       const trigger = miniAccountDetailTrigger.current;
@@ -1808,7 +1846,7 @@ export default function CityGoHome({
         return false;
       else if (passwordOpen) setPasswordOpen(false);
       else if (messengerOpen && board) setMessengerOpen(false);
-      else if (balanceOpen || phoneOpen) returnToApp();
+      else if (balanceOpen || phoneOpen || telegramStarsOpen) returnToApp();
       else if (receiptsOpen) setReceiptsOpen(false);
       else if (favoritesOpen) setFavoritesOpen(false);
       else return workspaceBack.current?.() ?? false;
@@ -2267,7 +2305,13 @@ export default function CityGoHome({
             <div
               className={miniApp ? "mini-account-detail" : undefined}
               hidden={
-                !(balanceOpen || phoneOpen || favoritesOpen || receiptsOpen)
+                !(
+                  balanceOpen ||
+                  phoneOpen ||
+                  favoritesOpen ||
+                  receiptsOpen ||
+                  telegramStarsOpen
+                )
               }
             >
               <WorkspaceFrame
@@ -2294,6 +2338,17 @@ export default function CityGoHome({
                   )
                 }
               >
+                {telegramStarsOpen &&
+                  telegramStarsAvailable &&
+                  miniAppOpenInvoice && (
+                    <TelegramStarsPanel
+                      key={board.user.id}
+                      sessionSignal={session.capture().signal}
+                      openInvoice={miniAppOpenInvoice}
+                      onAccessDenied={requireLogin}
+                      onClose={returnToMiniProfile}
+                    />
+                  )}
                 {miniApp ? (
                   balanceOpen && (
                     <MiniAppProfileBalance
@@ -2398,7 +2453,13 @@ export default function CityGoHome({
                 accountStyles.experience +
                 (miniApp ? " mini-workspace-frame" : "")
               }
-              hidden={balanceOpen || phoneOpen || favoritesOpen || receiptsOpen}
+              hidden={
+                balanceOpen ||
+                phoneOpen ||
+                favoritesOpen ||
+                receiptsOpen ||
+                telegramStarsOpen
+              }
             >
               <Experience
                 key={board.user.id + ":" + conversationNavigation}
@@ -2416,6 +2477,9 @@ export default function CityGoHome({
                           setMessengerOpen(true);
                         },
                         onReceipts: () => setReceiptsOpen(true),
+                        onTelegramStars: telegramStarsAvailable
+                          ? openTelegramStars
+                          : undefined,
                         onLogout: requestLogout,
                         housingCriteria:
                           launchHousing?.ownerId === board.user.id
@@ -2434,6 +2498,7 @@ export default function CityGoHome({
                 onNavigateWorkspace={() => {
                   setPhoneOpen(false);
                   setBalanceOpen(false);
+                  setTelegramStarsOpen(false);
                   setFavoritesOpen(false);
                   setReceiptsOpen(false);
                 }}
