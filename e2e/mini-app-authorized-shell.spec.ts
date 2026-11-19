@@ -253,9 +253,12 @@ for (const host of hosts) {
     await expect(
       page.getByRole("heading", { name: "123 ₽", exact: true }),
     ).toBeVisible();
-    await expect(
-      page.getByText("Подарок 500 ₽ CityGo уже начислен."),
-    ).toBeVisible();
+    const giftStatus = page.getByText("Подарок 500 ₽ CityGo уже начислен.");
+    if (host.provider === "telegram") {
+      await expect(giftStatus).toBeVisible();
+    } else {
+      await expect(giftStatus).toHaveCount(0);
+    }
     await expect(
       page.getByRole("button", { name: "Чеки", exact: true }),
     ).toBeVisible();

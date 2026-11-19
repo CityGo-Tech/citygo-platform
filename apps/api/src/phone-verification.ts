@@ -65,7 +65,11 @@ export function registerPhoneVerification(
     db: Database;
     config: ReturnType<typeof readConfig>;
     delivery?: PhoneVerificationDelivery;
-    context: (request: FastifyRequest) => Promise<PhoneVerificationContext>;
+    context: (
+      request: FastifyRequest,
+    ) => Promise<
+      PhoneVerificationContext & { phoneVerificationAllowed: boolean }
+    >;
   },
 ) {
   const selectedProvider = options.config.PHONE_VERIFICATION_MODE;
@@ -143,30 +147,40 @@ export function registerPhoneVerification(
       controller.abort();
     }
   }
-  app.get("/v1/phone-verification/policy", async (request) => {
-    const ctx = await options.context(request);
+  async function readPolicy(request: FastifyRequest) {
+    const { phoneVerificationAllowed, ...ctx } = await options.context(request);
     // Disabled installations do not query phone tables. Unbound installations
     // only check control readiness, never account gift history or challenges.
-    const available = !!policy && (await ready());
+    const enabled = phoneVerificationAllowed && !!policy;
+    const available = enabled && (await ready());
     const giftStatus = available
       ? (await state!.status(ctx)).giftStatus
       : "unavailable";
     return {
-      phoneVerification: !policy
+      phoneVerification: !enabled
         ? "disabled"
         : available
           ? "required"
           : "unavailable",
-      deliveryProvider: policy ? selectedProvider : "none",
+      deliveryProvider: enabled ? selectedProvider : "none",
       giftAmountMicros: 500_000_000,
       giftStatus,
     };
-  });
+  }
+  async function mutationContext(request: FastifyRequest) {
+    const { phoneVerificationAllowed, ...ctx } = await options.context(request);
+    if (!phoneVerificationAllowed)
+      throw new DomainError(
+        403,
+        "Подтверждение телефона в этом мини-приложении пока недоступно.",
+      );
+    return ctx;
+  }
   const limits = {
     config: { rateLimit: { max: 10, timeWindow: "15 minutes" } },
   };
-  app.post("/v1/phone-verification/start", limits, async (request) => {
-    const ctx = await options.context(request);
+  async function start(request: FastifyRequest) {
+    const ctx = await mutationContext(request);
     const { phone, expectedDeliveryProvider } =
       phoneVerificationStartSchema.parse(request.body);
     expectProvider(expectedDeliveryProvider);
@@ -189,9 +203,9 @@ export function registerPhoneVerification(
       expiresAt: result.expiresAt,
       resendAfterSeconds: 60,
     };
-  });
-  app.post("/v1/phone-verification/resend", limits, async (request) => {
-    const ctx = await options.context(request);
+  }
+  async function resend(request: FastifyRequest) {
+    const ctx = await mutationContext(request);
     const input = phoneVerificationResendSchema.parse(request.body);
     expectProvider(input.expectedDeliveryProvider);
     await unavailable();
@@ -211,9 +225,9 @@ export function registerPhoneVerification(
       expiresAt: result.expiresAt,
       resendAfterSeconds: 60,
     };
-  });
-  app.post("/v1/phone-verification/confirm", limits, async (request) => {
-    const ctx = await options.context(request);
+  }
+  async function confirm(request: FastifyRequest) {
+    const ctx = await mutationContext(request);
     await unavailable();
     const input = phoneVerificationConfirmSchema.parse(request.body);
     const phoneKey = digest("phone-identity", input.phone);
@@ -230,5 +244,14 @@ export function registerPhoneVerification(
         sourceChallengeId: input.challengeId,
       }),
     });
-  });
+  }
+  for (const path of [
+    "/v1/phone-verification",
+    "/v1/mini-apps/:provider/phone-verification",
+  ]) {
+    app.get(`${path}/policy`, readPolicy);
+    app.post(`${path}/start`, limits, start);
+    app.post(`${path}/resend`, limits, resend);
+    app.post(`${path}/confirm`, limits, confirm);
+  }
 }

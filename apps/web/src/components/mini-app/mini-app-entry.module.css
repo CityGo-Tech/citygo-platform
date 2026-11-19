@@ -92,6 +92,10 @@
   flex: 1 0 auto;
 }
 
+.accountContent :global(.mini-account-detail .conversation-workspace) {
+  display: block;
+}
+
 .accountContent:not(:has(:global(.mini-workspace-frame):not([hidden]))),
 .accountShell[data-mini-keyboard="open"] .accountContent {
   padding-bottom: max(var(--cg-space-md), var(--mini-safe-bottom));

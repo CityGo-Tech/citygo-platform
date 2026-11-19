@@ -127,3 +127,56 @@
   outline: 2px solid var(--cg-color-primary-strong);
   outline-offset: 2px;
 }
+
+.mini:global(.cg-card) {
+  gap: var(--cg-space-compact);
+  padding: 0;
+  background: transparent;
+}
+.mini h1 {
+  font-size: 2rem;
+  font-weight: 800;
+  line-height: 1.16;
+}
+.mini .intro {
+  font-size: 0.8125rem;
+}
+.mini .form {
+  gap: var(--cg-space-compact);
+}
+.mini .question {
+  gap: var(--cg-space-xs);
+  padding: var(--cg-space-sm) var(--cg-space-md);
+  border-radius: var(--cg-radius-control);
+  background: var(--cg-color-surface);
+}
+.mini .question strong {
+  font-size: 0.75rem;
+  color: var(--cg-color-muted);
+}
+.mini .question textarea {
+  min-height: 5rem;
+  padding: 0;
+  font-size: max(1rem, 16px);
+  border: 0;
+  scroll-margin-block: var(--cg-space-md);
+}
+.mini .notice {
+  gap: var(--cg-space-xs);
+  padding: var(--cg-space-compact) var(--cg-space-md);
+  color: var(--cg-color-success);
+  background: var(--cg-color-success-soft);
+  border-color: transparent;
+}
+.mini .actions {
+  display: grid;
+}
+.mini .actions button {
+  min-width: 0;
+  white-space: normal;
+}
+.mini .list li {
+  min-width: 0;
+  background: var(--cg-color-surface);
+  scroll-margin-block: var(--cg-space-md);
+}

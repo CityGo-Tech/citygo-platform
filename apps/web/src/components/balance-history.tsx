@@ -34,7 +34,7 @@ export function BalanceHistoryPanel({
   userId: string;
   sessionSignal: AbortSignal;
   onAccessDenied: () => void;
-  onClose: () => void;
+  onClose?: () => void;
 }) {
   const [snapshot, setSnapshot] = useState<{
     owner: string;
@@ -83,10 +83,16 @@ export function BalanceHistoryPanel({
       aria-labelledby="balance-history-title"
       aria-busy={state.busy}
     >
-      <Button type="button" variant="secondary" onClick={onClose}>
-        Назад к балансу
-      </Button>
-      <h2 id="balance-history-title" tabIndex={-1} ref={heading}>
+      {onClose && (
+        <Button type="button" variant="secondary" onClick={onClose}>
+          Назад к балансу
+        </Button>
+      )}
+      <h2
+        id="balance-history-title"
+        tabIndex={onClose ? -1 : undefined}
+        ref={onClose ? heading : undefined}
+      >
         История баланса
       </h2>
       <div className={styles.filters} role="group" aria-label="Вид операции">

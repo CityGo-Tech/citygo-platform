@@ -681,6 +681,13 @@ export function ConversationHome(props: JourneyProps) {
               onClose={() =>
                 setTab(miniNavigation ? supportReturnTab : "Диалоги")
               }
+              miniReturnLabel={
+                miniNavigation
+                  ? supportReturnTab === "Профиль"
+                    ? "К профилю"
+                    : "К диалогам"
+                  : undefined
+              }
             />
           </div>
           {rail}
@@ -788,6 +795,7 @@ export function ConversationHome(props: JourneyProps) {
             <AccountProfile
               key={board.user.id}
               userId={board.user.id}
+              revision={props.profileRevision}
               sessionSignal={props.sessionSignal}
               onAccessDenied={props.onAccessDenied}
               access={board.aiAccess}

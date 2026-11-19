@@ -446,12 +446,14 @@ export function createClient(
       );
     return result;
   }
-  const miniAppChatPath = (provider: MessengerProvider) =>
+  const miniAppPath = (provider: MessengerProvider) =>
     `/v1/mini-apps/${messengerProviderSchema.parse(provider)}`;
+  const phoneVerificationPath = (provider?: MessengerProvider) =>
+    `${provider === undefined ? "/v1" : miniAppPath(provider)}/phone-verification`;
   const threadMessagesPath = (threadId: string) =>
     `/v1/threads/${encodeURIComponent(threadId)}/messages`;
   const miniAppMessagesPath = (provider: MessengerProvider, threadId: string) =>
-    `${miniAppChatPath(provider)}/threads/${encodeURIComponent(threadId)}/messages`;
+    `${miniAppPath(provider)}/threads/${encodeURIComponent(threadId)}/messages`;
 
   type ChatStreamArgs = [
     text: string,
@@ -515,7 +517,7 @@ export function createClient(
 
   return {
     miniAppChat: (provider: MessengerProvider) =>
-      request(`${miniAppChatPath(provider)}/chat`, miniAppChatCapabilitySchema),
+      request(`${miniAppPath(provider)}/chat`, miniAppChatCapabilitySchema),
     miniAppChatStatus: (
       provider: MessengerProvider,
       threadId: string,
@@ -761,14 +763,18 @@ export function createClient(
           code,
         }),
       ),
-    phoneVerificationPolicy: () =>
-      request("/v1/phone-verification/policy", phoneVerificationPolicySchema),
+    phoneVerificationPolicy: (miniAppProvider?: MessengerProvider) =>
+      request(
+        `${phoneVerificationPath(miniAppProvider)}/policy`,
+        phoneVerificationPolicySchema,
+      ),
     beginPhoneVerification: async (
       phone: string,
       expectedDeliveryProvider: "sms_ru" | "prosto_sms",
+      miniAppProvider?: MessengerProvider,
     ) =>
       request(
-        "/v1/phone-verification/start",
+        `${phoneVerificationPath(miniAppProvider)}/start`,
         phoneVerificationChallengeSchema,
         phoneVerificationInput(phoneVerificationStartSchema, {
           phone,
@@ -780,6 +786,7 @@ export function createClient(
       proof: string,
       phone: string,
       expectedDeliveryProvider: "sms_ru" | "prosto_sms",
+      miniAppProvider?: MessengerProvider,
     ) => {
       const input = phoneVerificationInput(phoneVerificationResendSchema, {
         challengeId,
@@ -788,7 +795,7 @@ export function createClient(
         expectedDeliveryProvider,
       });
       const result = await request(
-        "/v1/phone-verification/resend",
+        `${phoneVerificationPath(miniAppProvider)}/resend`,
         phoneVerificationChallengeSchema,
         input,
       );
@@ -808,9 +815,10 @@ export function createClient(
       proof: string,
       phone: string,
       code: string,
+      miniAppProvider?: MessengerProvider,
     ) =>
       request(
-        "/v1/phone-verification/confirm",
+        `${phoneVerificationPath(miniAppProvider)}/confirm`,
         phoneVerificationReceiptSchema,
         phoneVerificationInput(phoneVerificationConfirmSchema, {
           challengeId,

@@ -8,6 +8,7 @@ import type {
   ConversationFilters,
   Quest,
   AiModeId,
+  MessengerProvider,
 } from "@citygo/contracts";
 import { chatTextProblem } from "@citygo/contracts";
 import { ChatTextarea } from "./chat-textarea";
@@ -45,6 +46,7 @@ const stateLabels: Record<Quest["state"], string> = {
 export type JourneyProps = {
   headerNavigationId?: string;
   miniAppNavigation?: {
+    provider: MessengerProvider;
     registerBack: (handler: (() => boolean) | null) => void;
     onMessenger: () => void;
     onLogout: (trigger: HTMLButtonElement) => void;
@@ -70,6 +72,7 @@ export type JourneyProps = {
     };
   };
   workspaceRequest?: { tab: string; sequence: number } | null;
+  profileRevision?: number;
   onWorkspaceRequestHandled?: (sequence: number) => void;
   onNavigateWorkspace?: () => void;
   board: Dashboard;
