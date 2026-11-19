@@ -12,7 +12,11 @@ import {
 import { registerBalanceHistoryApi } from "./balance-history.js";
 import { registerConversationExport } from "./conversation-export.js";
 import { registerAssistantContext } from "./assistant-context.js";
-import Fastify from "fastify";
+import Fastify, {
+  type FastifyRequest,
+  type RouteHandlerMethod,
+  type RouteShorthandOptions,
+} from "fastify";
 import { registerResultDiscussionApi } from "./result-discussion.js";
 import { registerConversationMessageSearch } from "./conversation-message-search.js";
 import { registerConversationTitles } from "./conversation-titles.js";
@@ -32,6 +36,7 @@ import {
   changePasswordSchema,
   changeRoleSchema,
   messageIdSchema,
+  messengerProviderSchema,
   setMessageFavoriteSchema,
   favoriteMessagesQuerySchema,
   conversationStartSchema,
@@ -62,6 +67,7 @@ import {
   type AiPolicy,
   type AiRouting,
   type HousingStorageLimits,
+  type MessengerProvider,
 } from "@citygo/contracts";
 import {
   Repository,
@@ -182,6 +188,7 @@ export async function buildApp(options: {
   passwordRecoveryDelivery?: PasswordRecoveryEmailDelivery;
   phoneVerificationDelivery?: PhoneVerificationDelivery;
   modeProviders?: ModeProviders;
+  syntheticMiniAppChat?: boolean;
 }) {
   const drain = options.drain ?? new ApiDrain();
   const config = options.config ?? readConfig();
@@ -199,6 +206,18 @@ export async function buildApp(options: {
   )
     throw new Error(
       "Synthetic mode adapters require the isolated test harness",
+    );
+  if (
+    options.syntheticMiniAppChat &&
+    (config.NODE_ENV !== "test" ||
+      options.testing !== true ||
+      config.AI_ASSISTANT_MODES !== "enabled" ||
+      !options.modeProviders?.maximum ||
+      !options.modeProviders.balanced ||
+      !options.modeProviders.minimum)
+  )
+    throw new Error(
+      "Synthetic mini app chat requires three test mode adapters",
     );
   if (
     (options.emailRegistrationDelivery ||
@@ -549,11 +568,12 @@ export async function buildApp(options: {
   const dummyHash = hashPassword(randomUUID());
   const bearer = (authorization?: string) =>
     authorization?.startsWith("Bearer ") ? authorization.slice(7) : undefined;
-  async function authenticate(
-    request: {
-      headers: { authorization?: string };
-      cookies: Record<string, string | undefined>;
-    },
+  type SessionRequest = {
+    headers: { authorization?: string };
+    cookies: Record<string, string | undefined>;
+  };
+  async function authenticateSession(
+    request: SessionRequest,
     allowPasswordChange = false,
     allowConsentRecovery = false,
   ) {
@@ -580,10 +600,26 @@ export async function buildApp(options: {
         "SERVICE_CONSENT_REQUIRED",
       );
     return {
-      ...account,
-      serviceConsentRequired: consent.serviceConsentRequired,
-      currentAiConsentRequired: consent.currentAiConsentRequired,
+      account: {
+        ...account,
+        serviceConsentRequired: consent.serviceConsentRequired,
+        currentAiConsentRequired: consent.currentAiConsentRequired,
+      },
+      messengerProvider: user.messengerProvider,
     };
+  }
+  async function authenticate(
+    request: SessionRequest,
+    allowPasswordChange = false,
+    allowConsentRecovery = false,
+  ) {
+    return (
+      await authenticateSession(
+        request,
+        allowPasswordChange,
+        allowConsentRecovery,
+      )
+    ).account;
   }
   async function authenticateAdmin(
     request: Parameters<typeof authenticate>[0],
@@ -1459,23 +1495,80 @@ export async function buildApp(options: {
       input.plan,
     );
   });
-  app.post(
-    "/v1/threads/:id/messages",
+  const miniAppChat = "/v1/mini-apps/:provider";
+  const miniAppMessages = `${miniAppChat}/threads/:id/messages`;
+  const miniAppScope = z.object({ provider: messengerProviderSchema });
+  const miniAppRequest = miniAppScope.extend({
+    id: conversationIdSchema,
+    requestId: chatInputSchema.shape.requestId,
+  });
+  const syntheticMiniAppAdapters = new Set(
+    Object.values(options.modeProviders ?? {}),
+  );
+  const miniAppChatAvailable = options.syntheticMiniAppChat === true;
+  const sameMiniAppProvider = (
+    session: MessengerProvider | null,
+    provider: MessengerProvider,
+  ) => session === null || session === provider;
+  function miniAppChatForbidden(): never {
+    throw new DomainError(
+      403,
+      "Отправка сообщений из мини-приложения пока недоступна.",
+    );
+  }
+  app.get(`${miniAppChat}/chat`, async (request) => {
+    const { provider } = miniAppScope.parse(request.params);
+    const { messengerProvider } = await authenticateSession(request);
+    return {
+      available:
+        miniAppChatAvailable &&
+        sameMiniAppProvider(messengerProvider, provider),
+    };
+  });
+  app.get(`${miniAppMessages}/:requestId`, async (request) => {
+    const { provider, id, requestId } = miniAppRequest.parse(request.params);
+    const { account, messengerProvider } = await authenticateSession(request);
+    if (!sameMiniAppProvider(messengerProvider, provider))
+      miniAppChatForbidden();
+    return { status: await repo.chatRequestStatus(account.id, id, requestId) };
+  });
+
+  async function authenticateChat(request: FastifyRequest) {
+    const { account, messengerProvider } = await authenticateSession(request);
+    const mini =
+      (request.params as { provider?: unknown }).provider !== undefined;
+    if (mini) {
+      const { provider } = miniAppScope.parse(request.params);
+      if (
+        !miniAppChatAvailable ||
+        !sameMiniAppProvider(messengerProvider, provider)
+      )
+        miniAppChatForbidden();
+    } else if (messengerProvider !== null) {
+      // Existing Web auth retains its own access. Telegram/MAX credentials
+      // cannot enable dispatch simply by addressing the regular chat URL.
+      miniAppChatForbidden();
+    }
+    return { account, mini };
+  }
+  function registerChatSend(
+    route: RouteShorthandOptions,
+    sendChatMessage: RouteHandlerMethod,
+  ) {
+    app.post("/v1/threads/:id/messages", route, sendChatMessage);
+    app.post(miniAppMessages, route, sendChatMessage);
+  }
+  registerChatSend(
     {
       bodyLimit: 2 * 1024 * 1024,
       preParsing: async (request, _reply, payload) => {
-        await drain.run(() => authenticate(request));
+        await drain.run(() => authenticateChat(request));
         return payload;
       },
-      config: {
-        rateLimit: {
-          max: 20,
-          timeWindow: "1 minute",
-        },
-      },
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
     },
     async (request, reply) => {
-      const user = await authenticate(request);
+      const { account: user, mini } = await authenticateChat(request);
       const threadId = questParams.parse(request.params).id;
       const input = chatInputSchema.parse(request.body);
       if (
@@ -1516,6 +1609,8 @@ export async function buildApp(options: {
           "AI пока недоступен. Администратору нужно проверить выбранного провайдера и настройки сервера.",
           "AI_UNAVAILABLE",
         );
+      if (mini && !syntheticMiniAppAdapters.has(provider))
+        miniAppChatForbidden();
       if (input.policyId !== aiPolicy.id)
         throw new DomainError(
           409,
@@ -1691,6 +1786,11 @@ export async function buildApp(options: {
       const reserveAttempt = async () => {
         signal.throwIfAborted();
         try {
+          if (mini && attemptNumber > 0)
+            throw new DomainError(
+              409,
+              "Для одного сообщения разрешена только одна попытка ответа. Обновите диалог.",
+            );
           if (attemptNumber > 0 && content.length > 0)
             throw new DomainError(409, "Повтор после начала ответа запрещён.");
           creditHoldId = await repo.reserveAiAttempt({

@@ -28,3 +28,13 @@ export const linkMessengerResponseSchema = z.strictObject({
 export const messengerLinksResponseSchema = z.strictObject({
   providers: z.array(messengerProviderSchema).max(2),
 });
+
+export const miniAppChatCapabilitySchema = z.strictObject({
+  available: z.boolean(),
+});
+export const miniAppChatStatusSchema = z.strictObject({
+  status: z.enum(["missing", "running", "complete", "interrupted"]),
+});
+export type MiniAppChatStatus = z.infer<
+  typeof miniAppChatStatusSchema
+>["status"];

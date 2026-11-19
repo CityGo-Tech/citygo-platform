@@ -26,6 +26,8 @@ import {
   linkMessengerResponseSchema,
   messengerLinksResponseSchema,
   messengerProviderSchema,
+  miniAppChatCapabilitySchema,
+  miniAppChatStatusSchema,
   miniAppSignInResponseSchema,
   prepareMessengerLinkResponseSchema,
   type MessengerProvider,
@@ -444,7 +446,90 @@ export function createClient(
       );
     return result;
   }
+  const miniAppChatPath = (provider: MessengerProvider) =>
+    `/v1/mini-apps/${messengerProviderSchema.parse(provider)}`;
+  const threadMessagesPath = (threadId: string) =>
+    `/v1/threads/${encodeURIComponent(threadId)}/messages`;
+  const miniAppMessagesPath = (provider: MessengerProvider, threadId: string) =>
+    `${miniAppChatPath(provider)}/threads/${encodeURIComponent(threadId)}/messages`;
+
+  type ChatStreamArgs = [
+    text: string,
+    requestId: string,
+    onEvent: (event: StreamEvent) => void,
+    signal?: AbortSignal,
+    policyId?: string,
+    creditReservationMode?: "full" | "fixed5_overdraft",
+    mode?: AiModeSelection,
+  ];
+  async function sendStream(
+    path: string,
+    ...[
+      text,
+      requestId,
+      onEvent,
+      signal,
+      policyId,
+      creditReservationMode,
+      mode,
+    ]: ChatStreamArgs
+  ) {
+    const validated = chatMessageTextSchema.safeParse(text);
+    if (!validated.success)
+      throw new ApiError(400, validated.error.issues[0]!.message);
+    // Capture the exact displayed capability before yielding to fetch. No
+    // selection, fallback or retry may change an already submitted request.
+    const selectedMode =
+      mode === undefined ? undefined : aiModeSelectionSchema.parse(mode);
+    const op = operation(
+      limits.streamTimeoutMs,
+      [options.signal?.(), signal],
+      limits.streamIdleTimeoutMs,
+    );
+    let response: Response | undefined;
+    try {
+      response = await fetchResponse(
+        path,
+        op,
+        { text, requestId, policyId, creditReservationMode, ...selectedMode },
+        true,
+      );
+      await checkStatus(response, path, op);
+      if (
+        response.status !== 200 ||
+        mediaType(response) !== "text/event-stream"
+      )
+        throw new ApiError(
+          response.status,
+          "Сервер вернул ответ неподдерживаемого формата",
+          "invalid_content_type",
+        );
+      await readEvents(response, op, limits, onEvent);
+    } catch (error) {
+      throw clientError(error);
+    } finally {
+      cancelBody(response);
+      op.finish();
+    }
+  }
+
   return {
+    miniAppChat: (provider: MessengerProvider) =>
+      request(`${miniAppChatPath(provider)}/chat`, miniAppChatCapabilitySchema),
+    miniAppChatStatus: (
+      provider: MessengerProvider,
+      threadId: string,
+      requestId: string,
+    ) =>
+      request(
+        `${miniAppMessagesPath(provider, threadId)}/${encodeURIComponent(requestId)}`,
+        miniAppChatStatusSchema,
+      ),
+    miniAppStream: (
+      provider: MessengerProvider,
+      threadId: string,
+      ...args: ChatStreamArgs
+    ) => sendStream(miniAppMessagesPath(provider, threadId), ...args),
     housingWorkspace: () =>
       request("/v1/housing/workspace", housingWorkspaceSchema),
     saveHousingPlan: (input: SaveHousingPlan) =>
@@ -1407,61 +1492,8 @@ export function createClient(
         { confirmed: true },
       ),
     admin: () => request("/v1/admin/overview", adminOverviewResponseSchema),
-    async stream(
-      threadId: string,
-      text: string,
-      requestId: string,
-      onEvent: (event: StreamEvent) => void,
-      signal?: AbortSignal,
-      policyId?: string,
-      creditReservationMode?: "full" | "fixed5_overdraft",
-      mode?: AiModeSelection,
-    ) {
-      const validated = chatMessageTextSchema.safeParse(text);
-      if (!validated.success)
-        throw new ApiError(400, validated.error.issues[0]!.message);
-      // Capture the exact displayed capability before yielding to fetch. No
-      // selection, fallback or retry may change an already submitted request.
-      const selectedMode =
-        mode === undefined ? undefined : aiModeSelectionSchema.parse(mode);
-      const path = "/v1/threads/" + encodeURIComponent(threadId) + "/messages";
-      const op = operation(
-        limits.streamTimeoutMs,
-        [options.signal?.(), signal],
-        limits.streamIdleTimeoutMs,
-      );
-      let response: Response | undefined;
-      try {
-        response = await fetchResponse(
-          path,
-          op,
-          {
-            text,
-            requestId,
-            policyId,
-            creditReservationMode,
-            ...selectedMode,
-          },
-          true,
-        );
-        await checkStatus(response, path, op);
-        if (
-          response.status !== 200 ||
-          mediaType(response) !== "text/event-stream"
-        )
-          throw new ApiError(
-            response.status,
-            "Сервер вернул ответ неподдерживаемого формата",
-            "invalid_content_type",
-          );
-        await readEvents(response, op, limits, onEvent);
-      } catch (error) {
-        throw clientError(error);
-      } finally {
-        cancelBody(response);
-        op.finish();
-      }
-    },
+    stream: (threadId: string, ...args: ChatStreamArgs) =>
+      sendStream(threadMessagesPath(threadId), ...args),
   };
 }
 

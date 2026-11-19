@@ -11,7 +11,11 @@ import { Button, Card, Badge, AssistantMessage } from "@citygo/ui-web";
 import { agentNames, type JourneyProps } from "./journey";
 import { FavoriteButton } from "./message-favorites";
 import { EmptyAiCreditHint, messageInterruptionLabel } from "./chat-readiness";
-import { chatTextProblem, type AgentKey } from "@citygo/contracts";
+import {
+  aiModeLabels,
+  chatTextProblem,
+  type AgentKey,
+} from "@citygo/contracts";
 import { ChatTextarea } from "./chat-textarea";
 import {
   AssistantCatalog,
@@ -37,6 +41,12 @@ import { AiModeSelector } from "./ai-mode-selector";
 import { isAiModeAvailable } from "@citygo/api-client";
 import { trackProductEvent } from "./product-analytics";
 import { TextMaterialPreview } from "./text-material-preview";
+import {
+  appendReviewedTextMaterial,
+  sameTextMaterialScope,
+  type ReviewedTextMaterial,
+  type TextMaterialScope,
+} from "./text-material-state";
 import { AssistantContextPanel } from "./assistant-context";
 import contextStyles from "./assistant-context.module.css";
 import { AssistantHandoffDialog } from "./assistant-handoff";
@@ -49,6 +59,12 @@ import { ConversationMessageSearch } from "./conversation-message-search";
 import { ConversationExportAction } from "./conversation-export";
 import { HousingPlanLaunch, HousingStarterPlan } from "./housing-starter-plan";
 import { HousingWorkspaceView } from "./housing-workspace";
+import { assistantPortrait } from "./assistant-portrait";
+import {
+  MiniChatModes,
+  MiniChatRecovery,
+  MiniChatSources,
+} from "./mini-app/chat-panels";
 import miniStyles from "./mini-app/mini-workspace.module.css";
 
 const greeting =
@@ -73,6 +89,11 @@ export function ConversationHome(props: JourneyProps) {
   const [housingView, setHousingView] = useState<"plan" | "checklist" | null>(
     null,
   );
+  const [modeOpen, setModeOpen] = useState(false);
+  const [sourceMessageId, setSourceMessageId] = useState<string | null>(null);
+  const [material, setMaterial] = useState<
+    (ReviewedTextMaterial & TextMaterialScope) | null
+  >(null);
   const [navigationHost, setNavigationHost] = useState<HTMLElement | null>(
     null,
   );
@@ -90,6 +111,8 @@ export function ConversationHome(props: JourneyProps) {
     setHousingView(openHousing ? "plan" : null);
     setShowList(false);
     setHousingJourney(null);
+    setModeOpen(false);
+    setSourceMessageId(null);
     props.onWorkspaceRequestHandled?.(props.workspaceRequest.sequence);
   }, [miniApp, props.workspaceRequest, props.onWorkspaceRequestHandled]);
   const [supportSelection, setSupportSelection] = useState<{
@@ -139,6 +162,61 @@ export function ConversationHome(props: JourneyProps) {
     },
   );
   const agent = props.streamAgent ?? board.thread?.agentKey ?? "support";
+  const chatOpen =
+    tab === "Диалоги" && !showList && !housingView && !housingJourney;
+  const miniRecovery =
+    miniApp && chatOpen ? props.miniChat?.recovery : undefined;
+  const openSources =
+    miniApp && chatOpen && sourceMessageId
+      ? board.thread?.messages.find(
+          (message) =>
+            message.id === sourceMessageId &&
+            message.role === "assistant" &&
+            message.status === "complete",
+        )
+      : undefined;
+  const sourceReceipt = openSources?.generation?.webSources;
+  const modes = board.aiAccess.modes;
+  const currentMode = props.aiMode ?? modes?.defaultMode ?? "balanced";
+  const showModes = miniApp && chatOpen && modeOpen;
+  const showChatPanel = !!(showModes || sourceReceipt || miniRecovery);
+  useEffect(() => {
+    if (showChatPanel)
+      workspace.current
+        ?.querySelector<HTMLElement>("[data-mini-chat-screen] h1")
+        ?.focus();
+  }, [showChatPanel, showModes, sourceReceipt]);
+  const renderMiniSourceAction = useCallback(
+    (messageId: string) => (
+      <Button
+        variant="ghost"
+        disabled={busy || sending}
+        onClick={() => setSourceMessageId(messageId)}
+      >
+        Источники ответа
+      </Button>
+    ),
+    [busy, sending],
+  );
+  const activeMaterial =
+    miniApp &&
+    board.thread &&
+    material &&
+    !props.sessionSignal.aborted &&
+    sameTextMaterialScope(material, {
+      userId: board.user.id,
+      threadId: board.thread.id,
+      sessionSignal: props.sessionSignal,
+    }) &&
+    (props.text === material.block ||
+      props.text.endsWith("\n\n" + material.block))
+      ? material
+      : null;
+  const editorText = activeMaterial
+    ? props.text === activeMaterial.block
+      ? ""
+      : props.text.slice(0, -activeMaterial.block.length - 2)
+    : props.text;
   const housingThread =
     board.thread &&
     !board.thread.closed &&
@@ -158,16 +236,40 @@ export function ConversationHome(props: JourneyProps) {
   )
     ? "support"
     : agent;
-  const canSend =
+  const canEdit =
     !!board.thread &&
+    !board.thread.closed &&
+    !props.history?.detached &&
+    !props.sessionSignal.aborted &&
+    !busy;
+  const canSend =
+    canEdit &&
+    (!miniApp ||
+      (props.miniChat?.available === true && !props.miniChat.offline)) &&
     isAiModeAvailable(
       board.aiAccess.modes,
       props.aiMode ?? "balanced",
       board.provider !== "unconfigured",
-    ) &&
-    !board.thread.closed &&
-    !props.history?.detached &&
-    !busy;
+    );
+  const messageField = (
+    <ChatTextarea
+      className="ym-disable-keys ym-hide-content"
+      id="conversation-message"
+      value={editorText}
+      validationText={props.text}
+      onChange={(event) => {
+        const value = event.target.value;
+        props.onText(
+          activeMaterial
+            ? appendReviewedTextMaterial(value, activeMaterial.block)
+            : value,
+        );
+      }}
+      rows={2}
+      placeholder="Напишите сообщение…"
+      disabled={!(miniApp ? canEdit : canSend) || sending}
+    />
+  );
   const suggest = (text: string) => {
     setHousingJourney(null);
     props.onText(text);
@@ -190,6 +292,7 @@ export function ConversationHome(props: JourneyProps) {
       setPlanSource(null);
       setHousingJourney(null);
       setHousingView(null);
+      setSourceMessageId(null);
       setTab("Диалоги");
       setShowList(false);
     }
@@ -221,6 +324,8 @@ export function ConversationHome(props: JourneyProps) {
       if (busy || sending) return true;
       if (handoffSource) setHandoffSource(null);
       else if (planSource) setPlanSource(null);
+      else if (showModes) setModeOpen(false);
+      else if (sourceReceipt) setSourceMessageId(null);
       else if (housingView) setHousingView(null);
       else if (currentHousingJourney) setHousingJourney(null);
       else if (tab === "Контекст") closeContext();
@@ -237,6 +342,8 @@ export function ConversationHome(props: JourneyProps) {
     sending,
     handoffSource,
     planSource,
+    showModes,
+    sourceReceipt,
     currentHousingJourney,
     housingView,
     tab,
@@ -327,6 +434,8 @@ export function ConversationHome(props: JourneyProps) {
               props.onNavigateWorkspace?.();
               setHousingJourney(null);
               setHousingView(null);
+              setModeOpen(false);
+              setSourceMessageId(null);
               setTab(name);
               if (name === "Мой план")
                 trackProductEvent("plan_opened", { surface: "plan" });
@@ -387,17 +496,8 @@ export function ConversationHome(props: JourneyProps) {
         (navigationHost
           ? createPortal(navigation, navigationHost)
           : navigation)}
-      {(!miniNavigation ||
-        (tab === "Диалоги" &&
-          !showList &&
-          !housingView &&
-          board.thread &&
-          board.assistantContextAvailable === true)) && (
-        <div
-          className={
-            miniNavigation ? miniStyles.context : contextStyles.mobileContext
-          }
-        >
+      {!miniNavigation && (
+        <div className={contextStyles.mobileContext}>
           <Button
             variant="secondary"
             disabled={
@@ -480,7 +580,29 @@ export function ConversationHome(props: JourneyProps) {
           }}
         />
       )}
-      {housingView ? (
+      {showModes ? (
+        <MiniChatModes
+          modes={modes}
+          selected={currentMode}
+          disabled={busy || sending || !props.onAiMode}
+          available={props.miniChat?.available === true}
+          onSelect={(mode) => {
+            setModeOpen(false);
+            props.onAiMode?.(mode);
+          }}
+        />
+      ) : openSources && sourceReceipt ? (
+        <MiniChatSources
+          content={openSources.content}
+          sources={sourceReceipt}
+          onClose={() => setSourceMessageId(null)}
+        />
+      ) : miniRecovery && !sending ? (
+        <MiniChatRecovery
+          recovery={miniRecovery}
+          disabled={busy || props.miniChat?.offline === true}
+        />
+      ) : housingView ? (
         <HousingWorkspaceView
           key={board.user.id + ":housing:" + housingView}
           userId={board.user.id}
@@ -709,14 +831,19 @@ export function ConversationHome(props: JourneyProps) {
           />
         </WorkspaceFrame>
       ) : (
-        <div className="conversation-workspace">
+        <div
+          className={
+            "conversation-workspace" +
+            (miniApp ? ` ${miniStyles.chatWorkspace}` : "")
+          }
+        >
           {sidebar}
           <div className="conversation-main">
             <Card
               className="conversation-chat-card"
               data-has-messages={!!board.thread?.messages.length}
             >
-              {board.thread && (
+              {!miniApp && board.thread && (
                 <div className="conversation-mode-bar">
                   <AiModeSelector
                     modes={board.aiAccess.modes}
@@ -727,16 +854,44 @@ export function ConversationHome(props: JourneyProps) {
                 </div>
               )}
               <div className="conversation-heading">
-                <Badge>ДИАЛОГ С ПОМОЩНИКОМ</Badge>
+                {!miniApp && <Badge>ДИАЛОГ С ПОМОЩНИКОМ</Badge>}
                 <h1>
                   {board.thread?.assistantKey
                     ? assistantTitle(board.thread.assistantKey)
                     : "Давайте начнём с того, что волнует"}
                 </h1>
-                <p>
-                  Можно начать с любого вопроса. Уточним нужное по ходу
-                  разговора.
-                </p>
+                {miniApp && board.thread ? (
+                  <div className={miniStyles.chatAssistant}>
+                    <Image
+                      src={assistantPortrait(
+                        board.thread.assistantKey ?? board.thread.agentKey,
+                      )}
+                      width={48}
+                      height={48}
+                      alt=""
+                    />
+                    <Button
+                      className={miniStyles.modeTrigger}
+                      aria-label="Режим работы"
+                      variant="ghost"
+                      disabled={busy || sending || !props.onAiMode}
+                      onClick={() => setModeOpen(true)}
+                    >
+                      {aiModeLabels[currentMode]}
+                      <Image
+                        src="/mini-app/right-blue.svg"
+                        width={20}
+                        height={20}
+                        alt=""
+                      />
+                    </Button>
+                  </div>
+                ) : (
+                  <p>
+                    Можно начать с любого вопроса. Уточним нужное по ходу
+                    разговора.
+                  </p>
+                )}
                 <div className="conversation-toolbar">
                   <Button
                     variant="ghost"
@@ -745,6 +900,17 @@ export function ConversationHome(props: JourneyProps) {
                   >
                     Все диалоги
                   </Button>
+                  {miniApp &&
+                    board.thread &&
+                    board.assistantContextAvailable === true && (
+                      <Button
+                        variant="ghost"
+                        disabled={busy || sending}
+                        onClick={openContext}
+                      >
+                        Что помощники знают
+                      </Button>
+                    )}
                   <details className="conversation-tools">
                     <summary>Действия с диалогом</summary>
                     {board.thread && (
@@ -770,6 +936,20 @@ export function ConversationHome(props: JourneyProps) {
                   </details>
                 </div>
               </div>
+              {activeMaterial && (
+                <Card
+                  className={miniStyles.attachment + " ym-hide-content"}
+                  aria-label="Вложение"
+                >
+                  <strong>{activeMaterial.filename}</strong>
+                  <small>
+                    {activeMaterial.pages
+                      ? `PDF · ${activeMaterial.pages} стр.`
+                      : "TXT"}{" "}
+                    · Текст добавлен к сообщению
+                  </small>
+                </Card>
+              )}
               <ConversationHistoryControls
                 state={props.history}
                 disabled={busy || sending}
@@ -825,6 +1005,10 @@ export function ConversationHome(props: JourneyProps) {
                             ? message.generation?.webSources
                             : undefined
                         }
+                        sourceActionKey={miniApp ? message.id : undefined}
+                        renderSourceAction={
+                          miniApp ? renderMiniSourceAction : undefined
+                        }
                       />
                     )}
                     {message.status === "interrupted" && (
@@ -839,6 +1023,24 @@ export function ConversationHome(props: JourneyProps) {
                         props.onFavorite?.(message.id, !message.favorite)
                       }
                     />
+                    {miniApp &&
+                      message.role === "assistant" &&
+                      message.status === "complete" && (
+                        <Button
+                          variant="ghost"
+                          disabled={busy || sending || !!planSource}
+                          onClick={() =>
+                            setPlanSource({
+                              messageId: message.id,
+                              threadId: board.thread!.id,
+                              role: message.role,
+                              content: message.content,
+                            })
+                          }
+                        >
+                          Сохранить в план
+                        </Button>
+                      )}
                     <details className="conversation-message-extras">
                       <summary>Ещё</summary>
                       {message.status === "complete" && props.onHandoff && (
@@ -875,20 +1077,22 @@ export function ConversationHome(props: JourneyProps) {
                           Другому помощнику
                         </Button>
                       )}
-                      <Button
-                        variant="ghost"
-                        disabled={busy || sending || !!planSource}
-                        onClick={() =>
-                          setPlanSource({
-                            messageId: message.id,
-                            threadId: board.thread!.id,
-                            role: message.role,
-                            content: message.content,
-                          })
-                        }
-                      >
-                        Добавить шаг в план
-                      </Button>
+                      {(!miniApp || message.role !== "assistant") && (
+                        <Button
+                          variant="ghost"
+                          disabled={busy || sending || !!planSource}
+                          onClick={() =>
+                            setPlanSource({
+                              messageId: message.id,
+                              threadId: board.thread!.id,
+                              role: message.role,
+                              content: message.content,
+                            })
+                          }
+                        >
+                          Добавить шаг в план
+                        </Button>
+                      )}
                       {message.status === "complete" && (
                         <MessageTextActions
                           key={
@@ -956,14 +1160,33 @@ export function ConversationHome(props: JourneyProps) {
                   вопрос можно задать в открытом диалоге помощника.
                 </p>
               ) : (
-                <form className="conversation-composer" onSubmit={props.onChat}>
-                  <EmptyAiCreditHint
-                    access={board.aiAccess}
-                    onBalance={props.onBalance}
-                  />
-                  <label htmlFor="conversation-message">
-                    Сообщение помощнику
-                  </label>
+                <form
+                  className={
+                    "conversation-composer" +
+                    (miniApp ? ` ${miniStyles.chatComposer}` : "")
+                  }
+                  onSubmit={(event) => {
+                    if (canSend && !sending) props.onChat(event);
+                    else event.preventDefault();
+                  }}
+                >
+                  {(!miniApp || props.miniChat?.available === true) && (
+                    <EmptyAiCreditHint
+                      access={board.aiAccess}
+                      onBalance={props.onBalance}
+                    />
+                  )}
+                  {miniApp && props.miniChat?.available !== true && (
+                    <p className={miniStyles.chatAvailability}>
+                      Отправка в мини-приложении пока недоступна. Здесь можно
+                      подготовить черновик.
+                    </p>
+                  )}
+                  {!miniApp && (
+                    <label htmlFor="conversation-message">
+                      Сообщение помощнику
+                    </label>
+                  )}
                   {props.draftRecovered && (
                     <div className="conversation-notice" role="status">
                       <p>
@@ -979,23 +1202,50 @@ export function ConversationHome(props: JourneyProps) {
                       </Button>
                     </div>
                   )}
-                  <ChatTextarea
-                    className="ym-disable-keys ym-hide-content"
-                    id="conversation-message"
-                    value={props.text}
-                    onChange={(e) => props.onText(e.target.value)}
-                    rows={2}
-                    placeholder="Напишите сообщение…"
-                    disabled={!canSend || sending}
-                  />
-                  <TextMaterialPreview
-                    userId={board.user.id}
-                    threadId={board.thread.id}
-                    sessionSignal={props.sessionSignal}
-                    draft={props.text}
-                    disabled={!canSend || sending}
-                    onDraft={props.onText}
-                  />
+                  {miniApp ? (
+                    <div className={miniStyles.chatEditor}>
+                      <label htmlFor="conversation-message">
+                        Сообщение помощнику
+                      </label>
+                      {messageField}
+                    </div>
+                  ) : (
+                    messageField
+                  )}
+                  {activeMaterial ? (
+                    <span>
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        disabled={!canEdit || sending}
+                        onClick={() => {
+                          setMaterial(null);
+                          props.onText(editorText);
+                        }}
+                      >
+                        Удалить вложение
+                      </Button>
+                    </span>
+                  ) : (
+                    <TextMaterialPreview
+                      userId={board.user.id}
+                      threadId={board.thread.id}
+                      sessionSignal={props.sessionSignal}
+                      draft={props.text}
+                      disabled={!(miniApp ? canEdit : canSend) || sending}
+                      miniApp={miniApp}
+                      onDraft={(text, reviewed) => {
+                        if (miniApp && board.thread)
+                          setMaterial({
+                            ...reviewed,
+                            userId: board.user.id,
+                            threadId: board.thread.id,
+                            sessionSignal: props.sessionSignal,
+                          });
+                        props.onText(text);
+                      }}
+                    />
+                  )}
                   <div className="conversation-send-action">
                     {sending ? (
                       <Button
@@ -1016,7 +1266,11 @@ export function ConversationHome(props: JourneyProps) {
                           chatTextProblem(props.text) !== null
                         }
                       >
-                        <span aria-hidden="true">↑</span>
+                        {miniApp ? (
+                          "Отправить"
+                        ) : (
+                          <span aria-hidden="true">↑</span>
+                        )}
                       </Button>
                     )}
                   </div>
@@ -1027,7 +1281,7 @@ export function ConversationHome(props: JourneyProps) {
           {rail}
         </div>
       )}
-      {miniNavigation && navigation}
+      {miniNavigation && !showModes && !sourceReceipt && navigation}
     </section>
   );
 }

@@ -46,6 +46,7 @@ async function fixture(
     postgres?: boolean;
     initialKopeks?: number;
     memory?: boolean;
+    syntheticMiniAppChat?: boolean;
   } = {},
 ) {
   const minimum = options.minimum !== undefined;
@@ -182,6 +183,7 @@ async function fixture(
   const reads: AiModeId[] = [];
   const failures = new Set<AiModeId>();
   const interruptions = new Set<AiModeId>();
+  const retries = new Set<AiModeId>();
   const prices = new Map<AiModeId, string>([
     ["maximum", "0.2"],
     ["balanced", "0.1"],
@@ -312,6 +314,7 @@ async function fixture(
           messages: structuredClone(messages),
           held: hold.held,
         });
+        if (retries.has(mode)) await guard.beforeRetry();
         const id = "gen-synthetic-mode-" + randomUUID();
         references.set(id, guard.billing.reference);
         await guard.billing.onGeneration(id);
@@ -436,6 +439,7 @@ async function fixture(
     config,
     modeProviders,
     testing: true,
+    syntheticMiniAppChat: options.syntheticMiniAppChat,
     ...(options.postpay ? { postpayReconcileScheduler: scheduler } : {}),
   });
   cleanup.app = app;
@@ -565,6 +569,7 @@ async function fixture(
     reads,
     failures,
     interruptions,
+    retries,
     prices,
     ledger,
     tickReconciler,
@@ -1731,6 +1736,205 @@ test("postpay all three modes debit only completed answers without reserving cus
     0,
   );
 });
+
+test("mini app chat denies dispatch outside its explicit synthetic harness", async (t) => {
+  const f = await fixture(t, { minimum: "fixed", postpay: true });
+  await assert.rejects(
+    buildApp({
+      db: f.db,
+      config: f.config,
+      testing: true,
+      syntheticMiniAppChat: true,
+    }),
+    /Synthetic mini app chat requires three test mode adapters/,
+  );
+  const chat = (provider: string) =>
+    `/v1/mini-apps/${provider}/threads/${f.threadId}/messages`;
+  const web = `/v1/threads/${f.threadId}/messages`;
+  const messengerToken = randomUUID();
+  await f.db.query(
+    "insert into messenger_accounts(provider,subject,user_id) values('telegram',12345,$1)",
+    [f.board.user.id],
+  );
+  await f.db.query(
+    "insert into sessions(token_hash,user_id,expires_at,messenger_provider) values($1,$2,now()+interval '1 day','telegram')",
+    [tokenHash(messengerToken), f.board.user.id],
+  );
+  const message = {
+    text: "Синтетический запрос без отправки",
+    requestId: randomUUID(),
+    aiMode: "maximum",
+    aiModeCatalogId: f.modes.catalogId,
+    policyId: f.modes.policy.id,
+  };
+  for (const provider of ["telegram", "max"]) {
+    const capability = await f.call(
+      "GET",
+      `/v1/mini-apps/${provider}/chat`,
+      f.token,
+    );
+    assert.equal(capability.statusCode, 200);
+    assert.deepEqual(capability.json(), { available: false });
+    assert.equal(
+      (await f.call("POST", chat(provider), f.token, message)).statusCode,
+      403,
+    );
+  }
+  assert.equal(
+    (await f.call("POST", web, messengerToken, message)).statusCode,
+    403,
+  );
+  assert.equal(
+    (await f.call("POST", chat("telegram"), messengerToken, message))
+      .statusCode,
+    403,
+  );
+  assert.equal(
+    (await f.call("GET", `${chat("max")}/${message.requestId}`, messengerToken))
+      .statusCode,
+    403,
+  );
+  assert.doesNotMatch(
+    (await f.call("GET", "/v1/dashboard", messengerToken)).body,
+    /messengerProvider/,
+  );
+
+  const invalidBody = await f.app.inject({
+    method: "POST",
+    url: chat("telegram"),
+    headers: {
+      origin: "http://localhost:3000",
+      cookie: "citygo=" + f.token,
+      "content-type": "application/json",
+    },
+    payload: "{",
+  });
+  assert.equal(invalidBody.statusCode, 403, invalidBody.body);
+  assert.equal(
+    (
+      await f.call("GET", `${chat("telegram")}/${message.requestId}`, f.token)
+    ).json().status,
+    "missing",
+  );
+  assert.equal(f.calls.length, 0);
+  assert.equal((await f.balance()).spentMicros, 0);
+  assert.equal(
+    (await f.db.query("select 1 from ai_postpay_attempts")).rows.length,
+    0,
+  );
+  assert.match(
+    (await f.send("balanced", "Обычный тестовый Web-запрос")).body,
+    /"type":"done"/,
+  );
+});
+
+for (const postgres of [false, true])
+  test(
+    `mini app chat runs all three synthetic modes, reads recovery state and refuses duplicate and adapter retries (${postgres ? "PostgreSQL" : "PGlite"})`,
+    { skip: postgres && !process.env.TEST_DATABASE_URL, timeout: 45000 },
+    async (t) => {
+      const f = await fixture(t, {
+        minimum: "fixed",
+        postpay: true,
+        syntheticMiniAppChat: true,
+        postgres,
+      });
+      const chat = (provider: string) =>
+        `/v1/mini-apps/${provider}/threads/${f.threadId}/messages`;
+      for (const [provider, mode] of [
+        ["telegram", "maximum"],
+        ["max", "minimum"],
+        ["telegram", "balanced"],
+      ] as const) {
+        const requestId = randomUUID();
+        const payload = {
+          text: `Синтетический вопрос ${mode}`,
+          requestId,
+          aiMode: mode,
+          aiModeCatalogId: f.modes.catalogId,
+          policyId: f.modes.policy.id,
+        };
+        assert.deepEqual(
+          (
+            await f.call("GET", `/v1/mini-apps/${provider}/chat`, f.token)
+          ).json(),
+          { available: true },
+        );
+        const status = () =>
+          f.call("GET", `${chat(provider)}/${requestId}`, f.token);
+        assert.deepEqual((await status()).json(), { status: "missing" });
+        if (mode === "minimum") f.control.blockMinimum = true;
+        const response = f.call("POST", chat(provider), f.token, payload);
+        if (mode === "minimum") {
+          try {
+            await f.minimumStarted;
+            assert.deepEqual((await status()).json(), { status: "running" });
+            assert.equal((await f.balance()).spentMicros, 2_000_000);
+          } finally {
+            f.releaseMinimum();
+          }
+        }
+        const answer = await response;
+        assert.equal(answer.statusCode, 200, answer.body);
+        assert.match(answer.body, /"type":"done"/);
+        assert.deepEqual((await status()).json(), { status: "complete" });
+        assert.equal(
+          (await f.call("POST", chat(provider), f.token, payload)).statusCode,
+          409,
+        );
+      }
+      assert.deepEqual(
+        f.calls.map(({ mode, held }) => [mode, held]),
+        [
+          ["maximum", "0"],
+          ["minimum", "0"],
+          ["balanced", "0"],
+        ],
+      );
+      assert.equal((await f.balance()).spentMicros, 6_000_000);
+      assert.equal((await f.balance()).heldMicros, 0);
+
+      f.retries.add("maximum");
+      const requestId = randomUUID();
+      const retry = await f.call("POST", chat("telegram"), f.token, {
+        text: "Прерванный синтетический ответ",
+        requestId,
+        aiMode: "maximum",
+        aiModeCatalogId: f.modes.catalogId,
+        policyId: f.modes.policy.id,
+      });
+      assert.match(retry.body, /"type":"error"/);
+      assert.doesNotMatch(retry.body, /"type":"done"/);
+      assert.deepEqual(
+        (
+          await f.call("GET", `${chat("telegram")}/${requestId}`, f.token)
+        ).json(),
+        { status: "interrupted" },
+      );
+      assert.equal((await f.balance()).spentMicros, 6_000_000);
+      const attempts = await f.db.query(
+        "select attempt_number from ai_model_attempts where thread_id=$1 and request_id=$2",
+        [f.threadId, requestId],
+      );
+      assert.deepEqual(attempts.rows, [{ attempt_number: 1 }]);
+      const stranger = await f.call("POST", "/v1/auth/register", "", {
+        email: randomUUID() + "@example.test",
+        password: "123456",
+        consents: await syntheticConsentsFor(f.app),
+      });
+      assert.equal(stranger.statusCode, 200, stranger.body);
+      assert.equal(
+        (
+          await f.call(
+            "GET",
+            `${chat("telegram")}/${requestId}`,
+            stranger.cookies[0]!.value,
+          )
+        ).statusCode,
+        404,
+      );
+    },
+  );
 
 test("postpay exact actual over balance settles once into debt without disabling the operator budget", async (t) => {
   const f = await fixture(t, { postpay: true });

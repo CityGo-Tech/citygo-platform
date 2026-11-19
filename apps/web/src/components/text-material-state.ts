@@ -25,6 +25,11 @@ export type TextMaterialContext = TextMaterialScope & {
   draft: string;
 };
 export type TextMaterialFile = Pick<File, "name" | "size" | "arrayBuffer">;
+export type ReviewedTextMaterial = {
+  filename: string;
+  block: string;
+  pages?: number;
+};
 export type TextMaterialView =
   | { phase: "select"; error?: string }
   | { phase: "reading"; filename: string }
@@ -73,10 +78,14 @@ function validText(text: string, limit = TEXT_MESSAGE_MAX_LENGTH) {
 
 export function composeTextMaterial(draft: string, material: string) {
   validText(material);
-  const result = (draft ? draft + "\n\n" : "") + "Материал:\n" + material;
+  const result = appendReviewedTextMaterial(draft, "Материал:\n" + material);
   const error = chatTextError(result);
   if (error) throw new Error(error);
   return result;
+}
+
+export function appendReviewedTextMaterial(draft: string, block: string) {
+  return (draft ? draft + "\n\n" : "") + block;
 }
 
 /** Local reader only. No upload, persistence or AI request belongs to this resource. */
@@ -84,7 +93,7 @@ export function createTextMaterialResource(options: {
   scope: TextMaterialScope;
   current: () => TextMaterialContext;
   publish: (view: TextMaterialView) => void;
-  apply: (draft: string) => void;
+  apply: (draft: string, material: ReviewedTextMaterial) => void;
   readPdf?: (
     buffer: ArrayBuffer,
     signal: AbortSignal,
@@ -241,7 +250,11 @@ export function createTextMaterialResource(options: {
         return false;
       }
       stop(); // A second synchronous click cannot append the material twice.
-      options.apply(combined);
+      options.apply(combined, {
+        filename: preview.filename,
+        block: "Материал:\n" + preview.text,
+        pages: preview.pages,
+      });
       return true;
     },
     dispose() {

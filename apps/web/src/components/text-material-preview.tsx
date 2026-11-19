@@ -6,6 +6,7 @@ import {
   sameTextMaterialScope,
   TEXT_MESSAGE_MAX_LENGTH,
   type TextMaterialContext,
+  type ReviewedTextMaterial,
   type TextMaterialScope,
   type TextMaterialView,
 } from "./text-material-state";
@@ -22,6 +23,7 @@ export function TextMaterialPreview({
   sessionSignal,
   draft,
   disabled,
+  miniApp = false,
   onDraft,
 }: {
   userId: string;
@@ -29,7 +31,8 @@ export function TextMaterialPreview({
   sessionSignal: AbortSignal;
   draft: string;
   disabled: boolean;
-  onDraft: (text: string) => void;
+  miniApp?: boolean;
+  onDraft: (text: string, material: ReviewedTextMaterial) => void;
 }) {
   const trigger = useRef<HTMLSpanElement>(null);
   const latest = useRef<TextMaterialContext & { apply: typeof onDraft }>({
@@ -66,14 +69,15 @@ export function TextMaterialPreview({
           disabled={disabled || sessionSignal.aborted}
           onClick={() => setScope({ userId, threadId, sessionSignal })}
         >
-          Прикрепить материал
+          {miniApp ? "Прикрепить PDF или TXT" : "Прикрепить материал"}
         </Button>
       </span>
       {scope && available && (
         <TextMaterialDialog
           scope={scope}
           current={() => latest.current}
-          onApply={(text) => latest.current.apply(text)}
+          onApply={(text, material) => latest.current.apply(text, material)}
+          miniApp={miniApp}
           onClose={() => setScope(null)}
           onRestore={() => {
             if (
@@ -100,13 +104,15 @@ function TextMaterialDialog({
   onClose,
   onRestore,
   draftLength,
+  miniApp,
 }: {
   scope: TextMaterialScope;
   current: () => TextMaterialContext;
-  onApply: (text: string) => void;
+  onApply: (text: string, material: ReviewedTextMaterial) => void;
   onClose: () => void;
   onRestore: () => void;
   draftLength: number | null;
+  miniApp: boolean;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const title = useRef<HTMLHeadingElement>(null);
@@ -123,7 +129,7 @@ function TextMaterialDialog({
       scope,
       current: () => callbacks.current.current(),
       publish: setView,
-      apply: (text) => callbacks.current.onApply(text),
+      apply: (text, material) => callbacks.current.onApply(text, material),
     });
     resource.current = reader;
     const element = dialog.current;
@@ -279,7 +285,7 @@ function TextMaterialDialog({
                 );
               }}
             >
-              Назад к выбору
+              {miniApp && preview ? "Удалить вложение" : "Назад к выбору"}
             </Button>
           ) : null}
           <Button type="button" variant="secondary" onClick={close}>
