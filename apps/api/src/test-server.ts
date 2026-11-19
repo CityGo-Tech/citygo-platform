@@ -6,6 +6,10 @@ import { readConfig } from "@citygo/config";
 import { seedTestBudget } from "./test-budget.js";
 import { ApiDrain, installShutdown } from "./shutdown.js";
 import { seedObservabilityE2eFixture } from "./test-customer-observability.js";
+import {
+  seedTelegramStarsTestFixture,
+  telegramStarsTestFixture,
+} from "./test-telegram-stars.js";
 if (process.env.NODE_ENV !== "test")
   throw new Error("Test server requires NODE_ENV=test");
 const testDatabaseUrl = "pglite://:memory:";
@@ -26,8 +30,10 @@ const app = await buildApp({
   config,
   testing: true,
   drain,
+  telegramStarsTest: telegramStarsTestFixture,
 });
 app.addHook("onClose", () => db.close());
 await seedObservabilityE2eFixture(db, app, testDatabaseUrl);
+await seedTelegramStarsTestFixture(db, app, testDatabaseUrl);
 installShutdown(app, drain);
 await app.listen({ host: "127.0.0.1", port: 4000 });

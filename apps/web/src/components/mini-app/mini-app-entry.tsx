@@ -265,6 +265,7 @@ export function MiniAppEntry({ host }: { host: MiniAppHost }) {
               openMaxPayment={
                 host.provider === "max" ? bridge?.openExternal : undefined
               }
+              miniAppOpenInvoice={bridge?.openInvoice}
               registerMiniAppBack={registerMiniAppBack}
               rememberHousingOwner={rememberHousingOwner}
             />

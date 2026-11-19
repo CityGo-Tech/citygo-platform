@@ -51,6 +51,7 @@ export type JourneyProps = {
     onMessenger: () => void;
     onLogout: (trigger: HTMLButtonElement) => void;
     onReceipts?: () => void;
+    onTelegramStars?: () => void;
     housingCriteria?: { commute: string; budgetRub: number | null };
   };
   miniChat?: {
