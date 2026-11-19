@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test, { type TestContext } from "node:test";
 import { AiCreditLedger, connectDatabase, migrate } from "./index.js";
+import { assertFixtureMigrationJournal } from "./test-migration-journal.js";
 
 const repayment = "citygo_apply_credit_debt_repayments(bigint)";
 const permissionDenied = (error: unknown) =>
@@ -39,10 +40,7 @@ async function fixture(t: TestContext) {
   await db.exec(defaultAcl[0]!);
   await db.exec("set role citygo_migrator");
   await migrate(db);
-  assert.equal(
-    (await db.query("select name from citygo_migrations")).rows.length,
-    50,
-  );
+  await assertFixtureMigrationJournal(db);
   const initial = (
     await db.query<{ owner: string; elevated: boolean; api: boolean }>(
       `select pg_get_userbyid(p.proowner) as owner,p.prosecdef as elevated,

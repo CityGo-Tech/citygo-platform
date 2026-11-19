@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { assertFixtureMigrationJournal } from "./test-migration-journal.js";
 import {
   connectDatabase,
   migrate,
@@ -31,10 +32,7 @@ test("exact disposable rewinds reject populated personal-plan history and tombst
   const db = await connectDatabase("pglite://:memory:");
   t.after(() => db.close());
   await migrate(db);
-  assert.equal(
-    (await db.query("select name from citygo_migrations")).rows.length,
-    50,
-  );
+  await assertFixtureMigrationJournal(db);
   const owner = await new Repository(db).register(
     "plan-rewind@example.test",
     "synthetic",
