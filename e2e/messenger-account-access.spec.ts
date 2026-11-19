@@ -158,9 +158,11 @@ test("expired Telegram entry can reopen, and account switch drops the previous o
   });
   await openMiniApp(page, telegram, "synthetic-telegram-expired");
   await page.getByRole("button", { name: "Войти через Telegram" }).click();
-  await expect(page.getByRole("alert")).toContainText(
-    "откройте мини-приложение заново",
-  );
+  await expect(
+    page
+      .getByRole("alert")
+      .filter({ hasText: "откройте мини-приложение заново" }),
+  ).toBeVisible();
   expect(state.authenticated).toBe(false);
   expect(state.starts).toEqual([]);
 
