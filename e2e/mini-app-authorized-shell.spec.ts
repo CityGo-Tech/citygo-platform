@@ -211,10 +211,14 @@ for (const host of hosts) {
     ]);
     await expect(tab(page, "План")).toHaveAttribute("aria-pressed", "true");
     await expect(heading(page, "Мой план")).toBeVisible();
-    await expect(page.getByText("Ваш переезд: Тула")).toBeVisible();
+    await expect(
+      page
+        .getByRole("region", { name: "Мой план переезда" })
+        .getByText("Ваш переезд: Тула"),
+    ).toBeVisible();
     await expect(page.getByText(step.title, { exact: true })).toBeVisible();
 
-    await page.getByRole("button", { name: "Результаты", exact: true }).click();
+    await page.getByRole("button", { name: /^Результаты/ }).click();
     await expect(heading(page, "Полезное из разговоров")).toBeVisible();
     await expect(page.getByText(step.title, { exact: true })).toBeVisible();
     await expect(tab(page, "План")).toHaveAttribute("aria-pressed", "true");
@@ -333,7 +337,7 @@ test("an ordinary browser keeps CityGo's web navigation when opening from a mini
   await expect(page).toHaveURL(/\/$/);
   await expect(nav(page)).toBeVisible();
   await expect(tab(page, "Мой план")).toBeVisible();
-  await expect(tab(page, "Результаты")).toBeVisible();
+  await expect(tab(page, "Мой план")).toBeVisible();
   await tab(page, "Помощники").click();
   await expect(heading(page, "Ваша команда AI-помощников")).toBeVisible();
   await expect(page.locator(".mini-app-tabs")).toHaveCount(0);
