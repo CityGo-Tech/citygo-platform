@@ -108,7 +108,10 @@ test("MAX email registration keeps the task, and connection requires separate ow
     page.getByRole("heading", { name: "Координатор переезда" }),
   ).toBeVisible();
 
-  await page.locator("details.account-menu > summary").click();
+  await page
+    .getByRole("navigation", { name: "Личный кабинет CityGo" })
+    .getByRole("button", { name: "Профиль", exact: true })
+    .click();
   await page.getByRole("button", { name: "Мессенджеры", exact: true }).click();
   await page.getByLabel("Пароль CityGo").fill(password);
   await page.getByRole("button", { name: "Проверить пароль" }).click();
@@ -179,7 +182,10 @@ test("expired Telegram entry can reopen, and account switch drops the previous o
       JSON.stringify({ text, savedAt: Date.now() }),
     );
   }, previousDraft);
-  await page.locator("details.account-menu > summary").click();
+  await page
+    .getByRole("navigation", { name: "Личный кабинет CityGo" })
+    .getByRole("button", { name: "Профиль", exact: true })
+    .click();
   await page.getByRole("button", { name: "Мессенджеры", exact: true }).click();
   await page.getByRole("button", { name: "Сменить аккаунт" }).click();
   await expect(page.getByText("Вы вышли из аккаунта.")).toBeVisible();
@@ -201,4 +207,39 @@ test("expired Telegram entry can reopen, and account switch drops the previous o
   expect(await page.locator("main").textContent()).not.toContain(previousDraft);
   expect(signIns).toBe(2);
   expect(state.starts).toEqual(["support"]);
+});
+
+test("a task can be reopened after going offline without sending a chat message", async ({
+  page,
+}) => {
+  const state = await syntheticProduct(page);
+  state.failStart = true;
+  await page.route("**/api/v1/mini-apps/telegram/sign-in", (route) => {
+    state.authenticated = true;
+    return route.fulfill({
+      json: { user: { id: "101", email }, purpose: "coordinator" },
+    });
+  });
+  await openMiniApp(page, telegram, "synthetic-telegram-reconnect");
+  await page.getByRole("button", { name: "Войти через Telegram" }).click();
+  const retry = page.getByRole("button", {
+    name: "Продолжить выбранную задачу",
+  });
+  await expect(retry).toBeEnabled();
+  await page.context().setOffline(true);
+  await expect(
+    page.getByRole("status").filter({ hasText: "Нет соединения" }),
+  ).toBeVisible();
+  await expect(retry).toBeDisabled();
+  await page.context().setOffline(false);
+  await expect(retry).toBeEnabled();
+  expect(state.starts).toEqual(["support"]);
+  state.failStart = false;
+  await retry.click();
+  await expect(
+    page.getByRole("heading", { name: "Координатор переезда" }),
+  ).toBeVisible();
+  await expect(retry).toHaveCount(0);
+  expect(state.starts).toEqual(["support", "support"]);
+  expect(state.chatPosts).toBe(0);
 });

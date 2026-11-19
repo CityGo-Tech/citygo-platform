@@ -2,7 +2,35 @@
   --mini-host-color: #1376ad;
   --mini-host-surface: #e9f4ff;
   --mini-tint: #f3f5fd;
+  --mini-safe-top: env(safe-area-inset-top, 0px);
+  --mini-safe-right: env(safe-area-inset-right, 0px);
+  --mini-safe-bottom: env(safe-area-inset-bottom, 0px);
+  --mini-safe-left: env(safe-area-inset-left, 0px);
   min-height: 100dvh;
+}
+
+.shell[data-host="Telegram"] {
+  --mini-safe-top: max(
+    env(safe-area-inset-top, 0px),
+    var(--tg-safe-area-inset-top, 0px),
+    var(--tg-content-safe-area-inset-top, 0px)
+  );
+  --mini-safe-right: max(
+    env(safe-area-inset-right, 0px),
+    var(--tg-safe-area-inset-right, 0px),
+    var(--tg-content-safe-area-inset-right, 0px)
+  );
+  --mini-safe-bottom: max(
+    env(safe-area-inset-bottom, 0px),
+    var(--tg-safe-area-inset-bottom, 0px),
+    var(--tg-content-safe-area-inset-bottom, 0px)
+  );
+  --mini-safe-left: max(
+    env(safe-area-inset-left, 0px),
+    var(--tg-safe-area-inset-left, 0px),
+    var(--tg-content-safe-area-inset-left, 0px)
+  );
+  --mini-host-height: var(--tg-viewport-stable-height, 100dvh);
 }
 
 .shell[data-host="MAX"] {
@@ -10,24 +38,99 @@
   --mini-host-surface: #f1edff;
 }
 
+.accountShell {
+  display: flex;
+  flex-direction: column;
+  height: min(
+    100dvh,
+    var(--mini-host-height, 100dvh),
+    var(--mini-keyboard-height, 100dvh)
+  );
+  min-height: 0;
+}
+
+.accountContent {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+  padding-inline: var(--mini-safe-left) var(--mini-safe-right);
+  scroll-padding-bottom: var(--mini-safe-bottom);
+}
+
+.accountContent > :global(.mini-home) {
+  display: flex;
+  flex: 1 0 auto;
+  flex-direction: column;
+  width: 100%;
+  min-height: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.accountContent > :global(.mini-home) > main {
+  display: flex;
+  flex: 1 0 auto;
+  flex-direction: column;
+  width: 100%;
+  min-height: 0;
+  min-width: 0;
+  max-width: 40rem;
+  padding: var(--cg-space-md) var(--cg-space-compact) 0;
+}
+
+.accountContent :global(.mini-workspace-frame):not([hidden]) {
+  display: flex;
+  flex: 1 0 auto;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.accountContent :global(.mini-workspace-frame) > section {
+  flex: 1 0 auto;
+}
+
+.accountContent:not(:has(:global(.mini-workspace-frame):not([hidden]))),
+.accountShell[data-mini-keyboard="open"] .accountContent {
+  padding-bottom: max(var(--cg-space-md), var(--mini-safe-bottom));
+}
+
+.accountShell[data-mini-keyboard="open"] :global(.mini-app-tabs) {
+  display: none;
+}
+
+.accountNotice {
+  margin: 0;
+  padding: var(--cg-space-sm) max(var(--cg-space-md), var(--mini-safe-right))
+    var(--cg-space-sm) max(var(--cg-space-md), var(--mini-safe-left));
+  color: var(--cg-color-danger);
+  background: var(--cg-color-surface);
+}
+
 .bar {
   display: flex;
+  flex: none;
   align-items: center;
   justify-content: space-between;
   min-height: 56px;
-  padding-inline: max(var(--cg-space-sm), env(safe-area-inset-left))
-    max(var(--cg-space-sm), env(safe-area-inset-right));
-  padding-top: env(safe-area-inset-top);
+  padding-inline: max(var(--cg-space-sm), var(--mini-safe-left))
+    max(var(--cg-space-sm), var(--mini-safe-right));
+  padding-top: var(--mini-safe-top);
   background: var(--mini-host-surface);
   border-bottom: 1px solid var(--cg-color-border);
 }
 
 .barSide {
+  flex: none;
   width: var(--cg-size-touch-min);
 }
 
 .barTitle {
   display: grid;
+  min-width: 0;
+  overflow-wrap: anywhere;
   text-align: center;
   line-height: 1.4;
 }
@@ -54,10 +157,9 @@
   max-width: 512px;
   min-height: 0;
   margin: 0 auto;
-  padding: var(--cg-space-md)
-    max(var(--cg-space-md), env(safe-area-inset-right))
-    max(var(--cg-space-lg), env(safe-area-inset-bottom))
-    max(var(--cg-space-md), env(safe-area-inset-left));
+  padding: var(--cg-space-md) max(var(--cg-space-md), var(--mini-safe-right))
+    max(var(--cg-space-lg), var(--mini-safe-bottom))
+    max(var(--cg-space-md), var(--mini-safe-left));
 }
 
 .content h1,

@@ -8,6 +8,7 @@ import type {
 } from "@citygo/contracts";
 import { Button, Card, Field, Progress } from "@citygo/ui-web";
 import styles from "./personal-plan.module.css";
+import miniStyles from "./mini-app/mini-workspace.module.css";
 import { PlanItemChecklist } from "./plan-checklist";
 import { PlanExportAction } from "./plan-export";
 import { PlanItemHistory } from "./plan-history";
@@ -247,11 +248,13 @@ export function PersonalPlanPanel({
   onOpenConversation,
   onContinue,
   onHelpers,
+  miniApp,
   navigationBusy = false,
 }: OwnerProps & {
   onOpenConversation: (threadId: string) => Promise<boolean>;
   onContinue: () => void;
   onHelpers: () => void;
+  miniApp?: { targetCity?: string | null; onResults: () => void };
   navigationBusy?: boolean;
 }) {
   const [snapshot, setSnapshot] = useState<{
@@ -548,20 +551,28 @@ export function PersonalPlanPanel({
     );
   return (
     <Card
-      className={styles.panel}
+      className={styles.panel + (miniApp ? ` ${miniStyles.panel}` : "")}
       aria-label="Мой план переезда"
       aria-busy={busy}
     >
-      <span className={styles.eyebrow}>CITYGO · ВАШ ПЕРЕЕЗД</span>
+      {!miniApp && <span className={styles.eyebrow}>CITYGO · ВАШ ПЕРЕЕЗД</span>}
       <h1 ref={planHeading} tabIndex={-1}>
-        Ваш переезд — понятными шагами
+        {miniApp ? "Мой план" : "Ваш переезд — понятными шагами"}
       </h1>
-      <p className={styles.intro}>
-        Сохраняйте собственные шаги или выбирайте их из разговоров. Уточняйте
-        план в своём темпе, даже если бюджет и дата ещё неизвестны.
-      </p>
+      {miniApp ? (
+        miniApp.targetCity && (
+          <p className={styles.intro + " ym-hide-content"}>
+            Ваш переезд: {miniApp.targetCity}
+          </p>
+        )
+      ) : (
+        <p className={styles.intro}>
+          Сохраняйте собственные шаги или выбирайте их из разговоров. Уточняйте
+          план в своём темпе, даже если бюджет и дата ещё неизвестны.
+        </p>
+      )}
       <div className={styles.toolbar}>
-        <span className={styles.meta}>МОЙ ПЛАН</span>
+        {!miniApp && <span className={styles.meta}>МОЙ ПЛАН</span>}
         <Button
           disabled={disabled || interactionActive}
           onClick={() => {
@@ -870,9 +881,24 @@ export function PersonalPlanPanel({
           Показать ещё шаги
         </Button>
       )}
+      {miniApp && (
+        <Button
+          variant="secondary"
+          className={miniStyles.resultsLink}
+          disabled={navigationBusy || interactionActive}
+          onClick={miniApp.onResults}
+          aria-label="Результаты"
+        >
+          <span>
+            <strong>Результаты</strong>
+            <small>Планы, ответы и чек-листы</small>
+          </span>
+          <span aria-hidden="true">›</span>
+        </Button>
+      )}
       <div className={styles.bottomActions}>
         <Button disabled={navigationBusy} onClick={onContinue}>
-          Продолжить разговор
+          {miniApp ? "Задать вопрос помощнику" : "Продолжить разговор"}
         </Button>
         <Button
           disabled={navigationBusy}
