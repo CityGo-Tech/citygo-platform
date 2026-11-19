@@ -22,6 +22,7 @@ export type AccountResetPlan = {
 // erase priced-attempt snapshots and can break credit/accounting foreign keys.
 const ownedTables = [
   "user_acquisition",
+  "messenger_accounts",
   "human_support_requests",
   "human_support_replies",
   "human_support_reads",
@@ -49,6 +50,8 @@ const ownedTables = [
   "ai_credit_charges",
 ] as const;
 const retained = [
+  "messenger_accounts",
+  "messenger_launch_consumptions",
   "ai_postpay_attempts",
   "credit_postpay_liabilities",
   "credit_postpay_repayments",
@@ -180,6 +183,7 @@ export class AccountReset {
       // A retained singleton and append-only audit, not a deletion whitelist.
       // Security lock above serializes the supported admission writers.
       for (const table of [
+        "messenger_launch_consumptions",
         "ai_postpay_attempts",
         "credit_postpay_liabilities",
         "credit_postpay_repayments",
@@ -212,6 +216,11 @@ export class AccountReset {
       const blockers: AccountResetBlocker[] = [
         { code: "RESET_APPLY_NOT_IMPLEMENTED", count: 1 },
       ];
+      if (counts.messenger_accounts)
+        blockers.push({
+          code: "MESSENGER_ACCOUNTS_REQUIRE_REVIEW",
+          count: counts.messenger_accounts,
+        });
       if (counts.conversation_titles)
         blockers.push({
           code: "CONVERSATION_TITLES_REQUIRE_REVIEW",

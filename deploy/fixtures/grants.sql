@@ -17,6 +17,9 @@ grant select, insert on user_acquisition to citygo_api;
 grant execute on function citygo_valid_landing_attribution(jsonb) to citygo_api;
 -- Match the production private memory index's append-only boundary.
 revoke update, delete, truncate on conversation_memory_fragments from citygo_api;
+-- Match the production messenger linking and replay permissions.
+revoke all on messenger_accounts, messenger_launch_consumptions from citygo_api, citygo_worker;
+grant select, insert, delete on messenger_accounts, messenger_launch_consumptions to citygo_api;
 grant select, delete on sessions, analytics_events to citygo_worker;
 grant select, update on agent_threads, chat_requests to citygo_worker;
 grant select on all tables in schema public to citygo_backup;

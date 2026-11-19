@@ -30,7 +30,6 @@ async function installPreviewRoutes(
         window.telegramFixture = { events: [], links: [], goBack: null };
         const state = window.telegramFixture;
         window.Telegram = { WebApp: {
-          initData: ${JSON.stringify(launchCanary)},
           initDataUnsafe: {
             start_param: ${JSON.stringify(startParam)},
             user: { first_name: ${JSON.stringify(launchCanary)} },
@@ -320,7 +319,7 @@ test("Telegram keeps guest tasks available when startup fails and blocks handoff
     "Откройте CityGo из бота ещё раз",
   );
   await page.getByRole("button", { name: "Продолжить в CityGo" }).click();
-  await expect(page).toHaveURL(/\/mini\/telegram#/);
+  await expect(page).toHaveURL(/\/mini\/telegram$/);
   expect((await fixtureCalls(page)).links).toEqual([]);
   expect(pageErrors).toEqual([]);
   expect(calls).toEqual({ external: [], api: [], sdk: 1 });
@@ -359,7 +358,7 @@ test("Telegram rejects an empty or repeated launch marker before loading SDK", a
       "Откройте CityGo из бота ещё раз",
     );
     await page.getByRole("button", { name: "Войти в CityGo" }).click();
-    await expect(page).toHaveURL(/\/mini\/telegram#/);
+    await expect(page).toHaveURL(/\/mini\/telegram$/);
     expect(calls).toEqual({ external: [], api: [], sdk: 0 });
     await page.goto("about:blank");
   }

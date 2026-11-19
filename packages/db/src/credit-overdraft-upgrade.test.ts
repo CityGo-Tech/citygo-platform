@@ -74,7 +74,7 @@ async function fixture(t: TestContext) {
   const names = (await readdir(directory))
     .filter((n) => n.endsWith(".sql"))
     .sort();
-  assert.equal(names.length, 50, "Update the literal schema23 upgrade fixture");
+  assert.equal(names.length, 51, "Update the literal schema23 upgrade fixture");
   assert.equal(names[22], "0023_payment_receipt_snapshots.sql");
   assert.equal(names[23], "0024_ai_credit_overdraft.sql");
   assert.equal(names[24], "0025_assistant_conversations.sql");
@@ -126,15 +126,16 @@ const snapshotTables = [
   ["payment_admission", "id"],
 ] as const;
 async function history(db: Database) {
-  const snapshot: Record<string, unknown[]> = {};
+  type HistoryRow = Record<string, unknown>;
+  const snapshot: Record<string, HistoryRow[]> = {};
   for (const [table, order] of snapshotTables)
     snapshot[table] = (
-      await db.query<{ row: unknown }>(
+      await db.query<{ row: HistoryRow }>(
         `select ${table === "agent_threads" ? "to_jsonb(t)-'conversation_agent_key'" : "to_jsonb(t)"} as row from ${table} t order by ${order}`,
       )
     ).rows.map(({ row }) => row);
   snapshot.ai_credit_charges = (
-    await db.query<{ row: unknown }>(
+    await db.query<{ row: HistoryRow }>(
       "select to_jsonb(c)-'reservation_mode'-'cost_limit_mode'-'balance_before_hold_micros' as row from ai_credit_charges c order by thread_id,request_id,attempt_number",
     )
   ).rows.map(({ row }) => row);
@@ -360,10 +361,17 @@ test("23→24 preserves paid money, exact historical receipts, pending full hold
   assert.equal(before.user_credentials!.length, 1);
   assert.equal(oldJournal.length, 23);
   await migrate(db);
+  const expectedUpgradedHistory: typeof before = {
+    ...before,
+    sessions: before.sessions!.map((session) => ({
+      ...session,
+      messenger_provider: null,
+    })),
+  };
   assert.deepEqual(
     await history(db),
-    before,
-    "Existing rows change only by the new explicit default reservation_mode",
+    expectedUpgradedHistory,
+    "Existing sessions remain ordinary and their historical fields stay intact",
   );
   const upgradedJournal = await journal(db);
   assert.deepEqual(
@@ -373,7 +381,7 @@ test("23→24 preserves paid money, exact historical receipts, pending full hold
   );
   assert.equal(upgradedJournal[23]!.name, "0024_ai_credit_overdraft.sql");
   assert.equal(upgradedJournal[24]!.name, "0025_assistant_conversations.sql");
-  assert.equal(upgradedJournal.at(-1)!.name, "0050_landing_attribution.sql");
+  assert.equal(upgradedJournal.at(-1)!.name, "0051_messenger_accounts.sql");
   assert.deepEqual(
     (await db.query("select distinct reservation_mode from ai_credit_charges"))
       .rows,
@@ -411,7 +419,7 @@ test("23→24 preserves paid money, exact historical receipts, pending full hold
   );
   assert.deepEqual(
     await history(db),
-    before,
+    expectedUpgradedHistory,
     "Old pending full hold blocks another dispatch without any money mutation",
   );
   const pending = f.charges[2]!;

@@ -164,5 +164,5 @@ lease или изменения финансовых ссылок.
   [общий клиент](../../packages/api-client/src/index.ts).
 - [Каталог/список Web](../../apps/web/src/components/assistant-conversations.tsx),
   [разговор](../../apps/web/src/components/conversation-home.tsx),
-  [сессионное состояние](../../apps/web/src/app/page.tsx),
+  [сессионное состояние](../../apps/web/src/app/citygo-home.tsx),
   [E2E](../../e2e/assistant-conversations.spec.ts).

@@ -144,6 +144,7 @@ grant update(metadata) on messages to citygo_api;
 grant update (provider_payment_id,status,confirmation_url,updated_at)
   on payment_topup_orders to citygo_api;
 grant delete on sessions to citygo_api;
+grant select, insert, delete on messenger_accounts,messenger_launch_consumptions to citygo_api;
 -- PostgreSQL requires a column UPDATE privilege for SELECT ... FOR UPDATE.
 -- The receipt command transaction locks the actual session to serialize logout.
 grant update (expires_at) on sessions to citygo_api;

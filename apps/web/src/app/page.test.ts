@@ -9,8 +9,8 @@ import {
 } from "../components/owner-receipts-state.js";
 
 const source = ts.createSourceFile(
-  "page.tsx",
-  readFileSync(new URL("./page.tsx", import.meta.url), "utf8"),
+  "citygo-home.tsx",
+  readFileSync(new URL("./citygo-home.tsx", import.meta.url), "utf8"),
   ts.ScriptTarget.Latest,
   true,
   ts.ScriptKind.TSX,

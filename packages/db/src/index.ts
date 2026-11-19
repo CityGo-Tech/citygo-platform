@@ -133,6 +133,11 @@ export {
   type AccountCredentials,
 } from "./account-access.js";
 export {
+  MessengerAccounts,
+  type MessengerProvider,
+  type VerifiedMessengerLaunch,
+} from "./messenger-accounts.js";
+export {
   AccountReset,
   type AccountResetPlan,
   type AccountResetBlocker,

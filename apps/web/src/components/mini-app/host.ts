@@ -1,7 +1,9 @@
 import type { LandingTask } from "../landing/landing-task";
+import type { MessengerProvider } from "@citygo/contracts";
 
 export type MiniAppBridge = {
   initialTask?: string;
+  initData?: string;
   openExternal: (url: string) => void;
   onBack?: (listener: () => void) => () => void;
   close?: () => void;
@@ -10,6 +12,7 @@ export type MiniAppBridge = {
 
 export type MiniAppHost = {
   name: string;
+  provider: MessengerProvider;
   script: string;
   launchFragmentKey: string;
   connect: () => MiniAppBridge | undefined;

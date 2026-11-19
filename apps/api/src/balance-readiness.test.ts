@@ -36,6 +36,7 @@ async function fixture(t: TestContext, oldSchema = 0) {
           47: "0047_conversation_memory.sql",
           48: "0048_native_search_postpay.sql",
           49: "0049_native_search_production.sql",
+          50: "0050_landing_attribution.sql",
         } as Record<number, string>
       )[oldSchema],
     );
@@ -68,7 +69,7 @@ async function fixture(t: TestContext, oldSchema = 0) {
   return { db, app };
 }
 
-test("readiness rejects actual schema44 under legacy default and turns ready only after applying50 without creating money or model attempts", async (t) => {
+test("readiness rejects actual schema44 under legacy default and turns ready only after applying51 without creating money or model attempts", async (t) => {
   const f = await fixture(t, 44);
   const before = (
     await f.db.query(
@@ -100,7 +101,7 @@ test("readiness rejects actual schema44 under legacy default and turns ready onl
   assert.deepEqual(current.json(), { status: "ok" });
   assert.equal(
     (await f.db.query("select name from citygo_migrations")).rows.length,
-    50,
+    51,
   );
   assert.deepEqual(
     (
@@ -110,6 +111,17 @@ test("readiness rejects actual schema44 under legacy default and turns ready onl
     ).rows,
     before,
   );
+});
+
+test("readiness requires the messenger migration and physical session ownership data", async (t) => {
+  const f = await fixture(t, 50);
+  assert.equal((await f.app.inject({ url: "/ready" })).statusCode, 503);
+  await migrate(f.db);
+  assert.equal((await f.app.inject({ url: "/ready" })).statusCode, 200);
+  await f.db.exec(
+    "alter table sessions drop column messenger_provider cascade",
+  );
+  assert.equal((await f.app.inject({ url: "/ready" })).statusCode, 503);
 });
 
 test("readiness refuses schema49 and missing physical attribution guards/columns even with a50 receipt", async (t) => {

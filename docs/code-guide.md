@@ -15,7 +15,7 @@
 Не нужно начинать с самого большого файла или всей истории коммитов.
 Пройдите один запрос от экрана до БД:
 
-1. [Главная страница Web](../apps/web/src/app/page.tsx) подключает
+1. [Основной интерфейс Web](../apps/web/src/app/citygo-home.tsx) подключает
    [Journey](../apps/web/src/components/journey.tsx) — текущий путь пользователя.
 2. [Общий клиент](../packages/api-client/src/index.ts) вызывает API;
    [transport](../packages/api-client/src/transport.ts) проверяет ответы,

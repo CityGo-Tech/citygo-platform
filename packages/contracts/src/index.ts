@@ -72,3 +72,4 @@ export * from "./balance-history.js";
 export * from "./result-discussion.js";
 export * from "./assistant-context.js";
 export * from "./web-sources.js";
+export * from "./messenger-accounts.js";

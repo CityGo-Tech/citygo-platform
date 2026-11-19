@@ -9,6 +9,12 @@ const optionalSetting = z.preprocess(
   (value) => (typeof value === "string" ? value.trim() || undefined : value),
   z.string().optional(),
 );
+const optionalMiniAppBotToken = optionalSetting.pipe(
+  z
+    .string()
+    .regex(/^[\x21-\x7e]{16,512}$/)
+    .optional(),
+);
 const optionalIntegerSetting = (min: number, max: number) =>
   z.preprocess(
     (value) => (typeof value === "string" ? value.trim() || undefined : value),
@@ -64,6 +70,8 @@ export const serverConfigSchema = z.object({
   API_HOST: z.string().default("127.0.0.1"),
   API_PORT: z.coerce.number().int().positive().default(4000),
   WEB_ORIGIN: z.url().default("http://localhost:3000"),
+  TELEGRAM_MINI_APP_BOT_TOKEN: optionalMiniAppBotToken,
+  MAX_MINI_APP_BOT_TOKEN: optionalMiniAppBotToken,
   DATABASE_URL: z.string().min(1).default("pglite://.local/database"),
   LLM_PROVIDER: z.preprocess(
     (value) => (typeof value === "string" ? value.trim() || undefined : value),

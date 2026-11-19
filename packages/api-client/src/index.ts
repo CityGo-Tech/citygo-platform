@@ -22,6 +22,14 @@ import {
   personalPlanExportSchema,
   conversationExportSchema,
 } from "@citygo/contracts";
+import {
+  linkMessengerResponseSchema,
+  messengerLinksResponseSchema,
+  messengerProviderSchema,
+  miniAppSignInResponseSchema,
+  prepareMessengerLinkResponseSchema,
+  type MessengerProvider,
+} from "@citygo/contracts";
 export {
   createPersonalPlanHistoryResource,
   type PlanHistoryState,
@@ -430,6 +438,48 @@ export function createClient(
     return result;
   }
   return {
+    miniAppSignIn: (provider: MessengerProvider, initData: string) =>
+      request(
+        `/v1/mini-apps/${messengerProviderSchema.parse(provider)}/sign-in`,
+        miniAppSignInResponseSchema,
+        { initData },
+      ),
+    prepareMessengerLink: (
+      provider: MessengerProvider,
+      initData: string,
+      password: string,
+    ) =>
+      request(
+        `/v1/mini-apps/${messengerProviderSchema.parse(provider)}/link/prepare`,
+        prepareMessengerLinkResponseSchema,
+        { initData, password },
+      ),
+    linkMessenger: (
+      provider: MessengerProvider,
+      initData: string,
+      userId: string,
+      confirmation: string,
+    ) =>
+      request(
+        `/v1/mini-apps/${messengerProviderSchema.parse(provider)}/link`,
+        linkMessengerResponseSchema,
+        { initData, userId, confirmation },
+      ),
+    messengerLinks: () =>
+      request("/v1/account/messenger-links", messengerLinksResponseSchema),
+    unlinkMessenger: (provider: MessengerProvider) =>
+      request(
+        `/v1/account/messenger-links/${messengerProviderSchema.parse(provider)}`,
+        okResponseSchema,
+        undefined,
+        "DELETE",
+      ),
+    revokeMessengerSessions: (provider: MessengerProvider) =>
+      request(
+        `/v1/account/messenger-links/${messengerProviderSchema.parse(provider)}/revoke`,
+        okResponseSchema,
+        {},
+      ),
     passwordRecoveryPolicy: () =>
       request(
         "/v1/auth/password-recovery-policy",

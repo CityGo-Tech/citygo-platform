@@ -7,6 +7,8 @@ import { DomainError } from "./errors.js";
 // This inventory is deliberately not discovered into a deletion list.
 const tables = [
   "user_acquisition",
+  "messenger_accounts",
+  "messenger_launch_consumptions",
   "human_support_requests",
   "human_support_replies",
   "human_support_reads",
@@ -122,6 +124,7 @@ const protectedAdmission = [
   "payment_admission_reconciliation_events",
 ] as const;
 const protectedEmpty = [
+  "messenger_accounts",
   "human_support_requests",
   "human_support_replies",
   "human_support_reads",
@@ -137,6 +140,7 @@ const protectedEmpty = [
   ...protectedDebt,
 ] as const;
 const preserved = [
+  "messenger_launch_consumptions",
   "service_consent_events",
   "phone_verification_challenges",
   "phone_verification_control",
@@ -443,6 +447,11 @@ async function inspect(tx: Sql, options: Options) {
     blockers.push({ code: "EXPECTED_USER_COUNT_MISMATCH", count: 1 });
   if (options.maintenanceConfirmed !== true)
     blockers.push({ code: "MAINTENANCE_NOT_CONFIRMED", count: 1 });
+  if (snapshot.counts.messenger_accounts)
+    blockers.push({
+      code: "MESSENGER_ACCOUNTS_REQUIRE_REVIEW",
+      count: snapshot.counts.messenger_accounts,
+    });
   const verificationHistoryCount = [
     "service_consent_events",
     "account_email_verifications",
