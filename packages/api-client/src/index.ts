@@ -32,6 +32,13 @@ import {
   prepareMessengerLinkResponseSchema,
   type MessengerProvider,
 } from "@citygo/contracts";
+import {
+  createdTelegramStarsOrderSchema,
+  createTelegramStarsOrderInputSchema,
+  telegramStarsOrderResponseSchema,
+  telegramStarsOrderSchema,
+  telegramStarsSnapshotSchema,
+} from "@citygo/contracts";
 export {
   createPersonalPlanHistoryResource,
   type PlanHistoryState,
@@ -762,6 +769,26 @@ export function createClient(
           proof,
           code,
         }),
+      ),
+    telegramStars: () =>
+      request("/v1/mini-apps/telegram/stars", telegramStarsSnapshotSchema),
+    createTelegramStarsOrder: (requestId: string) =>
+      request(
+        "/v1/mini-apps/telegram/stars/orders",
+        createdTelegramStarsOrderSchema,
+        createTelegramStarsOrderInputSchema.parse({ requestId }),
+      ),
+    cancelTelegramStarsOrder: (id: string) =>
+      request(
+        `/v1/mini-apps/telegram/stars/orders/${telegramStarsOrderSchema.shape.id.parse(id)}/cancel`,
+        telegramStarsOrderResponseSchema,
+        {},
+      ),
+    refundTelegramStarsOrder: (id: string) =>
+      request(
+        `/v1/mini-apps/telegram/stars/orders/${telegramStarsOrderSchema.shape.id.parse(id)}/refund`,
+        telegramStarsOrderResponseSchema,
+        {},
       ),
     phoneVerificationPolicy: (miniAppProvider?: MessengerProvider) =>
       request(
