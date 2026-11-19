@@ -52,13 +52,13 @@ test("the upgrade rehearsal rejects a production project before Docker or databa
   );
 });
 
-test("literal 12-era fixture rewinds current 50, rolls back late ACL failure and reapplies without losing data", async (t) => {
+test("literal 12-era fixture rewinds current 51, rolls back late ACL failure and reapplies without losing data", async (t) => {
   const db = new PGlite();
   t.after(() => db.close());
   await db.waitReady;
-  assert.equal(migrations.length, 50);
+  assert.equal(migrations.length, 51);
   assert.equal(migrations[11].name, "0012_housing_answer_history.sql");
-  assert.equal(migrations.at(-1).name, "0050_landing_attribution.sql");
+  assert.equal(migrations.at(-1).name, "0051_messenger_accounts.sql");
   await db.exec(
     "create role citygo_api; create role citygo_worker; create role citygo_backup; create table citygo_migrations(name text primary key,checksum text not null)",
   );
@@ -99,6 +99,35 @@ test("literal 12-era fixture rewinds current 50, rolls back late ACL failure and
     "Exercise the exact 9-era fixture memory guard too",
   );
   assert.equal(upgrade9Rewind[1].includes("${"), false);
+  const messengerUser = (
+    await db.query(
+      "insert into users(auth_subject) values('upgrade12-messenger-canary') returning id",
+    )
+  ).rows[0].id;
+  await db.query(
+    "insert into messenger_accounts(provider,subject,user_id) values('telegram',9012,$1)",
+    [messengerUser],
+  );
+  for (const sql of [upgrade9Rewind[1], rewind[1]]) {
+    await assert.rejects(
+      db.exec(sql),
+      /Messenger account history cannot be rewound/,
+    );
+    await db.exec("rollback");
+    assert.deepEqual(
+      (
+        await db.query(`select
+          (select count(*)::int from messenger_accounts) as links,
+          (select count(*)::int from citygo_migrations) as migrations,
+          exists(select 1 from information_schema.columns
+            where table_schema='public' and table_name='sessions'
+            and column_name='messenger_provider') as session_origin`)
+      ).rows,
+      [{ links: 1, migrations: 51, session_origin: true }],
+    );
+  }
+  // Remove only this in-memory fixture owner and its synthetic link.
+  await db.query("delete from users where id=$1", [messengerUser]);
   const memoryUser = (
     await db.query(
       "insert into users(auth_subject) values('upgrade12-memory-canary') returning id",
@@ -137,7 +166,7 @@ test("literal 12-era fixture rewinds current 50, rolls back late ACL failure and
       [
         {
           quotations: 1,
-          migrations: 50,
+          migrations: 51,
           admission: true,
           source_index: true,
           guard: true,
@@ -172,7 +201,7 @@ test("literal 12-era fixture rewinds current 50, rolls back late ACL failure and
       to_regclass('payment_admission') is not null as admission,
       exists(select 1 from pg_proc where proname='citygo_guard_account_email_verification_proof') as guard`)
     ).rows,
-    [{ confirmation: 1, migrations: 50, admission: true, guard: true }],
+    [{ confirmation: 1, migrations: 51, admission: true, guard: true }],
   );
   // Only this in-memory fixture's canary is removed; populated real history
   // remains a hard stop for every disposable rewind and reset helper.
@@ -196,7 +225,7 @@ test("literal 12-era fixture rewinds current 50, rolls back late ACL failure and
       to_regclass('payment_admission') is not null as admission,
       exists(select 1 from pg_proc where proname='citygo_guard_password_recovery') as guard`)
     ).rows,
-    [{ recovery: 1, migrations: 50, admission: true, guard: true }],
+    [{ recovery: 1, migrations: 51, admission: true, guard: true }],
     "Rejected rewind retains recovery history and rolls back earlier DDL",
   );
   // Remove only this synthetic in-memory test row before the existing empty
@@ -205,6 +234,18 @@ test("literal 12-era fixture rewinds current 50, rolls back late ACL failure and
     recoveryId,
   ]);
   await db.exec(rewind[1]);
+  assert.deepEqual(
+    (
+      await db.query(`select
+        to_regclass('messenger_accounts')::text as links,
+        to_regclass('messenger_launch_consumptions')::text as consumptions,
+        to_regprocedure('citygo_guard_messenger_launch_consumption()')::text as guard,
+        exists(select 1 from information_schema.columns
+          where table_schema='public' and table_name='sessions'
+          and column_name='messenger_provider') as session_origin`)
+    ).rows,
+    [{ links: null, consumptions: null, guard: null, session_origin: false }],
+  );
   assert.deepEqual(
     (
       await db.query(

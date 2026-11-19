@@ -1,12 +1,11 @@
-import { validLaunchQueryId, validLaunchUser } from "./wire.js";
+import { launchUserId, validLaunchQueryId } from "./wire.js";
 
 const maxUserId = (1n << 63n) - 1n;
 
-export function validMaxLaunch(fields: ReadonlyMap<string, string>): boolean {
+export function maxLaunchSubject(
+  fields: ReadonlyMap<string, string>,
+): string | undefined {
   const queryId = fields.get("query_id");
-  return (
-    queryId !== undefined &&
-    validLaunchQueryId(queryId) &&
-    validLaunchUser(fields.get("user"), maxUserId)
-  );
+  if (queryId === undefined || !validLaunchQueryId(queryId)) return;
+  return launchUserId(fields.get("user"), maxUserId);
 }

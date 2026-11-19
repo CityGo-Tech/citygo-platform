@@ -7,6 +7,8 @@ import type { AccountResetBlocker } from "./account-reset.js";
 // is not account deletion, a public erasure API, a migration, or a reset job.
 const tables = [
   "user_acquisition",
+  "messenger_accounts",
+  "messenger_launch_consumptions",
   "human_support_requests",
   "human_support_replies",
   "human_support_reads",
@@ -90,6 +92,8 @@ const tables = [
 ] as const;
 // No money, attempt, receipt, policy, migration, catalog or usage row is rewritten.
 const retainedTables = [
+  "messenger_accounts",
+  "messenger_launch_consumptions",
   "human_support_requests",
   "human_support_replies",
   "human_support_reads",
@@ -369,6 +373,11 @@ async function inspect(tx: Sql, options: Options) {
     blockers.push({ code: "EXPECTED_USER_COUNT_MISMATCH", count: 1 });
   if (options.maintenanceConfirmed !== true)
     blockers.push({ code: "MAINTENANCE_NOT_CONFIRMED", count: 1 });
+  if (snapshot.counts.messenger_accounts)
+    blockers.push({
+      code: "MESSENGER_ACCOUNTS_REQUIRE_REVIEW",
+      count: snapshot.counts.messenger_accounts,
+    });
   // Verification identities and recipient/IP anti-abuse history are not an
   // account-reset retention policy. Preserve them and refuse ANY such history;
   // do not silently make old erasure authorization apply to the new tables.

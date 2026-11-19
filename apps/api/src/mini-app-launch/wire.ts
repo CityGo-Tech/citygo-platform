@@ -43,11 +43,11 @@ export function parseLaunchFields(
   return fields;
 }
 
-export function validLaunchUser(
+export function launchUserId(
   raw: string | undefined,
   maxId: bigint,
-): boolean {
-  if (raw === undefined) return false;
+): string | undefined {
+  if (raw === undefined) return;
   try {
     const user: unknown = JSON.parse(
       raw,
@@ -73,7 +73,7 @@ export function validLaunchUser(
       user.id > maxId ||
       Object.values(user).some((value) => value && typeof value === "object")
     )
-      return false;
+      return;
 
     // The documented user objects are flat. After the JSON grammar check,
     // a complete JSON string token followed by a colon is a property name.
@@ -81,12 +81,12 @@ export function validLaunchUser(
     for (const match of raw.matchAll(/"(?:[^"\\]|\\[\s\S])*"/g)) {
       if (!/^\s*:/.test(raw.slice(match.index + match[0].length))) continue;
       const key: string = JSON.parse(match[0]);
-      if (keys.has(key)) return false;
+      if (keys.has(key)) return;
       keys.add(key);
     }
-    return true;
+    return user.id.toString();
   } catch {
-    return false;
+    return;
   }
 }
 

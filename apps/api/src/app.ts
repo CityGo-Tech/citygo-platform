@@ -158,6 +158,7 @@ import {
 import { registerAccountProfile } from "./account-profile.js";
 import { registerAdminPhoneContacts } from "./admin-phone-contacts.js";
 import { registerMiniAppLaunch } from "./mini-app-launch/http.js";
+import { registerMessengerAccounts } from "./mini-app-launch/account.js";
 import {
   registerCustomerObservability,
   serializeRequestLog,
@@ -717,6 +718,18 @@ export async function buildApp(options: {
       );
       if (acquisitionMigration.rows.length !== 1)
         throw new Error("Pending landing attribution migration");
+      const messengerMigration = await options.db.query(
+        "select name from citygo_migrations where name='0051_messenger_accounts.sql'",
+      );
+      if (messengerMigration.rows.length !== 1)
+        throw new Error("Pending messenger accounts migration");
+      await options.db.query(
+        "select provider,subject,user_id from messenger_accounts limit 0",
+      );
+      await options.db.query(
+        "select provider,fingerprint,expires_at from messenger_launch_consumptions limit 0",
+      );
+      await options.db.query("select messenger_provider from sessions limit 0");
       await options.db.query(
         "select landing_attribution from email_registrations limit 0",
       );
@@ -936,6 +949,31 @@ export async function buildApp(options: {
   registerMiniAppLaunch(app, {
     telegramToken: config.TELEGRAM_MINI_APP_BOT_TOKEN,
     maxToken: config.MAX_MINI_APP_BOT_TOKEN,
+  });
+  registerMessengerAccounts(app, {
+    db: options.db,
+    tokens: {
+      telegram: config.TELEGRAM_MINI_APP_BOT_TOKEN,
+      max: config.MAX_MINI_APP_BOT_TOKEN,
+    },
+    actor: async (request) => {
+      const user = await authenticate(request);
+      const token =
+        bearer(request.headers.authorization) ?? request.cookies[sessionName];
+      return {
+        id: user.id,
+        email: user.email,
+        sessionTokenHash: tokenHash(token!),
+      };
+    },
+    hasSession: async (request) => {
+      const token =
+        bearer(request.headers.authorization) ?? request.cookies[sessionName];
+      return !!(token && (await repo.session(tokenHash(token))));
+    },
+    setSession: (reply, token) => {
+      reply.setCookie(sessionName, token, cookieOptions);
+    },
   });
   registerEmailRegistration(app, {
     db: options.db,
