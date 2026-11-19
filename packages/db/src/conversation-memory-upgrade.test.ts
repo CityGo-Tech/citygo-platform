@@ -4,6 +4,7 @@ import test from "node:test";
 import { connectDatabase, migrate, ConversationMemory } from "./index.js";
 import { applyFixtureMigration } from "./test-service-consents.js";
 import { seedRestartFixture } from "./closed-account-restart-fixture.js";
+import { assertFixtureMigrationJournal } from "./test-migration-journal.js";
 
 test("schema46→47 preserves every existing row, accounting snapshot and migration checksum without inventing memory", async (t) => {
   const db = await connectDatabase("pglite://:memory:");
@@ -29,9 +30,13 @@ test("schema46→47 preserves every existing row, accounting snapshot and migrat
     const result: Record<string, unknown[]> = {};
     for (const table of tables) {
       assert.match(table, /^[a-z_][a-z0-9_]*$/);
+      const payload =
+        table === "sessions"
+          ? "to_jsonb(t) - 'messenger_provider'"
+          : "to_jsonb(t)";
       result[table] = (
         await db.query(
-          `select to_jsonb(t)::text as value from ${table} t ${table === "citygo_migrations" ? "where name<'0047_conversation_memory.sql'" : ""} order by to_jsonb(t)::text`,
+          `select (${payload})::text as value from ${table} t ${table === "citygo_migrations" ? "where name<'0047_conversation_memory.sql'" : ""} order by value`,
         )
       ).rows;
     }
@@ -76,9 +81,14 @@ test("schema46→47 preserves every existing row, accounting snapshot and migrat
   );
   assert.deepEqual(await snapshot(), before);
   await migrate(db);
+  await assertFixtureMigrationJournal(db);
   assert.equal(
-    (await db.query("select * from citygo_migrations")).rows.length,
-    50,
+    (
+      await db.query(
+        "select 1 from sessions where messenger_provider is not null",
+      )
+    ).rows.length,
+    0,
   );
   assert.deepEqual(await snapshot(), before);
 });

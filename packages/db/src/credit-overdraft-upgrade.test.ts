@@ -360,10 +360,17 @@ test("23→24 preserves paid money, exact historical receipts, pending full hold
   assert.equal(before.user_credentials!.length, 1);
   assert.equal(oldJournal.length, 23);
   await migrate(db);
+  const expectedUpgradedHistory: typeof before = {
+    ...before,
+    sessions: before.sessions!.map((session) => ({
+      ...session,
+      messenger_provider: null,
+    })),
+  };
   assert.deepEqual(
     await history(db),
-    before,
-    "Existing rows change only by the new explicit default reservation_mode",
+    expectedUpgradedHistory,
+    "Existing sessions remain ordinary and their historical fields stay intact",
   );
   const upgradedJournal = await journal(db);
   assert.deepEqual(
@@ -411,7 +418,7 @@ test("23→24 preserves paid money, exact historical receipts, pending full hold
   );
   assert.deepEqual(
     await history(db),
-    before,
+    expectedUpgradedHistory,
     "Old pending full hold blocks another dispatch without any money mutation",
   );
   const pending = f.charges[2]!;

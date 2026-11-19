@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { assertFixtureMigrationJournal } from "./test-migration-journal.js";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { connectDatabase, migrate } from "./index.js";
@@ -139,10 +140,7 @@ test("the disposable release fixture rewinds only reviewed empty new schema and 
     null,
   );
   await migrate(db);
-  assert.equal(
-    (await db.query("select 1 from citygo_migrations")).rows.length,
-    50,
-  );
+  await assertFixtureMigrationJournal(db);
 });
 
 test("reviewed NPD grants support invoker duties/session locks but not identity rewrites, history deletion or Worker access", async (t) => {
