@@ -11,6 +11,7 @@ import { Button, Field } from "@citygo/ui-web";
 import {
   parsePaymentAttempt,
   paymentAmountKopeks,
+  topupStatusLabels,
   type PaymentAttempt,
 } from "./payment-attempt";
 import { openPaymentPopup, type PaymentPopup } from "./payment-popup";
@@ -22,14 +23,6 @@ export type TopupActions = {
   topupAttempt: (requestId: string) => Promise<TopupOrder>;
   reconcileTopup: (orderId: string) => Promise<TopupOrder>;
   onCredited: () => Promise<void>;
-};
-
-const statusLabels: Record<TopupOrder["status"], string> = {
-  creating: "Платёж создаётся…",
-  pending: "Ожидаем оплату.",
-  succeeded: "Оплата подтверждена.",
-  canceled: "Платёж отменён.",
-  review_required: "Нужна проверка платежа. Не оплачивайте повторно.",
 };
 
 /** Explicit server-selected mode, never a return-URL settlement handler. */
@@ -322,7 +315,7 @@ export function TestTopupPanel({
       {order && (
         <div role="status">
           {order.test && <p>Тестовая оплата. Деньги не списываются.</p>}
-          <p>{statusLabels[order.status]}</p>
+          <p>{topupStatusLabels[order.status]}</p>
           <p>
             {formatMoneyMicros(order.creditMicros)} ₽ CityGo ·{" "}
             {order.credited

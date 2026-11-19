@@ -1,5 +1,8 @@
 import { z } from "zod";
-import { yooKassaReceiptEmailSchema } from "./yookassa-receipt.js";
+import {
+  yooKassaReceiptEmailSchema,
+  yooKassaReceiptRegistrationSchema,
+} from "./yookassa-receipt.js";
 
 // The server selects the test/live shop. A redirect or client report is never
 // payment evidence; the server must reconcile with that configured provider.
@@ -46,3 +49,15 @@ export const topupOrderSchema = z
     (order) => Date.parse(order.createdAt) <= Date.parse(order.updatedAt),
   );
 export type TopupOrder = z.infer<typeof topupOrderSchema>;
+
+// MAX test checkout adds provider-confirmed receipt status to the existing
+// order view. Test payments never produce production NPD receipts.
+export const maxTopupOrderSchema = topupOrderSchema
+  .safeExtend({
+    receiptRegistration: yooKassaReceiptRegistrationSchema.optional(),
+  })
+  .refine((order) => order.test);
+export const maxTopupListSchema = z.strictObject({
+  orders: z.array(maxTopupOrderSchema).max(25),
+});
+export type MaxTopupOrder = z.infer<typeof maxTopupOrderSchema>;

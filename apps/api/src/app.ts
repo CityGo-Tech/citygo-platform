@@ -137,6 +137,7 @@ import {
 import {
   PaymentNotificationInbox,
   PAYMENT_NOTIFICATION_PATH,
+  MAX_TEST_PAYMENT_NOTIFICATION_PATH,
   registerPaymentNotifications,
 } from "./payment-notifications.js";
 import {
@@ -189,9 +190,21 @@ export async function buildApp(options: {
   phoneVerificationDelivery?: PhoneVerificationDelivery;
   modeProviders?: ModeProviders;
   syntheticMiniAppChat?: boolean;
+  syntheticMaxPayments?: boolean;
 }) {
   const drain = options.drain ?? new ApiDrain();
   const config = options.config ?? readConfig();
+  const syntheticMaxPayments = options.syntheticMaxPayments === true;
+  if (
+    syntheticMaxPayments &&
+    (config.NODE_ENV !== "test" ||
+      options.testing !== true ||
+      config.YOOKASSA_MODE !== "test" ||
+      !options.paymentClient ||
+      !options.refundClient)
+  )
+    throw new Error("MAX test payments require the isolated payment harness");
+  const syntheticPaymentBrowserOrigin = "http://localhost:3000";
   const postpayMode = config.AI_CUSTOMER_BILLING_MODE === "postpay_actual_v1";
   if (
     options.postpayReconcileScheduler &&
@@ -538,7 +551,9 @@ export async function buildApp(options: {
   };
   await app.register(cookie);
   await app.register(cors, {
-    origin: config.WEB_ORIGIN,
+    origin: syntheticMaxPayments
+      ? [config.WEB_ORIGIN, syntheticPaymentBrowserOrigin]
+      : config.WEB_ORIGIN,
     credentials: true,
     exposedHeaders: [CONTRACT_VERSION_HEADER, REQUEST_ID_HEADER],
   });
@@ -635,13 +650,15 @@ export async function buildApp(options: {
       .header("X-Content-Type-Options", "nosniff")
       .header("Cache-Control", "no-store");
     if (["GET", "HEAD", "OPTIONS"].includes(request.method)) return;
-    // One exact machine-only webhook. It cannot authenticate browser writes;
-    // the handler rejects Cookie/Origin/Authorization and only queues ID hints.
+    // Exact machine notification routes only enqueue hints. They do not
+    // grant browser authority or attest a payment.
     if (
-      config.YOOKASSA_MODE === "live" &&
-      paymentClient &&
       request.method === "POST" &&
-      request.url === PAYMENT_NOTIFICATION_PATH &&
+      ((config.YOOKASSA_MODE === "live" &&
+        paymentClient &&
+        request.url === PAYMENT_NOTIFICATION_PATH) ||
+        (syntheticMaxPayments &&
+          request.url === MAX_TEST_PAYMENT_NOTIFICATION_PATH)) &&
       request.headers.origin === undefined &&
       request.headers.cookie === undefined &&
       request.headers.authorization === undefined
@@ -650,7 +667,11 @@ export async function buildApp(options: {
     // Cookie-authenticated writes must be same-origin. Native clients use bearer sessions.
     if (
       request.headers.origin
-        ? request.headers.origin !== config.WEB_ORIGIN
+        ? request.headers.origin !== config.WEB_ORIGIN &&
+          !(
+            syntheticMaxPayments &&
+            request.headers.origin === syntheticPaymentBrowserOrigin
+          )
         : !bearer(request.headers.authorization) &&
           request.headers["x-citygo-client"] !== "native"
     ) {
@@ -912,7 +933,25 @@ export async function buildApp(options: {
     config,
     client: paymentClient,
     authenticate,
+    authenticateCreate: async (request) => {
+      const { account, messengerProvider } = await authenticateSession(request);
+      if (messengerProvider)
+        throw new DomainError(403, "Пополнение через эту сессию недоступно.");
+      return account;
+    },
     authenticateReconciliation: (request) => authenticate(request, false, true),
+    authenticateMaxTest: syntheticMaxPayments
+      ? async (request) => {
+          const { account, messengerProvider } =
+            await authenticateSession(request);
+          if (messengerProvider !== "max")
+            throw new DomainError(
+              403,
+              "Войдите через MAX для тестового пополнения.",
+            );
+          return account;
+        }
+      : undefined,
   });
   registerPaymentAdmission(app, {
     admission: paymentAdmission,
@@ -933,10 +972,14 @@ export async function buildApp(options: {
     authenticate,
     authenticateReconciliation: (request) => authenticate(request, false, true),
   });
-  if (paymentClient && refundClient && config.YOOKASSA_MODE === "live") {
+  if (
+    paymentClient &&
+    refundClient &&
+    (config.YOOKASSA_MODE === "live" || syntheticMaxPayments)
+  ) {
     const refundJournal = new PaymentRefunds(options.db);
     const inbox = new PaymentNotificationInbox(options.db, {
-      mode: "live",
+      mode: syntheticMaxPayments ? "test" : "live",
       merchantId: config.YOOKASSA_SHOP_ID!,
       reconcile: async (item) => {
         if (item.kind === "payment") {
@@ -969,24 +1012,37 @@ export async function buildApp(options: {
           : "retry";
       },
     });
-    registerPaymentNotifications(app, inbox);
-    registerPaymentReconciliation(app, {
-      admission: paymentAdmission!,
+    registerPaymentNotifications(
+      app,
       inbox,
-      drain,
-      testing: options.testing === true,
-      scheduler: options.paymentReconcileScheduler,
-    });
+      syntheticMaxPayments
+        ? MAX_TEST_PAYMENT_NOTIFICATION_PATH
+        : PAYMENT_NOTIFICATION_PATH,
+    );
+    if (!syntheticMaxPayments)
+      registerPaymentReconciliation(app, {
+        admission: paymentAdmission!,
+        inbox,
+        drain,
+        testing: options.testing === true,
+        scheduler: options.paymentReconcileScheduler,
+      });
     // This bounded manual settlement drain remains usable when checkout or
     // background reconciliation is closed. The separate API lifecycle above
     // requires its explicit shared DB flag/lease, never Worker DB privileges.
     app.post(
-      "/v1/admin/payments/notifications/reconcile",
+      syntheticMaxPayments
+        ? MAX_TEST_PAYMENT_NOTIFICATION_PATH + "/process"
+        : "/v1/admin/payments/notifications/reconcile",
       {
         config: { rateLimit: { max: 5, timeWindow: 60_000 } },
       },
       async (request) => {
         await authenticateAdmin(request, true);
+        if (syntheticMaxPayments) {
+          z.strictObject({}).parse(request.body);
+          return inbox.processPending();
+        }
         const command = z
           .strictObject({ limit: z.number().int().min(1).max(25).default(10) })
           .parse(request.body);

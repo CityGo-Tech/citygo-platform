@@ -90,6 +90,23 @@ export type PaymentTopupOrder = {
 type StoredOrder = Omit<PaymentTopupOrder, "amountKopeks"> & {
   amountKopeks: number | string;
 };
+const selectOrder = `select o.id,o.id as "createKey",o.user_id::text as "userId",o.request_id as "requestId",
+       o.amount_kopeks as "amountKopeks",o.currency,o.merchant_id as "merchantId",o.test,
+       o.return_url as "returnUrl",o.create_payload as "createPayload",
+       coalesce((to_jsonb(o)->>'payload_version')::integer,1) as "payloadVersion",
+       to_jsonb(o)->>'receipt_email' as "receiptEmail",to_jsonb(o)->>'receipt_profile' as "receiptProfile",
+       o.provider_payment_id as "providerPaymentId",o.status,o.confirmation_url as "confirmationUrl",
+       to_char(o.created_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "createdAt",
+       to_char(o.updated_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "updatedAt",
+       exists(select 1 from ai_credit_topups p where p.operation_id=o.id and p.user_id=o.user_id
+         and p.provider_payment_id=o.provider_payment_id and p.paid_kopeks=o.amount_kopeks
+         and p.credited_micros=o.amount_kopeks::bigint*10000 and p.merchant_id=o.merchant_id
+         and p.test=o.test) as credited
+       from payment_topup_orders o`;
+const projectOrder = (row: StoredOrder): PaymentTopupOrder => ({
+  ...row,
+  amountKopeks: Number(row.amountKopeks),
+});
 
 // Server-only durable checkout state. No provider I/O, no inference of payment
 // from a return URL, and no money is created by this class. Only the separately
@@ -127,24 +144,12 @@ export class PaymentTopupOrders {
   ): Promise<PaymentTopupOrder> {
     const row = (
       await sql.query<StoredOrder>(
-        `select o.id,o.id as "createKey",o.user_id::text as "userId",o.request_id as "requestId",
-       o.amount_kopeks as "amountKopeks",o.currency,o.merchant_id as "merchantId",o.test,
-       o.return_url as "returnUrl",o.create_payload as "createPayload",
-       coalesce((to_jsonb(o)->>'payload_version')::integer,1) as "payloadVersion",
-       to_jsonb(o)->>'receipt_email' as "receiptEmail",to_jsonb(o)->>'receipt_profile' as "receiptProfile",
-       o.provider_payment_id as "providerPaymentId",o.status,o.confirmation_url as "confirmationUrl",
-       to_char(o.created_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "createdAt",
-       to_char(o.updated_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "updatedAt",
-       exists(select 1 from ai_credit_topups p where p.operation_id=o.id and p.user_id=o.user_id
-         and p.provider_payment_id=o.provider_payment_id and p.paid_kopeks=o.amount_kopeks
-         and p.credited_micros=o.amount_kopeks::bigint*10000 and p.merchant_id=o.merchant_id
-         and p.test=o.test) as credited
-       from payment_topup_orders o where o.id=$1 and o.user_id=$2`,
+        `${selectOrder} where o.id=$1 and o.user_id=$2`,
         [id, userId],
       )
     ).rows[0];
     if (!row) throw new DomainError(404, "Пополнение не найдено");
-    return { ...row, amountKopeks: Number(row.amountKopeks) };
+    return projectOrder(row);
   }
 
   async get(userId: string, orderId: string) {
@@ -164,6 +169,19 @@ export class PaymentTopupOrders {
     ).rows[0];
     if (!row) throw new DomainError(404, "Пополнение не найдено");
     return this.read(userId, row.id, this.db);
+  }
+
+  async listRecentTest(userId: string, merchantId: string, returnUrl: string) {
+    creditUserIdSchema.parse(userId);
+    merchantSchema.parse(merchantId);
+    returnUrlSchema.parse(returnUrl);
+    const { rows } = await this.db.query<StoredOrder>(
+      `${selectOrder}
+       where o.user_id=$1 and o.merchant_id=$2 and o.test and o.return_url=$3
+       order by o.created_at desc,o.id desc limit 20`,
+      [userId, merchantId, returnUrl],
+    );
+    return rows.map(projectOrder);
   }
 
   async create(

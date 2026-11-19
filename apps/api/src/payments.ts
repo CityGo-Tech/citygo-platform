@@ -1,4 +1,4 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import {
@@ -6,6 +6,7 @@ import {
   buildYooKassaReceipt,
   YOOKASSA_RECEIPT_PROFILE,
   topupOrderSchema,
+  yooKassaReceiptRegistrationSchema,
   type TopupOrder,
 } from "@citygo/contracts";
 import {
@@ -26,6 +27,9 @@ import {
 import { createPaymentAdmissionBinding } from "./payment-admission.js";
 
 export type PaymentClient = Pick<YooKassaClient, "create" | "get">;
+type PaymentAuthenticator = (
+  request: FastifyRequest,
+) => Promise<{ id: string }>;
 const REPLAY_LIMIT_MS = 23 * 60 * 60 * 1000;
 const paramsSchema = z.strictObject({ orderId: z.uuid() });
 const attemptParamsSchema = z.strictObject({ requestId: z.uuid() });
@@ -91,14 +95,10 @@ export function registerPaymentTopups(
     db: Database;
     config: ReturnType<typeof readConfig>;
     client?: PaymentClient;
-    authenticate: (request: {
-      headers: { authorization?: string };
-      cookies: Record<string, string | undefined>;
-    }) => Promise<{ id: string }>;
-    authenticateReconciliation?: (request: {
-      headers: { authorization?: string };
-      cookies: Record<string, string | undefined>;
-    }) => Promise<{ id: string }>;
+    authenticate: PaymentAuthenticator;
+    authenticateCreate: PaymentAuthenticator;
+    authenticateReconciliation?: PaymentAuthenticator;
+    authenticateMaxTest?: PaymentAuthenticator;
   },
 ) {
   // Even an injected live test transport gets the same trusted DB admission
@@ -210,103 +210,108 @@ export function registerPaymentTopups(
     }
   }
 
-  app.post(
-    "/v1/payments/topups",
-    { config: { rateLimit: { max: 10, timeWindow: 60_000 } } },
-    async (request) => {
-      const user = await options.authenticate(request);
-      const client = available();
-      const parsed = createTopupSchema.safeParse(request.body);
-      if (!parsed.success)
-        throw new DomainError(
-          400,
-          "Проверьте сумму, ID попытки и email для чека",
-        );
-      const input = parsed.data;
-      const fiscal =
-        options.config.YOOKASSA_FISCAL_PROFILE === YOOKASSA_RECEIPT_PROFILE;
-      if (options.config.YOOKASSA_MODE === "live" && !fiscal)
-        throw new DomainError(
-          503,
-          "Новый приём платежей требует настроенного чека",
-        );
-      if ((fiscal && !input.receiptEmail) || (!fiscal && input.receiptEmail))
-        throw new DomainError(
-          400,
-          "Укажите email для чека в настроенном режиме оплаты",
-        );
-      const order = await orders.create(
-        user.id,
-        input.requestId,
-        input.amountKopeks,
-        options.config.YOOKASSA_SHOP_ID!,
-        options.config.YOOKASSA_MODE === "test",
-        returnUrl,
-        fiscal
-          ? {
-              receiptEmail: input.receiptEmail!,
-              receiptProfile: YOOKASSA_RECEIPT_PROFILE,
-            }
-          : undefined,
+  async function create(
+    request: FastifyRequest,
+    authenticate: PaymentAuthenticator,
+  ) {
+    const user = await authenticate(request);
+    const client = available();
+    const parsed = createTopupSchema.safeParse(request.body);
+    if (!parsed.success)
+      throw new DomainError(
+        400,
+        "Проверьте сумму, ID попытки и email для чека",
       );
-      const receipt = configured(order);
-      if (
-        order.providerPaymentId ||
-        order.status === "review_required" ||
-        order.credited
-      )
-        return publicOrder(order);
-      if (fiscal && order.payloadVersion !== 2)
-        return publicOrder(await orders.markReviewRequired(user.id, order.id));
-      const age = Date.now() - Date.parse(order.createdAt);
-      if (!Number.isFinite(age) || age < -60_000 || age >= REPLAY_LIMIT_MS)
-        return publicOrder(await orders.markReviewRequired(user.id, order.id));
-      // Persist first. Ambiguous transport outcomes keep the exact same key.
-      // Recheck after durable creation, immediately before the external POST;
-      // the provider call itself is never made inside a DB transaction.
-      if (binding)
-        await options.db.transaction((tx) =>
-          assertLiveCheckoutAdmission(tx, binding),
-        );
-      const payment = await transport("create_payment", () =>
-        client.create({
-          orderId: order.id,
-          amountKopeks: order.amountKopeks,
-          returnUrl: order.returnUrl,
-          ...(receipt ? { receipt } : {}),
-          createPayload: order.createPayload,
-        }),
+    const input = parsed.data;
+    const fiscal =
+      options.config.YOOKASSA_FISCAL_PROFILE === YOOKASSA_RECEIPT_PROFILE;
+    if (options.config.YOOKASSA_MODE === "live" && !fiscal)
+      throw new DomainError(
+        503,
+        "Новый приём платежей требует настроенного чека",
       );
-      verified(payment, order);
-      const recorded = await orders.recordProvider(user.id, order.id, {
-        providerPaymentId: payment.id,
-        // POST success is not settlement proof. Bind first, then require GET.
-        status: payment.status === "canceled" ? "canceled" : "pending",
-        ...(payment.confirmationUrl
-          ? { confirmationUrl: payment.confirmationUrl }
-          : {}),
-      });
-      return publicOrder(recorded);
-    },
-  );
+    if ((fiscal && !input.receiptEmail) || (!fiscal && input.receiptEmail))
+      throw new DomainError(
+        400,
+        "Укажите email для чека в настроенном режиме оплаты",
+      );
+    const order = await orders.create(
+      user.id,
+      input.requestId,
+      input.amountKopeks,
+      options.config.YOOKASSA_SHOP_ID!,
+      options.config.YOOKASSA_MODE === "test",
+      returnUrl,
+      fiscal
+        ? {
+            receiptEmail: input.receiptEmail!,
+            receiptProfile: YOOKASSA_RECEIPT_PROFILE,
+          }
+        : undefined,
+    );
+    const receipt = configured(order);
+    if (
+      order.providerPaymentId ||
+      order.status === "review_required" ||
+      order.credited
+    )
+      return publicOrder(order);
+    if (fiscal && order.payloadVersion !== 2)
+      return publicOrder(await orders.markReviewRequired(user.id, order.id));
+    const age = Date.now() - Date.parse(order.createdAt);
+    if (!Number.isFinite(age) || age < -60_000 || age >= REPLAY_LIMIT_MS)
+      return publicOrder(await orders.markReviewRequired(user.id, order.id));
+    // Persist first. Ambiguous transport outcomes keep the exact same key.
+    // Recheck after durable creation, immediately before the external POST;
+    // the provider call itself is never made inside a DB transaction.
+    if (binding)
+      await options.db.transaction((tx) =>
+        assertLiveCheckoutAdmission(tx, binding),
+      );
+    const payment = await transport("create_payment", () =>
+      client.create({
+        orderId: order.id,
+        amountKopeks: order.amountKopeks,
+        returnUrl: order.returnUrl,
+        ...(receipt ? { receipt } : {}),
+        createPayload: order.createPayload,
+      }),
+    );
+    verified(payment, order);
+    const recorded = await orders.recordProvider(user.id, order.id, {
+      providerPaymentId: payment.id,
+      // POST success is not settlement proof. Bind first, then require GET.
+      status: payment.status === "canceled" ? "canceled" : "pending",
+      ...(payment.confirmationUrl
+        ? { confirmationUrl: payment.confirmationUrl }
+        : {}),
+    });
+    return publicOrder(recorded);
+  }
 
-  app.get("/v1/payments/topup-attempts/:requestId", async (request) => {
-    const user = await options.authenticate(request);
+  async function getAttempt(
+    request: FastifyRequest,
+    authenticate: PaymentAuthenticator,
+  ) {
+    const user = await authenticate(request);
     available();
     const input = attemptParamsSchema.parse(request.params);
     const order = await orders.getByRequestId(user.id, input.requestId);
     configured(order);
     return publicOrder(order); // Owner-scoped recovery; no provider call or write.
-  });
+  }
 
-  app.get("/v1/payments/topups/:orderId", async (request) => {
-    const user = await options.authenticate(request);
+  async function getOrder(
+    request: FastifyRequest,
+    authenticate: PaymentAuthenticator,
+  ) {
+    const user = await authenticate(request);
     available();
     const input = paramsSchema.parse(request.params);
     const order = await orders.get(user.id, input.orderId);
     configured(order);
     return publicOrder(order); // No provider call and no monetary mutation.
-  });
+  }
 
   // Trusted server entrypoint reused by authenticated owners and the durable
   // provider inbox. IDs from notifications never act as monetary proof.
@@ -315,7 +320,7 @@ export function registerPaymentTopups(
     orderId: string,
     forceGet = false,
     expectedProviderId?: string,
-    observed?: (status: YooKassaPayment["status"]) => void,
+    observed?: (payment: YooKassaPayment) => void,
   ) {
     const client = available();
     const order = await orders.get(userId, orderId);
@@ -343,7 +348,7 @@ export function registerPaymentTopups(
       }),
     );
     verified(payment, order);
-    observed?.(payment.status);
+    observed?.(payment);
     if (payment.status === "succeeded" && payment.paid === true) {
       await ledger.topUpConfirmed(userId, order.id, {
         providerPaymentId: payment.id,
@@ -369,18 +374,77 @@ export function registerPaymentTopups(
     });
     return publicOrder(recorded);
   }
-  app.post(
-    "/v1/payments/topups/:orderId/reconcile",
-    { config: { rateLimit: { max: 10, timeWindow: 60_000 } } },
-    async (request) => {
-      const user = await (
-        options.authenticateReconciliation ?? options.authenticate
-      )(request);
-      const input = paramsSchema.parse(request.params);
-      z.strictObject({}).parse(request.body);
-      return reconcileOrder(user.id, input.orderId);
+  const webPath = "/v1/payments";
+  const maxPath = "/v1/mini-apps/max/payments";
+  const limits = { config: { rateLimit: { max: 10, timeWindow: 60_000 } } };
+  const empty = z.strictObject({});
+  const scopes = [
+    {
+      path: webPath,
+      read: options.authenticate,
+      create: options.authenticateCreate,
+      reconcile: options.authenticateReconciliation ?? options.authenticate,
+      showProviderReceipt: false,
     },
-  );
+  ];
+  if (options.authenticateMaxTest) {
+    const authenticate = options.authenticateMaxTest;
+    if (options.config.YOOKASSA_MODE !== "test" || !options.client)
+      throw new Error("MAX payment routes require an isolated payment client");
+    scopes.push({
+      path: maxPath,
+      read: authenticate,
+      create: authenticate,
+      reconcile: authenticate,
+      showProviderReceipt: true,
+    });
+    app.get(maxPath + "/topups", async (request) => {
+      const user = await authenticate(request);
+      empty.parse(request.query);
+      const recent = await orders.listRecentTest(
+        user.id,
+        options.config.YOOKASSA_SHOP_ID!,
+        returnUrl,
+      );
+      return { orders: recent.map(publicOrder) };
+    });
+  }
+  for (const scope of scopes) {
+    app.post(scope.path + "/topups", limits, (request) =>
+      create(request, scope.create),
+    );
+    app.get(scope.path + "/topup-attempts/:requestId", (request) =>
+      getAttempt(request, scope.read),
+    );
+    app.get(scope.path + "/topups/:orderId", (request) =>
+      getOrder(request, scope.read),
+    );
+    app.post(
+      scope.path + "/topups/:orderId/reconcile",
+      limits,
+      async (request) => {
+        const user = await scope.reconcile(request);
+        const { orderId } = paramsSchema.parse(request.params);
+        empty.parse(request.body);
+        if (!scope.showProviderReceipt) return reconcileOrder(user.id, orderId);
+        let receiptRegistration: YooKassaPayment["receiptRegistration"];
+        const order = await reconcileOrder(
+          user.id,
+          orderId,
+          true,
+          undefined,
+          (payment) => {
+            receiptRegistration = yooKassaReceiptRegistrationSchema
+              .optional()
+              .parse(payment.receiptRegistration);
+          },
+        );
+        return receiptRegistration === undefined
+          ? order
+          : { ...order, receiptRegistration };
+      },
+    );
+  }
   return {
     reconcileOrder,
     async reconcileNotification(
@@ -389,7 +453,7 @@ export function registerPaymentTopups(
       providerId: string,
     ) {
       let terminal = false;
-      await reconcileOrder(userId, orderId, true, providerId, (status) => {
+      await reconcileOrder(userId, orderId, true, providerId, ({ status }) => {
         terminal = status === "succeeded" || status === "canceled";
       });
       return terminal;

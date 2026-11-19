@@ -35,6 +35,8 @@ export type PaymentNotification = z.infer<typeof rowSchema> & {
   kind: "payment" | "refund";
 };
 export const PAYMENT_NOTIFICATION_PATH = "/v1/payments/yookassa/notifications";
+export const MAX_TEST_PAYMENT_NOTIFICATION_PATH =
+  "/v1/mini-apps/max/payments/test-notifications";
 
 // This durable inbox is not settlement evidence. The callback must perform an
 // authenticated provider GET and the existing idempotent money-journal path.
@@ -243,9 +245,12 @@ export class PaymentNotificationInbox {
 export function registerPaymentNotifications(
   app: FastifyInstance,
   inbox: PaymentNotificationInbox,
+  path:
+    | typeof PAYMENT_NOTIFICATION_PATH
+    | typeof MAX_TEST_PAYMENT_NOTIFICATION_PATH = PAYMENT_NOTIFICATION_PATH,
 ) {
   app.post(
-    PAYMENT_NOTIFICATION_PATH,
+    path,
     {
       bodyLimit: 16 * 1024,
       config: { rateLimit: { max: 60, timeWindow: 60_000 } },

@@ -143,10 +143,12 @@ type RegistrationChallenge = PendingEmailRegistration & {
 
 export default function CityGoHome({
   miniApp,
+  openMaxPayment,
   registerMiniAppBack,
   rememberHousingOwner,
 }: {
   miniApp?: MiniAppAccountAccess;
+  openMaxPayment?: (url: string) => void;
   registerMiniAppBack?: (handler: (() => boolean) | null) => void;
   rememberHousingOwner?: (ownerId: string | null) => void;
 }) {
@@ -2301,6 +2303,12 @@ export default function CityGoHome({
                       sessionSignal={session.capture().signal}
                       availableMicros={board.aiAccess.credit?.availableMicros}
                       onAccessDenied={requireLogin}
+                      openMaxPayment={
+                        miniProvider === "max" ? openMaxPayment : undefined
+                      }
+                      onBalanceChanged={() =>
+                        void refresh(session.capture()).catch(() => {})
+                      }
                       onClose={returnToMiniProfile}
                     />
                   )
