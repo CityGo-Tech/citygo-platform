@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { createClient } from "@citygo/api-client";
+import type { MessengerProvider } from "@citygo/contracts";
 import { Button, Card, Field } from "@citygo/ui-web";
 import {
   createPhoneVerificationResource,
@@ -16,19 +17,26 @@ import styles from "./phone-verification.module.css";
 /** Account-bound, in-memory verification. Opening the panel never sends SMS. */
 export function PhoneVerificationPanel({
   userId,
+  miniAppProvider,
   sessionSignal,
   onAccessDenied,
   onGranted,
   onClose,
+  onOpenBalance,
+  onOpenAssistants,
 }: {
   userId: string;
+  miniAppProvider?: MessengerProvider;
   sessionSignal: AbortSignal;
   onAccessDenied: () => void;
   onGranted: () => void;
   onClose: () => void;
+  onOpenBalance?: () => void;
+  onOpenAssistants?: () => void;
 }) {
   const [snapshot, setSnapshot] = useState<{
     owner: string;
+    provider?: MessengerProvider;
     signal: AbortSignal;
     state: PhoneVerificationState;
   } | null>(null);
@@ -53,6 +61,8 @@ export function PhoneVerificationPanel({
     const signal = AbortSignal.any([controller.signal, sessionSignal]);
     const current = createPhoneVerificationResource({
       client: createClient("/api", { signal: () => signal }),
+      userId,
+      miniAppProvider,
       sessionSignal: signal,
       publish: (state) => {
         if (state.deliveryProvider !== currentProvider) {
@@ -67,12 +77,21 @@ export function PhoneVerificationPanel({
           state.phase === "confirmed"
         )
           setPhone("");
-        if (state.phase !== "ready" && state.phase !== "loading") {
+        if (
+          state.phase !== "ready" &&
+          state.phase !== "loading" &&
+          state.phase !== "recovering"
+        ) {
           setPhone("");
           setCode("");
           setConsentProvider(null);
         }
-        setSnapshot({ owner: userId, signal: sessionSignal, state });
+        setSnapshot({
+          owner: userId,
+          provider: miniAppProvider,
+          signal: sessionSignal,
+          state,
+        });
       },
       onAccessDenied: () => callbacks.current.onAccessDenied(),
       onGranted: () => callbacks.current.onGranted(),
@@ -84,7 +103,7 @@ export function PhoneVerificationPanel({
       controller.abort();
       if (resource.current === current) resource.current = null;
     };
-  }, [userId, sessionSignal]);
+  }, [userId, miniAppProvider, sessionSignal]);
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
@@ -93,6 +112,7 @@ export function PhoneVerificationPanel({
   const state =
     !sessionSignal.aborted &&
     snapshot?.owner === userId &&
+    snapshot.provider === miniAppProvider &&
     snapshot.signal === sessionSignal
       ? snapshot.state
       : null;
@@ -104,6 +124,12 @@ export function PhoneVerificationPanel({
     Math.ceil(((state?.retryAt ?? 0) - now) / 1000),
     0,
   );
+  const codeSeconds = state?.challenge
+    ? Math.max(
+        0,
+        Math.ceil((Date.parse(state.challenge.expiresAt) - now) / 1000),
+      )
+    : 0;
   const busy = !state || state.busy;
   const providerLabel = state
     ? phoneDeliveryLabel(state.deliveryProvider)
@@ -112,13 +138,31 @@ export function PhoneVerificationPanel({
     !!state &&
     state.deliveryProvider !== "none" &&
     consentProvider === state.deliveryProvider;
+  const completed =
+    state?.phase === "confirmed" || state?.phase === "recovered";
+  const heading = miniAppProvider
+    ? completed
+      ? state?.receipt?.alreadyGranted === false
+        ? "Подарок начислен"
+        : "Телефон подтверждён"
+      : state?.phase === "number-unavailable"
+        ? "Не удалось привязать номер"
+        : state?.phase === "ready" && state.challenge
+          ? "Код из SMS"
+          : "Подтвердить телефон"
+    : "Подтверждение телефона";
   return (
-    <Card className={styles.panel} aria-labelledby="phone-gift-heading">
-      <span className="eyebrow">ЛИЧНЫЙ КАБИНЕТ · CITYGO</span>
+    <Card
+      className={`${styles.panel}${miniAppProvider ? ` ${styles.miniPanel}` : ""} ym-hide-content ym-disable-keys`}
+      aria-labelledby="phone-gift-heading"
+    >
+      {!miniAppProvider && (
+        <span className="eyebrow">ЛИЧНЫЙ КАБИНЕТ · CITYGO</span>
+      )}
       <h1 id="phone-gift-heading" tabIndex={-1}>
-        Подтверждение телефона
+        {heading}
       </h1>
-      {state?.phase !== "phone-bound" && (
+      {!miniAppProvider && state?.phase !== "phone-bound" && (
         <p>Разовый подарок 500 ₽ CityGo после подтверждения номера.</p>
       )}
       {(!state || state.phase === "loading") && (
@@ -156,24 +200,57 @@ export function PhoneVerificationPanel({
           Сессия завершилась. Войдите снова, чтобы продолжить.
         </p>
       )}
-      {state?.phase === "confirmed" && state.receipt && (
+      {completed && (
         <div className={styles.notice} role="status">
           <strong>
-            {state.receipt.alreadyGranted
-              ? "Телефон подтверждён. Подарок уже был начислен."
-              : "Телефон подтверждён. Начислено 500 ₽ CityGo."}
+            {state.receipt?.alreadyGranted === false
+              ? "Телефон подтверждён. Начислено 500 ₽ CityGo."
+              : "Телефон подтверждён. Подарок уже был начислен."}
           </strong>
         </div>
       )}
+      {completed && miniAppProvider && onOpenBalance && (
+        <Button type="button" onClick={onOpenBalance}>
+          Посмотреть баланс
+        </Button>
+      )}
+      {completed && miniAppProvider && onOpenAssistants && (
+        <Button type="button" variant="secondary" onClick={onOpenAssistants}>
+          К помощникам
+        </Button>
+      )}
+      {state?.phase === "recovering" && (
+        <Button
+          type="button"
+          disabled={busy}
+          onClick={() => void resource.current?.load()}
+        >
+          Проверить подтверждение
+        </Button>
+      )}
+      {state?.phase === "number-unavailable" && (
+        <Button
+          type="button"
+          disabled={busy}
+          onClick={() => void resource.current?.load()}
+        >
+          Указать другой номер
+        </Button>
+      )}
       {state?.phase === "ready" && providerLabel && (
         <>
-          <details>
-            <summary>Условия подтверждения</summary>
-            <p>
-              Для доставки SMS номер и код передаются сервису {providerLabel}{" "}
-              только для подтверждения телефона.
-            </p>
-          </details>
+          {miniAppProvider && !state.challenge && (
+            <p>За подтверждение номера начислим 500 ₽ на баланс CityGo.</p>
+          )}
+          {(!miniAppProvider || !state.challenge) && (
+            <details>
+              <summary>Условия подтверждения</summary>
+              <p>
+                Для доставки SMS номер и код передаются сервису {providerLabel}{" "}
+                только для подтверждения телефона.
+              </p>
+            </details>
+          )}
           {state.challenge ? (
             <>
               <p>
@@ -191,7 +268,7 @@ export function PhoneVerificationPanel({
                 }}
               >
                 <Field
-                  label="Код из SMS"
+                  label={miniAppProvider ? "Код подтверждения" : "Код из SMS"}
                   className="ym-disable-keys"
                   name="phoneCode"
                   inputMode="numeric"
@@ -212,14 +289,21 @@ export function PhoneVerificationPanel({
                 >
                   {busy
                     ? "Подождите…"
-                    : "Подтвердить телефон и получить подарок"}
+                    : miniAppProvider
+                      ? "Подтвердить номер"
+                      : "Подтвердить телефон и получить подарок"}
                 </Button>
               </form>
-              <small role="status">
-                {clock?.expired
-                  ? "Срок кода истёк. Начните подтверждение заново."
-                  : "Никому не сообщайте код."}
-              </small>
+              {clock?.expired ? (
+                <small role="status">
+                  Срок кода истёк. Начните подтверждение заново.
+                </small>
+              ) : (
+                <small>
+                  Код действует ещё {Math.floor(codeSeconds / 60)} мин{" "}
+                  {codeSeconds % 60} с. Никому не сообщайте код.
+                </small>
+              )}
               <Button
                 type="button"
                 variant="secondary"
@@ -244,7 +328,7 @@ export function PhoneVerificationPanel({
                   resource.current?.reset();
                 }}
               >
-                Изменить номер
+                {miniAppProvider ? "Указать другой номер" : "Изменить номер"}
               </Button>
             </>
           ) : (
@@ -256,7 +340,11 @@ export function PhoneVerificationPanel({
               }}
             >
               <Field
-                label="Российский мобильный номер"
+                label={
+                  miniAppProvider
+                    ? "Номер телефона"
+                    : "Российский мобильный номер"
+                }
                 className="ym-disable-keys"
                 name="phone"
                 type="tel"
@@ -273,6 +361,9 @@ export function PhoneVerificationPanel({
                 <small>
                   Укажите российский мобильный номер +7 9XX XXX-XX-XX.
                 </small>
+              )}
+              {miniAppProvider && (
+                <small>Один подарок на аккаунт и номер.</small>
               )}
               <label className={styles.consent}>
                 <input

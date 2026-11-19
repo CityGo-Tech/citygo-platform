@@ -1,10 +1,12 @@
 import { ApiError, type createClient } from "@citygo/api-client";
 import { trackProductEvent } from "./product-analytics";
 import {
+  accountProfileSchema,
   phoneVerificationChallengeSchema,
   phoneVerificationPolicySchema,
   phoneVerificationReceiptSchema,
   russianMobilePhoneSchema,
+  type MessengerProvider,
   type PhoneVerificationReceipt,
 } from "@citygo/contracts";
 
@@ -14,6 +16,7 @@ type Client = Pick<
   | "beginPhoneVerification"
   | "resendPhoneVerification"
   | "confirmPhoneVerification"
+  | "getAccountProfile"
 >;
 export type PhoneDeliveryProvider = "none" | "sms_ru" | "prosto_sms";
 type Policy = Awaited<ReturnType<Client["phoneVerificationPolicy"]>>;
@@ -26,7 +29,10 @@ export type PhoneVerificationState = {
     | "email-required"
     | "already-granted"
     | "phone-bound"
+    | "number-unavailable"
     | "confirmed"
+    | "recovering"
+    | "recovered"
     | "closed";
   busy: boolean;
   deliveryProvider: PhoneDeliveryProvider;
@@ -66,6 +72,8 @@ export function phoneDeliveryLabel(provider: PhoneDeliveryProvider) {
  */
 export function createPhoneVerificationResource({
   client,
+  userId,
+  miniAppProvider,
   sessionSignal,
   publish,
   onAccessDenied,
@@ -73,6 +81,8 @@ export function createPhoneVerificationResource({
   now = Date.now,
 }: {
   client: Client;
+  userId: string;
+  miniAppProvider?: MessengerProvider;
   sessionSignal: AbortSignal;
   publish: (state: PhoneVerificationState) => void;
   onAccessDenied?: () => void;
@@ -92,6 +102,9 @@ export function createPhoneVerificationResource({
     receipt: null,
   });
   let state = empty("loading");
+  const scope: [] | [MessengerProvider] = miniAppProvider
+    ? [miniAppProvider]
+    : [];
   let disposed = false;
   let pending: {
     phone: string;
@@ -118,13 +131,30 @@ export function createPhoneVerificationResource({
       onAccessDenied?.();
       return;
     }
+    if (
+      operation === "confirm" &&
+      (!(error instanceof ApiError) ||
+        error.status < 400 ||
+        error.status === 408 ||
+        error.status >= 500)
+    ) {
+      commit({
+        ...state,
+        phase: "recovering",
+        busy: false,
+        error: "Не удалось подтвердить телефон. Проверьте текущий статус.",
+      });
+      return;
+    }
     // No raw server/provider error bodies or user input in UI diagnostics.
     const message =
       error instanceof ApiError && error.status === 429
         ? "Слишком много попыток. Подождите и попробуйте позже."
         : error instanceof ApiError && error.status === 409
           ? operation === "send"
-            ? "Условия подтверждения изменились. Обновите статус и подтвердите согласие заново."
+            ? miniAppProvider
+              ? "Не удалось привязать номер. Обновите статус и попробуйте другой номер."
+              : "Условия подтверждения изменились. Обновите статус и подтвердите согласие заново."
             : "Не удалось подтвердить подарок. Обновите статус или обратитесь в поддержку."
           : operation === "confirm" &&
               error instanceof ApiError &&
@@ -136,7 +166,12 @@ export function createPhoneVerificationResource({
     if (error instanceof ApiError && error.status === 409) {
       pending = null;
       commit({
-        ...empty("unavailable", state.deliveryProvider),
+        ...empty(
+          miniAppProvider && operation === "send"
+            ? "number-unavailable"
+            : "unavailable",
+          state.deliveryProvider,
+        ),
         error: message,
       });
       return;
@@ -177,7 +212,7 @@ export function createPhoneVerificationResource({
     let policy: Policy;
     try {
       policy = phoneVerificationPolicySchema.parse(
-        await client.phoneVerificationPolicy(),
+        await client.phoneVerificationPolicy(...scope),
       );
     } catch (error) {
       failure(error, "policy");
@@ -207,9 +242,13 @@ export function createPhoneVerificationResource({
     if (!active() || state.busy) return;
     const previous = state;
     commit({ ...state, busy: true, error: "" });
+    if (previous.phase === "recovering") {
+      await recoverConfirmation();
+      return;
+    }
     try {
       const policy = phoneVerificationPolicySchema.parse(
-        await client.phoneVerificationPolicy(),
+        await client.phoneVerificationPolicy(...scope),
       );
       if (!active()) return;
       const next = policyState(policy);
@@ -226,6 +265,60 @@ export function createPhoneVerificationResource({
     } catch (error) {
       pending = null;
       failure(error, "policy");
+    }
+  }
+  function refreshAfterConfirmation() {
+    // A presentation callback cannot invalidate the server's confirmation.
+    try {
+      onGranted?.();
+    } catch {
+      /* Keep the server-confirmed state. */
+    }
+  }
+  async function recoverConfirmation() {
+    try {
+      const profile = accountProfileSchema.parse(
+        await client.getAccountProfile(),
+      );
+      if (!active()) return;
+      if (profile.userId !== userId) throw new Error("Account mismatch");
+      if (profile.phoneVerified && profile.giftStatus === "claimed") {
+        pending = null;
+        commit(empty("recovered", state.deliveryProvider));
+        refreshAfterConfirmation();
+        return;
+      }
+      const policy = phoneVerificationPolicySchema.parse(
+        await client.phoneVerificationPolicy(...scope),
+      );
+      if (!active()) return;
+      const next = policyState(policy);
+      if (
+        pending &&
+        pending.deliveryProvider === next.deliveryProvider &&
+        next.phase === "ready"
+      ) {
+        commit({
+          ...state,
+          phase: "ready",
+          busy: false,
+          error:
+            "Подтверждение ещё не завершено. Проверьте код из последней SMS.",
+        });
+        return;
+      }
+      pending = null;
+      commit(next);
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        failure(error, "policy");
+        return;
+      }
+      commit({
+        ...state,
+        busy: false,
+        error: "Не удалось проверить статус. Попробуйте ещё раз.",
+      });
     }
   }
   async function send(raw?: string, consent = false) {
@@ -272,8 +365,9 @@ export function createPhoneVerificationResource({
               current.proof,
               phone,
               deliveryProvider,
+              ...scope,
             )
-          : client.beginPhoneVerification(phone, deliveryProvider)),
+          : client.beginPhoneVerification(phone, deliveryProvider, ...scope)),
       );
       if (!active()) return;
       if (
@@ -332,6 +426,7 @@ export function createPhoneVerificationResource({
           current.proof,
           current.phone,
           code,
+          ...scope,
         ),
       );
       if (!active()) return;
@@ -348,13 +443,7 @@ export function createPhoneVerificationResource({
           receipt.operationId,
         );
       commit({ ...empty("confirmed", current.deliveryProvider), receipt });
-      // Refreshing the cabinet is independent of the committed gift receipt.
-      // A presentation callback cannot turn a confirmed grant into a failure.
-      try {
-        onGranted?.();
-      } catch {
-        /* Keep the server-confirmed receipt. */
-      }
+      refreshAfterConfirmation();
     } catch (error) {
       failure(error, "confirm");
     }

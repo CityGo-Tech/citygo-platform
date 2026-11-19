@@ -46,6 +46,27 @@
 .error {
   color: var(--cg-color-danger);
 }
+.panel.miniPanel {
+  width: 100%;
+  padding: 0;
+  margin: 0 auto;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  gap: var(--cg-space-sm);
+}
+.miniPanel .notice {
+  background: var(--cg-color-success-soft);
+}
+.miniPanel .error {
+  padding: var(--cg-space-md);
+  border-radius: var(--cg-radius-card);
+  background: color-mix(
+    in srgb,
+    var(--cg-color-danger) 7%,
+    var(--cg-color-surface)
+  );
+}
 @media (max-width: 700px) {
   .panel {
     padding: var(--cg-space-md);

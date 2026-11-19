@@ -11,6 +11,14 @@ import {
 } from "./phone-verification-state";
 
 const phone = "+79990000000";
+const profile = {
+  userId: "1",
+  email: "verification@example.test",
+  emailVerified: true,
+  phoneVerified: false,
+  giftStatus: "available" as const,
+  emailConfirmation: "available" as const,
+};
 const challenge = {
   challengeId: "a274d301-c0e2-4e4a-b0f4-4bf8a513ff64",
   proof: "ab".repeat(32),
@@ -40,7 +48,9 @@ function setup() {
     | "beginPhoneVerification"
     | "resendPhoneVerification"
     | "confirmPhoneVerification"
+    | "getAccountProfile"
   > = {
+    getAccountProfile: async () => profile,
     phoneVerificationPolicy: async () => ({
       phoneVerification: "required" as const,
       giftAmountMicros: 500_000_000 as const,
@@ -70,6 +80,7 @@ function setup() {
     denied = 0;
   const resource = createPhoneVerificationResource({
     client,
+    userId: profile.userId,
     sessionSignal: owner.signal,
     publish: (state) => states.push(state),
     now: () => time,
@@ -291,11 +302,66 @@ test("a provider delivery result, wrong amount or extra fields can never be disp
     await s.resource.start(phone, true);
     s.client.confirmPhoneVerification = async () => raw as typeof receipt;
     await s.resource.confirm("012345");
-    assert.equal(s.last().phase, "ready");
+    assert.equal(s.last().phase, "recovering");
     assert.equal(s.last().receipt, null);
     assert.equal(s.granted(), 0);
     s.resource.dispose();
   }
+});
+
+test("a lost confirmation recovers only from the same account's verified phone and claimed gift", async () => {
+  const s = setup();
+  await s.resource.load();
+  await s.resource.start(phone, true);
+  let confirmations = 0;
+  s.client.confirmPhoneVerification = async () => {
+    confirmations++;
+    throw new ApiError(0, "SYNTHETIC_SECRET", "timeout");
+  };
+  await s.resource.confirm("012345");
+  assert.equal(s.last().phase, "recovering");
+  assert.doesNotMatch(s.last().error, /SYNTHETIC/);
+  await s.resource.confirm("012345");
+  await s.resource.resend(true);
+  assert.equal(confirmations, 1);
+  assert.equal(s.calls.length, 1);
+  const confirmedProfile = {
+    ...profile,
+    phoneVerified: true,
+    giftStatus: "claimed" as const,
+  };
+  s.client.getAccountProfile = async () => ({
+    ...confirmedProfile,
+    userId: "2",
+  });
+  await s.resource.load();
+  assert.equal(s.last().phase, "recovering");
+  assert.equal(s.granted(), 0);
+  s.client.getAccountProfile = async () => confirmedProfile;
+  await s.resource.load();
+  assert.equal(s.last().phase, "recovered");
+  assert.equal(s.last().challenge, null);
+  assert.equal(s.last().receipt, null);
+  assert.equal(s.granted(), 1);
+  assert.equal(confirmations, 1);
+  assert.equal(s.calls.length, 1);
+  s.resource.dispose();
+});
+
+test("checking a lost response without a confirmed grant allows reentry of the current code", async () => {
+  const s = setup();
+  await s.resource.load();
+  await s.resource.start(phone, true);
+  s.client.confirmPhoneVerification = async () => {
+    throw new ApiError(502, "synthetic proxy response");
+  };
+  await s.resource.confirm("012345");
+  await s.resource.load();
+  assert.equal(s.last().phase, "ready");
+  assert.notEqual(s.last().challenge, null);
+  assert.equal(s.granted(), 0);
+  assert.equal(s.calls.length, 1);
+  s.resource.dispose();
 });
 
 test("unknown send outcome stays throttled with no automatic resend or invented challenge", async () => {

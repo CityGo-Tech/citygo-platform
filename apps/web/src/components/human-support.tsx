@@ -21,6 +21,7 @@ export function HumanSupportPanel({
   onClose,
   initialRequestId,
   canManageStatus = false,
+  miniReturnLabel,
 }: {
   userId: string;
   sessionSignal: AbortSignal;
@@ -28,6 +29,7 @@ export function HumanSupportPanel({
   onClose: () => void;
   initialRequestId?: string | null;
   canManageStatus?: boolean;
+  miniReturnLabel?: string;
 }) {
   const [draft, setDraft] = useState({
     owner: userId,
@@ -87,6 +89,7 @@ export function HumanSupportPanel({
     snapshot.signal === sessionSignal
       ? snapshot.value
       : null;
+  const receipt = state?.receipt;
   useEffect(() => {
     if (replyRequest && !sessionSignal.aborted)
       document.getElementById("human-support-thread-" + replyRequest)?.focus();
@@ -101,36 +104,64 @@ export function HumanSupportPanel({
       return;
     void resource.current?.send(body);
   };
+  const openReceiptReplies = async (id: string) => {
+    const current = resource.current;
+    if (!current) return;
+    await current.setFilter("all");
+    if (await current.open(id)) setReplyRequest(id);
+  };
   return (
     <Card
-      className={styles.panel}
+      className={`${styles.panel}${miniReturnLabel ? ` ${styles.mini}` : ""} ym-hide-content ym-disable-keys`}
+      data-citygo-private
       aria-labelledby="human-support-heading"
       aria-busy={state?.busy}
     >
-      <span className={styles.eyebrow}>CITYGO · ВАШ ПЕРЕЕЗД</span>
+      {!miniReturnLabel && (
+        <span className={styles.eyebrow}>CITYGO · ВАШ ПЕРЕЕЗД</span>
+      )}
       <h1 id="human-support-heading">
-        {state?.receipt ? "Обращение сохранено" : "Можно обратиться к человеку"}
+        {receipt
+          ? "Обращение сохранено"
+          : miniReturnLabel
+            ? "Помощь человека"
+            : "Можно обратиться к человеку"}
       </h1>
-      <p className={styles.intro}>
-        Оставьте вопрос владельцу CityGo. Обращение бесплатно.
-      </p>
-      {state?.receipt && (
+      {(!miniReturnLabel || !receipt) && (
+        <p className={styles.intro}>
+          {miniReturnLabel
+            ? "Напишите, с чем помочь. Ответ будет в вашем профиле."
+            : "Оставьте вопрос владельцу CityGo. Обращение бесплатно."}
+        </p>
+      )}
+      {receipt && (
         <div role="status" className={styles.notice}>
-          <strong>Обращение №{state.receipt.id} сохранено</strong>
+          <strong>Обращение №{receipt.id} сохранено</strong>
           <p>
-            <time dateTime={state.receipt.createdAt}>
-              {new Date(state.receipt.createdAt).toLocaleString("ru-RU")}
+            <time dateTime={receipt.createdAt}>
+              {new Date(receipt.createdAt).toLocaleString("ru-RU")}
             </time>
           </p>
-          <p>
-            Статус: {state.receipt.status === "closed" ? "Закрыто" : "Открыто"}.
-          </p>
+          <p>Статус: {receipt.status === "closed" ? "Закрыто" : "Открыто"}.</p>
         </div>
       )}
-      {state?.error && state.receipt && <p role="alert">{state.error}</p>}
-      {state?.receipt ? (
+      {state?.error && receipt && <p role="alert">{state.error}</p>}
+      {receipt ? (
         <div className={styles.actions}>
+          {miniReturnLabel && (
+            <>
+              <Button onClick={onClose}>{miniReturnLabel}</Button>
+              <Button
+                variant="secondary"
+                disabled={state?.busy}
+                onClick={() => void openReceiptReplies(receipt.id)}
+              >
+                Открыть обращение
+              </Button>
+            </>
+          )}
           <Button
+            variant={miniReturnLabel ? "ghost" : "primary"}
             onClick={() => {
               setBody("");
               resource.current?.compose();
@@ -138,9 +169,11 @@ export function HumanSupportPanel({
           >
             Новый вопрос
           </Button>
-          <Button variant="secondary" onClick={onClose}>
-            Вернуться к диалогу
-          </Button>
+          {!miniReturnLabel && (
+            <Button variant="secondary" onClick={onClose}>
+              Вернуться к диалогу
+            </Button>
+          )}
         </div>
       ) : (
         <form onSubmit={submit} className={styles.form}>
@@ -177,8 +210,12 @@ export function HumanSupportPanel({
                 ? "Повторить сохранение того же вопроса"
                 : "Отправить обращение"}
             </Button>
-            <Button type="button" variant="secondary" onClick={onClose}>
-              Вернуться к диалогу
+            <Button
+              type="button"
+              variant={miniReturnLabel ? "ghost" : "secondary"}
+              onClick={onClose}
+            >
+              {miniReturnLabel ?? "Вернуться к диалогу"}
             </Button>
           </div>
         </form>

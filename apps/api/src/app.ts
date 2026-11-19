@@ -1074,10 +1074,24 @@ export async function buildApp(options: {
     delivery:
       options.phoneVerificationDelivery ?? configuredPhoneDelivery(config),
     context: async (request) => {
-      const user = await authenticate(request);
+      const { account, messengerProvider } = await authenticateSession(request);
+      const routeProvider = (
+        request.params as { provider?: unknown } | undefined
+      )?.provider;
+      const provider =
+        routeProvider === undefined
+          ? undefined
+          : messengerProviderSchema.parse(routeProvider);
       const token =
         bearer(request.headers.authorization) ?? request.cookies[sessionName];
-      return { userId: user.id, sessionTokenHash: tokenHash(token!) };
+      return {
+        userId: account.id,
+        sessionTokenHash: tokenHash(token!),
+        // MAX is status-only, including when a MAX-issued session opens
+        // the ordinary Web route or switches to the Telegram route.
+        phoneVerificationAllowed:
+          provider !== "max" && messengerProvider !== "max",
+      };
     },
   });
   registerAccountProfile(app, {

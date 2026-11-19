@@ -2,7 +2,11 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import Link from "next/link";
 import { createClient } from "@citygo/api-client";
-import { formatSignedMoneyMicros, type AiAccess } from "@citygo/contracts";
+import {
+  formatSignedMoneyMicros,
+  type AiAccess,
+  type MessengerProvider,
+} from "@citygo/contracts";
 import { Button, Card, Field } from "@citygo/ui-web";
 import { accountStyles } from "./account-overview";
 import { registrationClock } from "./email-registration-state";
@@ -17,6 +21,7 @@ import "./account-profile.css";
 /** Figma 6:64 result-card pattern with actual account/contact status. */
 export function AccountProfile({
   userId,
+  revision = 0,
   sessionSignal,
   onAccessDenied,
   access,
@@ -31,6 +36,7 @@ export function AccountProfile({
   miniApp,
 }: {
   userId: string;
+  revision?: number;
   sessionSignal: AbortSignal;
   onAccessDenied: () => void;
   access: AiAccess;
@@ -43,6 +49,7 @@ export function AccountProfile({
   onSupport?: () => void;
   onResults?: () => void;
   miniApp?: {
+    provider: MessengerProvider;
     onMessenger: () => void;
     onLogout: (trigger: HTMLButtonElement) => void;
     onReceipts?: () => void;
@@ -59,6 +66,7 @@ export function AccountProfile({
     typeof createAccountProfileResource
   > | null>(null);
   const denied = useRef(onAccessDenied);
+  const loadedRevision = useRef(revision);
   useEffect(() => {
     denied.current = onAccessDenied;
   }, [onAccessDenied]);
@@ -86,6 +94,11 @@ export function AccountProfile({
     };
   }, [userId, sessionSignal]);
   useEffect(() => {
+    if (loadedRevision.current === revision) return;
+    loadedRevision.current = revision;
+    void resource.current?.load();
+  }, [revision]);
+  useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, []);
@@ -98,6 +111,7 @@ export function AccountProfile({
       : null;
   if (sessionSignal.aborted || state?.phase === "closed") return null;
   const profile = state?.profile ?? null;
+  const showPhoneGift = miniApp?.provider !== "max";
   const clock = state?.challenge
     ? registrationClock(state.challenge, now)
     : null;
@@ -122,19 +136,20 @@ export function AccountProfile({
     <Card
       className={
         accountStyles.page +
-        " account-profile" +
+        " account-profile ym-hide-content" +
         (miniApp ? ` ${miniStyles.panel} ${miniStyles.profile}` : "")
       }
       aria-labelledby="account-profile-heading"
       aria-busy={!!state?.busy}
+      data-citygo-analytics-private
     >
       {!miniApp && <span className={accountStyles.eyebrow}>ВАШ CITYGO</span>}
-      <h1 id="account-profile-heading">
+      <h1 id="account-profile-heading" tabIndex={miniApp ? -1 : undefined}>
         {miniApp ? "Профиль" : "Личный кабинет"}
       </h1>
 
       <section
-        className={accountStyles.profileCard}
+        className={`${accountStyles.profileCard} ${miniApp ? miniStyles.profileBalance : ""}`}
         aria-labelledby="profile-balance-heading"
       >
         <span className={accountStyles.eyebrow}>БАЛАНС CITYGO</span>
@@ -143,9 +158,9 @@ export function AccountProfile({
             ? `${formatSignedMoneyMicros(access.credit.availableMicros)} ₽`
             : "Баланс недоступен"}
         </h2>
-        <p>Для общения с помощниками.</p>
+        {!miniApp && <p>Для общения с помощниками.</p>}
         <Button disabled={disabled} onClick={onBalance}>
-          Баланс и пополнение
+          {miniApp ? "Баланс и история операций" : "Баланс и пополнение"}
         </Button>
         {miniApp?.onReceipts && (
           <Button
@@ -302,7 +317,9 @@ export function AccountProfile({
         aria-labelledby="profile-phone-heading"
       >
         <span className={accountStyles.eyebrow}>ТЕЛЕФОН</span>
-        <h2 id="profile-phone-heading">Телефон и подарок</h2>
+        <h2 id="profile-phone-heading">
+          {showPhoneGift ? "Телефон и подарок" : "Телефон"}
+        </h2>
         <p>
           {profile
             ? profile.phoneVerified
@@ -310,22 +327,27 @@ export function AccountProfile({
               : "Телефон не подтверждён"
             : "Статус телефона пока недоступен."}
         </p>
-        {profile?.giftStatus === "claimed" && (
+        {showPhoneGift && profile?.giftStatus === "claimed" && (
           <p>Подарок 500 ₽ CityGo уже начислен.</p>
         )}
-        {profile?.giftStatus === "available" && (
+        {showPhoneGift && profile?.giftStatus === "available" && (
           <p>
             {profile.emailVerified
               ? "500 ₽ CityGo в подарок после подтверждения телефона."
               : "Подтвердите email, затем телефон — и получите 500 ₽ CityGo."}
           </p>
         )}
-        {profile?.giftStatus === "unavailable" && (
+        {showPhoneGift && profile?.giftStatus === "unavailable" && (
           <p>Подарок пока недоступен.</p>
         )}
-        <Button variant="secondary" disabled={disabled} onClick={onPhone}>
-          Телефон и подарок
-        </Button>
+        {(!miniApp ||
+          (showPhoneGift &&
+            profile?.giftStatus === "available" &&
+            profile.emailVerified)) && (
+          <Button variant="secondary" disabled={disabled} onClick={onPhone}>
+            {miniApp ? "Подтвердить телефон" : "Телефон и подарок"}
+          </Button>
+        )}
       </section>
 
       {miniApp && (

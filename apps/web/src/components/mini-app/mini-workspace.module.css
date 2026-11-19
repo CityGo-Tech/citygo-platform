@@ -41,6 +41,10 @@
   background: var(--cg-color-surface);
 }
 
+.workspace .profile > .profileBalance {
+  background: var(--cg-color-primary-soft);
+}
+
 .workspace .profile :global(.account-profile-actions) {
   display: grid;
 }

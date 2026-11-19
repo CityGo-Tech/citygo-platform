@@ -14,6 +14,7 @@ import {
   type LandingTask,
 } from "../components/landing/landing-task";
 import { BalanceHistoryPanel } from "../components/balance-history";
+import { MiniAppProfileBalance } from "../components/mini-app/profile-balance";
 import Link from "next/link";
 import {
   useCallback,
@@ -222,6 +223,8 @@ export default function CityGoHome({
   const [favoritesOpen, setFavoritesOpen] = useState(false);
   const [conversationNavigation, setConversationNavigation] = useState(0);
   const [phoneOpen, setPhoneOpen] = useState(false);
+  const [profileRevision, setProfileRevision] = useState(0);
+  const miniAccountDetailTrigger = useRef<HTMLElement | null>(null);
   const [messengerOpen, setMessengerOpen] = useState(!!miniApp?.initData);
   const [balanceOpen, setBalanceOpen] = useState(false);
   const [conversationView, setConversationView] = useState(true);
@@ -446,6 +449,7 @@ export default function CityGoHome({
     setReceiptsOpen(false);
     setFavoritesOpen(false);
     setPhoneOpen(false);
+    miniAccountDetailTrigger.current = null;
     setMessengerOpen(false);
     setBalanceOpen(false);
     setConversationView(true);
@@ -1716,20 +1720,30 @@ export default function CityGoHome({
   };
   const authViewSignal = session.capture().signal;
   function openBalance() {
+    if (miniApp && !phoneOpen && document.activeElement instanceof HTMLElement)
+      miniAccountDetailTrigger.current = document.activeElement;
     trackProductEvent("wallet_opened", { surface: "wallet" });
     setPhoneOpen(false);
     setMessengerOpen(false);
     setReceiptsOpen(false);
     setFavoritesOpen(false);
     setBalanceOpen(true);
+    if (miniApp) void refresh(session.capture()).catch(() => {});
   }
   function openPhone() {
+    if (miniProvider === "max") return;
+    if (miniApp && document.activeElement instanceof HTMLElement)
+      miniAccountDetailTrigger.current = document.activeElement;
     trackProductEvent("phone_opened", { surface: "phone" });
     setBalanceOpen(false);
     setMessengerOpen(false);
     setFavoritesOpen(false);
     setReceiptsOpen(false);
     setPhoneOpen(true);
+  }
+  function refreshPhoneStatus() {
+    setProfileRevision((revision) => revision + 1);
+    void refresh(session.capture()).catch(() => {});
   }
   function requestWorkspaceTab(tab: string) {
     setWorkspaceRequest({ tab, sequence: ++workspaceRequestSequence.current });
@@ -1746,10 +1760,24 @@ export default function CityGoHome({
   function returnToApp() {
     setBalanceOpen(false);
     setPhoneOpen(false);
+    if (miniApp) {
+      if (phoneOpen) refreshPhoneStatus();
+      const trigger = miniAccountDetailTrigger.current;
+      miniAccountDetailTrigger.current = null;
+      requestAnimationFrame(() => trigger?.focus());
+      return;
+    }
     requestAnimationFrame(() =>
       document
         .querySelector<HTMLButtonElement>("#citygo-account-overview button")
         ?.focus(),
+    );
+  }
+  function returnToMiniProfile() {
+    returnToApp();
+    requestWorkspaceTab("Профиль");
+    requestAnimationFrame(() =>
+      document.getElementById("account-profile-heading")?.focus(),
     );
   }
   useEffect(() => {
@@ -1761,11 +1789,11 @@ export default function CityGoHome({
   useEffect(() => {
     if (!balanceOpen) return;
     const target =
-      document.getElementById(chatBalanceTarget) ??
+      (!miniProvider && document.getElementById(chatBalanceTarget)) ||
       document.getElementById("citygo-wallet-view");
     target?.scrollIntoView({ block: "start" });
     target?.focus({ preventScroll: true });
-  }, [balanceOpen]);
+  }, [balanceOpen, miniProvider]);
   useEffect(() => {
     if (!registerMiniAppBack) return;
     registerMiniAppBack(() => {
@@ -2237,76 +2265,94 @@ export default function CityGoHome({
         ) : (
           <>
             <div
+              className={miniApp ? "mini-account-detail" : undefined}
               hidden={
                 !(balanceOpen || phoneOpen || favoritesOpen || receiptsOpen)
               }
             >
               <WorkspaceFrame
                 sidebar={
-                  <JourneySidebar
-                    disabled={busy || sending}
-                    onSuggest={(message) => {
-                      changeText(message);
-                      returnToWorkspace("Диалоги");
-                    }}
-                    onSupport={() => returnToWorkspace("Помощь человека")}
-                  />
+                  !miniApp && (
+                    <JourneySidebar
+                      disabled={busy || sending}
+                      onSuggest={(message) => {
+                        changeText(message);
+                        returnToWorkspace("Диалоги");
+                      }}
+                      onSupport={() => returnToWorkspace("Помощь человека")}
+                    />
+                  )
                 }
                 rail={
-                  <AssistantContextRail
-                    agent={board.thread?.agentKey ?? "support"}
-                    disabled={busy || sending}
-                    city={board.profile?.targetCity}
-                    onHelpers={() => returnToWorkspace("Помощники")}
-                  />
+                  !miniApp && (
+                    <AssistantContextRail
+                      agent={board.thread?.agentKey ?? "support"}
+                      disabled={busy || sending}
+                      city={board.profile?.targetCity}
+                      onHelpers={() => returnToWorkspace("Помощники")}
+                    />
+                  )
                 }
               >
-                <section
-                  id="citygo-wallet-view"
-                  tabIndex={-1}
-                  className={accountStyles.page}
-                  hidden={!balanceOpen}
-                  aria-label="Баланс и пополнение"
-                >
-                  <span className={accountStyles.eyebrow}>
-                    ЛИЧНЫЙ КАБИНЕТ · CITYGO
-                  </span>
-                  <h1>Баланс и пополнение</h1>
-                  <Button variant="secondary" onClick={returnToApp}>
-                    Вернуться в приложение
-                  </Button>
-                  <AiAccessPanel
-                    key={board.user.id + ":balance:" + formVersion}
-                    access={board.aiAccess}
-                    renderHistory={(onClose) => (
-                      <BalanceHistoryPanel
-                        userId={board.user.id}
-                        sessionSignal={session.capture().signal}
-                        onAccessDenied={requireLogin}
-                        onClose={onClose}
-                      />
+                {miniApp ? (
+                  balanceOpen && (
+                    <MiniAppProfileBalance
+                      userId={board.user.id}
+                      sessionSignal={session.capture().signal}
+                      availableMicros={board.aiAccess.credit?.availableMicros}
+                      onAccessDenied={requireLogin}
+                      onClose={returnToMiniProfile}
+                    />
+                  )
+                ) : (
+                  <section
+                    id="citygo-wallet-view"
+                    tabIndex={-1}
+                    className={accountStyles.page}
+                    hidden={!balanceOpen}
+                    aria-label="Баланс и пополнение"
+                  >
+                    <span className={accountStyles.eyebrow}>
+                      ЛИЧНЫЙ КАБИНЕТ · CITYGO
+                    </span>
+                    <h1>Баланс и пополнение</h1>
+                    <Button variant="secondary" onClick={returnToApp}>
+                      Вернуться в приложение
+                    </Button>
+                    <AiAccessPanel
+                      key={board.user.id + ":balance:" + formVersion}
+                      access={board.aiAccess}
+                      renderHistory={(onClose) => (
+                        <BalanceHistoryPanel
+                          userId={board.user.id}
+                          sessionSignal={session.capture().signal}
+                          onAccessDenied={requireLogin}
+                          onClose={onClose}
+                        />
+                      )}
+                      userId={board.user.id}
+                      busy={busy || sending}
+                      topups={topups}
+                      onPhone={openPhone}
+                    />
+                    {!board.aiAccess.credit && (
+                      <p role="status">
+                        Не удалось загрузить баланс. Обновите страницу.
+                      </p>
                     )}
-                    userId={board.user.id}
-                    busy={busy || sending}
-                    topups={topups}
-                    onPhone={openPhone}
-                  />
-                  {!board.aiAccess.credit && (
-                    <p role="status">
-                      Не удалось загрузить баланс. Обновите страницу.
-                    </p>
-                  )}
-                </section>
+                  </section>
+                )}
                 {phoneOpen ? (
                   <PhoneVerificationPanel
                     key={board.user.id + ":phone:" + formVersion}
                     userId={board.user.id}
                     sessionSignal={session.capture().signal}
                     onAccessDenied={requireLogin}
-                    onGranted={() =>
-                      void refresh(session.capture()).catch(() => {})
-                    }
+                    miniAppProvider={miniProvider}
+                    onGranted={refreshPhoneStatus}
                     onClose={returnToApp}
+                    onOpenBalance={openBalance}
+                    onOpenAssistants={() => returnToWorkspace("Помощники")}
                   />
                 ) : favoritesOpen ? (
                   <MessageFavoritesPanel
@@ -2363,6 +2409,7 @@ export default function CityGoHome({
                 miniAppNavigation={
                   miniApp
                     ? {
+                        provider: miniApp.provider,
                         registerBack: registerWorkspaceBack,
                         onMessenger: () => {
                           requestWorkspaceTab("Профиль");
@@ -2378,6 +2425,7 @@ export default function CityGoHome({
                     : undefined
                 }
                 workspaceRequest={workspaceRequest}
+                profileRevision={profileRevision}
                 onWorkspaceRequestHandled={(sequence) =>
                   setWorkspaceRequest((request) =>
                     request?.sequence === sequence ? null : request,

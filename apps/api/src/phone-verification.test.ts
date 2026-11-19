@@ -260,6 +260,124 @@ test("HTTP email + phone OTP creates exactly one gift; replay is the same receip
   assert.equal(f.sent.length, 1);
 });
 
+test("Telegram uses the shared phone ledger, while MAX never admits or confirms a code", async (t) => {
+  const f = await fixture(t, { prostoSms: true });
+  const session = async (provider: "max" | "telegram") => {
+    const token = randomUUID();
+    await f.db.query(
+      "insert into messenger_accounts(provider,subject,user_id) values($1,12345,$2)",
+      [provider, f.user.id],
+    );
+    await f.db.query(
+      "insert into sessions(token_hash,user_id,expires_at,messenger_provider) values($1,$2,now()+interval '1 day',$3)",
+      [tokenHash(token), f.user.id, provider],
+    );
+    return { ...headers, authorization: "Bearer " + token };
+  };
+  const telegram = await session("telegram");
+  const max = await session("max");
+  const standardPath = "/v1/phone-verification";
+  const telegramPath = "/v1/mini-apps/telegram/phone-verification";
+  const maxPath = "/v1/mini-apps/max/phone-verification";
+  const payload = { phone, expectedDeliveryProvider: "prosto_sms" };
+  for (const [path, auth] of [
+    [maxPath, f.auth],
+    [maxPath, telegram],
+    [standardPath, max],
+    [telegramPath, max],
+    [maxPath, max],
+  ] as const) {
+    const policy = await f.app.inject({
+      url: `${path}/policy`,
+      headers: auth,
+    });
+    assert.equal(
+      phoneVerificationPolicySchema.parse(policy.json()).phoneVerification,
+      "disabled",
+    );
+    for (const action of ["start", "resend", "confirm"]) {
+      const rejected = await f.app.inject({
+        method: "POST",
+        url: `${path}/${action}`,
+        headers: auth,
+        payload,
+      });
+      assert.equal(rejected.statusCode, 403);
+    }
+  }
+  assert.equal(f.sent.length, 0);
+  assert.deepEqual(await f.money(), { entries: 0, claims: 0 });
+  const start = async () => {
+    const response = await f.app.inject({
+      method: "POST",
+      url: `${telegramPath}/start`,
+      headers: telegram,
+      payload,
+    });
+    assert.equal(response.statusCode, 200);
+    return phoneVerificationChallengeSchema.parse(response.json());
+  };
+  const challenge = await start();
+  assert.equal(f.sent.length, 1);
+  const code = f.sent[0]!.code;
+  const input = {
+    challengeId: challenge.challengeId,
+    proof: challenge.proof,
+    phone,
+    code,
+  };
+  const wrong = await f.app.inject({
+    method: "POST",
+    url: `${telegramPath}/confirm`,
+    headers: telegram,
+    payload: { ...input, code: code === "000000" ? "111111" : "000000" },
+  });
+  assert.equal(wrong.statusCode, 400);
+  assert.deepEqual(await f.money(), { entries: 0, claims: 0 });
+  await f.db.query(
+    "update phone_verification_challenges set expires_at=created_at+interval '1 microsecond' where id=$1",
+    [challenge.challengeId],
+  );
+  const expired = await f.app.inject({
+    method: "POST",
+    url: `${telegramPath}/confirm`,
+    headers: telegram,
+    payload: input,
+  });
+  assert.equal(expired.statusCode, 400);
+  assert.deepEqual(await f.money(), { entries: 0, claims: 0 });
+  await f.db.query(
+    "update phone_verification_sends set created_at=created_at-interval '61 seconds'",
+  );
+  const renewed = await start();
+  // Discard the response body to simulate a lost confirmation receipt.
+  const confirmed = await f.app.inject({
+    method: "POST",
+    url: `${telegramPath}/confirm`,
+    headers: telegram,
+    payload: {
+      challengeId: renewed.challengeId,
+      proof: renewed.proof,
+      phone,
+      code: f.sent[1]!.code,
+    },
+  });
+  assert.equal(confirmed.statusCode, 200);
+  for (const auth of [f.auth, telegram, max]) {
+    const profile = await f.app.inject({
+      url: "/v1/account/profile",
+      headers: auth,
+    });
+    const own = accountProfileSchema.parse(profile.json());
+    assert.equal(own.userId, f.user.id);
+    assert.equal(own.phoneVerified, true);
+    assert.equal(own.giftStatus, "claimed");
+  }
+  assert.equal((await f.post("start", { phone })).statusCode, 409);
+  assert.equal(f.sent.length, 2);
+  assert.deepEqual(await f.money(), { entries: 1, claims: 1 });
+});
+
 test("saved customer phones are disclosed only to a current super-admin session, never a user or ordinary admin", async (t) => {
   const f = await fixture(t, { prostoSms: true });
   const start = await f.post("start", { phone });
