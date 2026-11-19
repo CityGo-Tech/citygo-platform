@@ -1,0 +1,31 @@
+.panel:global(.cg-card),
+.panel form,
+.list,
+.list li {
+  display: grid;
+  gap: var(--cg-space-compact);
+  min-width: 0;
+}
+
+.panel:global(.cg-card) {
+  padding: var(--cg-space-md);
+  overflow-wrap: anywhere;
+}
+
+.panel h2,
+.panel h3,
+.panel p {
+  margin: 0;
+}
+
+.list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.list li {
+  padding: var(--cg-space-compact);
+  border: 1px solid var(--cg-color-border);
+  border-radius: var(--cg-radius-control);
+}

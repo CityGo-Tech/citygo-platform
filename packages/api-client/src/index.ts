@@ -67,6 +67,8 @@ import {
   aiModeSelectionSchema,
   createTopupSchema,
   topupOrderSchema,
+  maxTopupListSchema,
+  maxTopupOrderSchema,
   aiControlResponseSchema,
   aiRoutingResponseSchema,
   apiErrorResponseSchema,
@@ -336,12 +338,15 @@ export function createClient(
       op.finish();
     }
   }
-  async function paymentRequest(
+  async function paymentRequest<
+    T extends { orderId: string; amountKopeks: number },
+  >(
+    schema: ResponseSchema<T>,
     path: string,
     expected: { orderId?: string; amountKopeks?: number },
     body?: unknown,
   ) {
-    const order = await request(path, topupOrderSchema, body);
+    const order = await request(path, schema, body);
     if (
       (expected.orderId !== undefined &&
         order.orderId.toLowerCase() !== expected.orderId.toLowerCase()) ||
@@ -1454,17 +1459,23 @@ export function createClient(
     createTopup: (input: CreateTopupInput) => {
       const parsed = createTopupSchema.parse(input);
       return paymentRequest(
+        topupOrderSchema,
         "/v1/payments/topups",
         { amountKopeks: parsed.amountKopeks },
         parsed,
       );
     },
     topupOrder: (orderId: string) =>
-      paymentRequest("/v1/payments/topups/" + encodeURIComponent(orderId), {
-        orderId,
-      }),
+      paymentRequest(
+        topupOrderSchema,
+        "/v1/payments/topups/" + encodeURIComponent(orderId),
+        {
+          orderId,
+        },
+      ),
     topupAttempt: (requestId: string) =>
       paymentRequest(
+        topupOrderSchema,
         "/v1/payments/topup-attempts/" +
           encodeURIComponent(
             createTopupSchema.shape.requestId.parse(requestId),
@@ -1473,7 +1484,43 @@ export function createClient(
       ),
     reconcileTopup: (orderId: string) =>
       paymentRequest(
+        topupOrderSchema,
         "/v1/payments/topups/" + encodeURIComponent(orderId) + "/reconcile",
+        { orderId },
+        {},
+      ),
+    listMaxTopups: () =>
+      request("/v1/mini-apps/max/payments/topups", maxTopupListSchema),
+    createMaxTopup: (input: CreateTopupInput) => {
+      const parsed = createTopupSchema.parse(input);
+      return paymentRequest(
+        maxTopupOrderSchema,
+        "/v1/mini-apps/max/payments/topups",
+        { amountKopeks: parsed.amountKopeks },
+        parsed,
+      );
+    },
+    maxTopupOrder: (orderId: string) =>
+      paymentRequest(
+        maxTopupOrderSchema,
+        "/v1/mini-apps/max/payments/topups/" + encodeURIComponent(orderId),
+        { orderId },
+      ),
+    maxTopupAttempt: (requestId: string) =>
+      paymentRequest(
+        maxTopupOrderSchema,
+        "/v1/mini-apps/max/payments/topup-attempts/" +
+          encodeURIComponent(
+            createTopupSchema.shape.requestId.parse(requestId),
+          ),
+        {},
+      ),
+    reconcileMaxTopup: (orderId: string) =>
+      paymentRequest(
+        maxTopupOrderSchema,
+        "/v1/mini-apps/max/payments/topups/" +
+          encodeURIComponent(orderId) +
+          "/reconcile",
         { orderId },
         {},
       ),

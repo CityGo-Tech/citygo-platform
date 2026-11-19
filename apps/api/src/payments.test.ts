@@ -13,16 +13,18 @@ import { readConfig } from "@citygo/config";
 import { RouterAIProvider } from "@citygo/llm";
 import {
   topupOrderSchema,
+  YOOKASSA_RECEIPT_PROFILE,
   type AiCredit,
   type TopupOrder,
 } from "@citygo/contracts";
 import { buildApp } from "./app.js";
+import { tokenHash } from "./auth.js";
 import { YooKassaTestClient } from "./yookassa.js";
 
 const origin = "https://pilot.example.test";
 const shop = "123456";
 const key = "test_SYNTHETIC-NOT-A-REAL-KEY";
-function settings() {
+function settings(fiscal = false) {
   return readConfig({
     NODE_ENV: "test",
     LLM_PROVIDER: "disabled",
@@ -31,9 +33,10 @@ function settings() {
     YOOKASSA_SHOP_ID: shop,
     YOOKASSA_SECRET_KEY: key,
     WEB_ORIGIN: origin,
+    ...(fiscal ? { YOOKASSA_FISCAL_PROFILE: YOOKASSA_RECEIPT_PROFILE } : {}),
   });
 }
-async function fixture(enabled = true) {
+async function fixture(enabled = true, syntheticMaxPayments = false) {
   const actual = await connectDatabase("pglite://:memory:");
   await migrate(actual);
   const state = {
@@ -161,7 +164,7 @@ async function fixture(enabled = true) {
     },
   });
   const config = enabled
-    ? settings()
+    ? settings(syntheticMaxPayments)
     : readConfig({
         NODE_ENV: "test",
         LLM_PROVIDER: "disabled",
@@ -173,6 +176,19 @@ async function fixture(enabled = true) {
     config,
     testing: true,
     ...(enabled ? { paymentClient: client } : {}),
+    ...(syntheticMaxPayments
+      ? {
+          syntheticMaxPayments,
+          refundClient: {
+            createRefund: async () => {
+              throw new Error("Unexpected synthetic refund create");
+            },
+            getRefund: async () => {
+              throw new Error("Unexpected synthetic refund lookup");
+            },
+          },
+        }
+      : {}),
   });
   const call = (
     method: "GET" | "POST",
@@ -236,6 +252,129 @@ async function fixture(enabled = true) {
 function order(body: string): TopupOrder {
   return topupOrderSchema.parse(JSON.parse(body));
 }
+
+test("isolated MAX checkout shares durable topups, scopes actors and verifies settlement/receipt through GET", async (t) => {
+  const f = await fixture(true, true);
+  t.after(f.close);
+  async function messengerSession(
+    userId: string,
+    provider: "max" | "telegram",
+    subject: number,
+  ) {
+    const token = randomUUID();
+    await f.actual.query(
+      "insert into messenger_accounts(provider,subject,user_id) values($1,$2,$3)",
+      [provider, subject, userId],
+    );
+    await f.actual.query(
+      "insert into sessions(token_hash,user_id,expires_at,messenger_provider) values($1,$2,now()+interval '1 day',$3)",
+      [tokenHash(token), userId, provider],
+    );
+    return token;
+  }
+  const max = await messengerSession(f.user.id, "max", 14101);
+  const telegram = await messengerSession(f.user.id, "telegram", 14102);
+  const other = await messengerSession(f.other.id, "max", 14103);
+  const prefix = "/v1/mini-apps/max/payments";
+  const notifications = prefix + "/test-notifications";
+  const topups = prefix + "/topups";
+  const localOrigin = "http://localhost:3000";
+  const input = {
+    requestId: randomUUID(),
+    amountKopeks: 10_001,
+    receiptEmail: "max-fixture@synthetic-citygo-mail.ru",
+  };
+  const create = (token: string, from = localOrigin) =>
+    f.call("POST", topups, token, input, from);
+  for (const token of [max, telegram])
+    assert.equal(
+      (await f.call("POST", "/v1/payments/topups", token, input)).statusCode,
+      403,
+    );
+  for (const token of [f.user.token, telegram])
+    assert.equal((await create(token)).statusCode, 403);
+  assert.equal((await create(max, "http://localhost:3001")).statusCode, 403);
+  assert.deepEqual((await f.call("GET", topups, max)).json(), { orders: [] });
+  assert.equal(f.state.posts, 0);
+  f.state.failCreate = true;
+  assert.equal((await create(max)).statusCode, 503);
+  const attempt = `${prefix}/topup-attempts/${input.requestId}`;
+  const pending = order((await f.call("GET", attempt, max)).body);
+  assert.equal(pending.status, "creating");
+  assert.equal((await f.call("GET", attempt, other)).statusCode, 404);
+  const createdResponse = await create(max);
+  assert.equal(createdResponse.statusCode, 200, createdResponse.body);
+  const created = order(createdResponse.body);
+  assert.equal(created.orderId, pending.orderId);
+  assert.equal(created.status, "pending");
+  assert.equal(created.test, true);
+  assert.deepEqual(f.posted[0], f.posted[1]);
+  assert.equal(
+    (f.posted[1]!.body as { confirmation: { return_url: string } }).confirmation
+      .return_url,
+    origin + "/",
+  );
+  assert.deepEqual((await f.call("GET", topups, other)).json(), { orders: [] });
+  const details = `${topups}/${created.orderId}`;
+  assert.equal((await f.call("GET", details, other)).statusCode, 404);
+  assert.deepEqual((await f.call("GET", topups, max)).json(), {
+    orders: [created],
+  });
+  assert.equal(f.state.gets, 0);
+  const providerId = f.payments.get(created.orderId)!.id;
+  const hint = {
+    type: "notification",
+    event: "payment.succeeded",
+    object: {
+      id: providerId,
+      paid: true,
+      amount: { value: "9999.99", currency: "RUB" },
+    },
+  };
+  assert.equal(
+    (await f.call("POST", notifications, max, hint)).statusCode,
+    403,
+  );
+  for (let index = 0; index < 2; index++) {
+    const accepted = await f.app.inject({
+      method: "POST",
+      url: notifications,
+      payload: hint,
+    });
+    assert.deepEqual(accepted.json(), { accepted: true });
+  }
+  assert.equal(f.state.gets, 0);
+  assert.equal((await f.balance()).availableMicros, 0);
+  assert.equal(
+    (await f.call("POST", notifications + "/process", max, {})).statusCode,
+    403,
+  );
+  await f.actual.query("update users set role='admin' where id=$1", [
+    f.other.id,
+  ]);
+  f.state.getStatus = "succeeded";
+  f.state.patch = { receipt_registration: "succeeded" };
+  assert.deepEqual(
+    (
+      await f.call("POST", notifications + "/process", f.other.token, {})
+    ).json(),
+    { processed: 1, retained: 0 },
+  );
+  assert.equal((await f.balance()).availableMicros, 100_010_000);
+  const reconciled = (
+    await f.call("POST", details + "/reconcile", max, {})
+  ).json();
+  assert.equal(reconciled.receiptRegistration, "succeeded");
+  assert.equal(reconciled.status, "succeeded");
+  assert.equal(reconciled.credited, true);
+  assert.equal((await f.balance()).availableMicros, 100_010_000);
+  assert.equal(f.state.gets, 2);
+  assert.equal(
+    (await f.actual.query("select id from payment_notification_inbox")).rows
+      .length,
+    1,
+  );
+});
 
 test("provider create refusal logs only safe diagnostics and preserves generic503 without retry or credit", async (t) => {
   const f = await fixture();

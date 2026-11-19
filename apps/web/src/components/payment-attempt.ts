@@ -1,3 +1,13 @@
+import type { TopupOrder } from "@citygo/contracts";
+
+export const topupStatusLabels: Record<TopupOrder["status"], string> = {
+  creating: "Платёж создаётся…",
+  pending: "Ожидаем оплату.",
+  succeeded: "Оплата подтверждена.",
+  canceled: "Платёж отменён.",
+  review_required: "Нужна проверка платежа. Не оплачивайте повторно.",
+};
+
 export type PaymentAttempt = {
   requestId: string;
   amountKopeks: number;

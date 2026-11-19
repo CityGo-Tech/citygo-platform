@@ -262,6 +262,9 @@ export function MiniAppEntry({ host }: { host: MiniAppHost }) {
           <div className={styles.accountContent}>
             <CityGoHome
               miniApp={accountAccess}
+              openMaxPayment={
+                host.provider === "max" ? bridge?.openExternal : undefined
+              }
               registerMiniAppBack={registerMiniAppBack}
               rememberHousingOwner={rememberHousingOwner}
             />
