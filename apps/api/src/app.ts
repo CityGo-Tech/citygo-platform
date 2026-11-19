@@ -167,6 +167,7 @@ import { registerAccountProfile } from "./account-profile.js";
 import { registerAdminPhoneContacts } from "./admin-phone-contacts.js";
 import { registerMiniAppLaunch } from "./mini-app-launch/http.js";
 import { registerMessengerAccounts } from "./mini-app-launch/account.js";
+import { registerMiniAppFunnel } from "./mini-app-funnel.js";
 import {
   registerTelegramStarsTest,
   TELEGRAM_STARS_TEST_WEBHOOK_PATH,
@@ -945,6 +946,7 @@ export async function buildApp(options: {
       authenticate,
       limits: options.syntheticPermissions,
     });
+  const funnel = registerMiniAppFunnel(app, options.db);
   const topups = registerPaymentTopups(app, {
     db: options.db,
     config,
@@ -957,6 +959,9 @@ export async function buildApp(options: {
       return account;
     },
     authenticateReconciliation: (request) => authenticate(request, false, true),
+    onMaxTestPayment: syntheticMaxPayments
+      ? () => funnel("max", "payment_confirmed")
+      : undefined,
     authenticateMaxTest: syntheticMaxPayments
       ? async (request) => {
           const { account, messengerProvider } =
@@ -1095,10 +1100,13 @@ export async function buildApp(options: {
     setSession: (reply, token) => {
       reply.setCookie(sessionName, token, cookieOptions);
     },
+    onSignIn: (provider, request) =>
+      funnel(provider, "sign_in_confirmed", request),
   });
   if (options.telegramStarsTest) {
     registerTelegramStarsTest(app, {
       ...options.telegramStarsTest,
+      onPaid: () => funnel("telegram", "payment_confirmed"),
       actor: async (request) => {
         const { account, messengerProvider } =
           await authenticateSession(request);
@@ -1474,7 +1482,15 @@ export async function buildApp(options: {
   });
   registerPersonalPlanApi(app, { db: options.db, authenticate });
   registerPlanChecklistApi(app, { db: options.db, authenticate });
-  registerHousingWorkspaceApi(app, { db: options.db, authenticate });
+  registerHousingWorkspaceApi(app, {
+    db: options.db,
+    authenticate: async (request) => {
+      const { account, messengerProvider } = await authenticateSession(request);
+      return { id: account.id, messengerProvider };
+    },
+    onSaved: (request, provider) => () =>
+      funnel(provider ?? null, "step_saved", request),
+  });
   registerBalanceHistoryApi(app, {
     db: options.db,
     context: async (request) => {
@@ -1664,7 +1680,7 @@ export async function buildApp(options: {
       // cannot enable dispatch simply by addressing the regular chat URL.
       miniAppChatForbidden();
     }
-    return { account, mini };
+    return { account, mini, messengerProvider };
   }
   function registerChatSend(
     route: RouteShorthandOptions,
@@ -1683,7 +1699,11 @@ export async function buildApp(options: {
       config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
     },
     async (request, reply) => {
-      const { account: user, mini } = await authenticateChat(request);
+      const {
+        account: user,
+        mini,
+        messengerProvider,
+      } = await authenticateChat(request);
       const threadId = questParams.parse(request.params).id;
       const input = chatInputSchema.parse(request.body);
       if (
@@ -2143,6 +2163,8 @@ export async function buildApp(options: {
             );
           });
         }
+        if (!routing.human)
+          await funnel(messengerProvider, "answer_succeeded", request);
         send({ type: "done", messageId });
       } catch (error) {
         if (error instanceof RouterAIInsufficientFundsError) {

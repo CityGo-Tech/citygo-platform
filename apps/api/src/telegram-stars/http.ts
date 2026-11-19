@@ -76,6 +76,7 @@ export function registerTelegramStarsTest(
     actor: (request: FastifyRequest) => Promise<TelegramStarsActor>;
     webhookSecret: string;
     refundStarPayment: RefundStarPayment;
+    onPaid?: () => Promise<void>;
   },
 ) {
   if (!webhookToken.test(options.webhookSecret))
@@ -160,11 +161,12 @@ export function registerTelegramStarsTest(
             409,
             "Платёж не соответствует тестовому заказу.",
           );
-        store.applyPayment(
+        const paid = store.applyPayment(
           message.chat.id,
           payment,
           !!message.refunded_payment,
         );
+        if (paid) await options.onPaid?.();
       } else if (
         privateChat &&
         fromBuyer &&

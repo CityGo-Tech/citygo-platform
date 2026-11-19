@@ -75,6 +75,8 @@ async function openProfile(
     const request = route.request();
     const url = new URL(request.url());
     const { pathname } = url;
+    if (pathname === "/api/v1/mini-apps/" + host?.provider + "/funnel")
+      return route.fulfill({ status: 204 });
     if (pathname.startsWith("/api/v1/analytics/")) return route.fallback();
     if (!state.authenticated) return route.fallback();
     const claimed = account.entries.some((entry) => entry.kind === "gift");

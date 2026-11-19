@@ -23,6 +23,45 @@ const userId = 900012;
 const authSubject = "upgrade12-disposable-fixture";
 const holdId = "00000000-0000-4000-8000-000000120004";
 
+// Compare the v12 values independently of columns intentionally added later.
+// Their expected defaults must be checked separately on the upgraded rows.
+const preserved = [
+  ["users", "id", "-'username'-'role'-'must_change_password'"],
+  ["user_credentials", "user_id"],
+  ["sessions", "user_id", "-'messenger_provider'"],
+  ["relocation_profiles", "user_id"],
+  ["questionnaire_answers", "user_id"],
+  ["relocation_plans", "user_id"],
+  ["user_quests", "user_id"],
+  ["xp_events", "user_id"],
+  ["agent_threads", "user_id", "-'conversation_agent_key'"],
+  ["messages", "thread_id", "", "select id from agent_threads"],
+  ["r1_housing_briefs", "user_id"],
+  ["r1_housing_commands", "user_id"],
+  [
+    "r1_housing_brief_revisions",
+    "brief_id",
+    "",
+    "select id from r1_housing_briefs",
+  ],
+  ["ai_consents", "user_id"],
+  ["ai_credit_accounts", "user_id", "-'billing_review_required'"],
+  ["ai_credit_entries", "user_id"],
+];
+export const upgrade12PreservedSnapshotSql = `select jsonb_build_object(${preserved
+  .map(([table, field, excluded = "", ownerQuery]) => {
+    const projection = `to_jsonb(t)${excluded}`;
+    const owner = ownerQuery
+      ? `in (${ownerQuery} where user_id=${userId})`
+      : `=${userId}`;
+    return `'${table}',(select jsonb_agg(${projection} order by (${projection})::text)
+              from ${table} t where ${field} ${owner})`;
+  })
+  .join(",")})::text as snapshot`;
+
+export const upgrade12LegacySessionOriginSql = `select bool_and(messenger_provider is null) as unscoped
+  from sessions where user_id=${userId}`;
+
 export async function releaseUpgrade12Smoke({
   project,
   directory,
@@ -509,39 +548,7 @@ export async function releaseUpgrade12Smoke({
     insert into ai_credit_entries(user_id,operation_id,kind,amount_micros)
       values(${userId},'${holdId}','hold',75000000);
     commit`);
-  const preserved = [
-    ["users", "id", "-'username'-'role'-'must_change_password'"],
-    ["user_credentials", "user_id"],
-    ["sessions", "user_id"],
-    ["relocation_profiles", "user_id"],
-    ["questionnaire_answers", "user_id"],
-    ["relocation_plans", "user_id"],
-    ["user_quests", "user_id"],
-    ["xp_events", "user_id"],
-    ["agent_threads", "user_id", "-'conversation_agent_key'"],
-    ["messages", "thread_id", "", "select id from agent_threads"],
-    ["r1_housing_briefs", "user_id"],
-    ["r1_housing_commands", "user_id"],
-    [
-      "r1_housing_brief_revisions",
-      "brief_id",
-      "",
-      "select id from r1_housing_briefs",
-    ],
-    ["ai_consents", "user_id"],
-    ["ai_credit_accounts", "user_id", "-'billing_review_required'"],
-    ["ai_credit_entries", "user_id"],
-  ];
-  const snapshot = () =>
-    psql(
-      `select jsonb_build_object(${preserved
-        .map(
-          ([table, field, excluded = "", ownerQuery]) =>
-            `'${table}',(select jsonb_agg(to_jsonb(t)${excluded} order by to_jsonb(t)::text)
-              from ${table} t where ${field} ${ownerQuery ? `in (${ownerQuery} where user_id=${userId})` : `=${userId}`})`,
-        )
-        .join(",")})::text`,
-    );
+  const snapshot = () => psql(upgrade12PreservedSnapshotSql);
   const before = snapshot();
   const aclSnapshot = () =>
     psql(`select jsonb_build_object(
@@ -653,6 +660,11 @@ export async function releaseUpgrade12Smoke({
     snapshot(),
     before,
     "Preserve actual 12-era data, IDs and history",
+  );
+  assert.equal(
+    psql(upgrade12LegacySessionOriginSql),
+    "t",
+    "Existing sessions remain ordinary CityGo sessions after the upgrade",
   );
   assert.equal(
     psql(

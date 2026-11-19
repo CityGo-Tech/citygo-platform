@@ -84,8 +84,13 @@ export function createTelegramStarsTestStore(
     charges.set(chargeId, entry);
     // Telegram may deliver the refund before the success message. A terminal
     // refund always wins. A late success with this charge cannot reissue value.
-    if (refunded) entry.order.status = "refunded";
-    else if (entry.order.status === "checkout") entry.order.status = "paid";
+    if (refunded) {
+      entry.order.status = "refunded";
+      return false;
+    }
+    if (entry.order.status !== "checkout") return false;
+    entry.order.status = "paid";
+    return true;
   }
 
   return {

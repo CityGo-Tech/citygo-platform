@@ -43,6 +43,10 @@ export function registerMessengerAccounts(
     actor: (request: FastifyRequest) => Promise<Actor>;
     hasSession: (request: FastifyRequest) => Promise<boolean>;
     setSession: (reply: FastifyReply, token: string) => void;
+    onSignIn?: (
+      provider: MiniAppLaunchProvider,
+      request: FastifyRequest,
+    ) => Promise<void>;
   },
 ) {
   const accounts = new AccountAccess(options.db);
@@ -115,6 +119,7 @@ export function registerMessengerAccounts(
         newSessionTokenHash: tokenHash(session),
       });
       options.setSession(reply, session);
+      await options.onSignIn?.(provider, request);
       return { user, purpose: launch.purpose };
     });
     app.post(prefix + "/link/prepare", authRoute, async (request) => {
