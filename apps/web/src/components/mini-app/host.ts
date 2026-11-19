@@ -1,6 +1,11 @@
 import type { LandingTask } from "../landing/landing-task";
 import type { MessengerProvider } from "@citygo/contracts";
 
+export type OpenMiniAppInvoice = (
+  url: string,
+  onClosed: (status: unknown) => void,
+) => void;
+
 export type MiniAppBridge = {
   initialTask?: string;
   initData?: string;
@@ -8,6 +13,7 @@ export type MiniAppBridge = {
   onBack?: (listener: () => void) => () => void;
   close?: () => void;
   ready?: () => void;
+  openInvoice?: OpenMiniAppInvoice;
 };
 
 export type MiniAppHost = {

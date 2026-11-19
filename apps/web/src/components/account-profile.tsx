@@ -53,6 +53,7 @@ export function AccountProfile({
     onMessenger: () => void;
     onLogout: (trigger: HTMLButtonElement) => void;
     onReceipts?: () => void;
+    onTelegramStars?: () => void;
   };
 }) {
   const [snapshot, setSnapshot] = useState<{
@@ -361,6 +362,15 @@ export function AccountProfile({
             <strong>Мессенджеры</strong>
           </span>
           <span aria-hidden="true">›</span>
+        </Button>
+      )}
+      {miniApp?.onTelegramStars && (
+        <Button
+          variant="secondary"
+          disabled={disabled}
+          onClick={miniApp.onTelegramStars}
+        >
+          Тестовая оплата Stars
         </Button>
       )}
       <section

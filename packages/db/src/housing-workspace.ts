@@ -84,10 +84,14 @@ export class HousingWorkspaceStore {
     return this.read(this.db, personalPlanIdSchema.parse(userId));
   }
 
-  async savePlan(userId: string, raw: SaveHousingPlan) {
+  async savePlan(
+    userId: string,
+    raw: SaveHousingPlan,
+    onSaved?: () => Promise<void>,
+  ) {
     personalPlanIdSchema.parse(userId);
     const input = saveHousingPlanSchema.parse(raw);
-    return this.db.transaction(async (tx) => {
+    const { workspace, saved } = await this.db.transaction(async (tx) => {
       await this.lockOwner(tx, userId);
       const previous = (
         await tx.query<{ snapshot: Plan }>(
@@ -106,7 +110,7 @@ export class HousingWorkspaceStore {
             commute === previous.criteria.commute &&
             budgetRub === previous.criteria.budgetRub,
         );
-        return current;
+        return { workspace: current, saved: false };
       }
       checkRevision(current.plan?.revision ?? 0, input.expectedRevision);
       if (current.plan && current.plan.threadId !== input.threadId)
@@ -138,14 +142,20 @@ export class HousingWorkspaceStore {
           input.requestId,
         ],
       );
-      return this.read(tx, userId);
+      return { workspace: await this.read(tx, userId), saved: true };
     });
+    if (saved) await onSaved?.();
+    return workspace;
   }
 
-  async saveChecklist(userId: string, raw: SaveHousingChecklist) {
+  async saveChecklist(
+    userId: string,
+    raw: SaveHousingChecklist,
+    onSaved?: () => Promise<void>,
+  ) {
     personalPlanIdSchema.parse(userId);
     const input = saveHousingChecklistSchema.parse(raw);
-    return this.db.transaction(async (tx) => {
+    const { workspace, saved } = await this.db.transaction(async (tx) => {
       await this.lockOwner(tx, userId);
       const previous = (
         await tx.query<{ snapshot: Checklist }>(
@@ -164,7 +174,7 @@ export class HousingWorkspaceStore {
               (item, index) => item === previous.selected[index],
             ),
         );
-        return current;
+        return { workspace: current, saved: false };
       }
       checkRevision(current.checklist?.revision ?? 0, input.expectedRevision);
       if (!current.plan)
@@ -188,7 +198,9 @@ export class HousingWorkspaceStore {
           input.requestId,
         ],
       );
-      return this.read(tx, userId);
+      return { workspace: await this.read(tx, userId), saved: true };
     });
+    if (saved) await onSaved?.();
+    return workspace;
   }
 }

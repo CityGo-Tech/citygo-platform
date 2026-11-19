@@ -76,8 +76,17 @@ for (const [hostIndex, host] of hosts.entries()) {
       }),
     );
     const sensitiveCalls: string[] = [];
+    const funnelSignals: unknown[] = [];
     page.on("request", (request) => {
       const url = new URL(request.url());
+      if (
+        request.method() === "POST" &&
+        url.pathname === `/api/v1/mini-apps/${host.provider}/funnel` &&
+        url.search === ""
+      ) {
+        funnelSignals.push(request.postDataJSON());
+        return;
+      }
       if (
         /(?:^|\.)mc\.yandex\./.test(url.hostname) ||
         /\/analytics\//.test(url.pathname) ||
@@ -193,6 +202,7 @@ for (const [hostIndex, host] of hosts.entries()) {
     expect(
       await page.evaluate(() => document.documentElement.scrollWidth),
     ).toBeLessThanOrEqual(320);
+    expect(funnelSignals).toEqual([{ event: "launch" }, { event: "launch" }]);
     expect(sensitiveCalls).toEqual([]);
   });
 }

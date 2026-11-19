@@ -100,6 +100,7 @@ export function registerPaymentTopups(
     authenticateCreate: PaymentAuthenticator;
     authenticateReconciliation?: PaymentAuthenticator;
     authenticateMaxTest?: PaymentAuthenticator;
+    onMaxTestPayment?: () => Promise<void>;
   },
 ) {
   // Even an injected live test transport gets the same trusted DB admission
@@ -362,15 +363,20 @@ export function registerPaymentTopups(
     observe?.payment?.(payment);
     observe?.receipt?.(payment.receiptRegistration);
     if (payment.status === "succeeded" && payment.paid === true) {
-      await ledger.topUpConfirmed(userId, order.id, {
-        providerPaymentId: payment.id,
-        paidKopeks: order.amountKopeks,
-        merchantId: order.merchantId,
-        test: order.test,
-        verifiedAt: payment.verifiedAt,
-        verification: "server_get_succeeded",
-        currency: "RUB",
-      });
+      await ledger.topUpConfirmed(
+        userId,
+        order.id,
+        {
+          providerPaymentId: payment.id,
+          paidKopeks: order.amountKopeks,
+          merchantId: order.merchantId,
+          test: order.test,
+          verifiedAt: payment.verifiedAt,
+          verification: "server_get_succeeded",
+          currency: "RUB",
+        },
+        order.test ? options.onMaxTestPayment : undefined,
+      );
     }
     const recorded = await orders.recordProvider(userId, order.id, {
       providerPaymentId: payment.id,

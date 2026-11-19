@@ -75,6 +75,12 @@ async function openProfile(
     const request = route.request();
     const url = new URL(request.url());
     const { pathname } = url;
+    if (pathname === "/api/v1/mini-apps/" + host?.provider + "/funnel") {
+      expect(request.method()).toBe("POST");
+      expect(url.search).toBe("");
+      expect(request.postDataJSON()).toEqual({ event: "launch" });
+      return route.fulfill({ status: 204 });
+    }
     if (pathname.startsWith("/api/v1/analytics/")) return route.fallback();
     if (!state.authenticated) return route.fallback();
     const claimed = account.entries.some((entry) => entry.kind === "gift");
@@ -368,6 +374,7 @@ test("Telegram checks a lost confirmation against the shared account used by Web
   expect(account.confirms).toEqual([{ phone, challengeId, proof, code }]);
   expect(account.unexpectedWrites).toEqual([]);
   expect(mutations).toEqual([
+    "/api/v1/mini-apps/telegram/funnel",
     "/api/v1/mini-apps/telegram/sign-in",
     "/api/v1/mini-apps/telegram/phone-verification/start",
     "/api/v1/mini-apps/telegram/phone-verification/confirm",
@@ -473,6 +480,9 @@ test("MAX shows the account status and a read-only balance while the gift is pen
     .click();
   await expect(walletTrigger).toBeFocused();
   expect(account.sends).toEqual([]);
-  expect(mutations).toEqual(["/api/v1/mini-apps/max/sign-in"]);
+  expect(mutations).toEqual([
+    "/api/v1/mini-apps/max/funnel",
+    "/api/v1/mini-apps/max/sign-in",
+  ]);
   expect(analytics).toEqual([]);
 });

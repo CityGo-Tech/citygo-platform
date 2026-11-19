@@ -219,16 +219,31 @@ test("confirmed top-up is 1:1, never implies bonus, and replays once", async (t)
   t.after(() => f.db.close());
   const operation = randomUUID(),
     payment = proof();
-  const first = await f.ledger.topUpConfirmed(f.user, operation, payment);
+  let confirmedEvents = 0;
+  const onNewTopup = async () => {
+    confirmedEvents++;
+  };
+  const first = await f.ledger.topUpConfirmed(
+    f.user,
+    operation,
+    payment,
+    onNewTopup,
+  );
   assert.equal(first.grantedMicros, 100 * RUB);
   assert.equal(first.bonusGranted, false);
   assert.equal(first.history[0]!.kind, "topup");
   assert.ok(aiCreditResponseSchema.safeParse(first).success);
-  await f.ledger.topUpConfirmed(f.user, operation, payment);
-  await f.ledger.topUpConfirmed(f.user, randomUUID(), {
-    ...payment,
-    verifiedAt: "2026-10-18T01:00:00.000Z",
-  });
+  await f.ledger.topUpConfirmed(f.user, operation, payment, onNewTopup);
+  await f.ledger.topUpConfirmed(
+    f.user,
+    randomUUID(),
+    {
+      ...payment,
+      verifiedAt: "2026-10-18T01:00:00.000Z",
+    },
+    onNewTopup,
+  );
+  assert.equal(confirmedEvents, 1);
   assert.equal((await f.ledger.status(f.user)).grantedMicros, 100 * RUB);
   assert.equal(
     (await f.db.query("select * from ai_credit_topups")).rows.length,

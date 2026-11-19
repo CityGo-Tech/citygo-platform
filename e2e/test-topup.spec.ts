@@ -280,7 +280,9 @@ test("ambiguous create retries the frozen email and key in memory; only explicit
   });
   await expect(retry).toBeEnabled();
   await expect(page.getByLabel("Сумма пополнения")).toBeDisabled();
+  const opened = page.waitForEvent("popup");
   await retry.click();
+  const popup = await opened;
   const checkout = page.getByRole("link", {
     name: "Открыть тестовую оплату",
     exact: true,
@@ -295,6 +297,8 @@ test("ambiguous create retries the frozen email and key in memory; only explicit
     "receipt-buyer@synthetic-citygo-mail.ru",
   );
   expect(state.reconciles).toBe(0);
+  await expect(popup).toHaveURL(order.confirmationUrl!);
+  await popup.close();
   await page.goto(`/?payment=succeeded&credited=true&orderId=${order.orderId}`);
   await openBalance(page);
   await expect(

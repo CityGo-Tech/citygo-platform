@@ -167,6 +167,11 @@ import { registerAccountProfile } from "./account-profile.js";
 import { registerAdminPhoneContacts } from "./admin-phone-contacts.js";
 import { registerMiniAppLaunch } from "./mini-app-launch/http.js";
 import { registerMessengerAccounts } from "./mini-app-launch/account.js";
+import { registerMiniAppFunnel } from "./mini-app-funnel.js";
+import {
+  registerTelegramStarsTest,
+  TELEGRAM_STARS_TEST_WEBHOOK_PATH,
+} from "./telegram-stars/http.js";
 import {
   registerCustomerObservability,
   serializeRequestLog,
@@ -191,6 +196,10 @@ export async function buildApp(options: {
   modeProviders?: ModeProviders;
   syntheticMiniAppChat?: boolean;
   syntheticMaxPayments?: boolean;
+  telegramStarsTest?: Omit<
+    Parameters<typeof registerTelegramStarsTest>[1],
+    "actor" | "onPaid"
+  >;
 }) {
   const drain = options.drain ?? new ApiDrain();
   const config = options.config ?? readConfig();
@@ -205,6 +214,14 @@ export async function buildApp(options: {
   )
     throw new Error("MAX test payments require the isolated payment harness");
   const syntheticPaymentBrowserOrigin = "http://localhost:3000";
+  if (
+    options.telegramStarsTest &&
+    (config.NODE_ENV !== "test" || options.testing !== true)
+  ) {
+    throw new Error(
+      "Telegram Stars fixtures require the isolated test harness",
+    );
+  }
   const postpayMode = config.AI_CUSTOMER_BILLING_MODE === "postpay_actual_v1";
   if (
     options.postpayReconcileScheduler &&
@@ -650,15 +667,16 @@ export async function buildApp(options: {
       .header("X-Content-Type-Options", "nosniff")
       .header("Cache-Control", "no-store");
     if (["GET", "HEAD", "OPTIONS"].includes(request.method)) return;
-    // Exact machine notification routes only enqueue hints. They do not
-    // grant browser authority or attest a payment.
+    // Exact machine-only webhook routes use their own payment verification.
     if (
       request.method === "POST" &&
       ((config.YOOKASSA_MODE === "live" &&
         paymentClient &&
         request.url === PAYMENT_NOTIFICATION_PATH) ||
         (syntheticMaxPayments &&
-          request.url === MAX_TEST_PAYMENT_NOTIFICATION_PATH)) &&
+          request.url === MAX_TEST_PAYMENT_NOTIFICATION_PATH) ||
+        (options.telegramStarsTest &&
+          request.url === TELEGRAM_STARS_TEST_WEBHOOK_PATH)) &&
       request.headers.origin === undefined &&
       request.headers.cookie === undefined &&
       request.headers.authorization === undefined
@@ -928,6 +946,7 @@ export async function buildApp(options: {
       authenticate,
       limits: options.syntheticPermissions,
     });
+  const funnel = registerMiniAppFunnel(app, options.db);
   const topups = registerPaymentTopups(app, {
     db: options.db,
     config,
@@ -935,11 +954,14 @@ export async function buildApp(options: {
     authenticate,
     authenticateCreate: async (request) => {
       const { account, messengerProvider } = await authenticateSession(request);
-      if (messengerProvider)
+      if (messengerProvider || syntheticMaxPayments)
         throw new DomainError(403, "Пополнение через эту сессию недоступно.");
       return account;
     },
     authenticateReconciliation: (request) => authenticate(request, false, true),
+    onMaxTestPayment: syntheticMaxPayments
+      ? () => funnel("max", "payment_confirmed")
+      : undefined,
     authenticateMaxTest: syntheticMaxPayments
       ? async (request) => {
           const { account, messengerProvider } =
@@ -1078,7 +1100,38 @@ export async function buildApp(options: {
     setSession: (reply, token) => {
       reply.setCookie(sessionName, token, cookieOptions);
     },
+    onSignIn: (provider, request) =>
+      funnel(provider, "sign_in_confirmed", request),
   });
+  if (options.telegramStarsTest) {
+    registerTelegramStarsTest(app, {
+      ...options.telegramStarsTest,
+      onPaid: () => funnel("telegram", "payment_confirmed"),
+      actor: async (request) => {
+        const { account, messengerProvider } =
+          await authenticateSession(request);
+        if (messengerProvider !== "telegram") {
+          throw new DomainError(
+            403,
+            "Войдите через Telegram для тестовой оплаты",
+          );
+        }
+        const token =
+          bearer(request.headers.authorization) ?? request.cookies[sessionName];
+        const { rows } = await options.db.query<{ subject: string }>(
+          `select m.subject::text from sessions s
+           join messenger_accounts m on m.user_id=s.user_id and m.provider=s.messenger_provider
+           where s.token_hash=$1 and s.user_id=$2 and s.messenger_provider='telegram'
+             and s.expires_at>statement_timestamp()`,
+          [tokenHash(token!), account.id],
+        );
+        const telegramUserId = rows[0]?.subject;
+        if (!telegramUserId)
+          throw new DomainError(401, "Войдите снова через Telegram");
+        return { userId: account.id, telegramUserId };
+      },
+    });
+  }
   registerEmailRegistration(app, {
     db: options.db,
     policyResolver: registrationAiPolicy,
@@ -1429,7 +1482,15 @@ export async function buildApp(options: {
   });
   registerPersonalPlanApi(app, { db: options.db, authenticate });
   registerPlanChecklistApi(app, { db: options.db, authenticate });
-  registerHousingWorkspaceApi(app, { db: options.db, authenticate });
+  registerHousingWorkspaceApi(app, {
+    db: options.db,
+    authenticate: async (request) => {
+      const { account, messengerProvider } = await authenticateSession(request);
+      return { id: account.id, messengerProvider };
+    },
+    onSaved: (request, provider) => () =>
+      funnel(provider ?? null, "step_saved", request),
+  });
   registerBalanceHistoryApi(app, {
     db: options.db,
     context: async (request) => {
@@ -1605,10 +1666,11 @@ export async function buildApp(options: {
 
   async function authenticateChat(request: FastifyRequest) {
     const { account, messengerProvider } = await authenticateSession(request);
-    const mini =
-      (request.params as { provider?: unknown }).provider !== undefined;
-    if (mini) {
-      const { provider } = miniAppScope.parse(request.params);
+    const provider =
+      (request.params as { provider?: unknown }).provider === undefined
+        ? null
+        : miniAppScope.parse(request.params).provider;
+    if (provider) {
       if (
         !miniAppChatAvailable ||
         !sameMiniAppProvider(messengerProvider, provider)
@@ -1619,7 +1681,7 @@ export async function buildApp(options: {
       // cannot enable dispatch simply by addressing the regular chat URL.
       miniAppChatForbidden();
     }
-    return { account, mini };
+    return { account, mini: provider !== null, provider };
   }
   function registerChatSend(
     route: RouteShorthandOptions,
@@ -1638,7 +1700,11 @@ export async function buildApp(options: {
       config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
     },
     async (request, reply) => {
-      const { account: user, mini } = await authenticateChat(request);
+      const {
+        account: user,
+        mini,
+        provider: funnelProvider,
+      } = await authenticateChat(request);
       const threadId = questParams.parse(request.params).id;
       const input = chatInputSchema.parse(request.body);
       if (
@@ -2098,6 +2164,8 @@ export async function buildApp(options: {
             );
           });
         }
+        if (!routing.human)
+          await funnel(funnelProvider, "answer_succeeded", request);
         send({ type: "done", messageId });
       } catch (error) {
         if (error instanceof RouterAIInsufficientFundsError) {

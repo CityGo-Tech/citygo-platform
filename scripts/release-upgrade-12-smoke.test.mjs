@@ -6,7 +6,11 @@ import { join } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 import { root } from "./env.mjs";
-import { releaseUpgrade12Smoke } from "./release-upgrade-12-smoke.mjs";
+import {
+  releaseUpgrade12Smoke,
+  upgrade12LegacySessionOriginSql,
+  upgrade12PreservedSnapshotSql,
+} from "./release-upgrade-12-smoke.mjs";
 
 // Use the DB package's existing declared dependency, not a second toolchain or
 // a network PostgreSQL connection. The regression executes the literal fixture
@@ -314,14 +318,7 @@ test("literal 12-era fixture rewinds current 52, rolls back late ACL failure and
   assert.equal(seed.includes("${"), false);
   await db.exec(seed);
   const history = async () =>
-    (
-      await db.query(`select jsonb_build_object(
-    'users',(select jsonb_agg(to_jsonb(t)-'username'-'role'-'must_change_password') from users t),
-    'threads',(select jsonb_agg(to_jsonb(t)-'conversation_agent_key' order by id) from agent_threads t),
-    'messages',(select jsonb_agg(to_jsonb(t) order by id) from messages t),
-    'credits',(select jsonb_agg(to_jsonb(t)-'billing_review_required') from ai_credit_accounts t),
-    'entries',(select jsonb_agg(to_jsonb(t) order by id) from ai_credit_entries t)) as snapshot`)
-    ).rows[0].snapshot;
+    (await db.query(upgrade12PreservedSnapshotSql)).rows[0].snapshot;
   const schema = async () =>
     (
       await db.query(`select jsonb_build_object(
@@ -384,6 +381,11 @@ test("literal 12-era fixture rewinds current 52, rolls back late ACL failure and
     migrations.map(({ name, checksum }) => ({ name, checksum })),
   );
   assert.deepEqual(await history(), historyBefore);
+  assert.deepEqual(
+    (await db.query(upgrade12LegacySessionOriginSql)).rows,
+    [{ unscoped: true }],
+    "Existing sessions remain ordinary CityGo sessions after the upgrade",
+  );
   assert.deepEqual(
     (
       await db.query(

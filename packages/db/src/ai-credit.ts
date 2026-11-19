@@ -226,13 +226,15 @@ export class AiCreditLedger {
     userId: string,
     operationId: string,
     raw: ConfirmedTopUp,
+    onNewTopup?: () => Promise<void>,
   ) {
     creditUserIdSchema.parse(userId);
     operationSchema.parse(operationId);
     const input = confirmedTopUpSchema.parse(raw);
     const credited = citygoTopUpMicrosFromPaidKopeks(input.paidKopeks);
+    let booked: boolean;
     try {
-      await this.db.transaction(async (tx) => {
+      booked = await this.db.transaction(async (tx) => {
         await lockPaymentMode(tx, input.test ? "test" : "real");
         await this.lock(tx, userId);
         const priorOperation = await this.entry(tx, operationId);
@@ -271,7 +273,7 @@ export class AiCreditLedger {
             throw new DomainError(409, "Платёж уже связан с другой операцией");
           // A repeated notification may have a new verification time or request
           // UUID. The original payment/posting remains authoritative and intact.
-          return;
+          return false;
         }
         const result = await tx.query(
           `update ai_credit_accounts set granted_micros=granted_micros+$2::bigint
@@ -300,6 +302,7 @@ export class AiCreditLedger {
             JSON.stringify(input),
           ],
         );
+        return true;
       });
     } catch (error) {
       // Different users can race for one globally unique payment/operation ID.
@@ -313,6 +316,7 @@ export class AiCreditLedger {
         throw new DomainError(409, "Платёж или операция уже учтены");
       throw error;
     }
+    if (booked) await onNewTopup?.();
     return this.status(userId);
   }
 

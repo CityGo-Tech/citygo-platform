@@ -3,6 +3,7 @@
 import Image from "next/image";
 import Script from "next/script";
 import dynamic from "next/dynamic";
+import { CONTRACT_VERSION, CONTRACT_VERSION_HEADER } from "@citygo/contracts";
 import { Button, Card, Field } from "@citygo/ui-web";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { housingFirstPaymentDetails } from "../housing-first-payment";
@@ -20,6 +21,7 @@ import {
 import styles from "./mini-app-entry.module.css";
 import type { MiniAppAccountAccess } from "./account-access";
 import { trackMiniAppKeyboard } from "./viewport";
+import { browserAnalyticsOptedOut } from "../use-product-analytics";
 
 type Screen = "welcome" | "housing" | "plan" | "relocation";
 type Launch = "checking" | MiniAppLaunch;
@@ -54,6 +56,7 @@ export function MiniAppEntry({ host }: { host: MiniAppHost }) {
   const accountBackHandler = useRef<(() => boolean) | null>(null);
   const entered = useRef(false);
   const connected = useRef(false);
+  const funnelEvents = useRef(new Set<"launch" | "task_selected">());
   const accountOpen = Boolean(accountAccess);
   const resumeKey = `citygo:mini-housing-resume:v1:${host.provider}`;
   const rememberHousingOwner = useCallback(
@@ -134,6 +137,24 @@ export function MiniAppEntry({ host }: { host: MiniAppHost }) {
   const launchNotice =
     notice || (launch === "invalid" || connectionFailed ? launchError : "");
 
+  const track = (event: "launch" | "task_selected") => {
+    if (browserAnalyticsOptedOut() || funnelEvents.current.has(event)) return;
+    funnelEvents.current.add(event);
+    void fetch(`/api/v1/mini-apps/${host.provider}/funnel`, {
+      method: "POST",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      headers: {
+        "content-type": "application/json",
+        [CONTRACT_VERSION_HEADER]: CONTRACT_VERSION,
+      },
+      body: JSON.stringify({ event }),
+    }).catch(() => {});
+  };
+  const selectTask = (next: "housing" | "relocation") => {
+    if (bridge?.initData) track("task_selected");
+    changeScreen(next);
+  };
   const connect = () => {
     if (connected.current) return;
     try {
@@ -151,6 +172,10 @@ export function MiniAppEntry({ host }: { host: MiniAppHost }) {
       setConnectionFailed(false);
       setNotice("");
       clearLaunchFragment();
+      if (connection.initData) {
+        track("launch");
+        if (task) track("task_selected");
+      }
     } catch {
       clearLaunchFragment();
       setConnectionFailed(true);
@@ -265,6 +290,7 @@ export function MiniAppEntry({ host }: { host: MiniAppHost }) {
               openMaxPayment={
                 host.provider === "max" ? bridge?.openExternal : undefined
               }
+              miniAppOpenInvoice={bridge?.openInvoice}
               registerMiniAppBack={registerMiniAppBack}
               rememberHousingOwner={rememberHousingOwner}
             />
@@ -300,12 +326,12 @@ export function MiniAppEntry({ host }: { host: MiniAppHost }) {
               <TaskButton
                 title="Найти жильё"
                 detail="Районы, дорога до работы и первый платёж"
-                onClick={() => changeScreen("housing")}
+                onClick={() => selectTask("housing")}
               />
               <TaskButton
                 title="Оценить переезд"
                 detail="Разберите расходы и следующие шаги"
-                onClick={() => changeScreen("relocation")}
+                onClick={() => selectTask("relocation")}
               />
               <Button
                 type="button"
@@ -438,7 +464,7 @@ export function MiniAppEntry({ host }: { host: MiniAppHost }) {
               <Button
                 type="button"
                 variant="secondary"
-                onClick={() => changeScreen("housing")}
+                onClick={() => selectTask("housing")}
               >
                 Найти жильё
               </Button>

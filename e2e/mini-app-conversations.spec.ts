@@ -181,6 +181,8 @@ async function setupConversation(
     const url = new URL(request.url());
     const path = url.pathname;
     const method = request.method();
+    if (path === prefix + "/funnel" && method === "POST")
+      return route.fulfill({ status: 204 });
     if (path === prefix + "/chat" && method === "GET") {
       state.capabilities++;
       return route.fulfill({ json: { available } });

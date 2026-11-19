@@ -2,15 +2,32 @@ import { clickAccountAction, clickWalletAction } from "./navigation-helper";
 import { test, expect, type Page } from "@playwright/test";
 import type { Dashboard } from "@citygo/contracts";
 
+test.beforeEach(async ({ context }, { project }) => {
+  // Use the isolated test proxy's benchmark IPs for this spec instead of
+  // sharing the suite's loopback registration quota.
+  const host = project.name === "mobile-web" ? 2 : 1;
+  await context.setExtraHTTPHeaders({
+    "X-Forwarded-For": `198.19.213.${host}`,
+  });
+});
+
 async function register(page: Page, password = "123456") {
   const email = "e2e-" + crypto.randomUUID() + "@example.test";
   await page.goto("/");
   await page.getByLabel("Электронная почта", { exact: true }).fill(email);
   await page.getByLabel("Пароль", { exact: true }).fill(password);
   await page.locator("input[name=personalDataConsent]").check();
+  const registered = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname === "/api/v1/auth/register",
+  );
   await page
     .getByRole("button", { name: "Создать аккаунт", exact: true })
     .click();
+  expect((await registered).status(), "Test registration HTTP status").toBe(
+    200,
+  );
   await expect(
     page.getByRole("heading", { name: "Давайте начнём с того, что волнует" }),
   ).toBeVisible();

@@ -234,6 +234,11 @@ test("MAX test payment and late receipt reconcile independently of the Mini App 
     const historyBefore = await getHistory(context.request);
     expect(historyBefore.entries).toEqual([]);
     expect((await web.request.get(topupsPath)).status()).toBe(403);
+    const ordinaryCheckout = await web.request.post("/api/v1/payments/topups", {
+      headers: { origin, "X-Forwarded-For": ip(4) },
+      data: { requestId: randomUUID(), amountKopeks, receiptEmail },
+    });
+    expect(ordinaryCheckout.status()).toBe(403);
 
     const cancellation = await createPayment(page);
     const canceledPaymentId = providerPaymentId(cancellation);
