@@ -29,6 +29,7 @@ async function fixture(t: TestContext, refundStarPayment?: RefundStarPayment) {
     return reply.send(error);
   });
   const calls: Parameters<RefundStarPayment>[0][] = [];
+  let paidEvents = 0;
   registerTelegramStarsTest(app, {
     actor: async (request) => {
       switch (request.headers.authorization) {
@@ -41,6 +42,9 @@ async function fixture(t: TestContext, refundStarPayment?: RefundStarPayment) {
       }
     },
     webhookSecret: secret,
+    onPaid: async () => {
+      paidEvents++;
+    },
     refundStarPayment: async (input) => {
       calls.push(input);
       return refundStarPayment ? refundStarPayment(input) : true;
@@ -134,6 +138,7 @@ async function fixture(t: TestContext, refundStarPayment?: RefundStarPayment) {
     create,
     step,
     snapshot,
+    paidEvents: () => paidEvents,
     webhook,
     approve,
     updatePayment,
@@ -211,6 +216,7 @@ test("pay and replay require a scoped invoice, bound purchaser, XTR price and a 
       /checkout-approved|charge-1|12001|provider-reference/,
     );
   }
+  assert.equal(f.paidEvents(), 1);
   assert.equal((await f.snapshot("visitor")).balance, 0);
   assert.equal(
     (await f.updatePayment("successful_payment", id, "charge-other"))

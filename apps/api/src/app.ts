@@ -198,7 +198,7 @@ export async function buildApp(options: {
   syntheticMaxPayments?: boolean;
   telegramStarsTest?: Omit<
     Parameters<typeof registerTelegramStarsTest>[1],
-    "actor"
+    "actor" | "onPaid"
   >;
 }) {
   const drain = options.drain ?? new ApiDrain();
@@ -1666,10 +1666,11 @@ export async function buildApp(options: {
 
   async function authenticateChat(request: FastifyRequest) {
     const { account, messengerProvider } = await authenticateSession(request);
-    const mini =
-      (request.params as { provider?: unknown }).provider !== undefined;
-    if (mini) {
-      const { provider } = miniAppScope.parse(request.params);
+    const provider =
+      (request.params as { provider?: unknown }).provider === undefined
+        ? null
+        : miniAppScope.parse(request.params).provider;
+    if (provider) {
       if (
         !miniAppChatAvailable ||
         !sameMiniAppProvider(messengerProvider, provider)
@@ -1680,7 +1681,7 @@ export async function buildApp(options: {
       // cannot enable dispatch simply by addressing the regular chat URL.
       miniAppChatForbidden();
     }
-    return { account, mini, messengerProvider };
+    return { account, mini: provider !== null, provider };
   }
   function registerChatSend(
     route: RouteShorthandOptions,
@@ -1702,7 +1703,7 @@ export async function buildApp(options: {
       const {
         account: user,
         mini,
-        messengerProvider,
+        provider: funnelProvider,
       } = await authenticateChat(request);
       const threadId = questParams.parse(request.params).id;
       const input = chatInputSchema.parse(request.body);
@@ -2164,7 +2165,7 @@ export async function buildApp(options: {
           });
         }
         if (!routing.human)
-          await funnel(messengerProvider, "answer_succeeded", request);
+          await funnel(funnelProvider, "answer_succeeded", request);
         send({ type: "done", messageId });
       } catch (error) {
         if (error instanceof RouterAIInsufficientFundsError) {

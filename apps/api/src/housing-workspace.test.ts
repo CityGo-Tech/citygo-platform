@@ -46,7 +46,14 @@ async function verifyHousingWorkspace(t: TestContext, db: Database) {
   const repository = new Repository(db);
   const token = randomUUID();
   const otherToken = randomUUID();
-  await repository.createSession(owner, tokenHash(token));
+  await db.query(
+    "insert into messenger_accounts(provider,subject,user_id) values('max',12345,$1)",
+    [owner],
+  );
+  await db.query(
+    "insert into sessions(token_hash,user_id,expires_at,messenger_provider) values($1,$2,now()+interval '1 day','max')",
+    [tokenHash(token), owner],
+  );
   await repository.createSession(other, tokenHash(otherToken));
   const thread = await ensureConversation(db, owner, "housing");
   const foreign = await ensureConversation(db, other, "housing");
@@ -214,6 +221,14 @@ async function verifyHousingWorkspace(t: TestContext, db: Database) {
       { revision: 1, plan_revision: 1 },
       { revision: 2, plan_revision: 2 },
     ],
+  );
+  assert.deepEqual(
+    (
+      await db.query(
+        "select count(*)::integer as total, count(user_id)::integer as identified from analytics_events where name='mini_max_step_saved'",
+      )
+    ).rows,
+    [{ total: 4, identified: 0 }],
   );
   assert.equal((await db.query("select 1 from xp_events")).rows.length, 0);
   assert.equal(

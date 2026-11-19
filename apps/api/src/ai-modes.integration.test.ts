@@ -1917,6 +1917,18 @@ for (const postgres of [false, true])
         [f.threadId, requestId],
       );
       assert.deepEqual(attempts.rows, [{ attempt_number: 1 }]);
+      assert.deepEqual(
+        (
+          await f.db.query(
+            "select name,user_id from analytics_events where name in ('mini_telegram_answer_succeeded','mini_max_answer_succeeded') order by id",
+          )
+        ).rows,
+        [
+          { name: "mini_telegram_answer_succeeded", user_id: null },
+          { name: "mini_max_answer_succeeded", user_id: null },
+          { name: "mini_telegram_answer_succeeded", user_id: null },
+        ],
+      );
       const stranger = await f.call("POST", "/v1/auth/register", "", {
         email: randomUUID() + "@example.test",
         password: "123456",

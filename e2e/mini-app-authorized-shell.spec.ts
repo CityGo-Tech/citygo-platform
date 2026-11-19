@@ -76,6 +76,8 @@ async function signIn(page: Page, host: Host, task?: "coordinator") {
   const state = await syntheticProduct(page);
   const initData = `synthetic-${host.provider}-workspace-proof`;
   const writes: string[] = [];
+  const funnelPath = `/api/v1/mini-apps/${host.provider}/funnel`;
+  const funnel: unknown[] = [];
   const dashboard: Dashboard = {
     user,
     profile: {
@@ -110,8 +112,18 @@ async function signIn(page: Page, host: Host, task?: "coordinator") {
   };
   page.on("request", (request) => {
     const path = new URL(request.url()).pathname;
-    if (request.method() !== "GET" && path.startsWith("/api/v1/"))
+    if (
+      request.method() !== "GET" &&
+      path.startsWith("/api/v1/") &&
+      !(request.method() === "POST" && path === funnelPath)
+    )
       writes.push(path);
+  });
+  await page.route(`**${funnelPath}`, (route) => {
+    const request = route.request();
+    expect(request.method()).toBe("POST");
+    funnel.push(request.postDataJSON());
+    return route.fulfill({ status: 204 });
   });
   await page.route("**/api/v1/dashboard", (route) =>
     state.authenticated ? route.fulfill({ json: dashboard }) : route.fallback(),
@@ -195,14 +207,14 @@ async function signIn(page: Page, host: Host, task?: "coordinator") {
     .click();
   await page.getByRole("button", { name: `Войти через ${host.name}` }).click();
   await expect(nav(page)).toBeVisible();
-  return { state, writes, signInPath };
+  return { state, writes, signInPath, funnel };
 }
 
 for (const host of hosts) {
   test(`${host.name} signed-in navigation shows the account plan, results, dialogs, catalog and profile`, async ({
     page,
   }) => {
-    const { state, writes, signInPath } = await signIn(page, host);
+    const { state, writes, signInPath, funnel } = await signIn(page, host);
     await expect(nav(page).getByRole("button")).toHaveText([
       "План",
       "Диалоги",
@@ -271,6 +283,7 @@ for (const host of hosts) {
       await expect(close).toHaveCount(0);
     }
     expect(writes).toEqual([signInPath]);
+    await expect.poll(() => funnel).toEqual([{ event: "launch" }]);
     expect(state.outside).toEqual([]);
   });
 }
@@ -279,7 +292,7 @@ test("Telegram honors safe insets and keeps the composer usable at 320px with la
   page,
 }) => {
   await page.setViewportSize({ width: 320, height: 680 });
-  const { state, writes, signInPath } = await signIn(
+  const { state, writes, signInPath, funnel } = await signIn(
     page,
     hosts[0],
     "coordinator",
@@ -323,6 +336,9 @@ test("Telegram honors safe insets and keeps the composer usable at 320px with la
     320,
   );
   expect(writes).toEqual([signInPath, "/api/v1/conversations/start"]);
+  await expect
+    .poll(() => funnel)
+    .toEqual([{ event: "launch" }, { event: "task_selected" }]);
   expect(state.outside).toEqual([]);
 });
 

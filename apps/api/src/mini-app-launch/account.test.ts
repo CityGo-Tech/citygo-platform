@@ -246,6 +246,17 @@ test("messenger account access requires email confirmation, owner preview and a 
       initData: sign(provider),
     });
     assert.equal(reopened.statusCode, 200);
+    const launchesRecorded = await db.query(
+      "select name,user_id from analytics_events where name=$1 order by id",
+      [`mini_${provider}_sign_in_confirmed`],
+    );
+    assert.deepEqual(
+      launchesRecorded.rows,
+      Array.from({ length: 2 }, () => ({
+        name: `mini_${provider}_sign_in_confirmed`,
+        user_id: null,
+      })),
+    );
     const reopenedCookie = session(reopened);
     assert.equal(
       (await send("DELETE", path, undefined, owner.cookie)).statusCode,
