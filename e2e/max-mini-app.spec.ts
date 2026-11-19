@@ -41,7 +41,6 @@ async function configureMaxPage(
         window.maxFixture = { events: [], external: [], goBack: null };
         const state = window.maxFixture;
         window.WebApp = {
-          initData: ${JSON.stringify(privateLaunchValue)},
           get initDataUnsafe() {
             if (${sdk === "broken"}) throw new Error('Bridge data unavailable');
             return {

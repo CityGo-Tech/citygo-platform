@@ -2,6 +2,7 @@
 
 import Image from "next/image";
 import Script from "next/script";
+import dynamic from "next/dynamic";
 import { Button, Card, Field } from "@citygo/ui-web";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { housingFirstPaymentDetails } from "../housing-first-payment";
@@ -17,6 +18,7 @@ import {
   type MiniAppLaunch,
 } from "./host";
 import styles from "./mini-app-entry.module.css";
+import type { MiniAppAccountAccess } from "./account-access";
 
 type Screen = "welcome" | "housing" | "plan" | "relocation";
 type Launch = "checking" | MiniAppLaunch;
@@ -26,10 +28,20 @@ const screenForTask = {
   coordinator: "relocation",
 } as const;
 const budgetFormat = new Intl.NumberFormat("ru-RU");
+const CityGoHome = dynamic(() => import("../../app/citygo-home"));
+
+function clearLaunchFragment() {
+  window.history.replaceState(
+    window.history.state,
+    "",
+    window.location.pathname + window.location.search,
+  );
+}
 
 export function MiniAppEntry({ host }: { host: MiniAppHost }) {
   const [launch, setLaunch] = useState<Launch>("checking");
   const [bridge, setBridge] = useState<MiniAppBridge>();
+  const [accountAccess, setAccountAccess] = useState<MiniAppAccountAccess>();
   const [connectionFailed, setConnectionFailed] = useState(false);
   const [screens, setScreens] = useState<Screen[]>(["welcome"]);
   const screen = screens.at(-1) ?? "welcome";
@@ -41,7 +53,9 @@ export function MiniAppEntry({ host }: { host: MiniAppHost }) {
   const connected = useRef(false);
 
   useEffect(() => {
-    setLaunch(miniAppLaunch(window.location.hash, host.launchFragmentKey));
+    const kind = miniAppLaunch(window.location.hash, host.launchFragmentKey);
+    setLaunch(kind);
+    if (kind === "invalid") clearLaunchFragment();
   }, [host]);
 
   const changeScreen = useCallback((next: Screen) => {
@@ -61,9 +75,11 @@ export function MiniAppEntry({ host }: { host: MiniAppHost }) {
     if (entered.current) heading.current?.focus();
   }, [screen]);
 
+  const returnFromAccount = useCallback(() => setAccountAccess(undefined), []);
   useEffect(() => {
+    if (accountAccess) return bridge?.onBack?.(returnFromAccount);
     if (screen !== "welcome") return bridge?.onBack?.(back);
-  }, [back, bridge, screen]);
+  }, [accountAccess, back, bridge, returnFromAccount, screen]);
 
   const launchError =
     "Не удалось подключиться к мессенджеру. Откройте CityGo из бота ещё раз.";
@@ -75,6 +91,7 @@ export function MiniAppEntry({ host }: { host: MiniAppHost }) {
     try {
       const connection = host.connect();
       if (!connection) {
+        clearLaunchFragment();
         setConnectionFailed(true);
         return;
       }
@@ -85,7 +102,9 @@ export function MiniAppEntry({ host }: { host: MiniAppHost }) {
       setBridge(connection);
       setConnectionFailed(false);
       setNotice("");
+      clearLaunchFragment();
     } catch {
+      clearLaunchFragment();
       setConnectionFailed(true);
     }
   };
@@ -100,8 +119,15 @@ export function MiniAppEntry({ host }: { host: MiniAppHost }) {
       setNotice(launchError);
       return;
     }
-    // Keep the launch fragment, profile and form contents in this mini-app.
-    // The Web bridge carries only an existing, allowlisted CityGo task.
+    if (bridge.initData) {
+      setAccountAccess({
+        provider: host.provider,
+        initData: bridge.initData,
+        task,
+      });
+      return;
+    }
+    // Older clients can still open the ordinary sign-in without messenger data.
     try {
       bridge.openExternal(new URL(path, window.location.origin).href);
     } catch {
@@ -117,13 +143,21 @@ export function MiniAppEntry({ host }: { host: MiniAppHost }) {
     }
   };
 
+  if (accountAccess)
+    return (
+      <CityGoHome miniApp={accountAccess} onBackToMiniApp={returnFromAccount} />
+    );
+
   return (
     <div className={styles.shell} data-host={host.name}>
       {launch === "messenger" && (
         <Script
           src={host.script}
           onReady={connect}
-          onError={() => setConnectionFailed(true)}
+          onError={() => {
+            clearLaunchFragment();
+            setConnectionFailed(true);
+          }}
         />
       )}
       <header className={styles.bar} aria-label={`CityGo в ${host.name}`}>
