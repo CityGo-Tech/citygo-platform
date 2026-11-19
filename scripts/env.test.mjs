@@ -69,6 +69,8 @@ const canaries = {
   PROSTOSMS_SENDER: "CityGo",
   PHONE_SMS_GLOBAL_DAILY_LIMIT: "10",
   PHONE_SMS_GLOBAL_TOTAL_LIMIT: "20",
+  TELEGRAM_MINI_APP_BOT_TOKEN: "synthetic-telegram-mini-app-token",
+  MAX_MINI_APP_BOT_TOKEN: "synthetic-max-mini-app-token",
 };
 function fixture(t, files = {}) {
   const directory = mkdtempSync(join(tmpdir(), "citygo-env-test-"));
@@ -227,6 +229,8 @@ test("API gets only known API settings; worker/migrator get no LLM or API settin
     "PROSTOSMS_SENDER",
     "PHONE_SMS_GLOBAL_DAILY_LIMIT",
     "PHONE_SMS_GLOBAL_TOTAL_LIMIT",
+    "TELEGRAM_MINI_APP_BOT_TOKEN",
+    "MAX_MINI_APP_BOT_TOKEN",
   ])
     assert.equal(api[key], canaries[key]);
   assert.equal(api.TEST_DATABASE_URL, undefined);

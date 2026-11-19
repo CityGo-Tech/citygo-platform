@@ -157,6 +157,7 @@ import {
 } from "./phone-verification.js";
 import { registerAccountProfile } from "./account-profile.js";
 import { registerAdminPhoneContacts } from "./admin-phone-contacts.js";
+import { registerMiniAppLaunch } from "./mini-app-launch/http.js";
 import {
   registerCustomerObservability,
   serializeRequestLog,
@@ -932,6 +933,10 @@ export async function buildApp(options: {
       },
     );
   }
+  registerMiniAppLaunch(app, {
+    telegramToken: config.TELEGRAM_MINI_APP_BOT_TOKEN,
+    maxToken: config.MAX_MINI_APP_BOT_TOKEN,
+  });
   registerEmailRegistration(app, {
     db: options.db,
     policyResolver: registrationAiPolicy,
