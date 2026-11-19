@@ -74,7 +74,7 @@ async function fixture(t: TestContext) {
   const names = (await readdir(directory))
     .filter((n) => n.endsWith(".sql"))
     .sort();
-  assert.equal(names.length, 51, "Update the literal schema23 upgrade fixture");
+  assert.equal(names.length, 52, "Update the literal schema23 upgrade fixture");
   assert.equal(names[22], "0023_payment_receipt_snapshots.sql");
   assert.equal(names[23], "0024_ai_credit_overdraft.sql");
   assert.equal(names[24], "0025_assistant_conversations.sql");
@@ -381,7 +381,7 @@ test("23→24 preserves paid money, exact historical receipts, pending full hold
   );
   assert.equal(upgradedJournal[23]!.name, "0024_ai_credit_overdraft.sql");
   assert.equal(upgradedJournal[24]!.name, "0025_assistant_conversations.sql");
-  assert.equal(upgradedJournal.at(-1)!.name, "0051_messenger_accounts.sql");
+  assert.equal(upgradedJournal.at(-1)!.name, "0052_housing_workspace.sql");
   assert.deepEqual(
     (await db.query("select distinct reservation_mode from ai_credit_charges"))
       .rows,
@@ -460,7 +460,7 @@ test("23→24 preserves paid money, exact historical receipts, pending full hold
     )
       assert.deepEqual(
         after[table],
-        before[table],
+        expectedUpgradedHistory[table],
         "Legacy settlement leaves all other history unchanged: " + table,
       );
   const finalJournal = await journal(db);

@@ -49,6 +49,7 @@ export type JourneyProps = {
     onMessenger: () => void;
     onLogout: (trigger: HTMLButtonElement) => void;
     onReceipts?: () => void;
+    housingCriteria?: { commute: string; budgetRub: number | null };
   };
   workspaceRequest?: { tab: string; sequence: number } | null;
   onWorkspaceRequestHandled?: (sequence: number) => void;

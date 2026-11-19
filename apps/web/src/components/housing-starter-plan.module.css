@@ -90,6 +90,22 @@
   font-size: 15px;
 }
 
+.check {
+  display: flex;
+  align-items: center;
+  min-height: 2.75rem;
+  gap: var(--cg-space-sm);
+  font-weight: 700;
+}
+
+.check input {
+  flex: none;
+  width: 1.25rem;
+  height: 1.25rem;
+  margin: 0;
+  accent-color: var(--cg-color-primary-strong);
+}
+
 @media (max-width: 680px) {
   .launch :global(.cg-button) {
     width: 100%;

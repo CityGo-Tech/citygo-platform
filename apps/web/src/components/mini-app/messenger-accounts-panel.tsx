@@ -90,7 +90,7 @@ export function MessengerAccountsPanel({
 
   function prepare(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!miniApp || locked.current) return;
+    if (!miniApp?.initData || locked.current) return;
     const form = event.currentTarget;
     const password = String(new FormData(form).get("password") ?? "");
     form.reset();
@@ -110,7 +110,7 @@ export function MessengerAccountsPanel({
   }
 
   function confirmLink() {
-    if (!miniApp || !prepared || prepared.id !== owner.id) return;
+    if (!miniApp?.initData || !prepared || prepared.id !== owner.id) return;
     const { confirmation } = prepared;
     setPrepared(undefined);
     void run(async (signal) => {
@@ -211,7 +211,7 @@ export function MessengerAccountsPanel({
                 </Button>
               </section>
             ))}
-            {miniApp && !providers.includes(miniApp.provider) ? (
+            {miniApp?.initData && !providers.includes(miniApp.provider) ? (
               <form onSubmit={prepare}>
                 <p>Чтобы подключить мессенджер, подтвердите пароль CityGo.</p>
                 <Field

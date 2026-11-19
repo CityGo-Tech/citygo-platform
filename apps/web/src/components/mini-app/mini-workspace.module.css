@@ -121,6 +121,11 @@
   align-self: end;
 }
 
+.housingLinks {
+  display: grid;
+  gap: var(--cg-space-sm);
+}
+
 .workspace :global(.conversation-main > .conversation-chat-card) {
   height: auto;
   min-height: 0;

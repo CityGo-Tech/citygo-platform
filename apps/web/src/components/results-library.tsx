@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createClient } from "@citygo/api-client";
 import type {
   FavoriteMessage,
@@ -179,6 +179,7 @@ export function ResultsLibrary({
   onContinue,
   navigationBusy = false,
   onDiscuss,
+  housingResults,
 }: {
   userId: string;
   sessionSignal: AbortSignal;
@@ -189,6 +190,7 @@ export function ResultsLibrary({
   onContinue: () => void;
   navigationBusy?: boolean;
   onDiscuss?: (input: ResultDiscussionInput) => Promise<boolean>;
+  housingResults?: ReactNode;
 }) {
   const [snapshot, setSnapshot] = useState<{
     owner: string;
@@ -529,6 +531,7 @@ export function ResultsLibrary({
           <p className={styles.intro}>
             Сохранённые планы и черновики — отдельно от ленты сообщений.
           </p>
+          {housingResults}
           <nav className={styles.filters} aria-label="Категории результатов">
             <Button
               variant={category === "plan" ? "primary" : "secondary"}

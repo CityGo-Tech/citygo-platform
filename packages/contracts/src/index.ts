@@ -38,6 +38,7 @@ export * from "./r1.js";
 // Candidate DTOs only: Prepared/brands do not authorize confirmation or XP.
 export * from "./housing.js";
 export * from "./housing-api.js";
+export * from "./housing-workspace.js";
 // Candidate permission commands; no production handler or approved R1 policy.
 export * from "./r1-permissions.js";
 // Test harness protocol only, never real consent or AI admission.

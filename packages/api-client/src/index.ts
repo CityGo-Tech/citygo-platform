@@ -48,6 +48,13 @@ import {
   type SavePlanChecklist,
 } from "@citygo/contracts";
 import {
+  housingWorkspaceSchema,
+  saveHousingPlanSchema,
+  saveHousingChecklistSchema,
+  type SaveHousingPlan,
+  type SaveHousingChecklist,
+} from "@citygo/contracts";
+import {
   accountUserResponseSchema,
   adminOverviewResponseSchema,
   adminUsersResponseSchema,
@@ -438,6 +445,22 @@ export function createClient(
     return result;
   }
   return {
+    housingWorkspace: () =>
+      request("/v1/housing/workspace", housingWorkspaceSchema),
+    saveHousingPlan: (input: SaveHousingPlan) =>
+      request(
+        "/v1/housing/workspace/plan",
+        housingWorkspaceSchema,
+        saveHousingPlanSchema.parse(input),
+        "PUT",
+      ),
+    saveHousingChecklist: (input: SaveHousingChecklist) =>
+      request(
+        "/v1/housing/workspace/checklist",
+        housingWorkspaceSchema,
+        saveHousingChecklistSchema.parse(input),
+        "PUT",
+      ),
     miniAppSignIn: (provider: MessengerProvider, initData: string) =>
       request(
         `/v1/mini-apps/${messengerProviderSchema.parse(provider)}/sign-in`,

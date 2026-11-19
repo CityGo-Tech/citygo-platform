@@ -55,12 +55,38 @@ export function MiniAppEntry({ host }: { host: MiniAppHost }) {
   const entered = useRef(false);
   const connected = useRef(false);
   const accountOpen = Boolean(accountAccess);
+  const resumeKey = `citygo:mini-housing-resume:v1:${host.provider}`;
+  const rememberHousingOwner = useCallback(
+    (ownerId: string | null) => {
+      try {
+        if (ownerId === null) window.sessionStorage.removeItem(resumeKey);
+        else window.sessionStorage.setItem(resumeKey, ownerId);
+      } catch {
+        // A restricted WebView can still resume when opened from the bot again.
+      }
+    },
+    [resumeKey],
+  );
 
   useEffect(() => {
     const kind = miniAppLaunch(window.location.hash, host.launchFragmentKey);
     setLaunch(kind);
     if (kind === "invalid") clearLaunchFragment();
-  }, [host]);
+    if (kind === "browser") {
+      try {
+        const ownerId = window.sessionStorage.getItem(resumeKey);
+        if (ownerId && /^[1-9][0-9]{0,18}$/.test(ownerId)) {
+          setAccountAccess({
+            provider: host.provider,
+            initData: "",
+            resumeHousingOwner: ownerId,
+          });
+        }
+      } catch {
+        // Browsers can disable session storage.
+      }
+    }
+  }, [host, resumeKey]);
 
   const changeScreen = useCallback((next: Screen) => {
     entered.current = true;
@@ -82,8 +108,9 @@ export function MiniAppEntry({ host }: { host: MiniAppHost }) {
   const returnFromAccount = useCallback(() => {
     entered.current = true;
     setNotice("");
+    rememberHousingOwner(null);
     setAccountAccess(undefined);
-  }, []);
+  }, [rememberHousingOwner]);
   const registerMiniAppBack = useCallback((handler: (() => boolean) | null) => {
     accountBackHandler.current = handler;
   }, []);
@@ -146,7 +173,17 @@ export function MiniAppEntry({ host }: { host: MiniAppHost }) {
         provider: host.provider,
         initData: bridge.initData,
         task,
+        ...(task === "housing" && (commute.trim() || budget)
+          ? {
+              housingCriteria: {
+                commute: commute.trim(),
+                budgetRub: budget ? Number(budget) : null,
+              },
+            }
+          : {}),
       });
+      setCommute("");
+      setBudget("");
       return;
     }
     // Older clients can still open the ordinary sign-in without messenger data.
@@ -226,6 +263,7 @@ export function MiniAppEntry({ host }: { host: MiniAppHost }) {
             <CityGoHome
               miniApp={accountAccess}
               registerMiniAppBack={registerMiniAppBack}
+              rememberHousingOwner={rememberHousingOwner}
             />
           </div>
         </>

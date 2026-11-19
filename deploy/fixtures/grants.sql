@@ -20,6 +20,12 @@ revoke update, delete, truncate on conversation_memory_fragments from citygo_api
 -- Match the production messenger linking and replay permissions.
 revoke all on messenger_accounts, messenger_launch_consumptions from citygo_api, citygo_worker;
 grant select, insert, delete on messenger_accounts, messenger_launch_consumptions to citygo_api;
+revoke all on housing_workspace_plans, housing_workspace_checklists from citygo_api, citygo_worker;
+grant select on housing_workspace_plans, housing_workspace_checklists to citygo_api;
+grant insert (user_id,revision,thread_id,situation,city,commute,budget_rub,request_id)
+  on housing_workspace_plans to citygo_api;
+grant insert (user_id,revision,plan_revision,selected,payment_checked,request_id)
+  on housing_workspace_checklists to citygo_api;
 grant select, delete on sessions, analytics_events to citygo_worker;
 grant select, update on agent_threads, chat_requests to citygo_worker;
 grant select on all tables in schema public to citygo_backup;

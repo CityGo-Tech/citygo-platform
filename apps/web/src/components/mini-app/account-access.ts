@@ -1,4 +1,7 @@
-import type { MessengerProvider } from "@citygo/contracts";
+import type {
+  HousingWorkspaceCriteria,
+  MessengerProvider,
+} from "@citygo/contracts";
 import type { LandingTask } from "../landing/landing-task";
 
 export const messengerNames = {
@@ -10,4 +13,6 @@ export type MiniAppAccountAccess = {
   provider: MessengerProvider;
   initData: string;
   task?: LandingTask;
+  housingCriteria?: Pick<HousingWorkspaceCriteria, "commute" | "budgetRub">;
+  resumeHousingOwner?: string;
 };
