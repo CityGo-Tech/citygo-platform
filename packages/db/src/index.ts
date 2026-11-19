@@ -301,6 +301,7 @@ export async function migrate(db: Database) {
   });
 }
 export { PlanChecklists } from "./plan-checklist.js";
+export { HousingWorkspaceStore } from "./housing-workspace.js";
 
 export {
   BalanceHistory,

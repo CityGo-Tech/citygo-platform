@@ -29,6 +29,8 @@ const ownedTables = [
   "conversation_titles",
   "conversation_memory_fragments",
   "personal_plan_items",
+  "housing_workspace_plans",
+  "housing_workspace_checklists",
   "user_credentials",
   "sessions",
   "relocation_profiles",
@@ -60,6 +62,8 @@ const retained = [
   "conversation_memory_fragments",
   "personal_plan_item_history",
   "personal_plan_checklists",
+  "housing_workspace_plans",
+  "housing_workspace_checklists",
   "service_consent_events",
   "phone_verification_control",
   "phone_verification_challenges",
@@ -249,6 +253,14 @@ export class AccountReset {
             (counts.personal_plan_items ?? 0) +
             (counts.personal_plan_checklists ?? 0) +
             (counts.personal_plan_item_history ?? 0),
+        });
+      const housingHistory =
+        (counts.housing_workspace_plans ?? 0) +
+        (counts.housing_workspace_checklists ?? 0);
+      if (housingHistory)
+        blockers.push({
+          code: "HOUSING_WORKSPACE_HISTORY_REQUIRES_REVIEW",
+          count: housingHistory,
         });
       if (expected === undefined)
         blockers.push({ code: "EXPECTED_USER_COUNT_NOT_PINNED", count: 1 });

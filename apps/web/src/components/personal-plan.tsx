@@ -1,5 +1,12 @@
 "use client";
-import { useEffect, useId, useRef, useState, type FormEvent } from "react";
+import {
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type FormEvent,
+  type ReactNode,
+} from "react";
 import { ApiError, createClient } from "@citygo/api-client";
 import type {
   CreatePersonalPlanItem,
@@ -249,12 +256,14 @@ export function PersonalPlanPanel({
   onContinue,
   onHelpers,
   miniApp,
+  housingResults,
   navigationBusy = false,
 }: OwnerProps & {
   onOpenConversation: (threadId: string) => Promise<boolean>;
   onContinue: () => void;
   onHelpers: () => void;
   miniApp?: { targetCity?: string | null; onResults: () => void };
+  housingResults?: ReactNode;
   navigationBusy?: boolean;
 }) {
   const [snapshot, setSnapshot] = useState<{
@@ -571,6 +580,7 @@ export function PersonalPlanPanel({
           план в своём темпе, даже если бюджет и дата ещё неизвестны.
         </p>
       )}
+      {housingResults}
       <div className={styles.toolbar}>
         {!miniApp && <span className={styles.meta}>МОЙ ПЛАН</span>}
         <Button

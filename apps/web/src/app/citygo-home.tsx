@@ -122,15 +122,23 @@ function draftStorage() {
   }
 }
 
-type RegistrationTask = { task: LandingTask; ownerId: string };
-type RegistrationChallenge = PendingEmailRegistration & { task?: LandingTask };
+type TaskSelection = {
+  task: LandingTask;
+  housingCriteria?: MiniAppAccountAccess["housingCriteria"];
+};
+type RegistrationTask = TaskSelection & { ownerId: string };
+type RegistrationChallenge = PendingEmailRegistration & {
+  selection?: TaskSelection;
+};
 
 export default function CityGoHome({
   miniApp,
   registerMiniAppBack,
+  rememberHousingOwner,
 }: {
   miniApp?: MiniAppAccountAccess;
   registerMiniAppBack?: (handler: (() => boolean) | null) => void;
+  rememberHousingOwner?: (ownerId: string | null) => void;
 }) {
   const [session] = useState(createSessionGuard);
   const [formVersion, setFormVersion] = useState(0);
@@ -149,12 +157,21 @@ export default function CityGoHome({
   );
   const [registration, setRegistration] =
     useState<RegistrationChallenge | null>(null);
-  const landingTask = useRef<{ task: LandingTask; expiresAt: number } | null>(
+  const landingTask = useRef<(TaskSelection & { expiresAt: number }) | null>(
     miniApp?.task
-      ? { task: miniApp.task, expiresAt: Date.now() + landingTaskMaxAgeMs }
+      ? {
+          task: miniApp.task,
+          expiresAt: Date.now() + landingTaskMaxAgeMs,
+          housingCriteria: miniApp.housingCriteria,
+        }
       : null,
   );
   const pendingOwnerTask = useRef<RegistrationTask | undefined>(undefined);
+  const resumeHousingOwner = useRef(miniApp?.resumeHousingOwner);
+  const [launchHousing, setLaunchHousing] = useState<{
+    ownerId: string;
+    criteria: MiniAppAccountAccess["housingCriteria"];
+  } | null>(null);
   const miniRetryTask = useRef<RegistrationTask | undefined>(undefined);
   const [miniOffline, setMiniOffline] = useState(false);
   const [miniRefreshFailed, setMiniRefreshFailed] = useState(false);
@@ -196,7 +213,7 @@ export default function CityGoHome({
   const [favoritesOpen, setFavoritesOpen] = useState(false);
   const [conversationNavigation, setConversationNavigation] = useState(0);
   const [phoneOpen, setPhoneOpen] = useState(false);
-  const [messengerOpen, setMessengerOpen] = useState(!!miniApp);
+  const [messengerOpen, setMessengerOpen] = useState(!!miniApp?.initData);
   const [balanceOpen, setBalanceOpen] = useState(false);
   const [conversationView, setConversationView] = useState(true);
   const [workspaceRequest, setWorkspaceRequest] = useState<{
@@ -316,7 +333,10 @@ export default function CityGoHome({
   }
   function clearUserState(owner?: string, keepAnonymousTask = false) {
     if (!keepAnonymousTask) landingTask.current = null;
+    resumeHousingOwner.current = undefined;
+    rememberHousingOwner?.(null);
     pendingOwnerTask.current = undefined;
+    setLaunchHousing(null);
     miniRetryTask.current = undefined;
     setMiniRefreshFailed(false);
     landingAssistantEvent.current = null;
@@ -394,7 +414,11 @@ export default function CityGoHome({
       !session.hasOwner() &&
       entrance &&
       Date.now() < entrance.expiresAt
-        ? { task: entrance.task, ownerId: next.user.id }
+        ? {
+            task: entrance.task,
+            ownerId: next.user.id,
+            housingCriteria: entrance.housingCriteria,
+          }
         : undefined);
     landingTask.current = null;
     if (session.ownerChanged(next.user.id)) {
@@ -465,7 +489,16 @@ export default function CityGoHome({
         rememberConversation(next.user.id, started.id);
         if (miniApp) {
           miniRetryTask.current = undefined;
-          requestWorkspaceTab("Диалоги");
+          if (followTask?.task === "housing") {
+            setLaunchHousing({
+              ownerId: next.user.id,
+              criteria: followTask.housingCriteria,
+            });
+            requestWorkspaceTab("Жильё");
+            rememberHousingOwner?.(next.user.id);
+          } else {
+            requestWorkspaceTab("Диалоги");
+          }
         }
         landingAssistantEvent.current = {
           ownerId: next.user.id,
@@ -523,6 +556,19 @@ export default function CityGoHome({
     }
     ticket.check();
     if (version !== refreshVersion.current) return false;
+    if (resumeHousingOwner.current) {
+      if (
+        resumeHousingOwner.current === next.user.id &&
+        !next.user.serviceConsentRequired &&
+        !next.user.mustChangePassword
+      ) {
+        requestWorkspaceTab("Жильё");
+        resumeHousingOwner.current = undefined;
+      } else if (resumeHousingOwner.current !== next.user.id) {
+        resumeHousingOwner.current = undefined;
+        rememberHousingOwner?.(null);
+      }
+    }
     if (next.thread?.closed) {
       writeChatDraft(next.user.id, next.thread.id, "", draftStorage());
       conversationDrafts.current.delete(next.thread.id);
@@ -922,11 +968,14 @@ export default function CityGoHome({
         ? readBrowserLandingAttribution()
         : undefined;
     const selectedTask = landingTask.current;
-    const task =
+    const selection =
       (authMode === "register" || miniApp) &&
       selectedTask &&
       Date.now() < selectedTask.expiresAt
-        ? selectedTask.task
+        ? {
+            task: selectedTask.task,
+            housingCriteria: selectedTask.housingCriteria,
+          }
         : undefined;
     const email = String(data.get("email"));
     let password = String(data.get("password"));
@@ -969,7 +1018,7 @@ export default function CityGoHome({
                 Date.now(),
                 consents!,
               ),
-              task,
+              selection,
             });
             analytics.registrationCodeSent(
               registrationAnalytics.current,
@@ -1008,12 +1057,14 @@ export default function CityGoHome({
         clearBrowserLandingAttribution();
         await refresh(
           ticket,
-          task ? { task, ownerId: authenticated.user.id } : undefined,
+          selection
+            ? { ...selection, ownerId: authenticated.user.id }
+            : undefined,
         );
         if (miniApp && ticket.active()) setMessengerOpen(true);
       } catch (cause) {
         if (ticket.active() && !accepted) {
-          if (task) landingTask.current = selectedTask;
+          if (selection) landingTask.current = selectedTask;
           trackProductEvent(
             authMode === "register" ? "registration_failed" : "login_failed",
             { surface: authMode },
@@ -1052,7 +1103,7 @@ export default function CityGoHome({
             Date.now(),
             current.consents,
           ),
-          task: current.task,
+          selection: current.selection,
         });
         setNotice("Новый код отправлен. Предыдущий код больше не действует.");
       } finally {
@@ -1093,8 +1144,8 @@ export default function CityGoHome({
         try {
           await refresh(
             confirmed,
-            current.task
-              ? { task: current.task, ownerId: authenticated.user.id }
+            current.selection
+              ? { ...current.selection, ownerId: authenticated.user.id }
               : undefined,
           );
           if (miniApp && confirmed.active()) setMessengerOpen(true);
@@ -1112,7 +1163,8 @@ export default function CityGoHome({
     });
   }
   async function signInWithMessenger() {
-    if (!miniApp || busy || logoutUnconfirmed || authPending.current) return;
+    if (!miniApp?.initData || busy || logoutUnconfirmed || authPending.current)
+      return;
     const selectedTask = landingTask.current;
     let ticket = session.capture();
     authPending.current = true;
@@ -1123,12 +1175,15 @@ export default function CityGoHome({
         signal: () => ticket.signal,
       }).miniAppSignIn(miniApp.provider, miniApp.initData);
       ticket.check();
-      const task =
+      const selection =
         selectedTask && Date.now() < selectedTask.expiresAt
-          ? selectedTask.task
+          ? {
+              task: selectedTask.task,
+              housingCriteria: selectedTask.housingCriteria,
+            }
           : result.purpose === "guest"
             ? undefined
-            : result.purpose;
+            : { task: result.purpose };
       notifyBrowserSessionChange();
       clearUserState();
       ticket = session.capture();
@@ -1136,7 +1191,7 @@ export default function CityGoHome({
       setBusy(true);
       await refresh(
         ticket,
-        task ? { task, ownerId: result.user.id } : undefined,
+        selection ? { ...selection, ownerId: result.user.id } : undefined,
       );
     } catch (cause) {
       if (ticket.active()) {
@@ -1833,7 +1888,7 @@ export default function CityGoHome({
                       : "Войти"}
                 </Button>
               </form>
-              {miniApp && (
+              {miniApp?.initData && (
                 <Button
                   variant="secondary"
                   disabled={busy || logoutUnconfirmed}
@@ -2073,6 +2128,10 @@ export default function CityGoHome({
                         },
                         onReceipts: () => setReceiptsOpen(true),
                         onLogout: requestLogout,
+                        housingCriteria:
+                          launchHousing?.ownerId === board.user.id
+                            ? launchHousing.criteria
+                            : undefined,
                       }
                     : undefined
                 }

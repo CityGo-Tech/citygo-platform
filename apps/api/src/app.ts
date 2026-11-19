@@ -109,6 +109,7 @@ import {
   LegacyCompletedChargeRecovery,
 } from "./ai-credit-recovery.js";
 import { registerSyntheticHousingApi } from "./housing.js";
+import { registerHousingWorkspaceApi } from "./housing-workspace.js";
 import { registerPersonalPlanApi } from "./personal-plan.js";
 import { registerPlanChecklistApi } from "./plan-checklist.js";
 import { registerHumanSupportApi } from "./human-support.js";
@@ -730,6 +731,17 @@ export async function buildApp(options: {
         "select provider,fingerprint,expires_at from messenger_launch_consumptions limit 0",
       );
       await options.db.query("select messenger_provider from sessions limit 0");
+      const housingWorkspaceMigration = await options.db.query(
+        "select name from citygo_migrations where name='0052_housing_workspace.sql'",
+      );
+      if (housingWorkspaceMigration.rows.length !== 1)
+        throw new Error("Pending housing workspace migration");
+      await options.db.query(
+        "select user_id,revision,thread_id,situation,city,commute,budget_rub,request_id,updated_at from housing_workspace_plans limit 0",
+      );
+      await options.db.query(
+        "select user_id,revision,plan_revision,selected,payment_checked,request_id,updated_at from housing_workspace_checklists limit 0",
+      );
       await options.db.query(
         "select landing_attribution from email_registrations limit 0",
       );
@@ -1311,6 +1323,7 @@ export async function buildApp(options: {
   });
   registerPersonalPlanApi(app, { db: options.db, authenticate });
   registerPlanChecklistApi(app, { db: options.db, authenticate });
+  registerHousingWorkspaceApi(app, { db: options.db, authenticate });
   registerBalanceHistoryApi(app, {
     db: options.db,
     context: async (request) => {

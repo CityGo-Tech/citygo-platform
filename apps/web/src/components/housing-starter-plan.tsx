@@ -15,6 +15,68 @@ type Stage = "question" | "criteria" | "preview" | "save";
 
 const title = "Стартовый план поиска жилья";
 
+export function housingPlanContent(input: {
+  situation: Situation;
+  commute: string;
+  budgetRub: number | null;
+}) {
+  const { situation, commute, budgetRub } = input;
+  const budget =
+    budgetRub === null
+      ? ""
+      : new Intl.NumberFormat("ru-RU").format(budgetRub) + " ₽/мес.";
+  const comparison = commute
+    ? `Сравните дорогу до ориентира «${commute}» в нужное вам время, тип жилья и условия проживания.`
+    : situation === "searching"
+      ? "Пока работа в поиске, сравните несколько транспортных направлений, тип жилья и условия проживания."
+      : "Сравните несколько транспортных направлений, тип жилья и условия проживания. Уточните регулярный маршрут, когда появится ориентир.";
+  return {
+    summary: [
+      budget ? "Бюджет " + budget : "Бюджет пока открыт",
+      commute ? "Ориентир «" + commute + "»" : "Район пока открыт",
+    ].join(" · "),
+    steps: [
+      { title: "Сравнивать по одинаковым критериям", details: comparison },
+      {
+        title: "Проверять предложения",
+        details:
+          "Когда появится дата заселения, сопоставьте на неё несколько объявлений. Перед просмотром уточните у арендодателя актуальность и полную сумму платежей.",
+      },
+      {
+        title: "Готовиться к разговору",
+        details:
+          "Спросите, что входит в ежемесячный платёж, на каких условиях возвращают залог и кто подписывает договор. Подготовьте вопросы для просмотра.",
+      },
+    ],
+  };
+}
+
+export function HousingPlanSteps({
+  summary,
+  steps,
+}: ReturnType<typeof housingPlanContent>) {
+  return (
+    <>
+      <p className={styles.summary}>{summary}</p>
+      <aside className={styles.orientation}>
+        <p className={styles.eyebrow}>Первый ориентир</p>
+        <h2>Полный расход — не только аренда</h2>
+        <p>{housingFirstPaymentDetails}</p>
+      </aside>
+      <ol className={styles.steps} aria-label="Шаги поиска">
+        {steps.map((step, index) => (
+          <li key={step.title}>
+            <h2>
+              {index + 1} · {step.title}
+            </h2>
+            <p>{step.details}</p>
+          </li>
+        ))}
+      </ol>
+    </>
+  );
+}
+
 export function HousingPlanLaunch({
   disabled,
   launchRef,
@@ -67,42 +129,17 @@ export function HousingStarterPlan({
     heading.current?.focus();
   }, [stage]);
 
-  const commute = criteria.commute;
-  const budget = criteria.budget
-    ? new Intl.NumberFormat("ru-RU").format(Number(criteria.budget)) + " ₽/мес."
-    : "";
-  const comparison = commute
-    ? `Сравните дорогу до ориентира «${commute}» в нужное вам время, тип жилья и условия проживания.`
-    : situation === "searching"
-      ? "Пока работа в поиске, сравните несколько транспортных направлений, тип жилья и условия проживания."
-      : "Сравните несколько транспортных направлений, тип жилья и условия проживания. Уточните регулярный маршрут, когда появится ориентир.";
-  const steps = [
-    {
-      title: "Сравнивать по одинаковым критериям",
-      details: comparison,
-    },
-    {
-      title: "Проверять предложения",
-      details:
-        "Когда появится дата заселения, сопоставьте на неё несколько объявлений. Перед просмотром уточните у арендодателя актуальность и полную сумму платежей.",
-    },
-    {
-      title: "Готовиться к разговору",
-      details:
-        "Спросите, что входит в ежемесячный платёж, на каких условиях возвращают залог и кто подписывает договор. Подготовьте вопросы для просмотра.",
-    },
-  ];
-  const costDetails = housingFirstPaymentDetails;
-  const summary = [
-    budget ? "Бюджет " + budget : "Бюджет пока открыт",
-    commute ? "Ориентир «" + commute + "»" : "Район пока открыт",
-  ].join(" · ");
+  const plan = housingPlanContent({
+    situation,
+    commute: criteria.commute,
+    budgetRub: criteria.budget ? Number(criteria.budget) : null,
+  });
   const initialFields = {
     title,
     details: [
-      summary,
-      "Полный расход — не только аренда. " + costDetails,
-      ...steps.map(
+      plan.summary,
+      "Полный расход — не только аренда. " + housingFirstPaymentDetails,
+      ...plan.steps.map(
         (step, i) => i + 1 + ". " + step.title + "\n" + step.details,
       ),
     ].join("\n\n"),
@@ -206,22 +243,7 @@ export function HousingStarterPlan({
             План действий для поиска жилья. Актуальность объявлений проверяйте у
             арендодателя.
           </p>
-          <p className={styles.summary}>{summary}</p>
-          <aside className={styles.orientation}>
-            <p className={styles.eyebrow}>Первый ориентир</p>
-            <h2>Полный расход — не только аренда</h2>
-            <p>{costDetails}</p>
-          </aside>
-          <ol className={styles.steps} aria-label="Шаги поиска">
-            {steps.map((step, i) => (
-              <li key={step.title}>
-                <h2>
-                  {i + 1} · {step.title}
-                </h2>
-                <p>{step.details}</p>
-              </li>
-            ))}
-          </ol>
+          <HousingPlanSteps {...plan} />
           <div className={styles.stack}>
             <Button type="button" onClick={() => setStage("save")}>
               Сохранить ориентир

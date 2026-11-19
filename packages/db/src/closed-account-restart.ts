@@ -18,6 +18,8 @@ const tables = [
   "personal_plan_checklists",
   "personal_plan_item_history",
   "personal_plan_items",
+  "housing_workspace_plans",
+  "housing_workspace_checklists",
   "password_recovery_challenges",
   "account_email_confirmation_challenges",
   "account_email_verifications",
@@ -93,6 +95,8 @@ const tables = [
 // No money, attempt, receipt, policy, migration, catalog or usage row is rewritten.
 const retainedTables = [
   "messenger_accounts",
+  "housing_workspace_plans",
+  "housing_workspace_checklists",
   "messenger_launch_consumptions",
   "human_support_requests",
   "human_support_replies",
@@ -403,6 +407,14 @@ async function inspect(tx: Sql, options: Options) {
         snapshot.counts.personal_plan_items! +
         snapshot.counts.personal_plan_checklists! +
         snapshot.counts.personal_plan_item_history!,
+    });
+  const housingHistory =
+    snapshot.counts.housing_workspace_plans! +
+    snapshot.counts.housing_workspace_checklists!;
+  if (housingHistory)
+    blockers.push({
+      code: "HOUSING_WORKSPACE_HISTORY_REQUIRES_REVIEW",
+      count: housingHistory,
     });
   if (snapshot.counts.password_recovery_challenges)
     blockers.push({

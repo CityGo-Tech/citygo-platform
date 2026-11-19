@@ -48,6 +48,7 @@ import { MessageTextActions } from "./message-text-actions";
 import { ConversationMessageSearch } from "./conversation-message-search";
 import { ConversationExportAction } from "./conversation-export";
 import { HousingPlanLaunch, HousingStarterPlan } from "./housing-starter-plan";
+import { HousingWorkspaceView } from "./housing-workspace";
 import miniStyles from "./mini-app/mini-workspace.module.css";
 
 const greeting =
@@ -69,6 +70,9 @@ export function ConversationHome(props: JourneyProps) {
   const [tab, setTab] = useState(
     miniNavigation && !props.board.thread ? "Мой план" : "Диалоги",
   );
+  const [housingView, setHousingView] = useState<"plan" | "checklist" | null>(
+    null,
+  );
   const [navigationHost, setNavigationHost] = useState<HTMLElement | null>(
     null,
   );
@@ -81,11 +85,13 @@ export function ConversationHome(props: JourneyProps) {
   }, [props.headerNavigationId]);
   useEffect(() => {
     if (!props.workspaceRequest) return;
-    setTab(props.workspaceRequest.tab);
+    const openHousing = miniApp && props.workspaceRequest.tab === "Жильё";
+    setTab(openHousing ? "Диалоги" : props.workspaceRequest.tab);
+    setHousingView(openHousing ? "plan" : null);
     setShowList(false);
     setHousingJourney(null);
     props.onWorkspaceRequestHandled?.(props.workspaceRequest.sequence);
-  }, [props.workspaceRequest, props.onWorkspaceRequestHandled]);
+  }, [miniApp, props.workspaceRequest, props.onWorkspaceRequestHandled]);
   const [supportSelection, setSupportSelection] = useState<{
     owner: string;
     signal: AbortSignal;
@@ -100,7 +106,7 @@ export function ConversationHome(props: JourneyProps) {
   const [showList, setShowList] = useState(false);
   useEffect(() => {
     if (miniApp) workspace.current?.scrollIntoView({ block: "start" });
-  }, [miniApp, tab, showList]);
+  }, [miniApp, tab, showList, housingView]);
   const [supportReturnTab, setSupportReturnTab] = useState("Диалоги");
   const [contextSource, setContextSource] = useState<{
     userId: string;
@@ -183,6 +189,7 @@ export function ConversationHome(props: JourneyProps) {
     if (opened) {
       setPlanSource(null);
       setHousingJourney(null);
+      setHousingView(null);
       setTab("Диалоги");
       setShowList(false);
     }
@@ -214,6 +221,7 @@ export function ConversationHome(props: JourneyProps) {
       if (busy || sending) return true;
       if (handoffSource) setHandoffSource(null);
       else if (planSource) setPlanSource(null);
+      else if (housingView) setHousingView(null);
       else if (currentHousingJourney) setHousingJourney(null);
       else if (tab === "Контекст") closeContext();
       else if (tab === "Помощь человека") setTab(supportReturnTab);
@@ -230,6 +238,7 @@ export function ConversationHome(props: JourneyProps) {
     handoffSource,
     planSource,
     currentHousingJourney,
+    housingView,
     tab,
     showList,
     supportReturnTab,
@@ -317,6 +326,7 @@ export function ConversationHome(props: JourneyProps) {
             onClick={() => {
               props.onNavigateWorkspace?.();
               setHousingJourney(null);
+              setHousingView(null);
               setTab(name);
               if (name === "Мой план")
                 trackProductEvent("plan_opened", { surface: "plan" });
@@ -325,7 +335,8 @@ export function ConversationHome(props: JourneyProps) {
               if (
                 name === "Диалоги" &&
                 (!miniNavigation || tab !== "Диалоги" || !showList)
-              ) openConversationList();
+              )
+                openConversationList();
             }}
           >
             {miniNavigation && "miniLabel" in item ? (
@@ -346,6 +357,27 @@ export function ConversationHome(props: JourneyProps) {
       })}
     </nav>
   );
+  const housingLinks = miniApp && (
+    <div
+      className={miniStyles.housingLinks}
+      aria-label="Результаты поиска жилья"
+    >
+      <Button
+        variant="secondary"
+        disabled={busy || sending}
+        onClick={() => setHousingView("plan")}
+      >
+        Стартовый план поиска жилья
+      </Button>
+      <Button
+        variant="secondary"
+        disabled={busy || sending}
+        onClick={() => setHousingView("checklist")}
+      >
+        Чек-лист просмотра
+      </Button>
+    </div>
+  );
   return (
     <section
       ref={workspace}
@@ -356,7 +388,11 @@ export function ConversationHome(props: JourneyProps) {
           ? createPortal(navigation, navigationHost)
           : navigation)}
       {(!miniNavigation ||
-        (tab === "Диалоги" && !showList && board.thread && board.assistantContextAvailable === true)) && (
+        (tab === "Диалоги" &&
+          !showList &&
+          !housingView &&
+          board.thread &&
+          board.assistantContextAvailable === true)) && (
         <div
           className={
             miniNavigation ? miniStyles.context : contextStyles.mobileContext
@@ -444,7 +480,24 @@ export function ConversationHome(props: JourneyProps) {
           }}
         />
       )}
-      {tab === "Контекст" ? (
+      {housingView ? (
+        <HousingWorkspaceView
+          key={board.user.id + ":housing:" + housingView}
+          userId={board.user.id}
+          threadId={housingThread?.id}
+          sessionSignal={props.sessionSignal}
+          onAccessDenied={props.onAccessDenied}
+          onExit={() => setHousingView(null)}
+          onOpenSource={(threadId) => void open(threadId)}
+          onChooseAssistant={() => {
+            setHousingView(null);
+            setTab("Помощники");
+          }}
+          initialView={housingView}
+          initialCriteria={miniNavigation?.housingCriteria}
+          defaultCity={board.profile?.targetCity}
+        />
+      ) : tab === "Контекст" ? (
         <div className="conversation-workspace">
           {sidebar}
           <div className="conversation-main">
@@ -519,6 +572,7 @@ export function ConversationHome(props: JourneyProps) {
               userId={board.user.id}
               sessionSignal={props.sessionSignal}
               onAccessDenied={props.onAccessDenied}
+              housingResults={housingLinks}
               navigationBusy={busy || sending}
               onOpenConversation={open}
               onPlan={() => setTab("Мой план")}
@@ -552,6 +606,7 @@ export function ConversationHome(props: JourneyProps) {
               userId={board.user.id}
               sessionSignal={props.sessionSignal}
               onAccessDenied={props.onAccessDenied}
+              housingResults={housingLinks}
               navigationBusy={busy || sending}
               onOpenConversation={open}
               onContinue={() => {
@@ -878,13 +933,17 @@ export function ConversationHome(props: JourneyProps) {
                     !!props.history?.detached ||
                     props.sessionSignal.aborted
                   }
-                  onStart={() =>
+                  onStart={() => {
+                    if (miniApp) {
+                      setHousingView("plan");
+                      return;
+                    }
                     setHousingJourney({
                       userId: board.user.id,
                       threadId: housingThread.id,
                       signal: props.sessionSignal,
-                    })
-                  }
+                    });
+                  }}
                 />
               )}
               {!board.thread ? (
