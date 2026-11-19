@@ -454,7 +454,10 @@ test("MAX shows the account status and a read-only balance while the gift is pen
   await expect(
     page.getByRole("button", { name: "Подтвердить телефон", exact: true }),
   ).toHaveCount(0);
-  await page.getByRole("button", { name: "Баланс и история операций" }).click();
+  const walletTrigger = page.getByRole("button", {
+    name: "Баланс и история операций",
+  });
+  await walletTrigger.click();
   await expect(
     page.getByRole("heading", { name: "Баланс CityGo" }),
   ).toBeVisible();
@@ -464,6 +467,11 @@ test("MAX shows the account status and a read-only balance while the gift is pen
   await expect(
     page.getByRole("button", { name: /пополнить|оплатить/i }),
   ).toHaveCount(0);
+  await page
+    .getByRole("banner", { name: "CityGo в MAX" })
+    .getByRole("button", { name: "Назад", exact: true })
+    .click();
+  await expect(walletTrigger).toBeFocused();
   expect(account.sends).toEqual([]);
   expect(mutations).toEqual(["/api/v1/mini-apps/max/sign-in"]);
   expect(analytics).toEqual([]);

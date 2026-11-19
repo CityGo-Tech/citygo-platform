@@ -685,7 +685,7 @@ export function ConversationHome(props: JourneyProps) {
                 miniNavigation
                   ? supportReturnTab === "Профиль"
                     ? "К профилю"
-                    : "К диалогам"
+                    : "Назад"
                   : undefined
               }
             />

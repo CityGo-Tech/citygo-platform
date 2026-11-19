@@ -224,6 +224,7 @@ export default function CityGoHome({
   const [conversationNavigation, setConversationNavigation] = useState(0);
   const [phoneOpen, setPhoneOpen] = useState(false);
   const [profileRevision, setProfileRevision] = useState(0);
+  const miniAccountDetailTrigger = useRef<HTMLElement | null>(null);
   const [messengerOpen, setMessengerOpen] = useState(!!miniApp?.initData);
   const [balanceOpen, setBalanceOpen] = useState(false);
   const [conversationView, setConversationView] = useState(true);
@@ -448,6 +449,7 @@ export default function CityGoHome({
     setReceiptsOpen(false);
     setFavoritesOpen(false);
     setPhoneOpen(false);
+    miniAccountDetailTrigger.current = null;
     setMessengerOpen(false);
     setBalanceOpen(false);
     setConversationView(true);
@@ -1718,6 +1720,8 @@ export default function CityGoHome({
   };
   const authViewSignal = session.capture().signal;
   function openBalance() {
+    if (miniApp && !phoneOpen && document.activeElement instanceof HTMLElement)
+      miniAccountDetailTrigger.current = document.activeElement;
     trackProductEvent("wallet_opened", { surface: "wallet" });
     setPhoneOpen(false);
     setMessengerOpen(false);
@@ -1728,6 +1732,8 @@ export default function CityGoHome({
   }
   function openPhone() {
     if (miniProvider === "max") return;
+    if (miniApp && document.activeElement instanceof HTMLElement)
+      miniAccountDetailTrigger.current = document.activeElement;
     trackProductEvent("phone_opened", { surface: "phone" });
     setBalanceOpen(false);
     setMessengerOpen(false);
@@ -1754,18 +1760,24 @@ export default function CityGoHome({
   function returnToApp() {
     setBalanceOpen(false);
     setPhoneOpen(false);
-    if (miniApp && phoneOpen) refreshPhoneStatus();
     if (miniApp) {
-      requestWorkspaceTab("Профиль");
-      requestAnimationFrame(() =>
-        document.getElementById("account-profile-heading")?.focus(),
-      );
+      if (phoneOpen) refreshPhoneStatus();
+      const trigger = miniAccountDetailTrigger.current;
+      miniAccountDetailTrigger.current = null;
+      requestAnimationFrame(() => trigger?.focus());
       return;
     }
     requestAnimationFrame(() =>
       document
         .querySelector<HTMLButtonElement>("#citygo-account-overview button")
         ?.focus(),
+    );
+  }
+  function returnToMiniProfile() {
+    returnToApp();
+    requestWorkspaceTab("Профиль");
+    requestAnimationFrame(() =>
+      document.getElementById("account-profile-heading")?.focus(),
     );
   }
   useEffect(() => {
@@ -2289,7 +2301,7 @@ export default function CityGoHome({
                       sessionSignal={session.capture().signal}
                       availableMicros={board.aiAccess.credit?.availableMicros}
                       onAccessDenied={requireLogin}
-                      onClose={returnToApp}
+                      onClose={returnToMiniProfile}
                     />
                   )
                 ) : (
