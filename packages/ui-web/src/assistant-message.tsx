@@ -85,20 +85,72 @@ const allowedElements = [
   "img",
 ];
 
-/** Shared by live, saved and interrupted replies. User messages stay plain text. */
-export const AssistantMessage = memo(function AssistantMessage({
+function checkedWebSources(content: string, webSources?: WebSources) {
+  try {
+    if (webSources) return validateWebSourcesForAnswer(webSources, content);
+  } catch {
+    // A corrupt or older receipt cannot become clickable or hide the answer.
+  }
+}
+
+function SourceLinks({
+  sources,
+  heading,
+}: {
+  sources: WebSources;
+  heading: boolean;
+}) {
+  return (
+    <section
+      className="cg-assistant-sources ym-hide-content"
+      aria-label="Источники"
+    >
+      {heading && <strong>Источники</strong>}
+      <ol>
+        {sources.citations.map((source, index) => (
+          <li key={index + ":" + source.url}>
+            <a
+              href={source.url}
+              target="_blank"
+              rel="noopener noreferrer nofollow"
+              referrerPolicy="no-referrer"
+            >
+              <span>{source.title}</span>
+              <span className="cg-assistant-source-host">
+                {new URL(source.url).host}
+              </span>
+            </a>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
+export function AssistantAnswerSources({
   content,
   webSources,
 }: {
   content: string;
-  webSources?: WebSources;
+  webSources: WebSources;
 }) {
-  let sources: WebSources | undefined;
-  try {
-    if (webSources) sources = validateWebSourcesForAnswer(webSources, content);
-  } catch {
-    // A corrupt/older receipt must not become a clickable source or hide text.
-  }
+  const sources = checkedWebSources(content, webSources);
+  return sources ? <SourceLinks sources={sources} heading={false} /> : null;
+}
+
+/** Shared by live, saved and interrupted replies. User messages stay plain text. */
+export const AssistantMessage = memo(function AssistantMessage({
+  content,
+  webSources,
+  sourceActionKey,
+  renderSourceAction,
+}: {
+  content: string;
+  webSources?: WebSources;
+  sourceActionKey?: string;
+  renderSourceAction?: (key: string) => ReactNode;
+}) {
+  const sources = checkedWebSources(content, webSources);
   return (
     <div className="cg-assistant-message">
       {content.length > 32_000 ? (
@@ -116,31 +168,12 @@ export const AssistantMessage = memo(function AssistantMessage({
           {content}
         </Markdown>
       )}
-      {sources && (
-        <section
-          className="cg-assistant-sources ym-hide-content"
-          aria-label="Источники"
-        >
-          <strong>Источники</strong>
-          <ol>
-            {sources.citations.map((source, index) => (
-              <li key={index + ":" + source.url}>
-                <a
-                  href={source.url}
-                  target="_blank"
-                  rel="noopener noreferrer nofollow"
-                  referrerPolicy="no-referrer"
-                >
-                  <span>{source.title}</span>
-                  <span className="cg-assistant-source-host">
-                    {new URL(source.url).host}
-                  </span>
-                </a>
-              </li>
-            ))}
-          </ol>
-        </section>
-      )}
+      {sources &&
+        (renderSourceAction && sourceActionKey ? (
+          renderSourceAction(sourceActionKey)
+        ) : (
+          <SourceLinks sources={sources} heading />
+        ))}
     </div>
   );
 });

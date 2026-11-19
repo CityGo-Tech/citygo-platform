@@ -1,6 +1,6 @@
 .dialog {
   width: min(816px, calc(100vw - 32px));
-  max-height: calc(100dvh - 32px);
+  max-height: calc(var(--mini-keyboard-height, 100dvh) - 32px);
   margin: auto;
   padding: 0;
   overflow: auto;
@@ -83,7 +83,7 @@
 @media (max-width: 540px) {
   .dialog {
     width: calc(100vw - 24px);
-    max-height: calc(100dvh - 24px);
+    max-height: calc(var(--mini-keyboard-height, 100dvh) - 24px);
   }
   .card {
     padding: var(--cg-space-lg);

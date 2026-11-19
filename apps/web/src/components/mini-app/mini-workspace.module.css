@@ -117,10 +117,6 @@
   grid-template-columns: minmax(0, 1fr);
 }
 
-.context {
-  align-self: end;
-}
-
 .housingLinks {
   display: grid;
   gap: var(--cg-space-sm);
@@ -144,6 +140,250 @@
 .workspace :global(.conversation-composer textarea) {
   min-width: 0;
   font-size: max(1rem, 16px);
+}
+
+.workspace .chatWorkspace {
+  display: flex;
+  flex: 1;
+}
+
+.chatWorkspace > :global(.conversation-main) {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+}
+
+.workspace .chatWorkspace :global(.conversation-chat-card) {
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  gap: var(--cg-space-compact);
+}
+
+.chatWorkspace :global(.conversation-heading h1),
+.chatScreen h1 {
+  margin: 0;
+  font-size: 2rem;
+  font-weight: 800;
+  line-height: 1.16;
+  overflow-wrap: anywhere;
+}
+
+.chatAssistant {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--cg-space-sm);
+}
+
+.chatAssistant > img {
+  flex: none;
+  border-radius: var(--cg-radius-control);
+  object-fit: contain;
+}
+
+.chatAssistant .modeTrigger:global(.cg-button) {
+  min-width: 0;
+  min-height: var(--cg-size-touch-min);
+  gap: var(--cg-space-sm);
+  padding-inline: var(--cg-space-sm);
+  background: var(--mini-tint);
+  color: var(--cg-color-primary-strong);
+  font-size: 0.875rem;
+  white-space: normal;
+}
+
+.modeTrigger img {
+  flex: none;
+}
+
+.workspace .chatWorkspace :global(.conversation-messages) {
+  max-height: min(60dvh, 42rem);
+  scrollbar-gutter: auto;
+}
+
+.workspace .chatWorkspace :global(.conversation-message) {
+  margin-bottom: var(--cg-space-compact);
+  padding: var(--cg-space-compact) var(--cg-space-md);
+  border: 1px solid var(--cg-color-border);
+  background: var(--cg-color-surface);
+}
+
+.workspace .chatWorkspace :global(.conversation-message.user) {
+  background: var(--mini-tint);
+  color: var(--cg-color-foreground);
+  border-color: transparent;
+}
+
+.workspace .chatWorkspace :global(.conversation-message.user) :is(p, small) {
+  color: var(--cg-color-foreground);
+}
+
+.workspace .chatWorkspace :global(.conversation-message.user) > strong {
+  color: var(--cg-color-primary-strong);
+}
+
+.workspace .chatWorkspace .attachment:global(.cg-card) {
+  flex: none;
+  display: grid;
+  gap: var(--cg-space-xs);
+  margin: 0;
+  padding: var(--cg-space-compact) var(--cg-space-md);
+  border: 0;
+  background: var(--mini-tint);
+  overflow-wrap: anywhere;
+}
+
+.attachment > small,
+.chatScreen > p,
+.chatRow > small {
+  color: var(--cg-color-muted);
+  font-size: 0.875rem;
+  line-height: 1.4;
+}
+
+.workspace .chatWorkspace .chatComposer {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--cg-space-compact);
+  padding: var(--cg-space-sm) 0 0;
+  border: 0;
+  background: transparent;
+}
+
+.chatComposer > .chatAvailability {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--cg-color-muted);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+
+.chatEditor {
+  display: grid;
+  min-width: 0;
+  gap: var(--cg-space-xs);
+  padding: var(--cg-space-sm) var(--cg-space-md);
+  border: 1px solid var(--cg-color-border);
+  border-radius: var(--cg-radius-control);
+  background: var(--cg-color-surface);
+}
+
+.chatEditor > label {
+  color: var(--cg-color-muted);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.chatEditor > textarea {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+}
+
+.workspace .chatWorkspace .chatComposer > span {
+  grid-column: 1;
+  grid-row: auto;
+  display: flex;
+}
+
+.workspace .chatWorkspace .chatComposer > :global(.conversation-send-action) {
+  grid-column: 2;
+  grid-row: auto;
+  align-self: stretch;
+  display: flex;
+}
+
+.workspace .chatWorkspace .chatComposer > span > :global(.cg-button),
+.workspace
+  .chatWorkspace
+  .chatComposer
+  > :global(.conversation-send-action)
+  > :global(.cg-button) {
+  width: 100%;
+  min-height: var(--cg-size-touch-min);
+  padding: var(--cg-space-sm);
+  font-size: 0.9375rem;
+  white-space: normal;
+}
+
+.workspace .chatWorkspace .chatComposer > span > :global(.cg-button) {
+  border-color: transparent;
+  background: var(--mini-tint);
+  color: var(--cg-color-primary-strong);
+}
+
+.chatScreen,
+.modeOptions {
+  display: grid;
+  gap: var(--cg-space-compact);
+  padding-bottom: max(var(--cg-space-compact), var(--mini-safe-bottom, 0px));
+  min-width: 0;
+}
+
+.modeOptions {
+  padding-bottom: 0;
+}
+
+.chatScreen > p,
+.recoveryNote > p {
+  margin: 0;
+}
+
+.modeOptions .chatRow:global(.cg-button),
+.chatScreen :global(.cg-assistant-sources) a {
+  display: grid;
+  gap: var(--cg-space-xs);
+  justify-content: stretch;
+  justify-items: start;
+  min-width: 0;
+  width: 100%;
+  padding: var(--cg-space-compact) var(--cg-space-md);
+  border: 1px solid var(--cg-color-border);
+  border-radius: var(--cg-radius-card);
+  background: var(--cg-color-surface);
+  color: var(--cg-color-foreground);
+  text-align: start;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.modeOptions .chatRow:global(.cg-button[aria-pressed="true"]) {
+  border-color: var(--cg-color-primary-strong);
+  background: var(--mini-tint);
+}
+
+.chatRow > strong {
+  font-size: 0.9375rem;
+}
+
+.chatRow > small {
+  font-weight: 500;
+}
+
+.chatScreen :global(.cg-assistant-sources) {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.chatScreen :global(.cg-assistant-sources) ol {
+  display: grid;
+  gap: var(--cg-space-compact);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.chatScreen .recoveryNote:global(.cg-card) {
+  margin: 0;
+  padding: var(--cg-space-md);
+  background: var(--mini-tint);
 }
 
 .tabs {

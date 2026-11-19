@@ -51,6 +51,24 @@ export type JourneyProps = {
     onReceipts?: () => void;
     housingCriteria?: { commute: string; budgetRub: number | null };
   };
+  miniChat?: {
+    available: boolean;
+    offline: boolean;
+    recovery?: {
+      status:
+        | "unchecked"
+        | "checking"
+        | "missing"
+        | "running"
+        | "complete"
+        | "interrupted";
+      canRetry: boolean;
+      canDismiss: boolean;
+      onCheck: () => void;
+      onRetry: () => void;
+      onDismiss: () => void;
+    };
+  };
   workspaceRequest?: { tab: string; sequence: number } | null;
   onWorkspaceRequestHandled?: (sequence: number) => void;
   onNavigateWorkspace?: () => void;

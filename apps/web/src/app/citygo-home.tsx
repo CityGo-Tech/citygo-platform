@@ -41,6 +41,7 @@ import type {
   ConversationFilters,
   ServiceConsentChoice,
   AiModeId,
+  StreamEvent,
 } from "@citygo/contracts";
 import { chatTextError } from "@citygo/contracts";
 import { Button, Card, Field, Badge } from "@citygo/ui-web";
@@ -80,6 +81,14 @@ import {
   messengerNames,
   type MiniAppAccountAccess,
 } from "../components/mini-app/account-access";
+import {
+  clearMiniChatMarkers,
+  miniChatMarkerKey,
+  readMiniChatMarker,
+  writeMiniChatMarker,
+  type MiniChatMarker,
+  type MiniChatRecovery,
+} from "../components/mini-app/chat-recovery";
 import { AccountOverview, accountStyles } from "../components/account-overview";
 import { AiAccessPanel } from "../components/ai-access";
 import { chatBalanceTarget } from "../components/chat-readiness";
@@ -227,6 +236,35 @@ export default function CityGoHome({
   const [sending, setSending] = useState(false);
   const [pending, setPending] = useState("");
   const [streamAgent, setStreamAgent] = useState<AgentKey | null>(null);
+  const [miniChatCapability, setMiniChatCapability] = useState<{
+    ownerId: string;
+    version: number;
+    available: boolean;
+  } | null>(null);
+  const [miniChatRecovery, setMiniChatRecovery] =
+    useState<MiniChatRecovery | null>(null);
+  const miniChatMarkers = useRef(new Map<string, MiniChatMarker>());
+  const miniChatOwner =
+    miniApp &&
+    !board?.user.serviceConsentRequired &&
+    !board?.user.mustChangePassword
+      ? board?.user.id
+      : undefined;
+  const miniChatThread = miniChatOwner ? board?.thread?.id : undefined;
+  const canSendMiniChat =
+    !!miniChatCapability &&
+    miniChatCapability.ownerId === miniChatOwner &&
+    miniChatCapability.version === formVersion &&
+    miniChatCapability.available;
+  const currentMiniRecovery =
+    miniChatRecovery?.ownerId === miniChatOwner &&
+    miniChatRecovery?.threadId === miniChatThread
+      ? miniChatRecovery
+      : null;
+  const canDismissMiniChat =
+    currentMiniRecovery?.status === "complete" ||
+    currentMiniRecovery?.status === "interrupted" ||
+    currentMiniRecovery?.status === "missing";
   const [selectedAiMode, setSelectedAiMode] =
     useState<AiModeId>(initialWebAiMode);
   const aiModeChoiceSequence = useRef(0);
@@ -268,6 +306,43 @@ export default function CityGoHome({
       }),
     [session],
   );
+  const miniProvider = miniApp?.provider;
+  useEffect(() => {
+    if (!miniProvider || !miniChatOwner) return;
+    const ticket = session.capture();
+    let current = true;
+    void api
+      .miniAppChat(miniProvider)
+      .then(({ available }) => {
+        if (current && ticket.active())
+          setMiniChatCapability({
+            ownerId: miniChatOwner,
+            available,
+            version: formVersion,
+          });
+      })
+      .catch(() => {});
+    return () => {
+      current = false;
+    };
+  }, [api, session, miniProvider, miniChatOwner, formVersion]);
+  useEffect(() => {
+    if (!miniChatOwner || !miniChatThread) {
+      setMiniChatRecovery(null);
+      return;
+    }
+    const marker = findMiniChatMarker(miniChatOwner, miniChatThread);
+    setMiniChatRecovery(
+      marker
+        ? {
+            ...marker,
+            ownerId: miniChatOwner,
+            threadId: miniChatThread,
+            status: "unchecked",
+          }
+        : null,
+    );
+  }, [miniChatOwner, miniChatThread, formVersion]);
   const analytics = useProductAnalytics({
     config: parseProductAnalyticsConfig({
       enabled: process.env.NEXT_PUBLIC_CITYGO_METRIKA_ENABLED,
@@ -341,6 +416,10 @@ export default function CityGoHome({
     setMiniRefreshFailed(false);
     landingAssistantEvent.current = null;
     clearChatDrafts(draftStorage());
+    clearMiniChatMarkers(draftStorage());
+    miniChatMarkers.current.clear();
+    setMiniChatRecovery(null);
+    setMiniChatCapability(null);
     setDraftRecovered(false);
     session.reset(owner);
     abort.current?.abort();
@@ -601,6 +680,10 @@ export default function CityGoHome({
       chatSubmitting.current
     )
       return;
+    if (miniApp && !canSendMiniChat) {
+      setSelectedAiMode(value);
+      return;
+    }
     const option = board.aiAccess.modes?.options.find(
       (candidate) => candidate.id === value,
     );
@@ -639,7 +722,8 @@ export default function CityGoHome({
     if (
       !board?.thread ||
       !session.hasOwner() ||
-      session.capture().signal.aborted
+      session.capture().signal.aborted ||
+      (miniApp && findMiniChatMarker(board.user.id, board.thread.id))
     )
       return;
     conversationDrafts.current.set(board.thread.id, value);
@@ -737,6 +821,15 @@ export default function CityGoHome({
         if (detail.userId !== board.user.id) {
           clearUserState();
           return;
+        }
+        if (
+          miniApp &&
+          (handoff || discussion) &&
+          findMiniChatMarker(board.user.id, detail.thread.id)
+        ) {
+          throw new Error(
+            "Сначала проверьте состояние предыдущей отправки в этом диалоге.",
+          );
         }
         let preparedDraft: string | null = null;
         if (handoff) {
@@ -1266,10 +1359,128 @@ export default function CityGoHome({
       }
     });
   }
+  function findMiniChatMarker(ownerId: string, threadId: string) {
+    const key = miniChatMarkerKey(ownerId, threadId);
+    return key
+      ? (miniChatMarkers.current.get(key) ??
+          readMiniChatMarker(draftStorage(), key))
+      : null;
+  }
+  function storeMiniChatMarker(
+    ownerId: string,
+    threadId: string,
+    marker: MiniChatMarker | null,
+  ) {
+    const key = miniChatMarkerKey(ownerId, threadId);
+    if (!key) return;
+    if (marker) miniChatMarkers.current.set(key, marker);
+    else miniChatMarkers.current.delete(key);
+    writeMiniChatMarker(draftStorage(), key, marker);
+  }
+
+  async function checkMiniChat() {
+    const recovery = currentMiniRecovery;
+    if (
+      !miniProvider ||
+      !recovery ||
+      miniOffline ||
+      busy ||
+      sending ||
+      recovery.status === "checking"
+    )
+      return;
+    setMiniChatRecovery({ ...recovery, status: "checking" });
+    const checked = await act(async (ticket) => {
+      const { status } = await api.miniAppChatStatus(
+        miniProvider,
+        recovery.threadId,
+        recovery.requestId,
+      );
+      ticket.check();
+      const current = await refresh(ticket);
+      ticket.check();
+      if (
+        !current ||
+        current.user.id !== recovery.ownerId ||
+        current.thread?.id !== recovery.threadId
+      )
+        throw new Error("Снова откройте диалог, чтобы проверить отправку.");
+      history.returnToLatest();
+      if (status === "complete" || status === "interrupted") {
+        storeMiniChatMarker(recovery.ownerId, recovery.threadId, null);
+        conversationDrafts.current.delete(recovery.threadId);
+        writeChatDraft(recovery.ownerId, recovery.threadId, "", draftStorage());
+        setDraftRecovered(false);
+        setText("");
+      }
+      setMiniChatRecovery({ ...recovery, status });
+    });
+    if (!checked)
+      setMiniChatRecovery((current) =>
+        current?.requestId === recovery.requestId &&
+        current.status === "checking"
+          ? { ...current, status: "unchecked" }
+          : current,
+      );
+  }
+
+  function dismissMiniChat() {
+    const recovery = currentMiniRecovery;
+    if (!recovery || busy || sending) return;
+    if (canDismissMiniChat) {
+      storeMiniChatMarker(recovery.ownerId, recovery.threadId, null);
+      if (recovery.status === "missing") {
+        conversationDrafts.current.delete(recovery.threadId);
+        writeChatDraft(recovery.ownerId, recovery.threadId, "", draftStorage());
+        setDraftRecovered(false);
+        setText("");
+      }
+      setMiniChatRecovery(null);
+    }
+  }
+
+  async function retryMiniChat() {
+    const recovery = currentMiniRecovery;
+    if (
+      !board?.thread ||
+      !recovery ||
+      recovery.status !== "missing" ||
+      miniOffline ||
+      !canSendMiniChat ||
+      !text.trim() ||
+      busy ||
+      sending ||
+      aiModeConsent !== null ||
+      history.detached ||
+      board.thread.closed ||
+      conversationSwitch.current
+    )
+      return;
+    const option = board.aiAccess.modes?.options.find(
+      (mode) => mode.id === recovery.mode,
+    );
+    if (option?.consentRequired) {
+      chooseAiMode(recovery.mode);
+      return;
+    }
+    await sendChat(
+      board,
+      text,
+      conversationEpoch.current,
+      session.capture(),
+      recovery,
+    );
+  }
+
   async function chat(event: FormEvent) {
     event.preventDefault();
     if (
       !board?.thread ||
+      (miniApp &&
+        (!canSendMiniChat ||
+          miniOffline ||
+          currentMiniRecovery ||
+          findMiniChatMarker(board.user.id, board.thread.id))) ||
       board.user.serviceConsentRequired ||
       board.thread.closed ||
       board.user.mustChangePassword ||
@@ -1314,6 +1525,7 @@ export default function CityGoHome({
     message: string,
     epoch: number,
     ticket: SessionTicket,
+    miniRetry?: MiniChatMarker,
   ) {
     if (
       chatSubmitting.current ||
@@ -1321,7 +1533,8 @@ export default function CityGoHome({
       epoch !== conversationEpoch.current ||
       !snapshot.thread ||
       visibleThread.current !== snapshot.thread.id ||
-      !snapshot.aiAccess.granted
+      !snapshot.aiAccess.granted ||
+      (miniProvider && (!canSendMiniChat || miniOffline))
     )
       return;
     const textError = chatTextError(message);
@@ -1331,14 +1544,17 @@ export default function CityGoHome({
     }
     let mode: ReturnType<typeof captureAiModeSelection>;
     try {
-      mode = captureAiModeSelection(snapshot.aiAccess.modes, selectedAiMode);
+      mode = captureAiModeSelection(
+        snapshot.aiAccess.modes,
+        miniRetry?.mode ?? selectedAiMode,
+      );
     } catch (error) {
       setError(
         error instanceof Error ? error.message : "Режим сейчас недоступен.",
       );
       return;
     }
-    const requestId = crypto.randomUUID();
+    const requestId = miniRetry?.requestId ?? crypto.randomUUID();
     // The legacy API omits a catalog and keeps its Balanced route.
     const submittedMode = mode?.aiMode ?? "balanced";
     let answerCompleted = false;
@@ -1350,8 +1566,24 @@ export default function CityGoHome({
     });
     chatSubmitting.current = true;
     const threadId = snapshot.thread.id;
-    conversationDrafts.current.delete(threadId);
-    writeChatDraft(snapshot.user.id, threadId, "", draftStorage());
+    const miniMarker: MiniChatRecovery | null = miniProvider
+      ? {
+          ownerId: snapshot.user.id,
+          threadId,
+          requestId,
+          mode: submittedMode,
+          status: "unchecked",
+        }
+      : null;
+    if (miniMarker) {
+      storeMiniChatMarker(snapshot.user.id, threadId, miniMarker);
+      setMiniChatRecovery(miniMarker);
+      conversationDrafts.current.set(threadId, message);
+      writeChatDraft(snapshot.user.id, threadId, message, draftStorage());
+    } else {
+      conversationDrafts.current.delete(threadId);
+      writeChatDraft(snapshot.user.id, threadId, "", draftStorage());
+    }
     setDraftRecovered(false);
     setText("");
     setDraft("");
@@ -1362,43 +1594,46 @@ export default function CityGoHome({
     abort.current = controller;
     const succeeded = await act(async () => {
       try {
-        await api.stream(
+        const onEvent = (event: StreamEvent) => {
+          if (
+            !ticket.active() ||
+            epoch !== conversationEpoch.current ||
+            visibleThread.current !== threadId
+          )
+            return;
+          if (event.type === "delta") {
+            responseStarted = true;
+            setDraft((value) => value + event.text);
+          }
+          if (event.type === "handoff") {
+            setNotice(event.reason);
+            setStreamAgent(event.to);
+          }
+          if (event.type === "done") {
+            answerCompleted = true;
+            trackProductEvent(
+              "ai_response_completed",
+              {
+                surface: "chat",
+                mode: submittedMode,
+                assistant: snapshot.thread!.agentKey,
+              },
+              requestId,
+            );
+          }
+        };
+        const args = [
           threadId,
           message,
           requestId,
-          (event) => {
-            if (
-              !ticket.active() ||
-              epoch !== conversationEpoch.current ||
-              visibleThread.current !== threadId
-            )
-              return;
-            if (event.type === "delta") {
-              responseStarted = true;
-              setDraft((value) => value + event.text);
-            }
-            if (event.type === "handoff") {
-              setNotice(event.reason);
-              setStreamAgent(event.to);
-            }
-            if (event.type === "done") {
-              answerCompleted = true;
-              trackProductEvent(
-                "ai_response_completed",
-                {
-                  surface: "chat",
-                  mode: submittedMode,
-                  assistant: snapshot.thread!.agentKey,
-                },
-                requestId,
-              );
-            }
-          },
+          onEvent,
           controller.signal,
           snapshot.aiAccess.policy?.id,
           snapshot.aiAccess.credit?.reservationMode,
           mode,
-        );
+        ] as const;
+        if (miniProvider) await api.miniAppStream(miniProvider, ...args);
+        else await api.stream(...args);
       } catch (e) {
         if (!ticket.active()) return;
         if (!controller.signal.aborted) throw e;
@@ -1424,7 +1659,14 @@ export default function CityGoHome({
         },
         requestId,
       );
-    if (!succeeded && !answerCompleted && !responseStarted) {
+    if (miniMarker && answerCompleted) {
+      storeMiniChatMarker(snapshot.user.id, threadId, null);
+      setMiniChatRecovery(null);
+      conversationDrafts.current.delete(threadId);
+      writeChatDraft(snapshot.user.id, threadId, "", draftStorage());
+    } else if (miniMarker) {
+      setText(message);
+    } else if (!succeeded && !answerCompleted && !responseStarted) {
       setText(message);
       conversationDrafts.current.set(threadId, message);
       writeChatDraft(snapshot.user.id, threadId, message, draftStorage());
@@ -2157,6 +2399,29 @@ export default function CityGoHome({
                 }}
                 busy={busy || aiModeConsent !== null}
                 sending={sending}
+                miniChat={
+                  miniProvider
+                    ? {
+                        available: canSendMiniChat,
+                        offline: miniOffline,
+                        recovery: currentMiniRecovery
+                          ? {
+                              status: currentMiniRecovery.status,
+                              canRetry:
+                                canSendMiniChat &&
+                                !miniOffline &&
+                                !history.detached &&
+                                !board.thread?.closed &&
+                                !!text.trim(),
+                              canDismiss: canDismissMiniChat,
+                              onCheck: () => void checkMiniChat(),
+                              onRetry: () => void retryMiniChat(),
+                              onDismiss: dismissMiniChat,
+                            }
+                          : undefined,
+                      }
+                    : undefined
+                }
                 draft={draft}
                 pending={pending}
                 streamAgent={streamAgent}

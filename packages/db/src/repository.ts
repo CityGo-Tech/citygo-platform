@@ -33,6 +33,7 @@ import type {
   ConversationFilters,
   ConversationSummary,
   ConversationMessagesPage,
+  MessengerProvider,
 } from "@citygo/contracts";
 import {
   LEGACY_AT_COST_TARIFF,
@@ -636,8 +637,14 @@ export class Repository {
   }
   async session(tokenHash: string) {
     return (
-      await this.db.query<{ id: string; email: string }>(
-        "select u.id::text,c.email from sessions s join users u on u.id=s.user_id join user_credentials c on c.user_id=u.id where s.token_hash=$1 and s.expires_at>now() and u.status='active'",
+      await this.db.query<{
+        id: string;
+        email: string;
+        messengerProvider: MessengerProvider | null;
+      }>(
+        `select u.id::text,c.email,s.messenger_provider as "messengerProvider"
+         from sessions s join users u on u.id=s.user_id join user_credentials c on c.user_id=u.id
+         where s.token_hash=$1 and s.expires_at>now() and u.status='active'`,
         [tokenHash],
       )
     ).rows[0];
@@ -1376,6 +1383,21 @@ export class Repository {
         ...(modeSnapshot ? { modeSnapshot } : {}),
       };
     });
+  }
+
+  async chatRequestStatus(userId: string, threadId: string, requestId: string) {
+    const row =
+      (
+        await this.db.query<{
+          status: "running" | "complete" | "interrupted" | null;
+        }>(
+          `select r.status from agent_threads t
+         left join chat_requests r on r.thread_id=t.id and r.request_id=$3
+         where t.id=$1 and t.user_id=$2`,
+          [threadId, userId, requestId],
+        )
+      ).rows[0] ?? fail(404, "Чат не найден");
+    return row.status ?? "missing";
   }
   /** Read-only target validation before any optional provider cost GET.
    * Never accepts a question, consumes quota, creates a hold or changes a lease.
