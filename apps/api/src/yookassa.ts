@@ -274,6 +274,27 @@ export class YooKassaClient {
     );
   }
 
+  async getReceiptRegistration(
+    paymentId: string,
+    expected: { orderId: string; amountKopeks: number },
+  ): Promise<YooKassaReceiptRegistration | undefined> {
+    expected = Object.freeze({ ...expected });
+    this.validateExpected(expected);
+    if (typeof paymentId !== "string" || !PROVIDER_ID.test(paymentId))
+      throw new YooKassaError("invalid_input");
+    const payment = await this.request(
+      "GET",
+      "/payments/" + encodeURIComponent(paymentId),
+      expected,
+      undefined,
+      paymentId,
+      true,
+    );
+    if (payment.status !== "succeeded" || !payment.paid)
+      throw new YooKassaError("invalid_response");
+    return payment.receiptRegistration;
+  }
+
   private validateExpected(input: { orderId: string; amountKopeks: number }) {
     if (
       typeof input.orderId !== "string" ||
@@ -287,6 +308,7 @@ export class YooKassaClient {
     raw: unknown,
     expected: { orderId: string; amountKopeks: number },
     paymentId?: string,
+    receiptRead = false,
   ): YooKassaPayment {
     const invalid = () => new YooKassaError("invalid_response");
     if (
@@ -324,15 +346,23 @@ export class YooKassaClient {
       raw.paid !== (status === "succeeded" || status === "waiting_for_capture")
     )
       throw invalid();
-    // Refund accounting is outside this payment transport. Never let an
-    // already refunded payment masquerade as a fresh successful top-up.
-    if (
-      raw.refunded_amount !== undefined &&
-      (!object(raw.refunded_amount) ||
-        raw.refunded_amount.currency !== "RUB" ||
-        raw.refunded_amount.value !== "0.00")
-    )
-      throw invalid();
+    // Only receipt reads may observe a nonzero refund. Settlement never
+    // accepts an already refunded payment as evidence of a new top-up.
+    if (raw.refunded_amount !== undefined) {
+      const refunded = raw.refunded_amount;
+      const value =
+        object(refunded) &&
+        refunded.currency === "RUB" &&
+        typeof refunded.value === "string"
+          ? AMOUNT.exec(refunded.value)
+          : null;
+      if (
+        !value ||
+        BigInt(value[1]!) * 100n + BigInt(value[2]!) >
+          BigInt(receiptRead ? expected.amountKopeks : 0)
+      )
+        throw invalid();
+    }
     let confirmationUrl: string | undefined;
     const receiptRegistration =
       raw.receipt_registration === undefined
@@ -370,6 +400,7 @@ export class YooKassaClient {
     expected: { orderId: string; amountKopeks: number },
     body?: unknown,
     paymentId?: string,
+    receiptRead = false,
   ) {
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -452,7 +483,7 @@ export class YooKassaClient {
           providerCode: object(raw) ? raw.code : undefined,
           parameter: object(raw) ? raw.parameter : undefined,
         });
-      return this.parse(raw, expected, paymentId);
+      return this.parse(raw, expected, paymentId, receiptRead);
     } catch (error) {
       if (error instanceof YooKassaError && error.code === "http") throw error;
       const code =

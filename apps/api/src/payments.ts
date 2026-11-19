@@ -26,7 +26,8 @@ import {
 } from "./yookassa.js";
 import { createPaymentAdmissionBinding } from "./payment-admission.js";
 
-export type PaymentClient = Pick<YooKassaClient, "create" | "get">;
+export type PaymentClient = Pick<YooKassaClient, "create" | "get"> &
+  Partial<Pick<YooKassaClient, "getReceiptRegistration">>;
 type PaymentAuthenticator = (
   request: FastifyRequest,
 ) => Promise<{ id: string }>;
@@ -320,7 +321,10 @@ export function registerPaymentTopups(
     orderId: string,
     forceGet = false,
     expectedProviderId?: string,
-    observed?: (payment: YooKassaPayment) => void,
+    observe?: {
+      payment?: (payment: YooKassaPayment) => void;
+      receipt?: (status: YooKassaPayment["receiptRegistration"]) => void;
+    },
   ) {
     const client = available();
     const order = await orders.get(userId, orderId);
@@ -341,14 +345,22 @@ export function registerPaymentTopups(
         "Создание платежа не подтверждено. Повторите исходное создание с прежним ID попытки.",
       );
     }
+    const paymentId = order.providerPaymentId;
+    const expected = { orderId: order.id, amountKopeks: order.amountKopeks };
+    if (order.credited && observe?.receipt && client.getReceiptRegistration) {
+      observe.receipt(
+        await transport("get_payment", () =>
+          client.getReceiptRegistration!(paymentId, expected),
+        ),
+      );
+      return publicOrder(order);
+    }
     const payment = await transport("get_payment", () =>
-      client.get(order.providerPaymentId!, {
-        orderId: order.id,
-        amountKopeks: order.amountKopeks,
-      }),
+      client.get(paymentId, expected),
     );
     verified(payment, order);
-    observed?.(payment);
+    observe?.payment?.(payment);
+    observe?.receipt?.(payment.receiptRegistration);
     if (payment.status === "succeeded" && payment.paid === true) {
       await ledger.topUpConfirmed(userId, order.id, {
         providerPaymentId: payment.id,
@@ -389,7 +401,10 @@ export function registerPaymentTopups(
   ];
   if (options.authenticateMaxTest) {
     const authenticate = options.authenticateMaxTest;
-    if (options.config.YOOKASSA_MODE !== "test" || !options.client)
+    if (
+      options.config.YOOKASSA_MODE !== "test" ||
+      !options.client?.getReceiptRegistration
+    )
       throw new Error("MAX payment routes require an isolated payment client");
     scopes.push({
       path: maxPath,
@@ -428,17 +443,13 @@ export function registerPaymentTopups(
         empty.parse(request.body);
         if (!scope.showProviderReceipt) return reconcileOrder(user.id, orderId);
         let receiptRegistration: YooKassaPayment["receiptRegistration"];
-        const order = await reconcileOrder(
-          user.id,
-          orderId,
-          true,
-          undefined,
-          (payment) => {
+        const order = await reconcileOrder(user.id, orderId, true, undefined, {
+          receipt: (status) => {
             receiptRegistration = yooKassaReceiptRegistrationSchema
               .optional()
-              .parse(payment.receiptRegistration);
+              .parse(status);
           },
-        );
+        });
         return receiptRegistration === undefined
           ? order
           : { ...order, receiptRegistration };
@@ -453,8 +464,10 @@ export function registerPaymentTopups(
       providerId: string,
     ) {
       let terminal = false;
-      await reconcileOrder(userId, orderId, true, providerId, ({ status }) => {
-        terminal = status === "succeeded" || status === "canceled";
+      await reconcileOrder(userId, orderId, true, providerId, {
+        payment: ({ status }) => {
+          terminal = status === "succeeded" || status === "canceled";
+        },
       });
       return terminal;
     },
