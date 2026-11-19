@@ -9,9 +9,10 @@
 
 ## Требования платформы
 
-- Внутри Telegram цифровые товары и услуги оплачиваются только Stars с валютой `XTR`. Возможность продавать на собственном сайте не меняет правила Telegram. Ссылка на ЮKassa для покупки цифровой услуги внутри Telegram не используется. [Условия Telegram, § 6.2](https://telegram.org/tos/bot-developers#6-2-digital-goods-and-services), [FAQ по цифровым платежам](https://core.telegram.org/bots/payments-stars#frequently-asked-questions)
+- Внутри Telegram цифровые товары и услуги оплачиваются только Stars с валютой `XTR`. Возможность продавать на собственном сайте не меняет правила Telegram. Ссылка на ЮKassa для покупки цифровой услуги внутри Telegram не используется. [Условия Telegram, § 6.2](https://telegram.org/tos/bot-developers#6-2-digital-goods-and-services), [FAQ по цифровым платежам](https://core.telegram.org/bots/payments-stars#faq)
 - `createInvoiceLink` принимает серверный `payload` до 128 байт, одну позицию цены для XTR и пустой `provider_token`. На `pre_checkout_query` нужно ответить в течение 10 секунд. Выдавать покупку можно после `successful_payment`. Закрытие `openInvoice`, в том числе со статусом `paid`, инициирует сверку с сервером. [Bot API](https://core.telegram.org/bots/api#createinvoicelink), [Подтверждение оплаты](https://core.telegram.org/bots/payments-stars#4-checkout), [События мини-аппа](https://core.telegram.org/bots/webapps#events-available-for-mini-apps)
 - Бот отвечает на `/paysupport`. Полный возврат выполняется через `refundStarPayment` по исходному плательщику и `telegram_payment_charge_id`. Платформа также может сообщить о возврате событием `refunded_payment`. [Требования к поддержке](https://telegram.org/tos/bot-developers#6-2-1-payment-disputes-for-digital-goods-and-services), [Возврат в Bot API](https://core.telegram.org/bots/api#refundstarpayment), [Событие возврата](https://core.telegram.org/bots/api#refundedpayment)
+- Перед коммерческой покупкой пользователь подтверждает условия продажи. Telegram ожидает доступ к этим условиям через `/terms` или столь же простой способ, контакты поддержки и обработку споров продавцом. [Чек-лист запуска Telegram](https://core.telegram.org/bots/payments-stars#live-checklist)
 
 ## Границы тестового сценария
 
