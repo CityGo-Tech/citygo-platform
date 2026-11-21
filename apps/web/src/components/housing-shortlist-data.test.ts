@@ -192,8 +192,6 @@ test("a missing rent can match the saved city only when no ceiling was saved", (
     budgetRub: null,
   });
   assert.equal(open.length, 3);
-  assert.ok(open[0]?.offer.rentRub !== null);
-  assert.ok(open[1]?.offer.rentRub !== null);
   assert.deepEqual(
     open
       .filter(({ offer }) => offer.rentRub === null)

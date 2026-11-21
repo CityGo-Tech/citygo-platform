@@ -157,6 +157,8 @@ export function HousingWorkspaceView({
     "plan" | "checklist" | "comparison" | "shortlist"
   >(initialView);
   const [shortlist, setShortlist] = useState<Plan | null>(null);
+  const shortlistOpen = useRef(false);
+  shortlistOpen.current = view === "shortlist";
   const [localShortlist, setLocalShortlist] = useState(false);
   useEffect(() => {
     setLocalShortlist(
@@ -340,7 +342,8 @@ export function HousingWorkspaceView({
     control.current = { load, save };
     void load();
     const refreshOnReturn = () => {
-      if (document.visibilityState === "visible") void load(true);
+      if (document.visibilityState === "visible")
+        void load(!shortlistOpen.current);
     };
     window.addEventListener("focus", refreshOnReturn);
     document.addEventListener("visibilitychange", refreshOnReturn);

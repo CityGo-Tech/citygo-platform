@@ -266,6 +266,23 @@ test("unknown budget keeps unpriced items explicit and a criteria revision inval
     refreshed.getByRole("heading", { name: nearMetro, exact: true }),
   ).toBeVisible();
 
+  const savedWorkspaceRoute = "**" + workspaceUrl;
+  await page.route(savedWorkspaceRoute, (route) =>
+    route.fulfill({ status: 503, json: { error: "Тестовый отказ чтения" } }),
+  );
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await expect(
+    page.getByText(
+      "Не удалось проверить версию. Вернитесь к плану и попробуйте снова.",
+    ),
+  ).toBeVisible();
+  await expect(refreshed).toHaveCount(0);
+  await expect(button(page, "Перейти к чек-листу")).toHaveCount(0);
+  await page.unroute(savedWorkspaceRoute);
+  await button(page, "Вернуться к плану").click();
+  const recovered = await openShortlist(page);
+  await expect(recovered.getByRole("listitem")).toHaveCount(1);
+
   await page.goto("/");
   await openSavedPlan(page);
   await expect(button(page, "Посмотреть короткий список")).toHaveCount(0);
