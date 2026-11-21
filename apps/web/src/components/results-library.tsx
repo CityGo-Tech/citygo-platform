@@ -10,6 +10,7 @@ import { Button, Card, Field, SelectField } from "@citygo/ui-web";
 import type { ResultDiscussionParams } from "@citygo/contracts";
 import type { ResultDiscussionInput } from "./result-discussion-state";
 import { ResultDiscussionDialog } from "./result-discussion";
+import { CareerApplicationDialog } from "./career-application";
 import { agentNames } from "./agent-names";
 import { FavoriteMessageContext } from "./favorite-message-context";
 import {
@@ -201,6 +202,12 @@ export function ResultsLibrary({
     signal: AbortSignal;
     selection: ResultDiscussionParams;
   } | null>(null);
+  const [application, setApplication] = useState<{
+    owner: string;
+    signal: AbortSignal;
+    item: PersonalPlanItem;
+  } | null>(null);
+  const applicationButton = useRef<HTMLButtonElement | null>(null);
   const discussButton = useRef<HTMLButtonElement | null>(null);
   const closeDiscussion = () => {
     setDiscussion(null);
@@ -293,6 +300,13 @@ export function ResultsLibrary({
     if (expanded && !sessionSignal.aborted) previewTitle.current?.focus();
   }, [expanded?.id, category, userId, sessionSignal]);
   if (sessionSignal.aborted || current?.closed) return null;
+  const closeApplication = (refresh = false) => {
+    setApplication(null);
+    if (refresh && !sessionSignal.aborted) void resource.current?.load();
+    requestAnimationFrame(() => {
+      if (!sessionSignal.aborted) applicationButton.current?.focus();
+    });
+  };
   const returnToList = () => {
     setSource(null);
     setDetail(null);
@@ -461,6 +475,18 @@ export function ResultsLibrary({
             onAccessDenied={onAccessDenied}
           />
         )}
+      {application?.owner === userId &&
+        application.signal === sessionSignal && (
+          <CareerApplicationDialog
+            owner={userId}
+            itemId={application.item.id}
+            revision={application.item.revision}
+            details={application.item.details}
+            sessionSignal={sessionSignal}
+            onAccessDenied={onAccessDenied}
+            onClose={closeApplication}
+          />
+        )}
       {selected && (
         <div className="ym-hide-content">
           <FavoriteMessageContext
@@ -516,6 +542,38 @@ export function ResultsLibrary({
               ? expanded.details || "Подробности пока не добавлены."
               : expanded.content}
           </div>
+          {"details" in expanded &&
+            expanded.source?.role === "user" &&
+            expanded.details.trim() && (
+              <section
+                className={styles.item}
+                aria-label="Следующий шаг для резюме"
+              >
+                <h2>Подготовьте один честный отклик</h2>
+                <p className={styles.summary}>
+                  Сопоставьте требования выбранной вакансии с подтверждённым
+                  опытом.
+                </p>
+                <div className={styles.actions}>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    disabled={navigationBusy}
+                    onClick={(event) => {
+                      if (sessionSignal.aborted || navigationBusy) return;
+                      applicationButton.current = event.currentTarget;
+                      setApplication({
+                        owner: userId,
+                        signal: sessionSignal,
+                        item: expanded,
+                      });
+                    }}
+                  >
+                    Сравнить с вакансией
+                  </Button>
+                </div>
+              </section>
+            )}
         </Card>
       )}
       <div hidden={selected !== null || Boolean(expanded)}>

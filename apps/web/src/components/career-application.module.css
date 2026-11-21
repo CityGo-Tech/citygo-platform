@@ -1,0 +1,38 @@
+.matches,
+.missing {
+  display: grid;
+  gap: var(--cg-space-sm);
+  min-width: 0;
+  margin: 0;
+  padding: var(--cg-space-md);
+  border: 1px solid var(--cg-color-border);
+  border-radius: var(--cg-radius-card);
+  overflow-wrap: anywhere;
+}
+
+.matches legend,
+.missing h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.source {
+  white-space: pre-wrap;
+}
+
+.source summary {
+  cursor: pointer;
+  white-space: normal;
+}
+
+.choice {
+  min-width: 0;
+  max-width: 100%;
+  width: 100%;
+}
+
+.missing ul {
+  margin: 0;
+  padding-inline-start: var(--cg-space-lg);
+}
