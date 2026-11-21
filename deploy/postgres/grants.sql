@@ -152,6 +152,8 @@ grant update (expires_at) on sessions to citygo_api;
 grant update (password_hash) on user_credentials to citygo_api;
 grant update (bootstrap_completed,test_payments_seen,real_ai_admitted) on account_security_state to citygo_api;
 grant usage, select on all sequences in schema public to citygo_api;
+-- Editorial snapshots are append-only; editorial authority is checked by API.
+grant select, insert on knowledge_editorial_revisions to citygo_api;
 grant select, delete on sessions, analytics_events to citygo_worker;
 grant select, update on agent_threads, chat_requests to citygo_worker;
 grant select on all tables in schema public to citygo_backup;

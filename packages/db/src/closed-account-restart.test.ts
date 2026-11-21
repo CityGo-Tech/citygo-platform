@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import {
   AccountAccess,
   ClosedAccountRestart,
+  KnowledgeEditorialStore,
   Repository,
   connectDatabase,
   migrate,
@@ -75,6 +76,75 @@ test("closed restart plan is complete, stable, count-only and nonmutating", asyn
     plan,
   );
   assert.deepEqual(await captureRestartRows(db), before);
+});
+
+test("closed retirement preserves the knowledge corpus and its content-free audit", async (t) => {
+  const { db, restart } = await fixture(t);
+  const actor = (
+    await db.query<{ id: string }>(
+      "select id::text from users order by id limit 1",
+    )
+  ).rows[0]!.id;
+  await db.query("update users set role='admin' where id=$1", [actor]);
+  await new KnowledgeEditorialStore(db).propose(
+    actor,
+    "source",
+    "test-retained-source",
+    {
+      expectedRevision: 0,
+      draft: {
+        title: "Synthetic source",
+        url: "https://retained.example/guide",
+        scope: { kind: "global" },
+        excerpt: "An invented excerpt.",
+        provenance: {
+          kind: "synthetic",
+          publisher: "Synthetic publisher",
+          retrievedAt: "2020-01-01T00:00:00Z",
+          reuseBasis: "unassessed",
+        },
+      },
+    },
+  );
+  const versions = (
+    await db.query("select * from knowledge_editorial_revisions")
+  ).rows;
+  const audit = (
+    await db.query(
+      "select * from audit_log where entity_type='knowledge-source'",
+    )
+  ).rows;
+  assert.equal(audit.length, 1);
+  await restart.apply(await prepared(restart));
+  assert.deepEqual(
+    (await db.query("select * from knowledge_editorial_revisions")).rows,
+    versions,
+  );
+  assert.deepEqual(
+    (
+      await db.query(
+        "select * from audit_log where entity_type='knowledge-source'",
+      )
+    ).rows,
+    audit,
+  );
+
+  await db.query(
+    "insert into audit_log(action,entity_type,entity_id,payload) values($1,$2,$3,$4::jsonb)",
+    [
+      "knowledge-candidate-proposed",
+      "knowledge-source",
+      "synthetic",
+      JSON.stringify({
+        previousRevision: 0,
+        revision: 1,
+        state: "candidate",
+        statement: "unexpected content",
+      }),
+    ],
+  );
+  const plan = await restart.plan();
+  assert.ok(plan.blockers.some(({ code }) => code === "UNREVIEWED_AUDIT_KIND"));
 });
 
 test("closed restart retires identity and conversations, preserving every financial value and original audit", async (t) => {

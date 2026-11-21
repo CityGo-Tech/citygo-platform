@@ -78,6 +78,7 @@ const retained = [
   "account_security_state",
   "quests",
   "knowledge_sources",
+  "knowledge_editorial_revisions",
   "ai_routing",
   "ai_budget",
   "ai_budget_daily",

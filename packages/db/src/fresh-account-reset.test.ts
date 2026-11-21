@@ -99,6 +99,36 @@ test("fresh reset plan is bounded, stable, count-only and read-only even after f
   assert.deepEqual(await captureRestartRows(db), before);
 });
 
+test("fresh reset preserves the editorial history and its audit", async (t) => {
+  const { db, reset } = await fixture(t);
+  await db.exec(`insert into knowledge_editorial_revisions(kind,id,revision,fact_key,scope,state,document,occurred_at)
+    values ('fact','example',1,'example-key','{"kind":"global"}','candidate',
+      '{"id":"example","revision":1,"factKey":"example-key","scope":{"kind":"global"},"publication":{"status":"candidate"}}','2026-01-01T00:00:00Z');
+    insert into audit_log(action,entity_type,entity_id,payload)
+      values ('knowledge-candidate','knowledge-editorial','example','{"revision":1}');`);
+  const plan = await reset.plan({
+    expectedUserCount: 2,
+    maintenanceConfirmed: true,
+  });
+  assert.ok(plan.preservedTables.includes("knowledge_editorial_revisions"));
+  assert.deepEqual(plan.blockers, [
+    { code: "KNOWLEDGE_EDITORIAL_HISTORY_REQUIRES_REVIEW", count: 1 },
+  ]);
+  await assert.rejects(
+    reset.apply(await prepared(reset)),
+    /Полный тестовый сброс заблокирован/,
+  );
+  assert.equal(
+    (await db.query("select * from knowledge_editorial_revisions")).rows.length,
+    1,
+  );
+  assert.equal(
+    (await db.query("select 1 from audit_log where entity_id='example'")).rows
+      .length,
+    1,
+  );
+});
+
 test("explicit full reset deletes accounts, all money/attempt history and knowledge; preserves schema/catalogue/configuration", async (t) => {
   const { db, data, reset } = await fixture(t);
   const preservedNames = [

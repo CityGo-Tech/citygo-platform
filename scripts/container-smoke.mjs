@@ -137,7 +137,7 @@ try {
   compose(["up", "-d", "--wait", "--wait-timeout", "90", "postgres"]);
   compose(["run", "--rm", "--no-deps", "migrator"]);
   const migrations = psql("select count(*) from citygo_migrations");
-  assert.equal(migrations, "50");
+  assert.equal(migrations, "51");
   compose(["run", "--rm", "--no-deps", "migrator"]);
   assert.equal(psql("select count(*) from citygo_migrations"), migrations);
   compose([
@@ -173,6 +173,14 @@ try {
     ),
     "f",
     "Consent evidence is append-only and unavailable to the worker",
+  );
+  assert.equal(psql("select count(*) from knowledge_editorial_revisions"), "0");
+  assert.equal(
+    psql(
+      "select has_table_privilege('citygo_api','knowledge_editorial_revisions','SELECT') and has_table_privilege('citygo_api','knowledge_editorial_revisions','INSERT') and not has_table_privilege('citygo_api','knowledge_editorial_revisions','UPDATE,DELETE,TRUNCATE') and not has_table_privilege('citygo_worker','knowledge_editorial_revisions','SELECT,INSERT,UPDATE,DELETE,TRUNCATE') and has_table_privilege('citygo_backup','knowledge_editorial_revisions','SELECT') and not has_table_privilege('citygo_backup','knowledge_editorial_revisions','INSERT,UPDATE,DELETE,TRUNCATE')",
+    ),
+    "t",
+    "The editorial history has append-only API access and read-only backup access",
   );
   assert.equal(psql("select count(*) from conversation_memory_fragments"), "0");
   assert.equal(

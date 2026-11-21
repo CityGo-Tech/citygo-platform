@@ -94,6 +94,10 @@ test("published facts return exact revisions, supporting quote/URL and earliest 
   });
   assert.equal(result.matches[0]!.validUntil, "2026-10-20T00:00:00.000Z");
   assert.equal(result.matches[0]!.evidence[0]!.url, source().url);
+  assert.equal(
+    result.matches[0]!.evidence[0]!.publisher,
+    source().provenance.publisher,
+  );
   assert.equal("excerpt" in result.matches[0]!.evidence[0]!, false);
 });
 

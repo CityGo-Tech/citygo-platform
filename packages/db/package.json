@@ -23,6 +23,7 @@
   "dependencies": {
     "pg": "^8.23.1",
     "@electric-sql/pglite": "^0.3.14",
+    "@citygo/content": "workspace:*",
     "@citygo/contracts": "workspace:*",
     "@citygo/domain": "workspace:*",
     "zod": "^4.6.7"
