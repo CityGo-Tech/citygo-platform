@@ -66,7 +66,7 @@ export type JourneyProps = {
   onStart: (id: string) => Promise<boolean>;
   onComplete: (id: string) => Promise<boolean>;
   onBegin?: (agentKey?: AgentKey) => Promise<boolean>;
-  onHandoff?: (input: AssistantHandoffInput) => Promise<boolean>;
+  onHandoff?: (input: AssistantHandoffInput) => Promise<string | null>;
   onDiscussResult?: (input: ResultDiscussionInput) => Promise<boolean>;
   conversations?: ConversationSummary[] | null;
   conversationNextCursor?: string | null;

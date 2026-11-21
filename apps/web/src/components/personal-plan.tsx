@@ -36,9 +36,11 @@ function StepEditor({
   title,
   details,
   disabled,
+  resume = false,
   onChange,
 }: StepFields & {
   disabled: boolean;
+  resume?: boolean;
   onChange: (value: StepFields) => void;
 }) {
   const detailsId = useId();
@@ -47,7 +49,7 @@ function StepEditor({
     <>
       <Field
         className="ym-disable-keys"
-        label="Название шага"
+        label={resume ? "Название результата" : "Название шага"}
         value={title}
         maxLength={120}
         required
@@ -55,7 +57,9 @@ function StepEditor({
         onChange={(event) => onChange({ title: event.target.value, details })}
       />
       <div className={styles.detailsLabel}>
-        <label htmlFor={detailsId}>Описание шага</label>
+        <label htmlFor={detailsId}>
+          {resume ? "Текст резюме" : "Описание шага"}
+        </label>
         <textarea
           id={detailsId}
           aria-describedby={detailsHintId}
@@ -67,7 +71,9 @@ function StepEditor({
           onChange={(event) => onChange({ title, details: event.target.value })}
         />
         <small id={detailsHintId}>
-          До 4 000 символов. Можно оставить пустым.
+          {resume
+            ? "До 4 000 символов."
+            : "До 4 000 символов. Можно оставить пустым."}
         </small>
       </div>
     </>
@@ -81,21 +87,25 @@ export function PlanStepComposer({
   onAccessDenied,
   source,
   initialFields,
+  resume = false,
   onSaved,
   onCancel,
 }: OwnerProps & {
   source: PlanMessageSource | null;
   initialFields?: StepFields;
+  resume?: boolean;
   onSaved: () => void;
   onCancel: (checkPlan: boolean) => void;
 }) {
-  const [fields, setFields] = useState<StepFields>(() =>
-    source
-      ? {
-          title: source.content.trim().split(/\r?\n/)[0]!.slice(0, 120),
-          details: source.content.slice(0, 4000),
-        }
-      : (initialFields ?? { title: "", details: "" }),
+  const [fields, setFields] = useState<StepFields>(
+    () =>
+      initialFields ??
+      (source
+        ? {
+            title: source.content.trim().split(/\r?\n/)[0]!.slice(0, 120),
+            details: source.content.slice(0, 4000),
+          }
+        : { title: "", details: "" }),
   );
   const [frozen, setFrozen] = useState<CreatePersonalPlanItem | null>(null);
   const [busy, setBusy] = useState(false);
@@ -119,7 +129,7 @@ export function PlanStepComposer({
       if (pending || signal.aborted) return;
       if (!request) {
         const value = fieldsRef.current;
-        if (!value.title.trim()) return;
+        if (!value.title.trim() || (resume && !value.details.trim())) return;
         request = {
           operationId: crypto.randomUUID(),
           sourceMessageId: source?.messageId ?? null,
@@ -160,7 +170,9 @@ export function PlanStepComposer({
           callbacks.current.onAccessDenied();
         } else {
           setError(
-            "Не удалось подтвердить добавление. Шаг уже мог сохраниться. Повторите тот же запрос или закройте форму и проверьте «Мой план» перед новым добавлением.",
+            resume
+              ? "Не удалось подтвердить сохранение. Резюме уже могло сохраниться. Повторите тот же запрос или проверьте «Результаты» перед созданием нового черновика."
+              : "Не удалось подтвердить добавление. Шаг уже мог сохраниться. Повторите тот же запрос или закройте форму и проверьте «Мой план» перед новым добавлением.",
           );
         }
       } finally {
@@ -177,6 +189,7 @@ export function PlanStepComposer({
     source?.messageId,
     source?.threadId,
     source?.role,
+    resume,
   ]);
 
   if (sessionSignal.aborted) return null;
@@ -187,18 +200,20 @@ export function PlanStepComposer({
   return (
     <section
       className={styles.composer + " ym-hide-content"}
-      aria-label="Добавление шага в план"
+      aria-label={resume ? "Черновик резюме" : "Добавление шага в план"}
       aria-busy={busy}
     >
       <h2 ref={heading} tabIndex={-1}>
-        Добавить шаг в план
+        {resume ? "Черновик резюме" : "Добавить шаг в план"}
       </h2>
       <p>
-        {source || initialFields
-          ? "Выберите действие и уточните формулировку перед сохранением."
-          : "Запишите действие, которое хотите сделать."}
+        {resume
+          ? "Проверьте формулировки и сохраните черновик в результатах."
+          : source || initialFields
+            ? "Выберите действие и уточните формулировку перед сохранением."
+            : "Запишите действие, которое хотите сделать."}
       </p>
-      {source && source.content.length > 4000 && (
+      {!initialFields && source && source.content.length > 4000 && (
         <small>
           В описание перенесены первые 4 000 символов сообщения. Исходный диалог
           сохранится по ссылке.
@@ -208,6 +223,7 @@ export function PlanStepComposer({
         <StepEditor
           {...fields}
           disabled={busy || !!frozen}
+          resume={resume}
           onChange={setFields}
         />
         {error && (
@@ -218,13 +234,20 @@ export function PlanStepComposer({
         <div className={styles.actions}>
           <Button
             type="submit"
-            disabled={busy || !submit || !fields.title.trim()}
+            disabled={
+              busy ||
+              !submit ||
+              !fields.title.trim() ||
+              (resume && !fields.details.trim())
+            }
           >
             {busy
               ? "Сохраняем…"
               : frozen
                 ? "Повторить тот же запрос"
-                : "Подтвердить добавление"}
+                : resume
+                  ? "Сохранить резюме"
+                  : "Подтвердить добавление"}
           </Button>
           <Button
             type="button"
@@ -232,7 +255,11 @@ export function PlanStepComposer({
             disabled={busy}
             onClick={() => onCancel(!!frozen)}
           >
-            {frozen ? "Закрыть и проверить план" : "Отмена"}
+            {frozen
+              ? resume
+                ? "Закрыть и проверить результаты"
+                : "Закрыть и проверить план"
+              : "Отмена"}
           </Button>
         </div>
       </form>

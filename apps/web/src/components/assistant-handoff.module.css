@@ -85,3 +85,7 @@
     width: 100%;
   }
 }
+
+.sourceText {
+  white-space: pre-wrap;
+}
