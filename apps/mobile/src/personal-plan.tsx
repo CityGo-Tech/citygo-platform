@@ -29,6 +29,7 @@ export function MobilePersonalPlan({
   access,
   xp,
   onClose,
+  onOpenResult,
   onAccessDenied,
   onOpenWebPlan,
 }: {
@@ -36,6 +37,7 @@ export function MobilePersonalPlan({
   access: MobilePlanAccess;
   xp: number;
   onClose: () => void;
+  onOpenResult: (id: string) => void;
   onAccessDenied: () => void;
   onOpenWebPlan: () => void;
 }) {
@@ -210,6 +212,12 @@ export function MobilePersonalPlan({
                       {item.details}
                     </Text>
                   )}
+                  <PlanButton
+                    title="Открыть результат"
+                    disabled={blocked}
+                    onPress={() => onOpenResult(item.id)}
+                    secondary
+                  />
                   <PlanButton
                     title={
                       item.status === "completed"
