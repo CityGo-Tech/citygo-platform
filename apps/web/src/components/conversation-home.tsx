@@ -466,9 +466,9 @@ export function ConversationHome(props: JourneyProps) {
       })}
     </nav>
   );
-  const housingLinks = miniApp && (
+  const housingLinks = (
     <div
-      className={miniStyles.housingLinks}
+      className={miniApp ? miniStyles.housingLinks : planStyles.actions}
       aria-label="Результаты поиска жилья"
     >
       <Button
@@ -487,6 +487,24 @@ export function ConversationHome(props: JourneyProps) {
       </Button>
     </div>
   );
+  const housingResult = housingView ? (
+    <HousingWorkspaceView
+      key={board.user.id + ":housing:" + housingView}
+      userId={board.user.id}
+      threadId={housingThread?.id}
+      sessionSignal={props.sessionSignal}
+      onAccessDenied={props.onAccessDenied}
+      onExit={() => setHousingView(null)}
+      onOpenSource={(threadId) => void open(threadId)}
+      onChooseAssistant={() => {
+        setHousingView(null);
+        setTab("Помощники");
+      }}
+      initialView={housingView}
+      initialCriteria={miniNavigation?.housingCriteria}
+      defaultCity={board.profile?.targetCity}
+    />
+  ) : null;
   return (
     <section
       ref={workspace}
@@ -602,23 +620,14 @@ export function ConversationHome(props: JourneyProps) {
           recovery={miniRecovery}
           disabled={busy || props.miniChat?.offline === true}
         />
-      ) : housingView ? (
-        <HousingWorkspaceView
-          key={board.user.id + ":housing:" + housingView}
-          userId={board.user.id}
-          threadId={housingThread?.id}
-          sessionSignal={props.sessionSignal}
-          onAccessDenied={props.onAccessDenied}
-          onExit={() => setHousingView(null)}
-          onOpenSource={(threadId) => void open(threadId)}
-          onChooseAssistant={() => {
-            setHousingView(null);
-            setTab("Помощники");
-          }}
-          initialView={housingView}
-          initialCriteria={miniNavigation?.housingCriteria}
-          defaultCity={board.profile?.targetCity}
-        />
+      ) : housingResult ? (
+        miniApp ? (
+          housingResult
+        ) : (
+          <WorkspaceFrame sidebar={sidebar} rail={rail}>
+            {housingResult}
+          </WorkspaceFrame>
+        )
       ) : tab === "Контекст" ? (
         <div className="conversation-workspace">
           {sidebar}

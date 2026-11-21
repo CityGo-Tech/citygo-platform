@@ -24,7 +24,7 @@ revoke all on housing_workspace_plans, housing_workspace_checklists from citygo_
 grant select on housing_workspace_plans, housing_workspace_checklists to citygo_api;
 grant insert (user_id,revision,thread_id,situation,city,commute,budget_rub,request_id)
   on housing_workspace_plans to citygo_api;
-grant insert (user_id,revision,plan_revision,selected,payment_checked,request_id)
+grant insert (user_id,revision,plan_revision,selected,payment_checked,request_id,confirmed_from_revision)
   on housing_workspace_checklists to citygo_api;
 grant select, delete on sessions, analytics_events to citygo_worker;
 grant select, update on agent_threads, chat_requests to citygo_worker;

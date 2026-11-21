@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  confirmHousingChecklistSchema,
   housingWorkspaceSchema,
   saveHousingChecklistSchema,
   saveHousingPlanSchema,
@@ -87,5 +88,57 @@ test("checklist selections are unique and bound to an existing plan revision", (
       checklist: saved,
     }).success,
     true,
+  );
+});
+
+test("checklist confirmation requires explicit review of exact revisions", () => {
+  const input = {
+    expectedRevision: 2,
+    planRevision: 3,
+    requestId: requestId.toUpperCase(),
+    reviewed: true,
+  };
+  assert.deepEqual(confirmHousingChecklistSchema.parse(input), {
+    ...input,
+    requestId,
+  });
+  for (const invalid of [
+    { ...input, reviewed: false },
+    { ...input, expectedRevision: 0 },
+    { ...input, planRevision: 0 },
+    { ...input, selected: ["payment"] },
+  ])
+    assert.equal(
+      confirmHousingChecklistSchema.safeParse(invalid).success,
+      false,
+    );
+
+  const saved = {
+    userId: "42",
+    plan: {
+      revision: 4,
+      threadId: "11",
+      criteria: command.criteria,
+      requestId,
+      updatedAt: "2026-11-19T00:00:00Z",
+    },
+    checklist: {
+      revision: 3,
+      planRevision: 3,
+      selected: ["payment"],
+      paymentChecked: true,
+      confirmedFromRevision: 2,
+      paymentNeedsReview: true,
+      requestId,
+      updatedAt: "2026-11-19T00:00:00Z",
+    },
+  };
+  assert.equal(housingWorkspaceSchema.safeParse(saved).success, true);
+  assert.equal(
+    housingWorkspaceSchema.safeParse({
+      ...saved,
+      checklist: { ...saved.checklist, confirmedFromRevision: 1 },
+    }).success,
+    false,
   );
 });

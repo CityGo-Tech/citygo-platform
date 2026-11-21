@@ -75,7 +75,7 @@ test("reset and exact disposable rewinds retain active and unlinked contact proo
     (select count(*)::int from pg_sequences where schemaname='public') as sequences,
     (select count(*)::int from citygo_migrations) as migrations`)
     ).rows,
-    [{ tables: 85, sequences: 23, migrations: 52 }],
+    [{ tables: 85, sequences: 23, migrations: 53 }],
   );
   assert.equal(
     (await db.query("select 1 from user_acquisition")).rows.length,

@@ -59,7 +59,7 @@ async function verifyHousingWorkspace(t: TestContext, db: Database) {
   const foreign = await ensureConversation(db, other, "housing");
   const nonHousing = await ensureConversation(db, owner, "support");
   const request = (
-    action: "" | "/plan" | "/checklist",
+    action: "" | "/plan" | "/checklist" | "/checklist/confirmation",
     body?: object,
     credential: string = token,
     origin?: string,
@@ -239,6 +239,191 @@ async function verifyHousingWorkspace(t: TestContext, db: Database) {
     (await db.query("select 1 from payment_topup_orders")).rows.length,
     0,
   );
+
+  // Confirm only a displayed checklist, with an explicit owner action.
+  const confirmPath = "/checklist/confirmation";
+  const confirmation = {
+    expectedRevision: 2,
+    planRevision: 3,
+    requestId: randomUUID(),
+    reviewed: true,
+  };
+  const commuteOnly = {
+    ...changed,
+    expectedRevision: 2,
+    requestId: randomUUID(),
+    criteria: { ...changed.criteria, commute: "Парк Победы" },
+  };
+  const planThree = await request("/plan", commuteOnly);
+  assert.equal(planThree.statusCode, 200, planThree.body);
+  assert.equal(planThree.json().checklist.paymentNeedsReview, undefined);
+  assert.equal(planThree.json().checklist.confirmedFromRevision, undefined);
+  const inaccessible = await request(confirmPath, confirmation, otherToken);
+  assert.equal(inaccessible.statusCode, 409);
+  assert.equal(inaccessible.json().currentRevision, undefined);
+  assert.deepEqual((await request("", undefined, otherToken)).json(), {
+    userId: other,
+    plan: null,
+    checklist: null,
+  });
+  assert.equal((await request(confirmPath, confirmation, "")).statusCode, 401);
+  assert.equal(
+    (
+      await request(
+        confirmPath,
+        confirmation,
+        token,
+        "https://other.example.test",
+      )
+    ).statusCode,
+    403,
+  );
+  for (const invalid of [
+    { ...confirmation, reviewed: false },
+    { ...confirmation, userId: other },
+    { ...confirmation, expectedRevision: 0 },
+  ])
+    assert.equal((await request(confirmPath, invalid)).statusCode, 400);
+
+  const staleChecklist = await request(confirmPath, {
+    ...confirmation,
+    expectedRevision: 1,
+  });
+  assert.equal(staleChecklist.statusCode, 409);
+  assert.equal(staleChecklist.json().code, "REVISION_CONFLICT");
+  const stalePlan = await request(confirmPath, {
+    ...confirmation,
+    planRevision: 2,
+  });
+  assert.equal(stalePlan.statusCode, 409);
+  assert.equal(stalePlan.json().code, "PLAN_STALE");
+  for (const usedRequest of [commuteOnly.requestId, checklist.requestId])
+    assert.equal(
+      (await request(confirmPath, { ...confirmation, requestId: usedRequest }))
+        .statusCode,
+      409,
+    );
+  assert.equal(
+    (await request("")).json().checklist.confirmedFromRevision,
+    undefined,
+  );
+
+  // A lost response can be retried with the same immutable intent.
+  const [confirmed, replay] = await Promise.all([
+    request(confirmPath, confirmation),
+    request(confirmPath, confirmation),
+  ]);
+  assert.equal(confirmed.statusCode, 200, confirmed.body);
+  assert.equal(replay.statusCode, 200, replay.body);
+  assert.deepEqual(replay.json(), confirmed.json());
+  const receipt = housingWorkspaceSchema.parse(confirmed.json()).checklist!;
+  assert.deepEqual(
+    { ...receipt, updatedAt: undefined },
+    {
+      revision: 3,
+      planRevision: 3,
+      confirmedFromRevision: 2,
+      selected: ["contract"],
+      paymentChecked: false,
+      requestId: confirmation.requestId,
+      updatedAt: undefined,
+    },
+  );
+  assert.deepEqual(
+    (
+      await request(confirmPath, {
+        ...confirmation,
+        expectedRevision: 3,
+        requestId: randomUUID(),
+      })
+    ).json(),
+    confirmed.json(),
+  );
+  assert.equal(
+    (await request(confirmPath, { ...confirmation, expectedRevision: 3 }))
+      .statusCode,
+    409,
+  );
+  assert.equal(
+    (
+      await request("/checklist", {
+        expectedRevision: 2,
+        planRevision: 3,
+        selected: receipt.selected,
+        paymentChecked: receipt.paymentChecked,
+        requestId: confirmation.requestId,
+      })
+    ).statusCode,
+    409,
+  );
+  assert.equal(
+    (
+      await request("/plan", {
+        ...commuteOnly,
+        expectedRevision: 3,
+        requestId: confirmation.requestId,
+      })
+    ).statusCode,
+    409,
+  );
+
+  // The exact old command can be replayed, but a payment change invalidates its effect
+  // on the current screen even if the budget later returns to its previous value.
+  for (const [expectedRevision, budgetRub] of [
+    [3, 70_000],
+    [4, null],
+  ] as const) {
+    const changedBudget = await request("/plan", {
+      ...commuteOnly,
+      criteria: { ...commuteOnly.criteria, budgetRub },
+      expectedRevision,
+      requestId: randomUUID(),
+    });
+    assert.equal(changedBudget.statusCode, 200, changedBudget.body);
+    assert.equal(changedBudget.json().checklist.paymentNeedsReview, true);
+    assert.deepEqual(
+      (await request(confirmPath, confirmation)).json(),
+      changedBudget.json(),
+    );
+    const needsReview = await request(confirmPath, {
+      ...confirmation,
+      expectedRevision: 3,
+      planRevision: expectedRevision + 1,
+      requestId: randomUUID(),
+    });
+    assert.equal(needsReview.statusCode, 409);
+    assert.equal(needsReview.json().code, "PLAN_STALE");
+  }
+  const reviewedAgain = await request("/checklist", {
+    expectedRevision: 3,
+    planRevision: 5,
+    selected: receipt.selected,
+    paymentChecked: false,
+    requestId: randomUUID(),
+  });
+  assert.equal(reviewedAgain.statusCode, 200, reviewedAgain.body);
+  assert.equal(reviewedAgain.json().checklist.confirmedFromRevision, undefined);
+  assert.equal(reviewedAgain.json().checklist.paymentNeedsReview, undefined);
+  const confirmedAgain = await request(confirmPath, {
+    ...confirmation,
+    expectedRevision: 4,
+    planRevision: 5,
+    requestId: randomUUID(),
+  });
+  assert.equal(confirmedAgain.statusCode, 200, confirmedAgain.body);
+  assert.equal(confirmedAgain.json().checklist.confirmedFromRevision, 4);
+  assert.deepEqual(
+    (
+      await db.query(
+        "select revision,confirmed_from_revision from housing_workspace_checklists where confirmed_from_revision is not null order by revision",
+      )
+    ).rows,
+    [
+      { revision: 3, confirmed_from_revision: 2 },
+      { revision: 5, confirmed_from_revision: 4 },
+    ],
+  );
+  assert.equal((await db.query("select 1 from xp_events")).rows.length, 0);
 }
 
 test("housing recovery, owner isolation and concurrent explicit result saves", async (t) => {

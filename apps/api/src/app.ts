@@ -807,15 +807,15 @@ export async function buildApp(options: {
       );
       await options.db.query("select messenger_provider from sessions limit 0");
       const housingWorkspaceMigration = await options.db.query(
-        "select name from citygo_migrations where name='0052_housing_workspace.sql'",
+        "select name from citygo_migrations where name in ('0052_housing_workspace.sql','0053_housing_checklist_confirmation.sql')",
       );
-      if (housingWorkspaceMigration.rows.length !== 1)
+      if (housingWorkspaceMigration.rows.length !== 2)
         throw new Error("Pending housing workspace migration");
       await options.db.query(
         "select user_id,revision,thread_id,situation,city,commute,budget_rub,request_id,updated_at from housing_workspace_plans limit 0",
       );
       await options.db.query(
-        "select user_id,revision,plan_revision,selected,payment_checked,request_id,updated_at from housing_workspace_checklists limit 0",
+        "select user_id,revision,plan_revision,selected,payment_checked,request_id,updated_at,confirmed_from_revision from housing_workspace_checklists limit 0",
       );
       await options.db.query(
         "select landing_attribution from email_registrations limit 0",

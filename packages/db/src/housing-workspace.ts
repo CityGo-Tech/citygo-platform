@@ -1,8 +1,10 @@
 import {
+  confirmHousingChecklistSchema,
   housingWorkspaceSchema,
   personalPlanIdSchema,
   saveHousingChecklistSchema,
   saveHousingPlanSchema,
+  type ConfirmHousingChecklist,
   type HousingWorkspace,
   type SaveHousingChecklist,
   type SaveHousingPlan,
@@ -18,11 +20,25 @@ const planSnapshot = `json_build_object(
   'updatedAt',to_char(updated_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
   'requestId',request_id::text
 )`;
-const checklistSnapshot = `json_build_object(
-  'revision',revision,'planRevision',plan_revision,'selected',selected,'paymentChecked',payment_checked,
-  'updatedAt',to_char(updated_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
-  'requestId',request_id::text
-)`;
+// Compare all later versions with the saved source, so a budget change and
+// reversal still asks the owner to recheck payments. Other criteria do not
+// affect the generic payment questions in this checklist.
+const paymentNeedsReview = `case when exists(
+  select 1 from housing_workspace_plans source
+  join housing_workspace_plans later
+    on later.user_id=source.user_id and later.revision>source.revision
+  where source.user_id=c.user_id and source.revision=c.plan_revision
+    and later.budget_rub is distinct from source.budget_rub
+) then true end`;
+
+function checklistSnapshot(needsReview = "null::boolean") {
+  return `json_strip_nulls(json_build_object(
+    'revision',c.revision,'planRevision',c.plan_revision,'selected',c.selected,'paymentChecked',c.payment_checked,
+    'updatedAt',to_char(c.updated_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+    'requestId',c.request_id::text,'confirmedFromRevision',c.confirmed_from_revision,
+    'paymentNeedsReview',${needsReview}
+  ))`;
+}
 
 function checkRevision(current: number, expected: number) {
   if (current !== expected)
@@ -55,7 +71,8 @@ export class HousingWorkspaceStore {
       await sql.query<{ plan: unknown; checklist: unknown }>(
         `select
           (select ${planSnapshot} from housing_workspace_plans where user_id=u.id order by revision desc limit 1) as plan,
-          (select ${checklistSnapshot} from housing_workspace_checklists where user_id=u.id order by revision desc limit 1) as checklist
+          (select ${checklistSnapshot(paymentNeedsReview)} from housing_workspace_checklists c
+            where c.user_id=u.id order by c.revision desc limit 1) as checklist
          from users u where u.id=$1 and u.status='active' and not u.must_change_password`,
         [userId],
       )
@@ -78,6 +95,27 @@ export class HousingWorkspaceStore {
       throw new DomainError(401, "Войдите в аккаунт");
     if (owner.must_change_password)
       throw new DomainError(403, "Сначала смените временный пароль");
+  }
+
+  private async checklistByRequest(tx: Sql, userId: string, requestId: string) {
+    return (
+      await tx.query<{ snapshot: Checklist }>(
+        `select ${checklistSnapshot()} as snapshot from housing_workspace_checklists c where c.user_id=$1 and c.request_id=$2`,
+        [userId, requestId],
+      )
+    ).rows[0]?.snapshot;
+  }
+
+  private async requireUnusedPlanRequest(
+    tx: Sql,
+    userId: string,
+    requestId: string,
+  ) {
+    const used = await tx.query(
+      "select 1 from housing_workspace_plans where user_id=$1 and request_id=$2",
+      [userId, requestId],
+    );
+    checkReplay(!used.rows.length);
   }
 
   async get(userId: string) {
@@ -112,6 +150,9 @@ export class HousingWorkspaceStore {
         );
         return { workspace: current, saved: false };
       }
+      checkReplay(
+        !(await this.checklistByRequest(tx, userId, input.requestId)),
+      );
       checkRevision(current.plan?.revision ?? 0, input.expectedRevision);
       if (current.plan && current.plan.threadId !== input.threadId)
         throw new DomainError(
@@ -157,16 +198,16 @@ export class HousingWorkspaceStore {
     const input = saveHousingChecklistSchema.parse(raw);
     const { workspace, saved } = await this.db.transaction(async (tx) => {
       await this.lockOwner(tx, userId);
-      const previous = (
-        await tx.query<{ snapshot: Checklist }>(
-          `select ${checklistSnapshot} as snapshot from housing_workspace_checklists where user_id=$1 and request_id=$2`,
-          [userId, input.requestId],
-        )
-      ).rows[0]?.snapshot;
+      const previous = await this.checklistByRequest(
+        tx,
+        userId,
+        input.requestId,
+      );
       const current = await this.read(tx, userId);
       if (previous) {
         checkReplay(
           input.expectedRevision + 1 === previous.revision &&
+            previous.confirmedFromRevision === undefined &&
             input.planRevision === previous.planRevision &&
             input.paymentChecked === previous.paymentChecked &&
             input.selected.length === previous.selected.length &&
@@ -176,16 +217,9 @@ export class HousingWorkspaceStore {
         );
         return { workspace: current, saved: false };
       }
+      await this.requireUnusedPlanRequest(tx, userId, input.requestId);
       checkRevision(current.checklist?.revision ?? 0, input.expectedRevision);
-      if (!current.plan)
-        throw new DomainError(409, "Сначала сохраните стартовый план.");
-      if (current.plan.revision !== input.planRevision)
-        throw new DomainError(
-          409,
-          "План изменился. Проверьте чек-лист перед сохранением.",
-          "PLAN_STALE",
-          current.plan.revision,
-        );
+      this.requireCurrentPlan(current, input.planRevision);
       await tx.query(
         `insert into housing_workspace_checklists(user_id,revision,plan_revision,selected,payment_checked,request_id)
          values($1,$2,$3,$4,$5,$6)`,
@@ -202,5 +236,66 @@ export class HousingWorkspaceStore {
     });
     if (saved) await onSaved?.();
     return workspace;
+  }
+
+  private requireCurrentPlan(current: HousingWorkspace, planRevision: number) {
+    if (!current.plan)
+      throw new DomainError(409, "Сначала сохраните стартовый план.");
+    if (current.plan.revision !== planRevision)
+      throw new DomainError(
+        409,
+        "План изменился. Откройте актуальную версию.",
+        "PLAN_STALE",
+        current.plan.revision,
+      );
+  }
+
+  async confirmChecklist(userId: string, raw: ConfirmHousingChecklist) {
+    personalPlanIdSchema.parse(userId);
+    const input = confirmHousingChecklistSchema.parse(raw);
+    return this.db.transaction(async (tx) => {
+      await this.lockOwner(tx, userId);
+      const previous = await this.checklistByRequest(
+        tx,
+        userId,
+        input.requestId,
+      );
+      const current = await this.read(tx, userId);
+      if (previous) {
+        checkReplay(
+          previous.confirmedFromRevision === input.expectedRevision &&
+            previous.planRevision === input.planRevision,
+        );
+        return current;
+      }
+      await this.requireUnusedPlanRequest(tx, userId, input.requestId);
+      this.requireCurrentPlan(current, input.planRevision);
+      const checklist = current.checklist;
+      if (!checklist)
+        throw new DomainError(409, "Сначала сохраните чек-лист просмотра.");
+      checkRevision(checklist.revision, input.expectedRevision);
+      if (checklist.paymentNeedsReview)
+        throw new DomainError(
+          409,
+          "Бюджет изменился. Перепроверьте платежи и сохраните чек-лист.",
+          "PLAN_STALE",
+          input.planRevision,
+        );
+      if (checklist.confirmedFromRevision !== undefined) return current;
+      await tx.query(
+        `insert into housing_workspace_checklists(user_id,revision,plan_revision,selected,payment_checked,request_id,confirmed_from_revision)
+         values($1,$2,$3,$4,$5,$6,$7)`,
+        [
+          userId,
+          checklist.revision + 1,
+          input.planRevision,
+          checklist.selected,
+          checklist.paymentChecked,
+          input.requestId,
+          checklist.revision,
+        ],
+      );
+      return this.read(tx, userId);
+    });
   }
 }

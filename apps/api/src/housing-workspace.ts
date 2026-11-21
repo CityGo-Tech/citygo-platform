@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import {
+  confirmHousingChecklistSchema,
   saveHousingChecklistSchema,
   saveHousingPlanSchema,
 } from "@citygo/contracts";
@@ -65,6 +66,18 @@ export function registerHousingWorkspaceApi(
         owner.id,
         requireInput(saveHousingChecklistSchema, request.body),
         options.onSaved?.(request, owner.messengerProvider),
+      );
+    },
+  );
+  app.put(
+    route + "/checklist/confirmation",
+    { config: writeLimit, bodyLimit: 8 * 1024 },
+    async (request) => {
+      const owner = await options.authenticate(request);
+      requireInput(noQuery, request.query);
+      return store.confirmChecklist(
+        owner.id,
+        requireInput(confirmHousingChecklistSchema, request.body),
       );
     },
   );
