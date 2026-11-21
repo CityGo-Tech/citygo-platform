@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  knowledgeEditorialVersionSchema,
+  knowledgeFactCandidateRequestSchema,
   knowledgeFactSchema,
+  knowledgeLookupRequestSchema,
+  knowledgePublishRequestSchema,
+  knowledgeSourceCandidateRequestSchema,
   knowledgeLookupInputSchema,
   knowledgeLookupResultSchema,
   knowledgePublicationSchema,
@@ -195,4 +200,74 @@ test("lookup results cannot promise research on conflict or expose matches on a 
     { status: "conflict", reason: "version_conflict", researchNeeded: true },
   ])
     assert.equal(knowledgeLookupResultSchema.safeParse(result).success, false);
+});
+
+test("editorial requests cannot supply actor, publication or a backdated lookup clock", () => {
+  const { title, url, excerpt, scope, provenance } = source();
+  const draft = { title, url, excerpt, scope, provenance };
+  assert.equal(
+    knowledgeSourceCandidateRequestSchema.safeParse({
+      expectedRevision: 0,
+      draft,
+    }).success,
+    true,
+  );
+  assert.equal(
+    knowledgeSourceCandidateRequestSchema.safeParse({
+      expectedRevision: 0,
+      draft: { ...draft, publication: published() },
+    }).success,
+    false,
+  );
+  const current = fact();
+  const candidate = {
+    factKey: current.factKey,
+    statement: current.statement,
+    scope: current.scope,
+    provenance: current.provenance,
+    evidence: current.evidence,
+  };
+  assert.equal(
+    knowledgeFactCandidateRequestSchema.safeParse({
+      expectedRevision: 1,
+      draft: { ...candidate, messages: [] },
+    }).success,
+    false,
+  );
+  assert.equal(
+    knowledgePublishRequestSchema.safeParse({
+      expectedRevision: 1,
+      validUntil: published().validUntil,
+      reviewedAt: published().reviewedAt,
+    }).success,
+    false,
+  );
+  assert.equal(
+    knowledgeLookupRequestSchema.safeParse({
+      factKey: current.factKey,
+      scope: current.scope,
+      asOf: published().reviewedAt,
+    }).success,
+    false,
+  );
+});
+
+test("editorial stale state preserves the published revision metadata", () => {
+  const document = fact();
+  assert.equal(
+    knowledgeEditorialVersionSchema.safeParse({
+      kind: "fact",
+      state: "stale",
+      document,
+    }).success,
+    true,
+  );
+  assert.equal(
+    knowledgeEditorialVersionSchema.safeParse({
+      kind: "fact",
+      state: "withdrawn",
+      document,
+    }).success,
+    false,
+  );
 });

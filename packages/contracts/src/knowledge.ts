@@ -1,7 +1,7 @@
 import { z } from "zod";
 
-// Offline knowledge contracts only. Parsing does not verify truth, permissions,
-// the public nature of text, a live URL or a person's identity.
+// Parsing does not verify truth, permissions, the public nature of text,
+// a live URL or a person's identity.
 const key = z
   .string()
   .min(1)
@@ -10,6 +10,8 @@ const key = z
 const revision = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 const instant = z.iso.datetime({ offset: true }).max(40);
 const text = (max: number) => z.string().trim().min(1).max(max);
+export const knowledgeEntityKindSchema = z.enum(["source", "fact"]);
+export const knowledgeEntityIdSchema = key;
 export const knowledgeReferenceSchema = z.strictObject({ id: key, revision });
 export const knowledgeScopeSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("global") }),
@@ -149,6 +151,61 @@ export const knowledgeQuerySchema = z.strictObject({
   asOf: instant,
   limit: z.number().int().min(1).max(20).default(5),
 });
+// Authoritative readers supply the current database time themselves.
+export const knowledgeLookupRequestSchema = knowledgeQuerySchema.omit({
+  asOf: true,
+});
+
+const expectedRevision = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
+
+export const knowledgeSourceCandidateRequestSchema = z.strictObject({
+  expectedRevision,
+  draft: z.strictObject({
+    title: knowledgeSourceSchema.shape.title,
+    url: knowledgeSourceSchema.shape.url,
+    scope: knowledgeScopeSchema,
+    excerpt: knowledgeSourceSchema.shape.excerpt,
+    provenance: knowledgeSourceSchema.shape.provenance,
+  }),
+});
+export const knowledgeFactCandidateRequestSchema = z.strictObject({
+  expectedRevision,
+  draft: z.strictObject({
+    factKey: knowledgeFactSchema.shape.factKey,
+    statement: knowledgeFactSchema.shape.statement,
+    scope: knowledgeScopeSchema,
+    provenance: knowledgeFactSchema.shape.provenance,
+    evidence: knowledgeFactSchema.shape.evidence,
+  }),
+});
+
+export const knowledgeRevisionRequestSchema = z.strictObject({
+  expectedRevision: revision,
+});
+
+export const knowledgePublishRequestSchema =
+  knowledgeRevisionRequestSchema.extend({ validUntil: instant });
+
+const editorialState = z.enum(["candidate", "published", "stale", "withdrawn"]);
+export const knowledgeEditorialVersionSchema = z
+  .discriminatedUnion("kind", [
+    z.strictObject({
+      kind: z.literal("source"),
+      state: editorialState,
+      document: knowledgeSourceSchema,
+    }),
+    z.strictObject({
+      kind: z.literal("fact"),
+      state: editorialState,
+      document: knowledgeFactSchema,
+    }),
+  ])
+  .refine(
+    ({ state, document }) =>
+      (state === "stale" ? "published" : state) === document.publication.status,
+    "Editorial state does not match the recorded publication",
+  );
+
 export const knowledgeLookupInputSchema = z.strictObject({
   query: knowledgeQuerySchema,
   registry: knowledgeRegistrySchema,
@@ -167,6 +224,7 @@ export const knowledgeMatchSchema = z.strictObject({
       z.strictObject({
         source: knowledgeReferenceSchema,
         title: text(300),
+        publisher: text(300),
         url: z.url({ protocol: /^https$/ }).max(2048),
         quote: text(4000),
         reviewedAt: instant,
@@ -212,6 +270,10 @@ export const knowledgeLookupResultSchema = z.discriminatedUnion("status", [
   }),
 ]);
 
+export type KnowledgeEntityKind = z.infer<typeof knowledgeEntityKindSchema>;
+export type KnowledgeEditorialVersion = z.infer<
+  typeof knowledgeEditorialVersionSchema
+>;
 export type KnowledgeScope = z.infer<typeof knowledgeScopeSchema>;
 export type KnowledgePublication = z.infer<typeof knowledgePublicationSchema>;
 export type KnowledgeSource = z.infer<typeof knowledgeSourceSchema>;

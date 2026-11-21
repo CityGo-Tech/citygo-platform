@@ -157,6 +157,7 @@ import {
 } from "./phone-verification.js";
 import { registerAccountProfile } from "./account-profile.js";
 import { registerAdminPhoneContacts } from "./admin-phone-contacts.js";
+import { registerKnowledgeEditorialApi } from "./knowledge-editorial.js";
 import {
   registerCustomerObservability,
   serializeRequestLog,
@@ -716,6 +717,19 @@ export async function buildApp(options: {
       );
       if (acquisitionMigration.rows.length !== 1)
         throw new Error("Pending landing attribution migration");
+      const knowledgeEditorialMigration = await options.db.query(
+        "select name from citygo_migrations where name='0054_knowledge_editorial.sql'",
+      );
+      if (knowledgeEditorialMigration.rows.length !== 1)
+        throw new Error("Pending editorial knowledge migration");
+      await options.db.query(
+        "select kind,id,revision,fact_key,scope,state,document,occurred_at from knowledge_editorial_revisions limit 0",
+      );
+      const knowledgeEditorialKeys = await options.db.query(
+        "select indexrelid from pg_index where indrelid='public.knowledge_editorial_revisions'::regclass and indisunique and indisvalid and (indisprimary or indexrelid=to_regclass('public.knowledge_editorial_first_fact_idx'))",
+      );
+      if (knowledgeEditorialKeys.rows.length !== 2)
+        throw new Error("Editorial knowledge uniqueness is unavailable");
       await options.db.query(
         "select landing_attribution from email_registrations limit 0",
       );
@@ -1133,6 +1147,11 @@ export async function buildApp(options: {
   app.get("/v1/admin/accounts", async (request) => {
     const actor = await authenticateAdmin(request);
     return { users: await accounts.list(actor.id) };
+  });
+  registerKnowledgeEditorialApi(app, {
+    db: options.db,
+    authenticate,
+    authenticateAdmin,
   });
   registerAdminPhoneContacts(app, {
     db: options.db,

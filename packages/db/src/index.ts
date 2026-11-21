@@ -18,6 +18,7 @@ export {
   CustomerObservability,
   type CustomerObservabilityContext,
 } from "./customer-observability.js";
+export { KnowledgeEditorialStore } from "./knowledge-editorial.js";
 export { PersonalPlan } from "./personal-plan.js";
 export { PersonalPlanHistory } from "./personal-plan-history.js";
 export { exportPersonalPlan } from "./personal-plan-export.js";

@@ -70,7 +70,75 @@ test("synthetic rewind refuses account or pending acquisition history before era
   }
 });
 
-test("18→50 rehearsal rejects a production project before fixture I/O", async () => {
+test("0054 preserves the schema-50 legacy catalog and makes editor history append-only", async (t) => {
+  const db = new PGlite();
+  t.after(() => db.close());
+  const current = migrations.slice(0, -1);
+  assert.equal(current.at(-1).name, "0050_landing_attribution.sql");
+  assert.equal(migrations.at(-1).name, "0054_knowledge_editorial.sql");
+  for (const migration of current)
+    await db.exec(withoutTransaction(migration.sql));
+  await db.exec(`insert into knowledge_sources(slug,title,source_url,status,verified_at,metadata)
+    values ('legacy-example','Legacy synthetic','https://legacy.example/reference','verified',
+      '2026-01-01T00:00:00Z','{"legacy":"keep"}')`);
+  const legacy = (await db.query("select * from knowledge_sources")).rows;
+  await db.exec(withoutTransaction(migrations.at(-1).sql));
+  assert.deepEqual(
+    (await db.query("select * from knowledge_sources")).rows,
+    legacy,
+  );
+  assert.deepEqual(
+    (await db.query("select * from knowledge_editorial_revisions")).rows,
+    [],
+  );
+
+  await db.exec(
+    "create role citygo_api; create role citygo_worker; create role citygo_backup; create table citygo_migrations(name text primary key,checksum text not null)",
+  );
+  const grants = readFileSync(
+    join(root, "deploy/postgres/grants.sql"),
+    "utf8",
+  ).replace(/^\\set[^\n]*\n/gm, "");
+  await db.exec(grants);
+  const access = (
+    await db.query(`select
+    has_table_privilege('citygo_api','knowledge_editorial_revisions','SELECT') as api_read,
+    has_table_privilege('citygo_api','knowledge_editorial_revisions','INSERT') as api_append,
+    has_table_privilege('citygo_api','knowledge_editorial_revisions','UPDATE,DELETE,TRUNCATE') as api_rewrite,
+    has_table_privilege('citygo_worker','knowledge_editorial_revisions','SELECT,INSERT,UPDATE,DELETE,TRUNCATE') as worker_access,
+    has_table_privilege('citygo_backup','knowledge_editorial_revisions','SELECT') as backup_read,
+    has_table_privilege('citygo_backup','knowledge_editorial_revisions','INSERT,UPDATE,DELETE,TRUNCATE') as backup_write`)
+  ).rows;
+  assert.deepEqual(access, [
+    {
+      api_read: true,
+      api_append: true,
+      api_rewrite: false,
+      worker_access: false,
+      backup_read: true,
+      backup_write: false,
+    },
+  ]);
+
+  await db.exec(`insert into knowledge_editorial_revisions(kind,id,revision,fact_key,scope,state,document,occurred_at)
+    values ('fact','example',1,'example-key','{"kind":"global"}','candidate',
+      '{"id":"example","revision":1,"factKey":"example-key","scope":{"kind":"global"},"publication":{"status":"candidate"}}','2026-01-01T00:00:00Z')`);
+  await assert.rejects(
+    db.exec(upgrade18RewindSql()),
+    /Editorial history cannot be rewound/,
+  );
+  await db.exec("rollback");
+  assert.equal(
+    (await db.query("select * from knowledge_editorial_revisions")).rows.length,
+    1,
+  );
+  assert.deepEqual(
+    (await db.query("select * from knowledge_sources")).rows,
+    legacy,
+  );
+});
+
+test("18→51 rehearsal rejects a production project before fixture I/O", async () => {
   const unexpected = () => assert.fail("No I/O before ownership guards");
   await assert.rejects(
     releaseUpgrade18Smoke({
@@ -84,11 +152,11 @@ test("18→50 rehearsal rejects a production project before fixture I/O", async 
   );
 });
 
-test("literal schema-18 fixture preserves budgets/orders/holds, rolls back late ACLs and reapplies only 19–50", async (t) => {
+test("literal schema-18 fixture preserves budgets/orders/holds, rolls back late ACLs and reapplies only 19–54 as listed", async (t) => {
   const db = new PGlite();
   t.after(() => db.close());
   await db.waitReady;
-  assert.equal(migrations.length, 50);
+  assert.equal(migrations.length, 51);
   assert.equal(migrations[17].name, "0018_payment_refunds.sql");
   assert.deepEqual(
     migrations.slice(18).map(({ name }) => name),
@@ -125,6 +193,7 @@ test("literal schema-18 fixture preserves budgets/orders/holds, rolls back late 
       "0048_native_search_postpay.sql",
       "0049_native_search_production.sql",
       "0050_landing_attribution.sql",
+      "0054_knowledge_editorial.sql",
     ],
   );
   await db.exec(
@@ -191,7 +260,7 @@ test("literal schema-18 fixture preserves budgets/orders/holds, rolls back late 
     [
       {
         quotations: 1,
-        migrations: 50,
+        migrations: 51,
         admission: true,
         source_index: true,
         guard: true,
@@ -224,7 +293,7 @@ test("literal schema-18 fixture preserves budgets/orders/holds, rolls back late 
       to_regclass('payment_admission') is not null as admission,
       exists(select 1 from pg_proc where proname='citygo_guard_account_email_verification_proof') as guard`)
     ).rows,
-    [{ confirmation: 1, migrations: 50, admission: true, guard: true }],
+    [{ confirmation: 1, migrations: 51, admission: true, guard: true }],
   );
   await db.query("delete from account_email_confirmation_challenges");
   await db.query("delete from users where id=$1", [confirmationUser]);
@@ -246,7 +315,7 @@ test("literal schema-18 fixture preserves budgets/orders/holds, rolls back late 
       to_regclass('payment_admission') is not null as admission,
       exists(select 1 from pg_proc where proname='citygo_guard_password_recovery') as guard`)
     ).rows,
-    [{ recovery: 1, migrations: 50, admission: true, guard: true }],
+    [{ recovery: 1, migrations: 51, admission: true, guard: true }],
     "Rejected rewind retains recovery history and rolls back earlier DDL",
   );
   // Remove only this synthetic in-memory test row before the existing empty

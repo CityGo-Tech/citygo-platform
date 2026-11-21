@@ -193,6 +193,7 @@ function matchFact(
     evidence.push({
       source: item.source,
       title: source.title,
+      publisher: source.provenance.publisher,
       url: source.url,
       quote: item.quote,
       reviewedAt: sourcePublication.reviewedAt,

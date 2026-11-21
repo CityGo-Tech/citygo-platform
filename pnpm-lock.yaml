@@ -300,6 +300,9 @@ importers:
 
   packages/db:
     dependencies:
+      '@citygo/content':
+        specifier: workspace:*
+        version: link:../content
       '@citygo/contracts':
         specifier: workspace:*
         version: link:../contracts

@@ -53,6 +53,7 @@ const tables = [
   "email_registration_rate_events",
   "generated_artifacts",
   "knowledge_sources",
+  "knowledge_editorial_revisions",
   "messages",
   "npd_receipt_commands",
   "npd_receipt_evidence",
@@ -144,6 +145,7 @@ const retainedTables = [
   "citygo_migration_lock",
   "citygo_migrations",
   "knowledge_sources",
+  "knowledge_editorial_revisions",
   // Retirement must not erase receipt duties, delivery contacts or evidence.
   "npd_receipt_commands",
   "npd_receipt_evidence",
@@ -513,7 +515,19 @@ async function inspect(tx: Sql, options: Options) {
     `select count(*)::int as count from audit_log where not (
     (entity_type='ai-routing' and action in ('ai-routing-initialized','ai-routing-changed'))
     or (entity_type='ai-budget' and action='ai-budget-changed')
-    or (entity_type='ai-credit' and action in ('ai-credit-welcome-granted','ai-credit-cost-overrun')))`,
+    or (entity_type='ai-credit' and action in ('ai-credit-welcome-granted','ai-credit-cost-overrun'))
+    or coalesce((
+      entity_type in ('knowledge-source','knowledge-fact')
+      and entity_id ~ '^[a-z0-9][a-z0-9._:-]{0,119}$'
+      and jsonb_typeof(payload)='object'
+      and payload - array['previousRevision','revision','state'] = '{}'::jsonb
+      and jsonb_typeof(payload->'previousRevision')='number'
+      and jsonb_typeof(payload->'revision')='number'
+      and (action,payload->>'state') in (
+        ('knowledge-candidate-proposed','candidate'),('knowledge-published','published'),
+        ('knowledge-marked-stale','stale'),('knowledge-withdrawn','withdrawn')
+      )
+    ), false))`,
   );
   const plan: ClosedAccountRestartPlan = {
     operation: "closed-account-restart-plan",

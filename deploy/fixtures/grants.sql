@@ -1,6 +1,9 @@
 -- Run AFTER migrations as their owner, never as the application's runtime role.
 grant select, insert, update, delete on all tables in schema public to citygo_api;
 grant usage, select on all sequences in schema public to citygo_api;
+-- Match the production append-only knowledge boundary despite the fixture DML grant.
+revoke all on knowledge_editorial_revisions from citygo_api, citygo_worker;
+grant select, insert on knowledge_editorial_revisions to citygo_api;
 revoke all on citygo_migrations, citygo_migration_lock from citygo_api;
 grant select on citygo_migrations to citygo_api;
 -- Match the production credit ledger's append-only boundary.

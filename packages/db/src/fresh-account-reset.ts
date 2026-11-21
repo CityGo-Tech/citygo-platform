@@ -53,6 +53,7 @@ const tables = [
   "email_registration_rate_events",
   "generated_artifacts",
   "knowledge_sources",
+  "knowledge_editorial_revisions",
   "messages",
   "npd_receipt_commands",
   "npd_receipt_evidence",
@@ -156,6 +157,7 @@ const preserved = [
   "email_registration_rate_events",
   "citygo_migration_lock",
   "citygo_migrations",
+  "knowledge_editorial_revisions",
   "quests",
   "ai_routing",
   ...protectedEmpty,
@@ -416,6 +418,13 @@ async function inspect(tx: Sql, options: Options) {
   const { snapshot, bootstrapCompleted } = await lockedSnapshot(tx);
   const blockers: FreshAccountResetPlan["blockers"] = [];
   // Private display metadata has no erasure authorization in these legacy tools.
+  // The generic audit log belongs to the test reset. Protect editorial
+  // evidence from being accidentally detached from its transition history.
+  if (snapshot.counts.knowledge_editorial_revisions)
+    blockers.push({
+      code: "KNOWLEDGE_EDITORIAL_HISTORY_REQUIRES_REVIEW",
+      count: snapshot.counts.knowledge_editorial_revisions,
+    });
   // A cleared title still retains its CAS evidence and needs separate review.
   if (snapshot.counts.conversation_titles)
     blockers.push({
