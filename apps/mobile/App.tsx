@@ -49,6 +49,8 @@ import { createMobileAiModeConsent } from "./src/ai-mode-consent";
 import { mobileWebDestination, defaultMobileWebUrl } from "./src/web-links";
 import { MobileServiceConsents } from "./src/service-consents";
 import { MobilePersonalPlan, type MobilePlanAccess } from "./src/personal-plan";
+import { observeSavedPlanLinks } from "./src/saved-plan-link";
+import { MobileSavedPlanResult } from "./src/saved-plan-result";
 import { MobileMessageSources } from "./src/message-sources";
 import {
   changeServiceConsent,
@@ -115,6 +117,10 @@ export default function App() {
     [ready, setReady] = useState(false),
     [error, setError] = useState("");
   const [planAccess, setPlanAccess] = useState<MobilePlanAccess | null>(null);
+  // Retain only the target through an expired session. All result data lives
+  // inside the authenticated screen and is discarded with that screen.
+  const [resultId, setResultId] = useState<string | null>(null);
+  useEffect(() => observeSavedPlanLinks(Linking, setResultId), []);
   const [selectedAiMode, setSelectedAiMode] = useState<AiModeId>("balanced");
   const [email, setEmail] = useState(""),
     [password, setPassword] = useState(""),
@@ -202,6 +208,7 @@ export default function App() {
     return next;
   }
   async function endSession(revoke: boolean) {
+    if (revoke) setResultId(null);
     const oldToken = session.current;
     session.current = null;
     clearUserState();
@@ -642,6 +649,33 @@ export default function App() {
       if (ticket.active()) setError(message);
     }
   }
+  const resultOwner = board?.user.id;
+  const resultToken = session.current;
+  const resultAccess = useMemo(
+    () =>
+      resultOwner && resultToken
+        ? {
+            userId: resultOwner,
+            token: resultToken,
+            sessionTicket: lifetime.capture(),
+          }
+        : null,
+    [lifetime, resultOwner, resultToken],
+  );
+  const showResult =
+    ready &&
+    resultId !== null &&
+    resultAccess?.sessionTicket.active() &&
+    !storageBlocked &&
+    !board?.user.mustChangePassword &&
+    !board?.user.serviceConsentRequired &&
+    !showPasswordChange &&
+    modeConsentView.phase === "closed";
+  function returnFromResult() {
+    setResultId(null);
+    if (resultAccess?.sessionTicket.active()) setPlanAccess(resultAccess);
+  }
+
   const consentFields = activeConsentForm ? (
     <MobileServiceConsents
       key={`${activeConsentForm.context}:${activeConsentForm.policy.version}`}
@@ -671,7 +705,18 @@ export default function App() {
           behavior={Platform.OS === "ios" ? "padding" : undefined}
         >
           <StatusBar barStyle="dark-content" />
-          {board &&
+          {showResult && resultId && resultAccess && (
+            <MobileSavedPlanResult
+              key={`${resultAccess.userId}:${resultId}`}
+              base={base}
+              id={resultId}
+              access={resultAccess}
+              onBackToPlan={returnFromResult}
+              onSessionExpired={() => void endSession(false)}
+            />
+          )}
+          {!showResult &&
+            board &&
             planAccess &&
             planAccess.userId === board.user.id &&
             planAccess.sessionTicket.active() &&
@@ -682,6 +727,7 @@ export default function App() {
                 access={planAccess}
                 xp={board.xp}
                 onClose={() => setPlanAccess(null)}
+                onOpenResult={setResultId}
                 onAccessDenied={() => void endSession(false)}
                 onOpenWebPlan={() => {
                   setPlanAccess(null);
@@ -777,6 +823,11 @@ export default function App() {
                 <Text style={styles.title}>
                   {mode === "login" ? "С возвращением" : "Начнём переезд"}
                 </Text>
+                {resultId && (
+                  <Text accessibilityLiveRegion="polite">
+                    Войдите, чтобы открыть сохранённый результат.
+                  </Text>
+                )}
                 {mode === "register" &&
                 registrationAvailability !== "disabled" ? (
                   <>
