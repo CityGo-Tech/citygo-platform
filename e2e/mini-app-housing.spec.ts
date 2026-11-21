@@ -180,18 +180,18 @@ test("housing results keep the chosen task, unknown budget and independent check
   await page.bringToFront();
   await page.evaluate(() => window.dispatchEvent(new Event("focus")));
   await expect(
-    page.getByText(/Эта версия устарела. Стартовый план обновлён до версии 2/),
+    page.getByText(
+      "Стартовый план обновлён до версии 2. Сохранённые отметки чек-листа действуют.",
+      { exact: true },
+    ),
   ).toBeVisible();
-  await page
-    .getByRole("button", {
-      name: "Проверить по обновлённому плану",
-      exact: true,
-    })
-    .click();
+  await expect(
+    page.getByRole("button", { name: "Перепроверить платёж", exact: true }),
+  ).toHaveCount(0);
   await expect(page.getByRole("checkbox", { name: /Платежи/ })).toBeChecked();
   await expect(
     page.getByRole("checkbox", { name: "Полный первый платёж проверен" }),
-  ).not.toBeChecked();
+  ).toBeChecked();
   expect((await workspace(page)).plan?.threadId).toBe(saved.plan?.threadId);
   expect(forbidden).toEqual([]);
 });

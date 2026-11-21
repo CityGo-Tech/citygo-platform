@@ -88,9 +88,38 @@ test("synthetic rewind refuses acquisition, messenger and housing history", asyn
   ]) {
     const db = new PGlite();
     t.after(() => db.close());
-    for (const migration of migrations)
+    const legacyChecklist = table === "housing_workspace_checklists";
+    const installed = legacyChecklist ? migrations.slice(0, -1) : migrations;
+    for (const migration of installed)
       await db.exec(withoutTransaction(migration.sql));
     await db.exec(sql);
+    if (legacyChecklist) {
+      const original = await db.query(
+        "select to_jsonb(c) as checklist from housing_workspace_checklists c",
+      );
+      const confirmation = migrations.at(-1);
+      assert.equal(
+        confirmation.name,
+        "0053_housing_checklist_confirmation.sql",
+      );
+      await db.exec(withoutTransaction(confirmation.sql));
+      assert.deepEqual(
+        (
+          await db.query(
+            "select to_jsonb(c)-'confirmed_from_revision' as checklist from housing_workspace_checklists c",
+          )
+        ).rows,
+        original.rows,
+      );
+      assert.deepEqual(
+        (
+          await db.query(
+            "select confirmed_from_revision from housing_workspace_checklists",
+          )
+        ).rows,
+        [{ confirmed_from_revision: null }],
+      );
+    }
     await assert.rejects(db.exec(upgrade18RewindSql()), failure);
     await db.exec("rollback");
     assert.equal(
@@ -100,7 +129,7 @@ test("synthetic rewind refuses acquisition, messenger and housing history", asyn
   }
 });
 
-test("18→52 rehearsal rejects a production project before fixture I/O", async () => {
+test("18→53 rehearsal rejects a production project before fixture I/O", async () => {
   const unexpected = () => assert.fail("No I/O before ownership guards");
   await assert.rejects(
     releaseUpgrade18Smoke({
@@ -114,11 +143,11 @@ test("18→52 rehearsal rejects a production project before fixture I/O", async 
   );
 });
 
-test("literal schema-18 fixture preserves budgets/orders/holds, rolls back late ACLs and reapplies only 19–52", async (t) => {
+test("literal schema-18 fixture preserves budgets/orders/holds, rolls back late ACLs and reapplies only 19–53", async (t) => {
   const db = new PGlite();
   t.after(() => db.close());
   await db.waitReady;
-  assert.equal(migrations.length, 52);
+  assert.equal(migrations.length, 53);
   assert.equal(migrations[17].name, "0018_payment_refunds.sql");
   assert.deepEqual(
     migrations.slice(18).map(({ name }) => name),
@@ -157,6 +186,7 @@ test("literal schema-18 fixture preserves budgets/orders/holds, rolls back late 
       "0050_landing_attribution.sql",
       "0051_messenger_accounts.sql",
       "0052_housing_workspace.sql",
+      "0053_housing_checklist_confirmation.sql",
     ],
   );
   await db.exec(
@@ -223,7 +253,7 @@ test("literal schema-18 fixture preserves budgets/orders/holds, rolls back late 
     [
       {
         quotations: 1,
-        migrations: 52,
+        migrations: 53,
         admission: true,
         source_index: true,
         guard: true,
@@ -256,7 +286,7 @@ test("literal schema-18 fixture preserves budgets/orders/holds, rolls back late 
       to_regclass('payment_admission') is not null as admission,
       exists(select 1 from pg_proc where proname='citygo_guard_account_email_verification_proof') as guard`)
     ).rows,
-    [{ confirmation: 1, migrations: 52, admission: true, guard: true }],
+    [{ confirmation: 1, migrations: 53, admission: true, guard: true }],
   );
   await db.query("delete from account_email_confirmation_challenges");
   await db.query("delete from users where id=$1", [confirmationUser]);
@@ -278,7 +308,7 @@ test("literal schema-18 fixture preserves budgets/orders/holds, rolls back late 
       to_regclass('payment_admission') is not null as admission,
       exists(select 1 from pg_proc where proname='citygo_guard_password_recovery') as guard`)
     ).rows,
-    [{ recovery: 1, migrations: 52, admission: true, guard: true }],
+    [{ recovery: 1, migrations: 53, admission: true, guard: true }],
     "Rejected rewind retains recovery history and rolls back earlier DDL",
   );
   // Remove only this synthetic in-memory test row before the existing empty
@@ -428,6 +458,23 @@ test("literal schema-18 fixture preserves budgets/orders/holds, rolls back late 
         },
       ],
     );
+  assert.deepEqual(
+    (
+      await db.query(`select
+        has_column_privilege('citygo_api','housing_workspace_checklists','confirmed_from_revision','SELECT') as can_read,
+        has_column_privilege('citygo_api','housing_workspace_checklists','confirmed_from_revision','INSERT') as can_append,
+        has_column_privilege('citygo_api','housing_workspace_checklists','confirmed_from_revision','UPDATE') as can_rewrite,
+        has_column_privilege('citygo_worker','housing_workspace_checklists','confirmed_from_revision','SELECT') as worker_read`)
+    ).rows,
+    [
+      {
+        can_read: true,
+        can_append: true,
+        can_rewrite: false,
+        worker_read: false,
+      },
+    ],
+  );
   assert.deepEqual(
     (
       await db.query(`select

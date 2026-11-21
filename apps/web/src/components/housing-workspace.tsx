@@ -6,9 +6,11 @@ import type { HousingWorkspace } from "@citygo/contracts";
 import { Button, Card, Field } from "@citygo/ui-web";
 import { housingFirstPaymentDetails } from "./housing-first-payment";
 import { housingPlanContent, HousingPlanSteps } from "./housing-starter-plan";
+import { HousingDirectionComparison } from "./housing-direction-comparison";
 import styles from "./housing-starter-plan.module.css";
 
-type Criteria = NonNullable<HousingWorkspace["plan"]>["criteria"];
+type Plan = NonNullable<HousingWorkspace["plan"]>;
+type Criteria = Plan["criteria"];
 type Checklist = NonNullable<HousingWorkspace["checklist"]>;
 type ChecklistDraft = Pick<
   Checklist,
@@ -21,12 +23,17 @@ type PlanDraft = {
   threadId: string;
   criteria: Omit<Criteria, "budgetRub"> & { budget: string };
 };
+type ChecklistReview = { expectedRevision: number; planRevision: number };
 type CityGoClient = ReturnType<typeof createClient>;
 type Mutation =
   | { kind: "plan"; input: Parameters<CityGoClient["saveHousingPlan"]>[0] }
   | {
       kind: "checklist";
       input: Parameters<CityGoClient["saveHousingChecklist"]>[0];
+    }
+  | {
+      kind: "confirmation";
+      input: Parameters<CityGoClient["confirmHousingChecklist"]>[0];
     };
 
 const viewingItems = [
@@ -63,15 +70,31 @@ function savedDraft(
     planRevision,
     selected: checklist?.selected ?? [],
     paymentChecked:
-      checklist?.planRevision === planRevision && checklist.paymentChecked,
+      checklist?.paymentChecked === true &&
+      (checklist.planRevision === planRevision ||
+        !checklist.paymentNeedsReview),
   };
 }
 
 function revisionOf(value: HousingWorkspace, mutation: Mutation) {
-  return value[mutation.kind]?.revision ?? 0;
+  return (
+    (mutation.kind === "plan" ? value.plan : value.checklist)?.revision ?? 0
+  );
 }
 
 function confirms(value: HousingWorkspace, mutation: Mutation) {
+  if (mutation.kind === "confirmation") {
+    const result = value.checklist;
+    return (
+      !!result &&
+      !result.paymentNeedsReview &&
+      ((result.confirmedFromRevision === mutation.input.expectedRevision &&
+        result.revision === mutation.input.expectedRevision + 1 &&
+        result.requestId === mutation.input.requestId) ||
+        (result.confirmedFromRevision !== undefined &&
+          result.revision === mutation.input.expectedRevision))
+    );
+  }
   const result = value[mutation.kind];
   return (
     result?.requestId === mutation.input.requestId &&
@@ -81,9 +104,21 @@ function confirms(value: HousingWorkspace, mutation: Mutation) {
 
 function checklistPlanChanged(value: HousingWorkspace, mutation: Mutation) {
   return (
-    mutation.kind === "checklist" &&
+    mutation.kind !== "plan" &&
     mutation.input.planRevision !== value.plan?.revision
   );
+}
+
+function comparisonChanges(shown: Criteria, current: Criteria) {
+  const changed: Array<"route" | "payment"> = [];
+  if (
+    shown.city !== current.city ||
+    shown.commute !== current.commute ||
+    shown.situation !== current.situation
+  )
+    changed.push("route");
+  if (shown.budgetRub !== current.budgetRub) changed.push("payment");
+  return changed;
 }
 
 type Controller = {
@@ -114,7 +149,11 @@ export function HousingWorkspaceView({
   initialCriteria?: { commute: string; budgetRub: number | null };
   defaultCity?: string;
 }) {
-  const [view, setView] = useState(initialView);
+  const [view, setView] = useState<"plan" | "checklist" | "comparison">(
+    initialView,
+  );
+  const [comparison, setComparison] = useState<Plan | null>(null);
+  const [review, setReview] = useState<ChecklistReview | null>(null);
   const [snapshot, setSnapshot] = useState<HousingWorkspace | null>(null);
   const [planDraft, setPlanDraft] = useState<PlanDraft | null>(null);
   const [preview, setPreview] = useState(false);
@@ -130,7 +169,11 @@ export function HousingWorkspaceView({
   const accessDenied = useRef(onAccessDenied);
   accessDenied.current = onAccessDenied;
   const heading = useRef<HTMLHeadingElement>(null);
+  const confirmationHeading = useRef<HTMLHeadingElement>(null);
   const headingId = useId();
+  useEffect(() => {
+    if (review) confirmationHeading.current?.focus();
+  }, [review]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -162,7 +205,8 @@ export function HousingWorkspaceView({
         setNotice("Стартовый план сохранён.");
       } else {
         setChecklistDraft(null);
-        setNotice("Чек-лист сохранён.");
+        setReview(null);
+        if (mutation.kind === "checklist") setNotice("Чек-лист сохранён.");
       }
     }
     function recover(value: HousingWorkspace) {
@@ -239,7 +283,9 @@ export function HousingWorkspaceView({
         const value =
           mutation.kind === "plan"
             ? await api.saveHousingPlan(mutation.input)
-            : await api.saveHousingChecklist(mutation.input);
+            : mutation.kind === "checklist"
+              ? await api.saveHousingChecklist(mutation.input)
+              : await api.confirmHousingChecklist(mutation.input);
         if (!accept(value)) return;
         if (!confirms(value, mutation)) {
           pending = mutation;
@@ -316,6 +362,14 @@ export function HousingWorkspaceView({
     !!planDraft && planDraft.expectedRevision !== (plan?.revision ?? 0);
   const checklistStale =
     !!checklist && checklist.planRevision !== plan?.revision;
+  const paymentNeedsReview = checklist?.paymentNeedsReview === true;
+  const preparationConfirmed =
+    checklist?.confirmedFromRevision !== undefined && !paymentNeedsReview;
+  const reviewOutdated =
+    !!review &&
+    (review.expectedRevision !== checklist?.revision ||
+      review.planRevision !== plan?.revision ||
+      paymentNeedsReview);
   const checklistOutdated =
     !!checklistDraft &&
     (checklistDraft.expectedRevision !== (checklist?.revision ?? 0) ||
@@ -323,7 +377,12 @@ export function HousingWorkspaceView({
   const checklistForm =
     checklistDraft ??
     (plan
-      ? savedDraft(checklist, checklist?.planRevision ?? plan.revision)
+      ? savedDraft(
+          checklist,
+          checklist?.paymentNeedsReview
+            ? checklist.planRevision
+            : plan.revision,
+        )
       : null);
   const editingPlan = !preview && (!!planDraft || !plan);
   const headingTitle =
@@ -340,6 +399,26 @@ export function HousingWorkspaceView({
   }, [headingTitle]);
 
   if (sessionSignal.aborted) return null;
+
+  if (view === "comparison" && comparison && plan) {
+    const stale = comparison.revision !== plan.revision;
+    return (
+      <HousingDirectionComparison
+        plan={comparison}
+        changes={comparisonChanges(comparison.criteria, plan.criteria)}
+        stale={stale}
+        blocked={blocked}
+        onBack={() => setView("plan")}
+        onReview={() => setComparison(plan)}
+        onOpenChecklist={() => {
+          if (!blocked && !stale) setView("checklist");
+        }}
+        onTransport={
+          onOpenSource ? () => onOpenSource(comparison.threadId) : undefined
+        }
+      />
+    );
+  }
 
   function updateCriteria(update: Partial<PlanDraft["criteria"]>) {
     if (!planForm) return;
@@ -384,6 +463,14 @@ export function HousingWorkspaceView({
     void control.current?.save({
       kind: "checklist",
       input: { ...checklistForm, requestId: crypto.randomUUID() },
+    });
+  }
+
+  function confirmPreparation() {
+    if (!review || blocked || reviewOutdated) return;
+    void control.current?.save({
+      kind: "confirmation",
+      input: { ...review, reviewed: true, requestId: crypto.randomUUID() },
     });
   }
 
@@ -538,9 +625,25 @@ export function HousingWorkspaceView({
                   Уточнить условия
                 </Button>
                 {plan && !planDraft && (
-                  <Button type="button" onClick={() => setView("checklist")}>
-                    Открыть чек-лист просмотра
-                  </Button>
+                  <>
+                    <Button
+                      type="button"
+                      disabled={blocked}
+                      onClick={() => {
+                        setComparison(plan);
+                        setView("comparison");
+                      }}
+                    >
+                      Показать направления поиска
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      onClick={() => setView("checklist")}
+                    >
+                      Открыть чек-лист просмотра
+                    </Button>
+                  </>
                 )}
                 {plan && onOpenSource && (
                   <Button
@@ -569,7 +672,14 @@ export function HousingWorkspaceView({
         </>
       ) : (
         <>
-          <Button type="button" variant="ghost" onClick={() => setView("plan")}>
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={() => {
+              setReview(null);
+              setView("plan");
+            }}
+          >
             К стартовому плану
           </Button>
           {!plan || !checklistForm ? (
@@ -578,7 +688,10 @@ export function HousingWorkspaceView({
             <>
               <p className={styles.intro}>
                 {checklist ? `Версия ${checklist.revision} · ` : ""}
-                На основе стартового плана версии {checklistForm.planRevision}
+                На основе стартового плана версии{" "}
+                {checklistDraft?.planRevision ??
+                  checklist?.planRevision ??
+                  plan.revision}
               </p>
               {checklistOutdated && (
                 <aside className={styles.orientation} role="status">
@@ -601,19 +714,22 @@ export function HousingWorkspaceView({
               {checklistStale && !checklistDraft && (
                 <aside className={styles.orientation} role="status">
                   <p>
-                    Эта версия устарела. Стартовый план обновлён до версии{" "}
-                    {plan.revision}.
+                    {paymentNeedsReview
+                      ? `Изменился бюджет в стартовом плане версии ${plan.revision}. Перепроверьте полный первый платёж.`
+                      : `Стартовый план обновлён до версии ${plan.revision}. Сохранённые отметки чек-листа действуют.`}
                   </p>
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    disabled={blocked}
-                    onClick={() =>
-                      setChecklistDraft(savedDraft(checklist, plan.revision))
-                    }
-                  >
-                    Проверить по обновлённому плану
-                  </Button>
+                  {paymentNeedsReview && (
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      disabled={blocked}
+                      onClick={() =>
+                        setChecklistDraft(savedDraft(checklist, plan.revision))
+                      }
+                    >
+                      Перепроверить платёж
+                    </Button>
+                  )}
                 </aside>
               )}
               <ul className={styles.steps} aria-label="Пункты просмотра">
@@ -626,7 +742,8 @@ export function HousingWorkspaceView({
                         disabled={
                           blocked ||
                           checklistOutdated ||
-                          (checklistStale && !checklistDraft)
+                          !!review ||
+                          (paymentNeedsReview && !checklistDraft)
                         }
                         onChange={(event) => {
                           const selected = new Set(checklistForm.selected);
@@ -654,7 +771,8 @@ export function HousingWorkspaceView({
                     disabled={
                       blocked ||
                       checklistOutdated ||
-                      (checklistStale && !checklistDraft)
+                      !!review ||
+                      (paymentNeedsReview && !checklistDraft)
                     }
                     onChange={(event) =>
                       setChecklistDraft({
@@ -671,12 +789,71 @@ export function HousingWorkspaceView({
                 disabled={
                   blocked ||
                   checklistOutdated ||
+                  !!review ||
                   (!!checklist && !checklistDraft)
                 }
                 onClick={saveChecklist}
               >
                 Сохранить чек-лист
               </Button>
+              {checklist && preparationConfirmed && !checklistDraft && (
+                <p className={styles.summary} role="status">
+                  Подготовка подтверждена
+                </p>
+              )}
+              {checklist &&
+                !preparationConfirmed &&
+                !checklistDraft &&
+                !review && (
+                  <Button
+                    type="button"
+                    disabled={blocked || paymentNeedsReview}
+                    onClick={() =>
+                      setReview({
+                        expectedRevision: checklist.revision,
+                        planRevision: plan.revision,
+                      })
+                    }
+                  >
+                    Подтвердить подготовку
+                  </Button>
+                )}
+              {review && (
+                <aside
+                  className={styles.orientation}
+                  aria-label="Подтверждение подготовки"
+                >
+                  <h2 ref={confirmationHeading} tabIndex={-1}>
+                    Подтвердите подготовку к просмотру
+                  </h2>
+                  {reviewOutdated ? (
+                    <p role="status">
+                      Результат обновился. Проверьте текущую версию чек-листа.
+                    </p>
+                  ) : (
+                    <p>
+                      Чек-лист версии {review.expectedRevision}, стартовый план
+                      версии {review.planRevision}. Подтвердите, что вы
+                      ознакомились с пунктами подготовки к просмотру.
+                    </p>
+                  )}
+                  <Button
+                    type="button"
+                    disabled={blocked || reviewOutdated}
+                    onClick={confirmPreparation}
+                  >
+                    Я подготовился к просмотру
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    disabled={busy || !!uncertain}
+                    onClick={() => setReview(null)}
+                  >
+                    {reviewOutdated ? "Посмотреть текущую версию" : "Отмена"}
+                  </Button>
+                </aside>
+              )}
               {onOpenSource && (
                 <Button
                   type="button"

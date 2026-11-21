@@ -57,10 +57,12 @@ import {
   type SavePlanChecklist,
 } from "@citygo/contracts";
 import {
+  confirmHousingChecklistSchema,
   housingWorkspaceSchema,
   saveHousingPlanSchema,
   saveHousingChecklistSchema,
   type SaveHousingPlan,
+  type ConfirmHousingChecklist,
   type SaveHousingChecklist,
 } from "@citygo/contracts";
 import {
@@ -558,6 +560,13 @@ export function createClient(
         "/v1/housing/workspace/checklist",
         housingWorkspaceSchema,
         saveHousingChecklistSchema.parse(input),
+        "PUT",
+      ),
+    confirmHousingChecklist: (input: ConfirmHousingChecklist) =>
+      request(
+        "/v1/housing/workspace/checklist/confirmation",
+        housingWorkspaceSchema,
+        confirmHousingChecklistSchema.parse(input),
         "PUT",
       ),
     miniAppSignIn: (provider: MessengerProvider, initData: string) =>

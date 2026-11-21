@@ -38,6 +38,7 @@ async function fixture(t: TestContext, oldSchema = 0) {
           49: "0049_native_search_production.sql",
           50: "0050_landing_attribution.sql",
           51: "0051_messenger_accounts.sql",
+          52: "0052_housing_workspace.sql",
         } as Record<number, string>
       )[oldSchema],
     );
@@ -70,7 +71,7 @@ async function fixture(t: TestContext, oldSchema = 0) {
   return { db, app };
 }
 
-test("readiness rejects actual schema44 under legacy default and turns ready at schema52 without creating money or model attempts", async (t) => {
+test("readiness rejects actual schema44 under legacy default and turns ready at schema53 without creating money or model attempts", async (t) => {
   const f = await fixture(t, 44);
   const before = (
     await f.db.query(
@@ -102,7 +103,7 @@ test("readiness rejects actual schema44 under legacy default and turns ready at 
   assert.deepEqual(current.json(), { status: "ok" });
   assert.equal(
     (await f.db.query("select name from citygo_migrations")).rows.length,
-    52,
+    53,
   );
   assert.deepEqual(
     (
@@ -125,12 +126,14 @@ test("readiness requires the messenger migration and physical session ownership 
   assert.equal((await f.app.inject({ url: "/ready" })).statusCode, 503);
 });
 
-test("readiness requires schema52 and both physical housing result tables", async (t) => {
-  const f = await fixture(t, 51);
+test("readiness requires the physical housing checklist confirmation column and schema53", async (t) => {
+  const f = await fixture(t, 52);
   assert.equal((await f.app.inject({ url: "/ready" })).statusCode, 503);
   await migrate(f.db);
   assert.equal((await f.app.inject({ url: "/ready" })).statusCode, 200);
-  await f.db.exec("drop table housing_workspace_checklists");
+  await f.db.exec(
+    "alter table housing_workspace_checklists drop column confirmed_from_revision cascade",
+  );
   assert.equal((await f.app.inject({ url: "/ready" })).statusCode, 503);
 });
 

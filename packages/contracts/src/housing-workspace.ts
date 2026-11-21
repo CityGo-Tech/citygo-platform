@@ -50,6 +50,12 @@ export const saveHousingChecklistSchema = z.strictObject({
   ...checklistContent,
   requestId: savedMetadata.requestId,
 });
+export const confirmHousingChecklistSchema = z.strictObject({
+  expectedRevision: revision,
+  planRevision: revision,
+  requestId: savedMetadata.requestId,
+  reviewed: z.literal(true),
+});
 export const housingWorkspaceSchema = z
   .strictObject({
     userId: personalPlanIdSchema,
@@ -61,7 +67,17 @@ export const housingWorkspaceSchema = z
       })
       .nullable(),
     checklist: z
-      .strictObject({ ...savedMetadata, ...checklistContent })
+      .strictObject({
+        ...savedMetadata,
+        ...checklistContent,
+        confirmedFromRevision: revision.optional(),
+        paymentNeedsReview: z.literal(true).optional(),
+      })
+      .refine(
+        ({ revision: current, confirmedFromRevision }) =>
+          confirmedFromRevision === undefined ||
+          confirmedFromRevision + 1 === current,
+      )
       .nullable(),
   })
   .refine(
@@ -78,3 +94,6 @@ export type HousingWorkspaceCriteria = z.infer<
 export type HousingChecklistEntry = z.infer<typeof housingChecklistEntrySchema>;
 export type SaveHousingPlan = z.infer<typeof saveHousingPlanSchema>;
 export type SaveHousingChecklist = z.infer<typeof saveHousingChecklistSchema>;
+export type ConfirmHousingChecklist = z.infer<
+  typeof confirmHousingChecklistSchema
+>;
