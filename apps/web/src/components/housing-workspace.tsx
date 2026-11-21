@@ -7,6 +7,8 @@ import { Button, Card, Field } from "@citygo/ui-web";
 import { housingFirstPaymentDetails } from "./housing-first-payment";
 import { housingPlanContent, HousingPlanSteps } from "./housing-starter-plan";
 import { HousingDirectionComparison } from "./housing-direction-comparison";
+import { HousingShortlist } from "./housing-shortlist";
+import { isHousingShortlistLoopback } from "./housing-shortlist-data";
 import styles from "./housing-starter-plan.module.css";
 
 type Plan = NonNullable<HousingWorkspace["plan"]>;
@@ -135,6 +137,7 @@ export function HousingWorkspaceView({
   onOpenSource,
   onChooseAssistant,
   initialView = "plan",
+  allowLocalShortlist = false,
   initialCriteria,
   defaultCity,
 }: {
@@ -146,12 +149,24 @@ export function HousingWorkspaceView({
   onOpenSource?: (threadId: string) => void;
   onChooseAssistant?: () => void;
   initialView?: "plan" | "checklist";
+  allowLocalShortlist?: boolean;
   initialCriteria?: { commute: string; budgetRub: number | null };
   defaultCity?: string;
 }) {
-  const [view, setView] = useState<"plan" | "checklist" | "comparison">(
-    initialView,
-  );
+  const [view, setView] = useState<
+    "plan" | "checklist" | "comparison" | "shortlist"
+  >(initialView);
+  const [shortlist, setShortlist] = useState<Plan | null>(null);
+  const [localShortlist, setLocalShortlist] = useState(false);
+  useEffect(() => {
+    setLocalShortlist(
+      allowLocalShortlist &&
+        isHousingShortlistLoopback(window.location.host) &&
+        new URLSearchParams(window.location.search).get(
+          "housingCatalogDemo",
+        ) === "1",
+    );
+  }, [allowLocalShortlist]);
   const [comparison, setComparison] = useState<Plan | null>(null);
   const [review, setReview] = useState<ChecklistReview | null>(null);
   const [snapshot, setSnapshot] = useState<HousingWorkspace | null>(null);
@@ -396,9 +411,32 @@ export function HousingWorkspaceView({
   const blocked = !current || busy || !!uncertain;
   useEffect(() => {
     heading.current?.focus();
-  }, [headingTitle]);
+  }, [headingTitle, view]);
 
   if (sessionSignal.aborted) return null;
+
+  if (view === "shortlist" && localShortlist && shortlist && current) {
+    const outdated = plan?.revision !== shortlist.revision;
+    return (
+      <HousingShortlist
+        criteria={shortlist.criteria}
+        revision={shortlist.revision}
+        blocked={blocked}
+        loadFailed={!!error}
+        outdated={outdated}
+        onBack={() => {
+          setShortlist(null);
+          setView("plan");
+        }}
+        onOpenChecklist={() => {
+          if (!outdated && !blocked && !error) {
+            setShortlist(null);
+            setView("checklist");
+          }
+        }}
+      />
+    );
+  }
 
   if (view === "comparison" && comparison && plan) {
     const stale = comparison.revision !== plan.revision;
@@ -636,6 +674,20 @@ export function HousingWorkspaceView({
                     >
                       Показать направления поиска
                     </Button>
+                    {localShortlist && (
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        disabled={blocked}
+                        onClick={() => {
+                          setShortlist(plan);
+                          setView("shortlist");
+                          void control.current?.load();
+                        }}
+                      >
+                        Посмотреть короткий список
+                      </Button>
+                    )}
                     <Button
                       type="button"
                       variant="secondary"
