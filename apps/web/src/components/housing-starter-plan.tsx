@@ -42,19 +42,24 @@ export function HousingPlanLaunch({
   );
 }
 
+export type HousingPlanFields = { title: string; details: string };
+
 export function HousingStarterPlan({
-  userId,
-  sessionSignal,
-  onAccessDenied,
   onExit,
-  onOpenSavedPlan,
-}: {
-  userId: string;
-  sessionSignal: AbortSignal;
-  onAccessDenied: () => void;
-  onExit: () => void;
-  onOpenSavedPlan: () => void;
-}) {
+  ...access
+}: { onExit: () => void } & (
+  | {
+      onPreview: () => void;
+      onRequestSave: (fields: HousingPlanFields) => void;
+    }
+  | {
+      userId: string;
+      sessionSignal: AbortSignal;
+      onAccessDenied: () => void;
+      onOpenSavedPlan: () => void;
+    }
+)) {
+  const guest = "onRequestSave" in access;
   const [stage, setStage] = useState<Stage>("question");
   const [situation, setSituation] = useState<Situation>("direct");
   const [commuteDraft, setCommuteDraft] = useState("");
@@ -107,22 +112,27 @@ export function HousingStarterPlan({
       ),
     ].join("\n\n"),
   };
+  const showPreview = () => {
+    setStage("preview");
+    if (guest) access.onPreview();
+  };
   const choose = (selection: Situation) => {
     setSituation(selection);
-    setStage(selection === "oriented" ? "criteria" : "preview");
+    if (selection === "oriented") setStage("criteria");
+    else showPreview();
   };
 
-  if (stage === "save") {
+  if (stage === "save" && !guest) {
     return (
       <PlanStepComposer
-        userId={userId}
-        sessionSignal={sessionSignal}
-        onAccessDenied={onAccessDenied}
+        userId={access.userId}
+        sessionSignal={access.sessionSignal}
+        onAccessDenied={access.onAccessDenied}
         source={null}
         initialFields={initialFields}
-        onSaved={onOpenSavedPlan}
+        onSaved={access.onOpenSavedPlan}
         onCancel={(checkPlan) => {
-          if (checkPlan) onOpenSavedPlan();
+          if (checkPlan) access.onOpenSavedPlan();
           else setStage("preview");
         }}
       />
@@ -136,7 +146,7 @@ export function HousingStarterPlan({
     >
       <div className={styles.header}>
         <Button type="button" variant="ghost" onClick={onExit}>
-          К диалогу
+          {guest ? "Закрыть" : "К диалогу"}
         </Button>
         <p className={styles.eyebrow}>Помощник по жилью</p>
         <h1 id={headingId} ref={heading} tabIndex={-1}>
@@ -167,7 +177,7 @@ export function HousingStarterPlan({
           onSubmit={(event) => {
             event.preventDefault();
             setCriteria({ commute: commuteDraft.trim(), budget: budgetDraft });
-            setStage("preview");
+            showPreview();
           }}
         >
           <Field
@@ -223,7 +233,13 @@ export function HousingStarterPlan({
             ))}
           </ol>
           <div className={styles.stack}>
-            <Button type="button" onClick={() => setStage("save")}>
+            <Button
+              type="button"
+              onClick={() => {
+                if (guest) access.onRequestSave(initialFields);
+                else setStage("save");
+              }}
+            >
               Сохранить ориентир
             </Button>
             <Button

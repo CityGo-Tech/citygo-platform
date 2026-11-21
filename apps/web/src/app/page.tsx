@@ -51,6 +51,11 @@ import {
 import { createConversationListRequests } from "../components/conversation-list-requests";
 import { ConversationHome } from "../components/conversation-home";
 import {
+  HousingStarterPlan,
+  type HousingPlanFields,
+} from "../components/housing-starter-plan";
+import { PlanStepComposer } from "../components/personal-plan";
+import {
   WorkspaceFrame,
   JourneySidebar,
   AssistantContextRail,
@@ -110,8 +115,20 @@ function draftStorage() {
   }
 }
 
-type RegistrationTask = { task: LandingTask; ownerId: string };
-type RegistrationChallenge = PendingEmailRegistration & { task?: LandingTask };
+type TaskContinuation = {
+  task: LandingTask;
+  expiresAt: number;
+  housingPlan?: HousingPlanFields;
+};
+type RegistrationTask = TaskContinuation & { ownerId: string };
+type RegistrationChallenge = PendingEmailRegistration & {
+  task?: TaskContinuation;
+};
+type HousingSave = {
+  ownerId: string;
+  threadId: string;
+  fields: HousingPlanFields;
+};
 
 export default function Home() {
   const [session] = useState(createSessionGuard);
@@ -131,9 +148,10 @@ export default function Home() {
   );
   const [registration, setRegistration] =
     useState<RegistrationChallenge | null>(null);
-  const landingTask = useRef<{ task: LandingTask; expiresAt: number } | null>(
-    null,
-  );
+  const landingTask = useRef<TaskContinuation | null>(null);
+  const [guestHousing, setGuestHousing] = useState(false);
+  const guestHousingViewed = useRef(false);
+  const [housingSave, setHousingSave] = useState<HousingSave | null>(null);
   const landingAssistantEvent = useRef<{
     ownerId: string;
     signal: AbortSignal;
@@ -144,13 +162,14 @@ export default function Home() {
     undefined,
   );
   useEffect(() => {
-    const task = consumeLandingTask();
+    const entry = consumeLandingTask();
     const login = consumeLandingLoginIntent();
-    if (task) {
+    if (entry) {
       landingTask.current = {
-        task,
+        task: entry.task,
         expiresAt: Date.now() + landingTaskMaxAgeMs,
       };
+      setGuestHousing(entry.preview === true);
     } else if (login) {
       setMode("login");
     }
@@ -280,7 +299,11 @@ export default function Home() {
     if (hadOwner) setNotice("Сессия завершилась. Войдите снова.");
   }
   function clearUserState(owner?: string, keepAnonymousTask = false) {
-    if (!keepAnonymousTask) landingTask.current = null;
+    if (!keepAnonymousTask) {
+      landingTask.current = null;
+      setGuestHousing(false);
+    }
+    setHousingSave(null);
     landingAssistantEvent.current = null;
     clearChatDrafts(draftStorage());
     setDraftRecovered(false);
@@ -373,6 +396,7 @@ export default function Home() {
         : readConversationSelection(next.user.id, conversationStorage());
     const target =
       registrationTask?.ownerId === next.user.id &&
+      Date.now() < registrationTask.expiresAt &&
       next.user.role === "user" &&
       !next.user.mustChangePassword &&
       !next.user.serviceConsentRequired
@@ -402,6 +426,13 @@ export default function Home() {
           assistant: target,
           threadId: started.id,
         };
+        if (registrationTask?.housingPlan) {
+          setHousingSave({
+            ownerId: next.user.id,
+            threadId: started.id,
+            fields: registrationTask.housingPlan,
+          });
+        }
       } catch {
         ticket.check();
         if (version !== refreshVersion.current) return false;
@@ -835,10 +866,10 @@ export default function Home() {
       authMode === "register" ? readBrowserLandingAttribution() : undefined;
     const selectedTask = landingTask.current;
     const task =
-      authMode === "register" &&
       selectedTask &&
+      (authMode === "register" || selectedTask.housingPlan) &&
       Date.now() < selectedTask.expiresAt
-        ? selectedTask.task
+        ? selectedTask
         : undefined;
     const email = String(data.get("email"));
     let password = String(data.get("password"));
@@ -920,7 +951,7 @@ export default function Home() {
         clearBrowserLandingAttribution();
         await refresh(
           ticket,
-          task ? { task, ownerId: authenticated.user.id } : undefined,
+          task ? { ...task, ownerId: authenticated.user.id } : undefined,
         );
       } catch (cause) {
         if (ticket.active() && !accepted) {
@@ -940,7 +971,9 @@ export default function Home() {
   function changeAuthMode(next: "register" | "login" | "recover") {
     // Cancel both the network lifetime and the memory-only pending proof.
     const mustConfirmLogout = logoutUnconfirmed;
+    const pendingTask = registration?.task ?? landingTask.current;
     clearUserState();
+    if (pendingTask?.housingPlan) landingTask.current = pendingTask;
     setLogoutUnconfirmed(mustConfirmLogout);
     setMode(next);
   }
@@ -1005,7 +1038,7 @@ export default function Home() {
           await refresh(
             confirmed,
             current.task
-              ? { task: current.task, ownerId: authenticated.user.id }
+              ? { ...current.task, ownerId: authenticated.user.id }
               : undefined,
           );
         } catch {
@@ -1528,6 +1561,30 @@ export default function Home() {
           <Card>
             <p role="status">Загружаем ваш маршрут…</p>
           </Card>
+        ) : !board && guestHousing && !logoutUnconfirmed ? (
+          <HousingStarterPlan
+            onExit={() => {
+              landingTask.current = null;
+              setGuestHousing(false);
+            }}
+            onPreview={() => {
+              if (guestHousingViewed.current) return;
+              guestHousingViewed.current = true;
+              trackProductEvent("plan_opened", {
+                surface: "plan",
+                assistant: "housing",
+              });
+            }}
+            onRequestSave={(housingPlan) => {
+              landingTask.current = {
+                task: "housing",
+                expiresAt: Date.now() + landingTaskMaxAgeMs,
+                housingPlan,
+              };
+              setGuestHousing(false);
+              setMode("register");
+            }}
+          />
         ) : !board && mode === "recover" ? (
           <PasswordRecovery
             key={formVersion}
@@ -1537,8 +1594,7 @@ export default function Home() {
             onRecovered={() => {
               if (authViewSignal.aborted) return;
               notifyBrowserSessionChange();
-              clearUserState();
-              setMode("login");
+              changeAuthMode("login");
               setNotice(
                 "Пароль изменён. Все прежние сессии завершены. Войдите с новым паролем.",
               );
@@ -1687,6 +1743,24 @@ export default function Home() {
               await refresh(ticket);
               ticket.check();
               setNotice("Условия приняты. Можно продолжить работу.");
+            }}
+          />
+        ) : housingSave &&
+          housingSave.ownerId === board.user.id &&
+          housingSave.threadId === board.thread?.id ? (
+          <PlanStepComposer
+            userId={board.user.id}
+            sessionSignal={session.capture().signal}
+            onAccessDenied={requireLogin}
+            initialFields={housingSave.fields}
+            source={null}
+            onSaved={() => {
+              setHousingSave(null);
+              returnToWorkspace("Мой план");
+            }}
+            onCancel={(checkPlan) => {
+              setHousingSave(null);
+              if (checkPlan) returnToWorkspace("Мой план");
             }}
           />
         ) : (
