@@ -335,6 +335,20 @@ async function fixture(
     if (path === "/api/v1/dashboard") return route.fulfill({ json: board() });
     if (
       housing &&
+      path === "/api/v1/knowledge/lookup" &&
+      request.method() === "POST"
+    ) {
+      expect(request.postDataJSON()).toEqual({
+        factKey: "housing.rent.first_payment",
+        scope: { kind: "global" },
+        limit: 1,
+      });
+      return route.fulfill({
+        json: { status: "miss", researchNeeded: true, reason: "not_found" },
+      });
+    }
+    if (
+      housing &&
       path === "/api/v1/conversations/start" &&
       request.method() === "POST"
     ) {

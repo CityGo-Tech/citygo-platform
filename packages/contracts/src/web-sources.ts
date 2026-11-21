@@ -61,7 +61,7 @@ function publicIpv4(host: string) {
 }
 
 /** Text-only validation. It never resolves DNS or requests the destination. */
-function publicWebUrl(value: string): string | null {
+export function publicWebUrl(value: string): string | null {
   if (
     !/^https:\/\//i.test(value) ||
     /[\s\\]/u.test(value) ||

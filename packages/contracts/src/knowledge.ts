@@ -279,4 +279,7 @@ export type KnowledgePublication = z.infer<typeof knowledgePublicationSchema>;
 export type KnowledgeSource = z.infer<typeof knowledgeSourceSchema>;
 export type KnowledgeFact = z.infer<typeof knowledgeFactSchema>;
 export type KnowledgeMatch = z.infer<typeof knowledgeMatchSchema>;
+export type KnowledgeLookupRequest = z.input<
+  typeof knowledgeLookupRequestSchema
+>;
 export type KnowledgeLookupResult = z.infer<typeof knowledgeLookupResultSchema>;

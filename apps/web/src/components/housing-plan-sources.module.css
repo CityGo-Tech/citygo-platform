@@ -1,0 +1,73 @@
+.rows > section > h2 {
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.rows p {
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.context,
+.details,
+.evidence {
+  display: grid;
+  min-width: 0;
+  gap: var(--cg-space-sm);
+  margin: 0;
+}
+
+.context,
+.evidence {
+  font-size: 14px;
+}
+
+.context div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--cg-space-xs) var(--cg-space-sm);
+}
+
+.context dt,
+.date {
+  color: var(--cg-color-muted);
+}
+
+.context dd,
+.details p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.evidence {
+  list-style: none;
+  padding: 0;
+}
+
+.evidence li {
+  display: grid;
+  gap: var(--cg-space-xs);
+  min-width: 0;
+}
+
+.evidence a {
+  color: var(--cg-color-primary-strong);
+  overflow-wrap: anywhere;
+}
+
+.date {
+  font-size: 12px;
+}
+
+.actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--cg-space-compact);
+}
+
+@media (max-width: 680px) {
+  .actions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
