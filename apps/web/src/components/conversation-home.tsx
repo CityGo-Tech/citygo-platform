@@ -501,6 +501,7 @@ export function ConversationHome(props: JourneyProps) {
         setTab("Помощники");
       }}
       initialView={housingView}
+      allowLocalShortlist={!miniApp}
       initialCriteria={miniNavigation?.housingCriteria}
       defaultCity={board.profile?.targetCity}
     />

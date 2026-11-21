@@ -111,3 +111,9 @@
     width: 100%;
   }
 }
+
+.demoOriginal {
+  width: min(100%, 42rem);
+  margin: var(--cg-space-md) auto;
+  padding: 0 var(--cg-space-md);
+}
