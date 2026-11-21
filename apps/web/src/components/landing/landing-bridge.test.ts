@@ -57,10 +57,24 @@ test("the fixed signup task survives DNT independently from tracking", () => {
         { headers: { DNT: "1" } },
       ),
     );
-    assert.equal(response.headers.get("location"), "/#citygo-start-" + task);
+    assert.equal(
+      response.headers.get("location"),
+      task === "housing"
+        ? "/#citygo-housing-preview"
+        : "/#citygo-start-coordinator",
+    );
     assert.equal(response.cookies.get("citygo_landing_attribution")!.maxAge, 0);
     assert.equal(response.cookies.getAll().length, 2);
   }
+});
+
+test("explicit registration handoff still opens authentication directly", () => {
+  const response = GET(
+    new NextRequest(
+      "https://pilot.example.test/landing/start?intent=register&task=housing",
+    ),
+  );
+  assert.equal(response.headers.get("location"), "/#citygo-start-housing");
 });
 
 test("unknown, duplicate and login tasks cannot carry a destination", () => {

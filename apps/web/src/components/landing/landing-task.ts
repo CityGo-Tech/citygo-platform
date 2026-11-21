@@ -16,6 +16,7 @@ export function landingTaskFromValue(
 }
 
 const landingTaskFragment = "#citygo-start-";
+export const housingPreviewHash = "#citygo-housing-preview";
 
 export function landingTaskHash(task: LandingTask): string {
   return landingTaskFragment + task;
@@ -23,9 +24,16 @@ export function landingTaskHash(task: LandingTask): string {
 
 /** The bridge sends a fixed fragment to this tab only. Never persist a task
  * alongside analytics or across auth lifetimes. */
-export function consumeLandingTask(): LandingTask | undefined {
+export function consumeLandingTask():
+  { task: LandingTask; preview?: true } | undefined {
   const { hash, pathname, search } = window.location;
-  if (pathname !== "/" || !hash.startsWith(landingTaskFragment)) return;
+  if (pathname !== "/") return;
+  if (hash === housingPreviewHash) {
+    window.history.replaceState(null, "", pathname + search);
+    return { task: "housing", preview: true };
+  }
+  if (!hash.startsWith(landingTaskFragment)) return;
   window.history.replaceState(null, "", pathname + search);
-  return landingTaskFromValue(hash.slice(landingTaskFragment.length));
+  const task = landingTaskFromValue(hash.slice(landingTaskFragment.length));
+  return task ? { task } : undefined;
 }

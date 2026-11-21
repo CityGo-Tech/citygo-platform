@@ -456,6 +456,12 @@ test("the housing CTA resumes signup through window focus with analytics disable
   );
   await action.click();
   await expect(page).toHaveURL("http://localhost:3000/");
+  await page
+    .getByRole("button", { name: "Работу пока ищу", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Сохранить ориентир", exact: true })
+    .click();
   await submitRegistration(page);
   expect(state.begin[0]?.landingAttribution).toBeUndefined();
   expect(state.begin[0]).not.toHaveProperty("task");
@@ -487,7 +493,7 @@ test("the housing CTA resumes signup through window focus with analytics disable
     releaseStart();
   }
   await expect(
-    page.getByRole("heading", { name: "Помощник по жилью", level: 1 }),
+    page.getByRole("region", { name: "Добавление шага в план" }),
   ).toBeVisible();
   expect(state.starts).toEqual(["housing"]);
   expect(state.chatPosts).toBe(0);
@@ -510,6 +516,12 @@ for (const cause of ["different owner", "unavailable conversation"] as const) {
       if (cause === "different owner") state.dashboardOwner = "102";
       else state.failStart = true;
       await page.goto("/landing/start?task=housing");
+      await page
+        .getByRole("button", { name: "Работу пока ищу", exact: true })
+        .click();
+      await page
+        .getByRole("button", { name: "Сохранить ориентир", exact: true })
+        .click();
       await submitRegistration(page);
       await page.getByLabel("Код из письма", { exact: true }).fill("654321");
       await page

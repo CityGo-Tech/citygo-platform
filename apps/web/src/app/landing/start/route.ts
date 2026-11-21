@@ -7,6 +7,7 @@ import {
 } from "../../../components/landing/landing-attribution";
 
 import {
+  housingPreviewHash,
   landingTaskFromValue,
   landingTaskHash,
 } from "../../../components/landing/landing-task";
@@ -23,12 +24,18 @@ export function GET(request: NextRequest) {
     tasks.length === 1
       ? landingTaskFromValue(tasks[0]!)
       : undefined;
+  const fragment =
+    task === "housing" && intentValue === null
+      ? housingPreviewHash
+      : task
+        ? landingTaskHash(task)
+        : "";
   // A standalone Next server can expose its internal 0.0.0.0:3000 origin in
   // request.url. A fixed relative target works behind either public hostname
   // and cannot reflect Host/Forwarded or a caller-provided return URL.
   const response = new NextResponse(null, {
     status: 303,
-    headers: { Location: task ? "/" + landingTaskHash(task) : "/" },
+    headers: { Location: "/" + fragment },
   });
   response.headers.set("Cache-Control", "private, no-store");
   response.headers.set("Referrer-Policy", "no-referrer");
