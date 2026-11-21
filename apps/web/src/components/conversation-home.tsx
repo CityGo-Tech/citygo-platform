@@ -41,6 +41,7 @@ import contextStyles from "./assistant-context.module.css";
 import { AssistantHandoffDialog } from "./assistant-handoff";
 import {
   currentAssistantHandoffSource,
+  type AssistantHandoffInput,
   type AssistantHandoffSource,
 } from "./assistant-handoff-state";
 import { MessageTextActions } from "./message-text-actions";
@@ -99,8 +100,16 @@ export function ConversationHome(props: JourneyProps) {
     signal: AbortSignal;
   } | null>(null);
   const housingLaunch = useRef<HTMLElement>(null);
-  const [handoffSource, setHandoffSource] =
-    useState<AssistantHandoffSource | null>(null);
+  const [handoff, setHandoff] = useState<{
+    source: AssistantHandoffSource;
+    intent?: AssistantHandoffInput["intent"];
+  } | null>(null);
+  const handoffSource = handoff?.source;
+  const [resumeDraft, setResumeDraft] = useState<{
+    source: AssistantHandoffSource;
+    destinationId: string;
+    text: string;
+  } | null>(null);
   const { board, busy, sending } = props;
   const log = useRef<HTMLDivElement>(null);
   const historyScroll = useHistoryScrollAnchor(
@@ -114,6 +123,62 @@ export function ConversationHome(props: JourneyProps) {
     },
   );
   const agent = props.streamAgent ?? board.thread?.agentKey ?? "support";
+  const ownedResumeDraft =
+    resumeDraft &&
+    !props.sessionSignal.aborted &&
+    resumeDraft.source.sessionSignal === props.sessionSignal &&
+    resumeDraft.source.userId === board.user.id
+      ? resumeDraft
+      : null;
+  const showResumeDraft =
+    !!ownedResumeDraft &&
+    tab === "Диалоги" &&
+    !showList &&
+    board.thread?.id === ownedResumeDraft.destinationId &&
+    !board.thread.closed &&
+    (board.thread.assistantKey ?? board.thread.agentKey) === "resume-builder";
+  useEffect(() => {
+    const signal = props.sessionSignal;
+    const clear = () =>
+      setResumeDraft((draft) =>
+        draft?.source.sessionSignal === signal ? null : draft,
+      );
+    setResumeDraft((draft) =>
+      draft?.source.sessionSignal === signal &&
+      draft.source.userId === board.user.id
+        ? draft
+        : null,
+    );
+    signal.addEventListener("abort", clear, { once: true });
+    return () => signal.removeEventListener("abort", clear);
+  }, [board.user.id, props.sessionSignal]);
+
+  function reviewHandoff(
+    message: NonNullable<JourneyProps["board"]["thread"]>["messages"][number],
+    intent?: AssistantHandoffInput["intent"],
+  ) {
+    const thread = board.thread;
+    if (
+      busy ||
+      sending ||
+      props.sessionSignal.aborted ||
+      tab === "Контекст" ||
+      !thread
+    )
+      return;
+    const source = {
+      userId: board.user.id,
+      threadId: thread.id,
+      messageId: message.id,
+      assistantKey: thread.assistantKey ?? thread.agentKey,
+      content: message.content,
+      sessionSignal: props.sessionSignal,
+    };
+    if (
+      currentAssistantHandoffSource(source, board, props.sessionSignal, intent)
+    )
+      setHandoff({ source, intent });
+  }
   const housingThread =
     board.thread &&
     !board.thread.closed &&
@@ -303,6 +368,7 @@ export function ConversationHome(props: JourneyProps) {
           handoffSource,
           board,
           props.sessionSignal,
+          handoff?.intent,
         ) && (
           <AssistantHandoffDialog
             key={
@@ -313,22 +379,62 @@ export function ConversationHome(props: JourneyProps) {
               handoffSource.messageId
             }
             source={handoffSource}
+            intent={handoff?.intent}
             board={board}
             sessionSignal={props.sessionSignal}
             disabled={busy || sending}
             onPrepare={async (input) => {
-              const prepared = await props.onHandoff!(input);
-              if (prepared && !input.source.sessionSignal.aborted) {
-                setTab("Диалоги");
-                setShowList(false);
-                setPlanSource(null);
-                setHandoffSource(null);
-              }
-              return prepared;
+              const destinationId = await props.onHandoff!(input);
+              if (!destinationId || input.source.sessionSignal.aborted)
+                return false;
+              if (input.intent === "resume")
+                setResumeDraft({
+                  source: input.source,
+                  destinationId,
+                  text: input.text,
+                });
+              setTab("Диалоги");
+              setShowList(false);
+              setPlanSource(null);
+              setHandoff(null);
+              return true;
             }}
-            onClose={() => setHandoffSource(null)}
+            onClose={() => setHandoff(null)}
           />
         )}
+      {ownedResumeDraft && (
+        <div hidden={!showResumeDraft}>
+          <PlanStepComposer
+            key={
+              ownedResumeDraft.destinationId +
+              ":" +
+              ownedResumeDraft.source.messageId
+            }
+            userId={board.user.id}
+            sessionSignal={props.sessionSignal}
+            onAccessDenied={props.onAccessDenied}
+            source={{
+              messageId: ownedResumeDraft.source.messageId,
+              threadId: ownedResumeDraft.source.threadId,
+              role: "user",
+              content: ownedResumeDraft.source.content,
+            }}
+            initialFields={{
+              title: "Черновик резюме",
+              details: ownedResumeDraft.text,
+            }}
+            resume
+            onSaved={() => {
+              setResumeDraft(null);
+              if (showResumeDraft) setTab("Результаты");
+            }}
+            onCancel={(checkPlan) => {
+              setResumeDraft(null);
+              if (checkPlan) setTab("Результаты");
+            }}
+          />
+        </div>
+      )}
       {planSource && (
         <PlanStepComposer
           key={board.user.id + ":" + planSource.messageId}
@@ -684,33 +790,37 @@ export function ConversationHome(props: JourneyProps) {
                             !!handoffSource ||
                             props.sessionSignal.aborted
                           }
-                          onClick={() => {
-                            if (
-                              busy ||
-                              sending ||
-                              props.sessionSignal.aborted ||
-                              tab === "Контекст" ||
-                              !board.thread
-                            )
-                              return;
-                            setHandoffSource({
-                              userId: board.user.id,
-                              threadId: board.thread.id,
-                              messageId: message.id,
-                              assistantKey:
-                                board.thread.assistantKey ??
-                                board.thread.agentKey,
-                              content: message.content,
-                              sessionSignal: props.sessionSignal,
-                            });
-                          }}
+                          onClick={() => reviewHandoff(message)}
                         >
                           Другому помощнику
                         </Button>
                       )}
+                      {message.role === "user" &&
+                        message.status === "complete" &&
+                        (board.thread?.assistantKey ??
+                          board.thread?.agentKey) === "job-search" &&
+                        !board.thread?.closed &&
+                        !ownedResumeDraft &&
+                        props.onHandoff && (
+                          <Button
+                            variant="ghost"
+                            disabled={
+                              busy ||
+                              sending ||
+                              !!planSource ||
+                              !!handoffSource ||
+                              props.sessionSignal.aborted
+                            }
+                            onClick={() => reviewHandoff(message, "resume")}
+                          >
+                            Подготовить резюме
+                          </Button>
+                        )}
                       <Button
                         variant="ghost"
-                        disabled={busy || sending || !!planSource}
+                        disabled={
+                          busy || sending || !!planSource || showResumeDraft
+                        }
                         onClick={() =>
                           setPlanSource({
                             messageId: message.id,

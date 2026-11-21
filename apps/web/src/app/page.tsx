@@ -551,20 +551,25 @@ export default function Home() {
       sending ||
       conversationSwitch.current
     )
-      return false;
+      return null;
     if (
       handoff &&
       (agentKey !== handoff.target ||
-        !assistantHandoffTarget(handoff.source, handoff.target) ||
+        !assistantHandoffTarget(
+          handoff.source,
+          handoff.target,
+          handoff.intent,
+        ) ||
         !currentAssistantHandoffSource(
           handoff.source,
           // The displayed history includes authorized older pages. The hook
           // binds this projection to the current owner, thread and session.
           history.board ?? board,
           session.capture().signal,
+          handoff.intent,
         ))
     )
-      return false;
+      return null;
     if (
       discussion &&
       (handoff ||
@@ -575,26 +580,28 @@ export default function Home() {
           session.capture().signal,
         ))
     )
-      return false;
+      return null;
     if (discussion) {
       try {
         resultDiscussionDraft(discussion.text);
       } catch {
-        return false;
+        return null;
       }
     }
     if (handoff) {
       try {
+        if (handoff.intent === "resume" && handoff.text.length > 4000)
+          return null;
         assistantHandoffDraft(handoff.text);
       } catch {
-        return false;
+        return null;
       }
     }
     conversationSwitch.current = true;
     const epoch = ++conversationEpoch.current;
     const version = ++refreshVersion.current;
     if (board.thread) conversationDrafts.current.set(board.thread.id, text);
-    let opened = false;
+    let opened: string | null = null;
     try {
       const completed = await act(async (ticket) => {
         const started = await api.startConversation(agentKey);
@@ -628,10 +635,12 @@ export default function Home() {
             throw new Error(
               "Handoff target does not match the selected assistant",
             );
-          const existing =
-            conversationDrafts.current.get(detail.thread.id) ??
-            readChatDraft(board.user.id, detail.thread.id, draftStorage());
-          preparedDraft = assistantHandoffDraft(handoff.text, existing);
+          if (handoff.intent !== "resume") {
+            const existing =
+              conversationDrafts.current.get(detail.thread.id) ??
+              readChatDraft(board.user.id, detail.thread.id, draftStorage());
+            preparedDraft = assistantHandoffDraft(handoff.text, existing);
+          }
         }
         if (discussion) {
           if (
@@ -667,14 +676,14 @@ export default function Home() {
         setDraft("");
         setPending("");
         setStreamAgent(null);
-        opened = true;
+        opened = detail.thread.id;
         trackProductEvent(
           "assistant_opened",
           { surface: "chat", assistant: detail.thread.agentKey },
           detail.thread.id,
         );
       });
-      return completed && opened;
+      return completed ? opened : null;
     } finally {
       if (epoch === conversationEpoch.current)
         conversationSwitch.current = false;
@@ -1869,10 +1878,10 @@ export default function Home() {
                   })
                 }
                 topups={topups}
-                onBegin={beginConversation}
+                onBegin={async (key) => !!(await beginConversation(key))}
                 onHandoff={(input) => beginConversation(input.target, input)}
-                onDiscussResult={(input) =>
-                  beginConversation(input.target, undefined, input)
+                onDiscussResult={async (input) =>
+                  !!(await beginConversation(input.target, undefined, input))
                 }
                 conversations={conversations}
                 conversationNextCursor={conversationNextCursor}

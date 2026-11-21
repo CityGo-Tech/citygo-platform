@@ -13,6 +13,7 @@ export type AssistantHandoffInput = {
   source: AssistantHandoffSource;
   target: AgentKey;
   text: string;
+  intent?: "resume";
 };
 
 /** Source identity is checked again at the selection commit boundary. */
@@ -20,6 +21,7 @@ export function currentAssistantHandoffSource(
   source: AssistantHandoffSource,
   board: Dashboard,
   signal: AbortSignal,
+  intent?: AssistantHandoffInput["intent"],
 ) {
   const thread = board.thread;
   return (
@@ -28,11 +30,14 @@ export function currentAssistantHandoffSource(
     source.userId === board.user.id &&
     source.threadId === thread?.id &&
     source.assistantKey === (thread?.assistantKey ?? thread?.agentKey) &&
+    (intent !== "resume" ||
+      (source.assistantKey === "job-search" && !thread?.closed)) &&
     !!thread?.messages.some(
       (message) =>
         message.id === source.messageId &&
         message.status === "complete" &&
-        message.content === source.content,
+        message.content === source.content &&
+        (intent !== "resume" || message.role === "user"),
     )
   );
 }
@@ -40,9 +45,12 @@ export function currentAssistantHandoffSource(
 export function assistantHandoffTarget(
   source: AssistantHandoffSource,
   target: string,
+  intent?: AssistantHandoffInput["intent"],
 ): target is AgentKey {
   return (
-    agentKeys.some((key) => key === target) && target !== source.assistantKey
+    (intent !== "resume" || target === "resume-builder") &&
+    agentKeys.some((key) => key === target) &&
+    target !== source.assistantKey
   );
 }
 
