@@ -2,6 +2,8 @@
 import { useEffect, useId, useRef, useState, type Ref } from "react";
 import { Button, Card, Field } from "@citygo/ui-web";
 import { PlanStepComposer } from "./personal-plan";
+import { HousingPlanFact, HousingPlanSources } from "./housing-plan-sources";
+import { useHousingPlanKnowledge } from "./use-housing-plan-knowledge";
 import styles from "./housing-starter-plan.module.css";
 
 const situations = [
@@ -10,7 +12,7 @@ const situations = [
   { value: "direct", label: "Сразу покажите стартовый план" },
 ] as const;
 type Situation = (typeof situations)[number]["value"];
-type Stage = "question" | "criteria" | "preview" | "save";
+type Stage = "question" | "criteria" | "preview" | "sources" | "save";
 
 const title = "Стартовый план поиска жилья";
 
@@ -60,6 +62,13 @@ export function HousingStarterPlan({
   const [commuteDraft, setCommuteDraft] = useState("");
   const [budgetDraft, setBudgetDraft] = useState("");
   const [criteria, setCriteria] = useState({ commute: "", budget: "" });
+  const { state: knowledge, refresh: refreshKnowledge } =
+    useHousingPlanKnowledge({
+      userId,
+      sessionSignal,
+      enabled: stage === "preview" || stage === "sources",
+      onAccessDenied,
+    });
   const heading = useRef<HTMLHeadingElement>(null);
   const headingId = useId();
   useEffect(() => {
@@ -107,10 +116,27 @@ export function HousingStarterPlan({
       ),
     ].join("\n\n"),
   };
+  function showPreview() {
+    refreshKnowledge();
+    setStage("preview");
+  }
   const choose = (selection: Situation) => {
     setSituation(selection);
-    setStage(selection === "oriented" ? "criteria" : "preview");
+    if (selection === "oriented") setStage("criteria");
+    else showPreview();
   };
+
+  if (stage === "sources") {
+    return (
+      <HousingPlanSources
+        state={knowledge}
+        context={{ commute, budget, situation }}
+        assessment={costDetails}
+        onBack={() => setStage("preview")}
+        onCorrect={() => setStage("criteria")}
+      />
+    );
+  }
 
   if (stage === "save") {
     return (
@@ -123,7 +149,7 @@ export function HousingStarterPlan({
         onSaved={onOpenSavedPlan}
         onCancel={(checkPlan) => {
           if (checkPlan) onOpenSavedPlan();
-          else setStage("preview");
+          else showPreview();
         }}
       />
     );
@@ -167,7 +193,7 @@ export function HousingStarterPlan({
           onSubmit={(event) => {
             event.preventDefault();
             setCriteria({ commute: commuteDraft.trim(), budget: budgetDraft });
-            setStage("preview");
+            showPreview();
           }}
         >
           <Field
@@ -208,9 +234,10 @@ export function HousingStarterPlan({
           </p>
           <p className={styles.summary}>{summary}</p>
           <aside className={styles.orientation}>
-            <p className={styles.eyebrow}>Первый ориентир</p>
+            <p className={styles.eyebrow}>Оценка помощника</p>
             <h2>Полный расход — не только аренда</h2>
             <p>{costDetails}</p>
+            <HousingPlanFact state={knowledge} />
           </aside>
           <ol className={styles.steps} aria-label="Шаги поиска">
             {steps.map((step, i) => (
@@ -225,6 +252,16 @@ export function HousingStarterPlan({
           <div className={styles.stack}>
             <Button type="button" onClick={() => setStage("save")}>
               Сохранить ориентир
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => {
+                refreshKnowledge();
+                setStage("sources");
+              }}
+            >
+              Основания рекомендации
             </Button>
             <Button
               type="button"

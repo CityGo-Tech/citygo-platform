@@ -103,6 +103,9 @@ import {
   paymentAdmissionUserStatusSchema,
   completionResponseSchema,
   dashboardResponseSchema,
+  knowledgeLookupRequestSchema,
+  knowledgeLookupResultSchema,
+  type KnowledgeLookupRequest,
   okResponseSchema,
   startResponseSchema,
   messageIdSchema,
@@ -818,6 +821,31 @@ export function createClient(
         role,
       }),
     dashboard: () => request("/v1/dashboard", dashboardResponseSchema),
+    lookupKnowledge: async (input: KnowledgeLookupRequest) => {
+      const query = knowledgeLookupRequestSchema.parse(input);
+      const result = await request(
+        "/v1/knowledge/lookup",
+        knowledgeLookupResultSchema,
+        query,
+      );
+      if (
+        result.status === "hit" &&
+        (result.matches.length > query.limit ||
+          result.matches.some(
+            (match) =>
+              match.factKey !== query.factKey ||
+              (match.scope.kind !== "global" &&
+                JSON.stringify(match.scope) !== JSON.stringify(query.scope)),
+          ))
+      ) {
+        throw new ApiError(
+          200,
+          "Ответ сервера не соответствует запрошенной теме или области",
+          "invalid_response",
+        );
+      }
+      return result;
+    },
     personalPlan: async (
       before?: string,
       status?: PersonalPlanStatus,
